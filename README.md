@@ -19,10 +19,10 @@ cargo build --release
 | Throughput (49MB, `-c '.'`) | 42 MB/s | 110 MB/s | 194 MB/s | **2.7 GB/s** |
 | Parallel NDJSON | — | — | — | **yes** |
 | SIMD | — | — | — | **yes (NEON/AVX2)** |
-| jq compat ([jq.test](tests/jq_compat/)) | 81% | 66% | 53% | **20%** |
+| jq compat ([jq.test](tests/jq_compat/)) | 95% | 82% | 66% | **25%** |
 
 Largest wins on parse-dominated workloads over large files; smallest on complex filters where evaluator cost dominates.
 
-jq compat % = pass rate on [jq's official test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test) (502 tests). jq itself scores 81% due to version differences. Run `bash tests/jq_compat/run_compat.sh` to reproduce.
+jq compat % = pass rate on [jq's official test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test) (502 tests, JSON-aware comparison). jq scores 95% (remaining 5% = import/module tests needing `-L` paths + version-specific number formatting). Run `bash tests/jq_compat/run_compat.sh` to reproduce.
 
 See [benches/](benches/) for methodology, full results, and how to reproduce.

@@ -6,7 +6,7 @@
 #   bash tests/jq_compat/run_compat.sh           # test all available tools
 #   bash tests/jq_compat/run_compat.sh -v         # verbose: show each failure
 #
-# Requires: jq.test in the same directory as this script.
+# Requires: jq (for JSON-aware output comparison), jq.test in same directory.
 # Builds jx from source if target/release/jx doesn't exist.
 # Requires: coreutils (brew install coreutils) for gtimeout on macOS.
 
@@ -34,6 +34,11 @@ if [[ ! -f "$TEST_FILE" ]]; then
     exit 1
 fi
 
+if ! command -v jq &>/dev/null; then
+    echo "error: jq is required for JSON-aware output comparison" >&2
+    exit 1
+fi
+
 # Build jx if needed
 if [[ ! -x "$PROJECT_ROOT/target/release/jx" ]]; then
     echo "Building jx (release)..."
@@ -56,6 +61,34 @@ done
 
 echo "Tools: ${tool_names[*]}"
 echo ""
+
+# JSON-aware comparison: normalize each line through jq, then compare.
+# This handles differences like 2 vs 2.0, whitespace, key ordering, etc.
+json_equal() {
+    local a="$1" b="$2"
+    # Fast path: exact string match
+    [[ "$a" == "$b" ]] && return 0
+
+    # Normalize each line through jq (parse + re-serialize)
+    local a_norm b_norm
+    a_norm=$(echo "$a" | while IFS= read -r line; do
+        if norm=$(printf '%s' "$line" | jq -c -S '.' 2>/dev/null); then
+            printf '%s\n' "$norm"
+        else
+            # Not valid JSON (e.g., raw string output) — keep as-is
+            printf '%s\n' "$line"
+        fi
+    done)
+    b_norm=$(echo "$b" | while IFS= read -r line; do
+        if norm=$(printf '%s' "$line" | jq -c -S '.' 2>/dev/null); then
+            printf '%s\n' "$norm"
+        else
+            printf '%s\n' "$line"
+        fi
+    done)
+
+    [[ "$a_norm" == "$b_norm" ]]
+}
 
 # Run all tests for a given tool, reading jq.test inline
 run_tool() {
@@ -84,11 +117,10 @@ run_tool() {
                         total=$((total + 1))
                         local actual
                         if actual=$(printf '%s' "$input" | $TIMEOUT 5 "$tool_path" -c -- "$filter" 2>/dev/null); then
-                            # Strip trailing empty lines from both
                             local actual_clean expected_clean
                             actual_clean=$(printf '%s' "$actual" | sed '/^$/d')
                             expected_clean=$(printf '%s' "$expected" | sed '/^$/d')
-                            if [[ "$actual_clean" == "$expected_clean" ]]; then
+                            if json_equal "$actual_clean" "$expected_clean"; then
                                 passed=$((passed + 1))
                             else
                                 failed=$((failed + 1))
@@ -125,7 +157,7 @@ run_tool() {
             local actual_clean expected_clean
             actual_clean=$(printf '%s' "$actual" | sed '/^$/d')
             expected_clean=$(printf '%s' "$expected" | sed '/^$/d')
-            if [[ "$actual_clean" == "$expected_clean" ]]; then
+            if json_equal "$actual_clean" "$expected_clean"; then
                 passed=$((passed + 1))
             else
                 failed=$((failed + 1))
