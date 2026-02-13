@@ -33,7 +33,10 @@ Running 10+ hyperfine invocations back-to-back compounds the effect.
 
 Mitigations:
 - **Cooldown between groups:** `sleep $COOLDOWN` (default 10s) between
-  hyperfine invocations. Configurable via environment variable.
+  hyperfine invocations. Configurable via environment variable. *(done)*
+- **Tool ordering:** Run jx last in each group. Conservative approach —
+  thermal throttling penalizes jx (understates its advantage) rather
+  than competitors. *(not yet implemented)*
 - **CI runners are less affected** — server-grade cooling, but shared
   runners have their own variance (~10-30%).
 
