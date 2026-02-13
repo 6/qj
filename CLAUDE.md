@@ -37,7 +37,7 @@ bash bench/build_cpp_bench.sh
 ### End-to-end tool comparison (jx vs jq vs jaq vs gojq)
 ```
 bash bench/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
-bash bench/run_bench.sh           # hyperfine across small + large files
+bash bench/bench.sh               # hyperfine across small + large files, writes BENCHMARKS.md
 ```
 
 ### Profiling a single run

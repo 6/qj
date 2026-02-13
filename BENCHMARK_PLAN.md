@@ -148,7 +148,7 @@ jobs:
   build-and-test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -175,7 +175,7 @@ jobs:
 Notes:
 - `jdx/mise-action@v2` installs Rust from `mise.toml` (pinned version),
   keeping CI in sync with local dev.
-- `macos-latest` resolves to ARM64 runners (macos-14+).
+- `macos-26` is macOS Tahoe (ARM64), `ubuntu-24.04` is the current LTS.
 - `cargo bench --no-run` validates benchmark code compiles without
   actually running (what ripgrep and tokio do).
 - Rust cache via `Swatinem/rust-cache` for fast rebuilds.
@@ -202,9 +202,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux-x86_64
-          - os: macos-latest
+          - os: macos-26
             platform: darwin-arm64
     runs-on: ${{ matrix.os }}
     steps:
