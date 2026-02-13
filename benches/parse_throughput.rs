@@ -1,5 +1,6 @@
 use jx::simdjson;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn mb_per_sec(bytes: u64, dur: Duration) -> f64 {
@@ -152,8 +153,75 @@ fn bench_iterate_many_extract(label: &str, padded: &[u8], json_len: usize, field
     );
 }
 
+/// Find an external tool (jq, jaq) on PATH. Returns None if not installed.
+fn find_tool(name: &str) -> Option<String> {
+    Command::new("which")
+        .arg(name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Benchmark an external JSON tool (jq/jaq) by spawning it repeatedly.
+/// Uses `tool '.' file > /dev/null` to measure parse + identity filter throughput.
+fn bench_external_tool(label: &str, tool: &str, filter: &str, file: &Path, file_bytes: u64) {
+    // Calibrate: run once to estimate per-invocation time, then pick iters for ~2s total.
+    // Warmup
+    for _ in 0..3 {
+        let _ = Command::new(tool)
+            .args([filter, file.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+    }
+
+    // Single timed run to calibrate
+    let t0 = Instant::now();
+    let _ = Command::new(tool)
+        .args([filter, file.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let single = t0.elapsed();
+
+    let iters = ((2.0 / single.as_secs_f64()) as u64).max(3);
+
+    let start = Instant::now();
+    for _ in 0..iters {
+        let out = Command::new(tool)
+            .args([filter, file.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{tool} failed on {}", file.display());
+    }
+    let elapsed = start.elapsed();
+    let mbs = mb_per_sec(file_bytes * iters, elapsed);
+    println!(
+        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
+        elapsed.as_secs_f64()
+    );
+}
+
 fn main() {
     println!("=== jx parse throughput benchmark ===\n");
+
+    let jq_path = find_tool("jq");
+    let jaq_path = find_tool("jaq");
+    if jq_path.is_some() || jaq_path.is_some() {
+        print!("External tools:");
+        if let Some(p) = &jq_path {
+            print!(" jq={p}");
+        }
+        if let Some(p) = &jaq_path {
+            print!(" jaq={p}");
+        }
+        println!("\n");
+    }
 
     let data_dir = Path::new("bench/data");
 
@@ -177,6 +245,12 @@ fn main() {
         let json_len = raw.len();
 
         println!("{fname} ({json_len} bytes):");
+        if let Some(ref jq) = jq_path {
+            bench_external_tool("jq '.' (end-to-end)", jq, ".", &path, json_len as u64);
+        }
+        if let Some(ref jaq) = jaq_path {
+            bench_external_tool("jaq '.' (end-to-end)", jaq, ".", &path, json_len as u64);
+        }
         bench_serde_json_parse("serde_json DOM parse", &raw);
         bench_simdjson_ondemand_parse("simdjson On-Demand parse (FFI)", &padded, json_len);
         if let Some(f) = field {
@@ -205,6 +279,24 @@ fn main() {
         let json_len = raw.len();
 
         println!("{fname} ({json_len} bytes):");
+        if let Some(ref jq) = jq_path {
+            bench_external_tool(
+                "jq '.name' (end-to-end)",
+                jq,
+                ".name",
+                &path,
+                json_len as u64,
+            );
+        }
+        if let Some(ref jaq) = jaq_path {
+            bench_external_tool(
+                "jaq '.name' (end-to-end)",
+                jaq,
+                ".name",
+                &path,
+                json_len as u64,
+            );
+        }
         bench_serde_json_ndjson_parse("serde_json NDJSON line-by-line", &raw);
         bench_iterate_many_count("iterate_many count (FFI)", &padded, json_len);
         bench_iterate_many_extract(
