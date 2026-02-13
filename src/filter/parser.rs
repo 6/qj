@@ -566,6 +566,74 @@ mod tests {
     }
 
     #[test]
+    fn parse_operator_precedence_mul_add() {
+        // 1 + 2 * 3 should parse as 1 + (2 * 3), not (1 + 2) * 3
+        assert_eq!(
+            p("1 + 2 * 3"),
+            Filter::Arith(
+                Box::new(Filter::Literal(Value::Int(1))),
+                ArithOp::Add,
+                Box::new(Filter::Arith(
+                    Box::new(Filter::Literal(Value::Int(2))),
+                    ArithOp::Mul,
+                    Box::new(Filter::Literal(Value::Int(3))),
+                )),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_operator_precedence_div_sub() {
+        // 10 - 6 / 2 should parse as 10 - (6 / 2)
+        assert_eq!(
+            p("10 - 6 / 2"),
+            Filter::Arith(
+                Box::new(Filter::Literal(Value::Int(10))),
+                ArithOp::Sub,
+                Box::new(Filter::Arith(
+                    Box::new(Filter::Literal(Value::Int(6))),
+                    ArithOp::Div,
+                    Box::new(Filter::Literal(Value::Int(2))),
+                )),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_operator_precedence_mod() {
+        // 5 + 7 % 3 should parse as 5 + (7 % 3)
+        assert_eq!(
+            p("5 + 7 % 3"),
+            Filter::Arith(
+                Box::new(Filter::Literal(Value::Int(5))),
+                ArithOp::Add,
+                Box::new(Filter::Arith(
+                    Box::new(Filter::Literal(Value::Int(7))),
+                    ArithOp::Mod,
+                    Box::new(Filter::Literal(Value::Int(3))),
+                )),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_same_precedence_left_assoc() {
+        // 2 * 3 / 4 should parse as (2 * 3) / 4 (left-to-right)
+        assert_eq!(
+            p("2 * 3 / 4"),
+            Filter::Arith(
+                Box::new(Filter::Arith(
+                    Box::new(Filter::Literal(Value::Int(2))),
+                    ArithOp::Mul,
+                    Box::new(Filter::Literal(Value::Int(3))),
+                )),
+                ArithOp::Div,
+                Box::new(Filter::Literal(Value::Int(4))),
+            )
+        );
+    }
+
+    #[test]
     fn parse_comma() {
         assert_eq!(
             p(".a, .b"),
