@@ -6,18 +6,18 @@
 All benchmarks: warm cache (`--warmup 3`), output to pipe, single-threaded.
 Median of multiple runs via [hyperfine](https://github.com/sharkdp/hyperfine).
 
-| Filter | File | jx | jq | jaq | gojq |
+| Filter | File | **jx** | jq | jaq | gojq |
 |--------|------|------|------|------|------|
-| `-c '.'` | twitter.json | 1.8ms | 16.5ms | 6.2ms | 8.3ms |
-| `-c '.statuses'` | twitter.json | 2.2ms | 17.2ms | 5.3ms | 7.5ms |
-| `'.statuses|length'` | twitter.json | 3.2ms | 8.7ms | 4.7ms | 6.2ms |
-| `'.statuses[]|.user.name'` | twitter.json | 3.6ms | 9.6ms | 5.0ms | 6.6ms |
-| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | twitter.json | 3.3ms | 9.5ms | 5.1ms | 6.7ms |
-| `-c '.'` | large_twitter.json | 18.0ms | 1.18s | 257.9ms | 448.0ms |
-| `-c '.statuses'` | large_twitter.json | 77.7ms | 1.17s | 253.7ms | 442.0ms |
-| `'.statuses|length'` | large_twitter.json | 152.4ms | 386.5ms | 162.2ms | 284.7ms |
-| `'.statuses[]|.user.name'` | large_twitter.json | 157.8ms | 394.4ms | 171.8ms | 299.9ms |
-| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | large_twitter.json | 160.8ms | 407.2ms | 180.4ms | 304.3ms |
+| `-c '.'` | twitter.json | **1.8ms** | 16.5ms | 6.2ms | 8.3ms |
+| `-c '.statuses'` | twitter.json | **2.2ms** | 17.2ms | 5.3ms | 7.5ms |
+| `'.statuses\|length'` | twitter.json | **3.2ms** | 8.7ms | 4.7ms | 6.2ms |
+| `'.statuses[]\|.user.name'` | twitter.json | **3.6ms** | 9.6ms | 5.0ms | 6.6ms |
+| `'.statuses[]\|select(.retweet_count>0)\|{user:.user.screen_name,n:.retweet_count}'` | twitter.json | **3.3ms** | 9.5ms | 5.1ms | 6.7ms |
+| `-c '.'` | large_twitter.json | **18.0ms** | 1.18s | 257.9ms | 448.0ms |
+| `-c '.statuses'` | large_twitter.json | **77.7ms** | 1.17s | 253.7ms | 442.0ms |
+| `'.statuses\|length'` | large_twitter.json | **152.4ms** | 386.5ms | 162.2ms | 284.7ms |
+| `'.statuses[]\|.user.name'` | large_twitter.json | **157.8ms** | 394.4ms | 171.8ms | 299.9ms |
+| `'.statuses[]\|select(.retweet_count>0)\|{user:.user.screen_name,n:.retweet_count}'` | large_twitter.json | **160.8ms** | 407.2ms | 180.4ms | 304.3ms |
 
 ### Understanding the numbers
 

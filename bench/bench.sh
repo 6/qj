@@ -220,7 +220,11 @@ filter_display() {
     header="| Filter | File |"
     separator="|--------|------|"
     for tool in "${TOOLS[@]}"; do
-        header="$header $tool |"
+        if [ "$tool" = "jx" ]; then
+            header="$header **$tool** |"
+        else
+            header="$header $tool |"
+        fi
         separator="$separator------|"
     done
 
@@ -233,7 +237,12 @@ filter_display() {
             row="| \`$display\` | $file |"
             for tool in "${TOOLS[@]}"; do
                 val="${RESULTS["$i,$file,$tool"]:-}"
-                row="$row $(format_time "$val") |"
+                formatted=$(format_time "$val")
+                if [ "$tool" = "jx" ]; then
+                    row="$row **$formatted** |"
+                else
+                    row="$row $formatted |"
+                fi
             done
             echo "$row"
         done
