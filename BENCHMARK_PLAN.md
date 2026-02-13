@@ -1,0 +1,374 @@
+# Benchmarking Strategy for jx
+
+jx claims "10-50x faster on large inputs." This document defines how we
+measure, track, and present that — with enough rigor to survive scrutiny
+but without over-engineering for a young CLI tool.
+
+---
+
+## 1. Philosophy
+
+### Be honest about where jx loses
+
+ripgrep's benchmarks (BurntSushi) are the gold standard: they include
+scenarios where ripgrep is slower than grep, explain WHY architecturally,
+and publish raw data. jx should do the same. When jaq or gojq wins on a
+filter, show it and explain the tradeoff (e.g., "jaq's evaluator is
+faster on complex filters; jx wins on parse-dominated workloads").
+
+### Be explicit about what's being measured
+
+fd got burned by "misleading benchmarks" GitHub issues because caching
+and thread count weren't documented. Every benchmark must state:
+- Warm cache (hyperfine `--warmup 3`)
+- Output destination (`> /dev/null` for throughput, pipe for realism)
+- Thread count (single-threaded unless testing parallel mode)
+- CPU architecture (ARM64 vs x86_64 matters for SIMD)
+
+### Keep it simple
+
+jaq's approach works at this stage: hyperfine tables in the README,
+reproducible with a single script. We don't need a SaaS benchmarking
+platform. The progression is:
+1. **Now:** Shell scripts + hyperfine + manual README updates
+2. **Soon:** CI automation + `github-action-benchmark` for regression tracking
+3. **Later:** Comprehensive cross-platform matrix (only if jx gets traction)
+
+---
+
+## 2. Benchmark Matrix
+
+Three dimensions: **file size** x **filter complexity** x **output mode**.
+
+### Files
+
+Already exist or are trivial to generate via existing scripts:
+
+| File | Size | Type | Generator |
+|------|------|------|-----------|
+| `twitter.json` | 631 KB | Single JSON | `bench/download_testdata.sh` |
+| `citm_catalog.json` | 1.7 MB | Single JSON | `bench/download_testdata.sh` |
+| `canada.json` | 2.2 MB | Single JSON (numeric-heavy) | `bench/download_testdata.sh` |
+| `large_twitter.json` | ~49 MB | Single JSON | `bench/gen_large.sh` |
+| `large.jsonl` | ~50 MB | NDJSON | `bench/gen_large.sh` |
+| `100k.ndjson` | ~8 MB | NDJSON (synthetic) | `bench/generate_ndjson.sh` |
+| `1m.ndjson` | ~82 MB | NDJSON (synthetic) | `bench/generate_ndjson.sh` |
+
+**Future (for parallel benchmarks):**
+- `xl.ndjson` — 500MB+ generated NDJSON, needed to show parallel scaling
+
+### Filters (5 tiers)
+
+These cover the full performance spectrum, from parse-dominated to
+eval-dominated workloads. All use `twitter.json` / `large_twitter.json`
+structure:
+
+| Tier | Filter | What it tests |
+|------|--------|---------------|
+| 1. Identity compact | `-c '.'` | Passthrough fast path (simdjson::minify) |
+| 2. Field extraction | `-c '.statuses'` | Passthrough candidate (path lookup + raw copy) |
+| 3. Pipe + builtin | `.statuses\|length` | Minimal eval, parse still dominates |
+| 4. Iterate + field | `.statuses[]\|.user.name` | Eval-heavy, many output values |
+| 5. Select + construct | `.statuses[]\|select(.retweet_count>0)\|{user:.user.screen_name,n:.retweet_count}` | Complex eval, object construction |
+
+**Why these tiers matter:** jx's advantage is largest at tiers 1-3 (SIMD
+parsing dominates). At tiers 4-5, jaq's evaluator may be faster. Showing
+both tells an honest story.
+
+### Tools compared
+
+All four are already used in `bench/run_bench.sh`:
+- **jx** (this project)
+- **jq** 1.7+ (reference implementation)
+- **jaq** 2.x (fastest Rust alternative)
+- **gojq** 0.12+ (Go alternative)
+
+---
+
+## 3. Benchmark Scripts
+
+### Current state
+
+| Script | Purpose |
+|--------|---------|
+| `bench/run_bench.sh` | Hyperfine: jx vs jq vs jaq vs gojq on twitter.json + large_twitter.json |
+| `bench/compare_tools.sh` | Older baseline script (jq vs jaq only, no jx) |
+| `bench/download_testdata.sh` | Downloads twitter.json, citm_catalog.json, canada.json |
+| `bench/gen_large.sh` | Generates large_twitter.json (~49MB) + large.jsonl (~50MB) |
+| `bench/generate_ndjson.sh` | Generates 100k.ndjson + 1m.ndjson via gen_ndjson binary |
+| `bench/build_cpp_bench.sh` | Builds C++ simdjson baseline benchmark |
+| `benches/parse_throughput.rs` | Rust benchmark: simdjson vs serde_json parse speed |
+
+### Refactored script: `bench/bench.sh`
+
+Replace `bench/run_bench.sh` with `bench/bench.sh` that adds:
+
+1. **JSON export:** `hyperfine --export-json` for every run, saved to
+   `bench/results/{date}-{platform}.json`
+2. **Correctness validation:** Before timing, `diff <(jx ...) <(jq ...)`
+   on every filter to catch regressions
+3. **Platform tagging:** Capture `uname -ms`, CPU model, tool versions
+   in the JSON output
+4. **Full tier coverage:** All 5 filter tiers on both small + large files
+5. **NDJSON benchmarks:** Add large.jsonl runs for each tool
+
+Keep `bench/run_bench.sh` as a symlink to `bench/bench.sh` or delete it
+once the new script is validated.
+
+Existing helper scripts (`download_testdata.sh`, `gen_large.sh`,
+`generate_ndjson.sh`, `build_cpp_bench.sh`) stay unchanged.
+
+### Results directory
+
+```
+bench/results/
+  2025-06-15-darwin-arm64.json
+  2025-06-15-linux-x86_64.json
+  ...
+```
+
+Gitignored. CI uploads these as artifacts.
+
+---
+
+## 4. GitHub Actions CI
+
+### a. `ci.yml` — every push/PR (fast, no benchmarks)
+
+Runs on every push and PR. Tests correctness only.
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings
+
+      - name: Check benchmarks compile
+        run: cargo bench --no-run
+```
+
+Notes:
+- `macos-latest` resolves to ARM64 runners (macos-14+).
+- `cargo bench --no-run` validates benchmark code compiles without
+  actually running (what ripgrep and tokio do).
+- Rust cache via `Swatinem/rust-cache` for fast rebuilds.
+
+### b. `benchmark.yml` — on push to main + manual trigger
+
+Runs the full benchmark suite. No cron schedule — wasteful for a project
+with infrequent commits. Path filter ensures it only runs when code
+changes.
+
+```yaml
+name: Benchmarks
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'bench/**', 'benches/**', 'Cargo.toml', 'Cargo.lock']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  deployments: write
+
+jobs:
+  benchmark:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+          - os: macos-latest
+            platform: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Install benchmark tools
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y jq
+            # jaq: download prebuilt binary
+            curl -sL https://github.com/01mf02/jaq/releases/latest/download/jaq-x86_64-unknown-linux-gnu \
+              -o /usr/local/bin/jaq && chmod +x /usr/local/bin/jaq
+            # gojq: download prebuilt binary
+            GOJQ_VERSION=$(curl -s https://api.github.com/repos/itchyny/gojq/releases/latest | jq -r .tag_name)
+            curl -sL "https://github.com/itchyny/gojq/releases/download/${GOJQ_VERSION}/gojq_${GOJQ_VERSION#v}_linux_amd64.tar.gz" \
+              | tar xz -C /tmp && sudo mv /tmp/gojq_*/gojq /usr/local/bin/
+            # hyperfine
+            cargo install hyperfine
+          else
+            brew install jq hyperfine
+            brew install jaq || true
+            brew install gojq || true
+          fi
+
+      - name: Download/generate test data
+        run: |
+          bash bench/download_testdata.sh
+          bash bench/gen_large.sh
+          bash bench/generate_ndjson.sh
+
+      - name: Cache test data
+        uses: actions/cache@v4
+        with:
+          path: bench/data
+          key: bench-data-v1
+
+      - name: Run benchmarks
+        run: bash bench/bench.sh
+
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: jx benchmarks (${{ matrix.platform }})
+          tool: 'customSmallerIsBetter'
+          output-file-path: bench/results/latest.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench/${{ matrix.platform }}
+
+      - name: Upload raw results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ matrix.platform }}
+          path: bench/results/
+```
+
+Notes:
+- No `schedule:` trigger. Path filter on `src/**`, `bench/**`, `Cargo.toml`
+  ensures benchmarks only run when code actually changes.
+- `benchmark-action/github-action-benchmark` stores historical data on
+  `gh-pages` branch and generates interactive charts.
+- Alert threshold 150% — CI shared runners are noisy, only catch real
+  regressions.
+- `fail-on-alert: false` — does NOT block PRs (too noisy on shared runners).
+- Results also uploaded as artifacts for manual inspection.
+
+---
+
+## 5. Regression Tracking
+
+Use [`benchmark-action/github-action-benchmark`](https://github.com/benchmark-action/github-action-benchmark):
+
+- **Storage:** Historical results in `gh-pages` branch under `dev/bench/`
+- **Charts:** Interactive time-series at `https://{user}.github.io/jx/dev/bench`
+- **Alerts:** Commit comment when any benchmark regresses > 150%
+- **No hard gate:** `fail-on-alert: false` because shared runner variance
+  is 10-30% — a 150% threshold catches real regressions while ignoring noise
+
+### Output format for `github-action-benchmark`
+
+`bench/bench.sh` must produce a JSON file compatible with
+`customSmallerIsBetter`:
+
+```json
+[
+  {
+    "name": "identity compact - twitter.json - jx",
+    "unit": "ms",
+    "value": 1.2
+  },
+  {
+    "name": "identity compact - twitter.json - jq",
+    "unit": "ms",
+    "value": 45.3
+  }
+]
+```
+
+Each benchmark name encodes: `{filter tier} - {file} - {tool}`.
+
+---
+
+## 6. Presenting Results
+
+### README table (now)
+
+Simple hyperfine-style table, manually updated after significant changes:
+
+```
+| Filter                    | File              | jx     | jq     | jaq    | gojq   |
+|---------------------------|-------------------|--------|--------|--------|--------|
+| -c '.'                    | twitter.json      | 1.2ms  | 45ms   | 8ms    | 12ms   |
+| -c '.'                    | large_twitter.json| 18ms   | 1.1s   | 180ms  | 320ms  |
+| .statuses[]|.user.name    | twitter.json      | 3ms    | 48ms   | 5ms    | 14ms   |
+| .statuses[]|.user.name    | large_twitter.json| 85ms   | 1.8s   | 210ms  | 580ms  |
+```
+
+*(Numbers are illustrative — update with actual measurements.)*
+
+### GitHub Pages charts (after CI is set up)
+
+Auto-generated by `github-action-benchmark`. Shows performance trends
+over time per platform. Linked from README.
+
+### Commentary
+
+Include a short "Understanding the numbers" section in the README:
+- "jx is fastest on parse-dominated workloads (tiers 1-3) thanks to SIMD"
+- "On complex filters (tier 5), jaq's evaluator can be faster"
+- "NDJSON parallel processing (when implemented) will show the biggest gains"
+- "All benchmarks: warm cache, output to /dev/null, single-threaded"
+
+---
+
+## 7. What NOT to Do
+
+| Temptation | Why not |
+|------------|---------|
+| CodSpeed / bencher.dev | Overkill for a CLI tool at this stage. Adds a SaaS dependency for something hyperfine + github-action-benchmark handles fine. |
+| Self-hosted runners | Maintenance burden. Shared runners are fine with a 150% alert threshold. Revisit if jx gets CI-visible perf regressions that are just noise. |
+| Criterion microbenchmarks for filter eval | Hyperfine end-to-end is what users experience. Microbenchmarks are useful for optimizing internals but shouldn't be the public-facing story. |
+| Windows CI | Not a target platform (PLAN.md). Would need MSVC simdjson build, not worth it yet. |
+| Scheduled CI runs | Wasteful for a project with infrequent commits. `push` to main with path filters is sufficient. |
+| Blocking PRs on perf regression | Shared runner variance is 10-30%. A hard gate would create false-positive friction. Comment-on-alert is enough. |
+
+---
+
+## 8. Implementation Order
+
+1. **Refactor `bench/bench.sh`** — JSON export, correctness checks, platform tagging, all 5 filter tiers
+2. **Add `bench/results/` to `.gitignore`**
+3. **Create `.github/workflows/ci.yml`** — build + test matrix (no benchmarks)
+4. **Create `.github/workflows/benchmark.yml`** — full benchmark suite with `github-action-benchmark`
+5. **Enable GitHub Pages** on `gh-pages` branch for benchmark charts
+6. **Update README** with benchmark table and methodology notes
