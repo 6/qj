@@ -19,6 +19,15 @@ Run `cargo test` after any code change — it's fast.
 diff <(./target/release/jx '.field' test.json) <(jq '.field' test.json)
 ```
 
+## Fuzzing
+
+Three fuzz targets exercise the C++/FFI boundary (`fuzz/`). Run after changing `src/simdjson/`. Requires nightly and `cargo-fuzz`.
+```
+cargo +nightly fuzz run fuzz_parse   -- -max_total_time=120
+cargo +nightly fuzz run fuzz_dom     -- -max_total_time=120
+cargo +nightly fuzz run fuzz_ndjson  -- -max_total_time=120
+```
+
 ## Benchmarking
 
 All benchmark scripts, data generators, and results live in `benches/`.
@@ -60,3 +69,4 @@ hyperfine --warmup 3 './target/release/jx ".field" test.json' 'jq ".field" test.
 - `src/output/` — pretty-print, compact, raw output formatters
 - `src/io/` — mmap for files, streaming for stdin
 - `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks
+- `fuzz/` — cargo-fuzz targets for simdjson FFI boundary (requires nightly)
