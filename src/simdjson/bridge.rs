@@ -78,6 +78,16 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
     fn jx_minify_free(ptr: *mut c_char);
+
+    fn jx_dom_find_field_raw(
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +453,42 @@ pub fn minify(buf: &[u8], json_len: usize) -> Result<Vec<u8>> {
     let mut out_len: usize = 0;
     check(unsafe { jx_minify(buf.as_ptr().cast(), json_len, &mut out_ptr, &mut out_len) })?;
     let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// DOM field extraction — parse, find nested field, return raw JSON bytes.
+// ---------------------------------------------------------------------------
+
+/// DOM parse a JSON buffer, navigate a chain of field names, and return
+/// the raw compact JSON bytes of the found sub-tree.
+///
+/// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
+/// `fields` is the chain of field names (e.g. `["a", "b", "c"]` for `.a.b.c`).
+/// Missing fields or non-object inputs return `b"null"` (jq semantics).
+pub fn dom_find_field_raw(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Vec<u8>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let field_ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast()).collect();
+    let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+    check(unsafe {
+        jx_dom_find_field_raw(
+            buf.as_ptr().cast(),
+            json_len,
+            field_ptrs.as_ptr(),
+            field_lens.as_ptr(),
+            fields.len(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    })?;
+    let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    // Reuse jx_minify_free — both allocate with new char[]
     unsafe { jx_minify_free(out_ptr) };
     Ok(result)
 }
@@ -912,5 +958,89 @@ mod tests {
         let buf = pad_buffer(json);
         // Empty input may succeed with empty output or error — both acceptable
         let _ = minify(&buf, json.len());
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_find_field_raw tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn field_raw_basic() {
+        let json = br#"{"name":"alice","age":30}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["name"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#""alice""#);
+    }
+
+    #[test]
+    fn field_raw_object_value() {
+        let json = br#"{"data":{"x":1,"y":[2,3]}}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["data"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"{"x":1,"y":[2,3]}"#);
+    }
+
+    #[test]
+    fn field_raw_nested() {
+        let json = br#"{"a":{"b":{"c":42}}}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["a", "b", "c"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "42");
+    }
+
+    #[test]
+    fn field_raw_missing() {
+        let json = br#"{"name":"alice"}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["missing"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "null");
+    }
+
+    #[test]
+    fn field_raw_non_object() {
+        let json = b"[1,2,3]";
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["x"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "null");
+    }
+
+    #[test]
+    fn field_raw_nested_missing() {
+        let json = br#"{"a":{"b":{"c":42}}}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["a", "b", "missing"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "null");
+    }
+
+    #[test]
+    fn field_raw_int_value() {
+        let json = br#"{"count":42}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["count"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "42");
+    }
+
+    #[test]
+    fn field_raw_bool_value() {
+        let json = br#"{"active":true}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["active"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "true");
+    }
+
+    #[test]
+    fn field_raw_null_value() {
+        let json = br#"{"val":null}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["val"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "null");
+    }
+
+    #[test]
+    fn field_raw_array_value() {
+        let json = br#"{"items":[1,2,3]}"#;
+        let buf = pad_buffer(json);
+        let out = dom_find_field_raw(&buf, json.len(), &["items"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "[1,2,3]");
     }
 }

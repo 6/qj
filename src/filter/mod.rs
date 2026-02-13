@@ -91,16 +91,41 @@ pub enum StringPart {
 
 /// Detected passthrough-eligible filter patterns that can bypass the
 /// full DOM parse → Value → eval → output pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PassthroughPath {
     /// `.` — identity; with compact output, use simdjson::minify() directly.
     Identity,
+    /// `.field` or `.a.b.c` — field chain; with compact output, use DOM
+    /// parse + field lookup + `to_string()` directly.
+    Field(Vec<String>),
+}
+
+/// Collect a chain of Field accesses from a Pipe tree.
+/// Returns true if the entire tree is a chain of `.field` accesses.
+fn collect_field_chain(filter: &Filter, fields: &mut Vec<String>) -> bool {
+    match filter {
+        Filter::Field(name) => {
+            fields.push(name.clone());
+            true
+        }
+        Filter::Pipe(a, b) => collect_field_chain(a, fields) && collect_field_chain(b, fields),
+        _ => false,
+    }
 }
 
 /// Check if a parsed filter is eligible for a fast passthrough path.
 pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
     match filter {
         Filter::Identity => Some(PassthroughPath::Identity),
+        Filter::Field(name) => Some(PassthroughPath::Field(vec![name.clone()])),
+        Filter::Pipe(_, _) => {
+            let mut fields = Vec::new();
+            if collect_field_chain(filter, &mut fields) {
+                Some(PassthroughPath::Field(fields))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }

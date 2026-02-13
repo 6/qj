@@ -53,7 +53,7 @@ performance story is SIMD parsing + parallelism, not a faster evaluator.
 | jq 1.7 | 23-62 MB/s e2e | baseline | No | No | No | Yes (`--stream`)* | 100% | All |
 | jaq 2.3 | 93-187 MB/s e2e | 1.3-2x jq | No | No | No | No | ~90% | All |
 | gojq 0.12 | 47-122 MB/s e2e | 0.8-2.5x jq | No | No | No | No | ~85% | All |
-| **jx 0.1** | **7-9 GB/s parse** | **2-4x jq** | **Planned** | **Yes (NEON/AVX2)** | **Planned** | **Planned** | **~60%** | **macOS/Linux** |
+| **jx 0.1** | **7-9 GB/s parse** | **3-63x jq** | **Planned** | **Yes (NEON/AVX2)** | **Passthrough** | **Planned** | **~60%** | **macOS/Linux** |
 
 \* jq's `--stream` mode parses incrementally, emitting `[[path], value]`
 pairs without loading the full tree. It works for constant-memory
@@ -156,7 +156,7 @@ jx/
 │   └── parse_throughput.rs    # Criterion benchmarks (simdjson vs serde)
 ├── tests/
 │   ├── simdjson_ffi.rs        # simdjson FFI integration tests (15 tests)
-│   └── e2e.rs                 # End-to-end CLI tests (29 tests)
+│   └── e2e.rs                 # End-to-end CLI tests (42 tests)
 ├── build.rs                   # Compiles simdjson.cpp via cc crate
 ├── Cargo.toml
 ├── CLAUDE.md
@@ -590,7 +590,7 @@ Where we're at parity with jaq:
 All Phase 1 slices implemented: Value type, output formatter (Tier 1
 direct-to-buffer with itoa/ryu, Tier 2 pretty-print), simdjson DOM bridge
 (flat token buffer protocol), filter lexer, recursive descent parser,
-generator-based evaluator, CLI with clap. 146 tests (117 unit + 29 e2e).
+generator-based evaluator, CLI with clap. 188 tests (131 unit + 42 e2e + 15 FFI).
 
 #### What was built
 
@@ -685,7 +685,7 @@ The throughput targets are not met yet. Analysis:
 | `src/simdjson/bridge.cpp` | Extended with `jx_dom_to_flat()` (flat token buffer) |
 | `src/simdjson/bridge.rs` | Extended with `dom_parse_to_value()` |
 | `src/main.rs` | CLI (clap derive), stdin/file input, filter → eval → output |
-| `tests/e2e.rs` | 29 end-to-end tests |
+| `tests/e2e.rs` | 42 end-to-end tests |
 
 ---
 
@@ -824,7 +824,7 @@ minified bytes + newline and skip the entire Value pipeline.
 - `main.rs`: Pre-check before `process_padded()` — identity + compact →
   minify fast path. Works for both file and stdin inputs. Added
   `minify_timed()` for `--debug-timing` support.
-- 170 tests (121 unit + 34 e2e + 15 FFI), all passing.
+- 170 tests, all passing (pre-field-passthrough count).
 
 **Profiling** (large_twitter.json, 49MB, `--debug-timing`):
 
@@ -861,6 +861,76 @@ minified bytes + newline and skip the entire Value pipeline.
 | Output byte-identical to jq `-c` | Yes | Yes | ✓ |
 | Identity compact >=10x faster than jq | >=10x | **63.5x** | ✓ |
 | Identity compact >=10x faster than jaq | >=10x | **13.9x** | ✓ |
+
+### Step 3b: Field compact passthrough — `.field` + `-c` fast path
+
+**Status: COMPLETE.**
+
+Field compact (`.field` + `-c`, `.a.b.c` + `-c`) now uses a dedicated
+C++ FFI function that DOM parses, navigates to the target field via
+`at_key()`, and serializes just that sub-tree via `simdjson::to_string()`.
+This bypasses Value construction, eval, and Rust output serialization.
+
+**Implementation:**
+- `bridge.cpp`: Added `jx_dom_find_field_raw()` — DOM parse + nested
+  field navigation + `to_string()` serialization. Handles missing fields
+  (returns `"null"`) and non-object inputs (returns `"null"`).
+- `bridge.rs`: Added FFI declaration + safe `pub fn dom_find_field_raw()`
+  wrapper. Reuses `jx_minify_free()` for deallocation.
+- `filter/mod.rs`: Extended `PassthroughPath` with `Field(Vec<String>)`.
+  Added `collect_field_chain()` to detect `.a.b.c` pipe chains.
+- `main.rs`: Added field match arm in passthrough pre-check for both
+  file and stdin paths. Added `field_raw_timed()` for `--debug-timing`.
+- 188 tests (131 unit + 42 e2e + 15 FFI), all passing.
+
+**Profiling** (large_twitter.json, 49MB, `--debug-timing`):
+
+| Phase | Time | % of total |
+|-------|------|------------|
+| Read | 4ms | 6% |
+| DOM parse + find + to_string | 67ms | 92% |
+| Write | 1ms | 2% |
+| **Total** | **72ms** | **676 MB/s** |
+
+**Benchmark results** (Apple Silicon, hyperfine --warmup 3, 49MB file):
+
+| Tool | Time | jx speedup |
+|------|------|------------|
+| jx `-c .statuses` | **74ms** | — |
+| jaq `-c .statuses` | 246ms | **3.3x** |
+| jq `-c .statuses` | 1,132ms | **15.3x** |
+
+Small file (twitter.json, 631KB):
+
+| Tool | Time | jx speedup |
+|------|------|------------|
+| jx `-c .statuses` | **2.4ms** | — |
+| jaq `-c .statuses` | 6.4ms | **2.7x** |
+| jq `-c .statuses` | 16.7ms | **6.9x** |
+
+**Before vs after** (49MB file, `-c .statuses`):
+
+| | Before | After | Improvement |
+|---|--------|-------|-------------|
+| jx | 261ms | **74ms** | **3.5x** |
+| jx vs jaq | 1.0x (tied) | **3.3x** |
+| jx vs jq | 4.5x | **15.3x** |
+
+**Verification:** Output byte-identical to `jq -c .statuses` on both
+twitter.json and large_twitter.json.
+
+**Note:** The 74ms is dominated by DOM parse (~65ms). The `to_string()`
+serialization of the sub-tree is very fast. The original plan estimated
+25-30ms, but that underestimated the DOM parse cost on 49MB. The minify
+passthrough (18ms) is faster because it skips DOM entirely. Further
+improvement would require On-Demand parsing or a sub-tree minify approach.
+
+**Updated performance table** (49MB large_twitter.json):
+
+| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+|--------|----|----|-----|----------|-----------|
+| `-c '.'` | **18ms** | 1,157ms | 253ms | 63x | 14x |
+| `-c '.statuses'` | **74ms** | 1,132ms | 246ms | 15x | 3.3x |
 
 ### Step 4: NDJSON end-to-end benchmarks + parallel NDJSON
 

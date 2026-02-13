@@ -353,4 +353,50 @@ void jx_minify_free(char* ptr) {
     delete[] ptr;
 }
 
+// ---------------------------------------------------------------------------
+// DOM field extraction — parse, navigate nested fields, serialize sub-tree.
+// ---------------------------------------------------------------------------
+
+int jx_dom_find_field_raw(
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::parser parser;
+        dom::element doc;
+        auto err = parser.parse(buf, len).get(doc);
+        if (err) return static_cast<int>(err);
+
+        // Navigate nested fields: .a.b.c
+        dom::element current = doc;
+        for (size_t i = 0; i < field_count; i++) {
+            std::string_view key(fields[i], field_lens[i]);
+            // at_key only works on objects; non-object → null (jq semantics)
+            if (current.type() != dom::element_type::OBJECT) {
+                const char* null_str = "null";
+                *out_ptr = new char[4];
+                std::memcpy(*out_ptr, null_str, 4);
+                *out_len = 4;
+                return 0;
+            }
+            auto field_err = current.at_key(key).get(current);
+            if (field_err) {
+                // Field not found → output "null" (jq semantics)
+                const char* null_str = "null";
+                *out_ptr = new char[4];
+                std::memcpy(*out_ptr, null_str, 4);
+                *out_len = 4;
+                return 0;
+            }
+        }
+
+        std::string result = simdjson::to_string(current);
+        *out_len = result.size();
+        *out_ptr = new char[result.size()];
+        std::memcpy(*out_ptr, result.data(), result.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
 } // extern "C"

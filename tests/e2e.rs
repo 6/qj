@@ -331,6 +331,59 @@ fn passthrough_identity_pretty_not_affected() {
     assert_eq!(out, "{\n  \"a\": 1\n}\n");
 }
 
+// --- Field compact passthrough ---
+
+#[test]
+fn passthrough_field_compact_basic() {
+    let out = jx_compact(".name", r#"{"name":"alice","age":30}"#);
+    assert_eq!(out.trim(), r#""alice""#);
+}
+
+#[test]
+fn passthrough_field_compact_object_value() {
+    let out = jx_compact(".data", r#"{"data":{"x":1,"y":[2,3]}}"#);
+    assert_eq!(out.trim(), r#"{"x":1,"y":[2,3]}"#);
+}
+
+#[test]
+fn passthrough_field_compact_nested() {
+    let out = jx_compact(".a.b.c", r#"{"a":{"b":{"c":42}}}"#);
+    assert_eq!(out.trim(), "42");
+}
+
+#[test]
+fn passthrough_field_compact_missing() {
+    let out = jx_compact(".missing", r#"{"name":"alice"}"#);
+    assert_eq!(out.trim(), "null");
+}
+
+#[test]
+fn passthrough_field_compact_nested_missing() {
+    let out = jx_compact(".a.b.missing", r#"{"a":{"b":{"c":42}}}"#);
+    assert_eq!(out.trim(), "null");
+}
+
+#[test]
+fn passthrough_field_compact_non_object() {
+    // .field on an array should return null (jq semantics)
+    let out = jx_compact(".x", "[1,2,3]");
+    assert_eq!(out.trim(), "null");
+}
+
+#[test]
+fn passthrough_field_compact_stdin() {
+    // Same as basic but exercises the stdin path
+    let out = jx_compact(".name", r#"{"name":"bob"}"#);
+    assert_eq!(out.trim(), r#""bob""#);
+}
+
+#[test]
+fn passthrough_field_pretty_not_affected() {
+    // Without -c, field access should still use normal pretty-print path
+    let out = jx(".data", r#"{"data":{"x":1}}"#);
+    assert_eq!(out, "{\n  \"x\": 1\n}\n");
+}
+
 // --- File input ---
 
 #[test]
