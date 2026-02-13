@@ -25,6 +25,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEST_FILE="$SCRIPT_DIR/jq.test"
+MODULES_DIR="$SCRIPT_DIR/modules"
 VERBOSE=false
 
 [[ "${1:-}" == "-v" ]] && VERBOSE=true
@@ -62,38 +63,41 @@ done
 echo "Tools: ${tool_names[*]}"
 echo ""
 
-# JSON-aware comparison: normalize each line through jq, then compare.
+# JSON-aware comparison: compare each line using jq's == operator.
 # This handles differences like 2 vs 2.0, whitespace, key ordering, etc.
 json_equal() {
     local a="$1" b="$2"
     # Fast path: exact string match
     [[ "$a" == "$b" ]] && return 0
 
-    # Normalize each line through jq (parse + re-serialize)
-    local a_norm b_norm
-    a_norm=$(echo "$a" | while IFS= read -r line; do
-        if norm=$(printf '%s' "$line" | jq -c -S '.' 2>/dev/null); then
-            printf '%s\n' "$norm"
-        else
-            # Not valid JSON (e.g., raw string output) — keep as-is
-            printf '%s\n' "$line"
-        fi
-    done)
-    b_norm=$(echo "$b" | while IFS= read -r line; do
-        if norm=$(printf '%s' "$line" | jq -c -S '.' 2>/dev/null); then
-            printf '%s\n' "$norm"
-        else
-            printf '%s\n' "$line"
-        fi
-    done)
+    # Split into arrays of lines
+    local -a a_lines b_lines
+    IFS=$'\n' read -r -d '' -a a_lines <<< "$a" || true
+    IFS=$'\n' read -r -d '' -a b_lines <<< "$b" || true
 
-    [[ "$a_norm" == "$b_norm" ]]
+    [[ ${#a_lines[@]} -ne ${#b_lines[@]} ]] && return 1
+
+    local i
+    for (( i=0; i<${#a_lines[@]}; i++ )); do
+        local al="${a_lines[$i]}" bl="${b_lines[$i]}"
+        [[ "$al" == "$bl" ]] && continue
+        # Try JSON-aware comparison using jq's == operator
+        if jq -e -n --argjson a "$al" --argjson b "$bl" '$a == $b' &>/dev/null; then
+            continue
+        fi
+        return 1
+    done
+    return 0
 }
 
 # Run all tests for a given tool, reading jq.test inline
+# $1 = tool name, $2 = tool path, remaining args = extra flags (e.g. -L path)
 run_tool() {
     local tool_name="$1"
     local tool_path="$2"
+    shift 2
+    local extra_args=()
+    [[ $# -gt 0 ]] && extra_args=("$@")
     local passed=0 failed=0 errored=0 total=0
     local state="scan" filter="" input="" expected=""
 
@@ -116,7 +120,8 @@ run_tool() {
                     if [[ -n "$expected" ]]; then
                         total=$((total + 1))
                         local actual
-                        if actual=$(printf '%s' "$input" | $TIMEOUT 5 "$tool_path" -c -- "$filter" 2>/dev/null); then
+                        actual=$(printf '%s' "$input" | $TIMEOUT 5 "$tool_path" ${extra_args[@]+"${extra_args[@]}"} -c -- "$filter" 2>/dev/null) || true
+                        if [[ -n "$actual" ]]; then
                             local actual_clean expected_clean
                             actual_clean=$(printf '%s' "$actual" | sed '/^$/d')
                             expected_clean=$(printf '%s' "$expected" | sed '/^$/d')
@@ -153,7 +158,8 @@ run_tool() {
     if [[ "$state" == "expected" && -n "$expected" ]]; then
         total=$((total + 1))
         local actual
-        if actual=$(printf '%s' "$input" | $TIMEOUT 5 "$tool_path" -c -- "$filter" 2>/dev/null); then
+        actual=$(printf '%s' "$input" | $TIMEOUT 5 "$tool_path" ${extra_args[@]+"${extra_args[@]}"} -c -- "$filter" 2>/dev/null) || true
+        if [[ -n "$actual" ]]; then
             local actual_clean expected_clean
             actual_clean=$(printf '%s' "$actual" | sed '/^$/d')
             expected_clean=$(printf '%s' "$expected" | sed '/^$/d')
@@ -174,5 +180,12 @@ run_tool() {
 
 echo "jq compat (jq.test):"
 for name in "${tool_names[@]}"; do
-    run_tool "$name" "${tool_paths[$name]}"
+    case "$name" in
+        jq|jaq|gojq)
+            run_tool "$name" "${tool_paths[$name]}" -L "$MODULES_DIR"
+            ;;
+        *)
+            run_tool "$name" "${tool_paths[$name]}"
+            ;;
+    esac
 done

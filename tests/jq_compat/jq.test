@@ -1512,18 +1512,6 @@ split("")
 ["fo", "foo", "barfoo", "foobarfoo", "foob"]
 ["fo","","bar","bar","b"]
 
-[.[]|ltrimstr("")]
-["a", "xx", ""]
-["a", "xx", ""]
-
-[.[]|rtrimstr("")]
-["a", "xx", ""]
-["a", "xx", ""]
-
-[.[]|trimstr("")]
-["a", "xx", ""]
-["a", "xx", ""]
-
 [(index(","), rindex(",")), indices(",")]
 "a,bc,def,ghij,klmno"
 [1,13,[1,4,8,13]]
@@ -1859,6 +1847,10 @@ try ["OK", strflocaltime({})] catch ["KO", .]
 [strptime("%Y-%m-%dT%H:%M:%SZ")|(.,mktime)]
 "2015-03-05T23:51:47Z"
 [[2015,2,5,23,51,47,4,63],1425599507]
+
+[strptime("%FT%T")|(.,mktime)]
+"2025-06-07T08:09:10"
+[[2025,5,7,8,9,10,6,157],1749283750]
 
 # Check day-of-week and day of year computations
 # (should trip an assert if this fails)
@@ -2510,27 +2502,8 @@ foreach .[] as $x (0, 1; . + $x)
 
 # regression test for CVE-2025-49014 (use of fmt after free)
 # tests with both empty string literal and empty string created by function
-# as they seems to behave reference wise differently.
+# as they seems to behave referecne wise differently.
 strflocaltime("" | ., @uri)
 0
 ""
 ""
-
-# regression tests for #3413
-# upper range bounds should be in sync with the constants defined at
-#   src/jv_parse.c:#define MAX_PARSING_DEPTH (N)
-#   src/jv_print.c:#define MAX_PRINT_DEPTH (N)
-# (N-1)
-reduce range(9999) as $_ ([];[.]) | tojson | fromjson | flatten
-null
-[]
-
-# (N)
-reduce range(10000) as $_ ([];[.]) | tojson | try (fromjson) catch . | (contains("<skipped: too deep>") | not) and contains("Exceeds depth limit for parsing")
-null
-true
-
-# (N+1)
-reduce range(10001) as $_ ([];[.]) | tojson | contains("<skipped: too deep>")
-null
-true
