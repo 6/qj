@@ -13,7 +13,8 @@
 Prerequisites:
 
 ```bash
-brew install hyperfine jq jaq gojq coreutils
+mise install              # installs jq, jaq, gojq, hyperfine
+brew install coreutils    # gtimeout (macOS only, needed by run_compat.sh)
 ```
 
 Generate test data and run:

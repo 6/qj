@@ -14,7 +14,7 @@ cargo build --release
 
 ## Benchmarks
 
-|  | jq 1.7 | gojq 0.12 | jaq 2.0 | **jx** |
+|  | jq 1.7 | gojq 0.12.18 | jaq 2.3 | **jx** |
 |--|--------|-----------|---------|--------|
 | Throughput (49MB, `-c '.'`) | 42 MB/s | 110 MB/s | 194 MB/s | **2.7 GB/s** |
 | Parallel NDJSON | — | — | — | **yes** |

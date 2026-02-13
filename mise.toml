@@ -1,3 +1,6 @@
 [tools]
 rust = "1.93.1"
 jq = "1.8.1"
+gojq = "0.12.18"
+jaq = "2.3.0"
+hyperfine = "1.20.0"

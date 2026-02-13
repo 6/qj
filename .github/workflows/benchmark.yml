@@ -28,26 +28,9 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Install benchmark tools (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update && sudo apt-get install -y jq
-
-          curl -sL https://github.com/01mf02/jaq/releases/latest/download/jaq-x86_64-unknown-linux-gnu \
-            -o /usr/local/bin/jaq && sudo chmod +x /usr/local/bin/jaq
-
-          GOJQ_VERSION=$(curl -s https://api.github.com/repos/itchyny/gojq/releases/latest | jq -r .tag_name)
-          curl -sL "https://github.com/itchyny/gojq/releases/download/${GOJQ_VERSION}/gojq_${GOJQ_VERSION#v}_linux_amd64.tar.gz" \
-            | tar xz -C /tmp && sudo mv /tmp/gojq_*/gojq /usr/local/bin/
-
-          cargo install hyperfine
-
-      - name: Install benchmark tools (macOS)
+      - name: Install coreutils (macOS)
         if: runner.os == 'macOS'
-        run: |
-          brew install jq hyperfine
-          brew install jaq || true
-          brew install gojq || true
+        run: brew install coreutils
 
       - name: Cache test data
         uses: actions/cache@v4
