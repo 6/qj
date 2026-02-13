@@ -5,7 +5,8 @@
 ///   pipe     = comma ("|" comma)*
 ///   comma    = compare ("," compare)*
 ///   compare  = arith (("==" | "!=" | "<" | "<=" | ">" | ">=") arith)?
-///   arith    = postfix (("+" | "-" | "*" | "/" | "%") postfix)*
+///   arith    = mul_div (("+" | "-") mul_div)*
+///   mul_div  = postfix (("*" | "/" | "%") postfix)*
 ///   postfix  = primary ("." ident | "[" expr "]" | "[]" | "?")*
 ///   primary  = "." | "." ident | literal | "(" expr ")" | "[" expr "]"
 ///            | "{" obj_pairs "}" | "select" "(" expr ")"
@@ -127,13 +128,27 @@ impl<'a> Parser<'a> {
         Ok(Filter::Compare(Box::new(left), op, Box::new(right)))
     }
 
-    // arith = postfix (("+"|"-"|"*"|"/"|"%") postfix)*
+    // arith = mul_div (("+"|"-") mul_div)*
     fn parse_arith(&mut self) -> Result<Filter> {
-        let mut left = self.parse_postfix()?;
+        let mut left = self.parse_mul_div()?;
         loop {
             let op = match self.peek() {
                 Some(Token::Plus) => ArithOp::Add,
                 Some(Token::Minus) => ArithOp::Sub,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_mul_div()?;
+            left = Filter::Arith(Box::new(left), op, Box::new(right));
+        }
+        Ok(left)
+    }
+
+    // mul_div = postfix (("*"|"/"|"%") postfix)*
+    fn parse_mul_div(&mut self) -> Result<Filter> {
+        let mut left = self.parse_postfix()?;
+        loop {
+            let op = match self.peek() {
                 Some(Token::Star) => ArithOp::Mul,
                 Some(Token::Slash) => ArithOp::Div,
                 Some(Token::Percent) => ArithOp::Mod,
