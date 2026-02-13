@@ -40,19 +40,29 @@ performance problems:
    on multi-core machines with zero user configuration. simdjson's
    `iterate_many` already does 3.5 GB/s on NDJSON — we build on it.
 
-jx aims to beat everything on *parsing throughput*, *parallel processing*,
-AND *filter evaluation speed*.
+jx aims to beat everything on *parsing throughput* and *parallel
+processing*, while matching jaq on *filter evaluation speed*. The
+performance story is SIMD parsing + parallelism, not a faster evaluator.
 
 ---
 
 ## Competitive landscape
 
-| Tool | Parsing | Parallel | SIMD | On-Demand | Memory model | jq compat | Platform |
-|------|---------|----------|------|-----------|--------------|-----------|----------|
-| jq 1.8 | ~300 MB/s | No | No | No | Full DOM, O(n)+ | 100% | All |
-| jaq 2.3 | ~500 MB/s | No | No | No | Full DOM, O(n) | ~90% | All |
-| gojq | ~400 MB/s | No | No | No | Full DOM, O(n) | ~85% | All |
-| **jx** | **3-7 GB/s** | **Yes (NDJSON)** | **Yes (NEON/AVX2)** | **Yes** | **Streaming** | **~80%** | **All** |
+| Tool | Parsing | Parallel | SIMD | On-Demand | Streaming | Memory model | jq compat | Platform |
+|------|---------|----------|------|-----------|-----------|--------------|-----------|----------|
+| jq 1.8 | ~300 MB/s | No | No | No | Yes (`--stream`)* | Full DOM, O(n)+ | 100% | All |
+| jaq 2.3 | ~500 MB/s | No | No | No | No | Full DOM, O(n) | ~90% | All |
+| gojq | ~400 MB/s | No | No | No | No | Full DOM, O(n) | ~85% | All |
+| **jx** | **3-7 GB/s** | **Yes (NDJSON)** | **Yes (NEON/AVX2)** | **Yes** | **Yes (transparent)** | **Streaming** | **~80%** | **All** |
+
+\* jq's `--stream` mode parses incrementally, emitting `[[path], value]`
+pairs without loading the full tree. It works for constant-memory
+processing of large files, but requires a completely different programming
+model — you work with path arrays instead of normal jq filters (e.g.,
+`jq --stream 'select(.[0] == ["name"]) | .[1]'` instead of `jq '.name'`).
+It's also significantly slower than normal mode because every value gets
+wrapped in a path tuple. jx's streaming (Phase 4) uses normal jq filter
+syntax with automatic streaming behavior — that's the real differentiator.
 
 ---
 
@@ -367,8 +377,8 @@ FFI overhead <5% vs direct C++ calls.
 ## Phase 1: Filter parser, evaluator, and FFI bridge
 
 **Goal:** Parse and evaluate the Tier 1 filters (`.field`, `.[]`, `|`,
-`select()`, object construction) against simdjson-parsed data. Match or
-beat jaq's filter evaluation speed.
+`select()`, object construction) against simdjson-parsed data. Match
+jaq's filter evaluation speed (the win is in parsing, not eval).
 
 ### 1a. simdjson FFI bridge
 
@@ -465,12 +475,25 @@ it fits the On-Demand pattern, use the fast path. Otherwise, fall back.
 
 ### 1d. Filter evaluation performance
 
-Target: match or beat jaq's evaluation speed. jaq's advantage over jq
-comes from straightforward Rust engineering — no bytecode VM overhead,
-native integers, efficient memory management. We get the same benefits
-by default with a clean AST-walking evaluator in Rust.
+**Honest assessment:** jaq is already a well-optimized Rust implementation
+by someone who has spent years on it. It uses native integers, efficient
+memory management, and a clean evaluator. We will not beat jaq on pure
+filter evaluation speed — we'd be doing essentially the same things in
+the same language. The target is to **match** jaq on eval, and win on
+everything else (parsing, parallelism, streaming).
 
-**Key design choices for fast evaluation:**
+Where the performance advantage is real:
+- **Parsing**: simdjson On-Demand at 5-7 GB/s vs jaq's hifijson at ~500 MB/s (10-14x)
+- **Parallelism**: 10 threads on independent NDJSON lines (~8-9x scaling)
+- **End-to-end large NDJSON**: Parsing dominates, so SIMD + threading = 30-50x
+
+Where we're at parity with jaq:
+- **Pure eval on same parsed data**: `map(select(.x > 0) | {a: .a, b: .b})`
+  on an already-parsed DOM — roughly same speed, maybe 10-20% either way
+- **Small inputs**: Parsing takes microseconds regardless. Startup dominates
+- **Complex filters on small data**: Pure eval speed. jaq is already good
+
+**Key design choices for competitive evaluation:**
 - Native i64 for integers (not f64 like jq)
 - Arena-allocated AST with index references (cache-friendly)
 - Per-thread reusable output buffers (same pattern as gg's WorkerState)
@@ -495,8 +518,8 @@ if needed) instead of building a Value and re-serializing.
 
 **Success criterion:** `jx '.field' file.json` produces identical output
 to `jq '.field' file.json` for all Tier 1 filters. Throughput ≥5x jq
-on a 100MB file. Filter evaluation speed ≥ jaq on jaq's own benchmark
-suite.
+on a 100MB file. Filter evaluation speed comparable to jaq (within ±20%)
+on jaq's own benchmark suite.
 
 ---
 
@@ -628,8 +651,29 @@ into memory.
 
 A 5GB JSON file like `[{...}, {...}, ..., {...}]` with millions of
 array elements. jq loads the entire thing into memory (uses ~5x the
-file size in RAM). jq's `--stream` mode fixes memory but is significantly
-slower.
+file size in RAM).
+
+### Prior art: jq `--stream`
+
+jq already has a streaming mode: `jq --stream` parses incrementally,
+emitting `[[path], value]` pairs without loading the full tree. So
+`jq --stream 'select(.[0] == ["name"]) | .[1]' huge.json` works on a
+5GB file with constant memory.
+
+The problems with `--stream`:
+- **Different programming model.** You work with path arrays instead of
+  normal jq filters. `select(.[0] == ["name"]) | .[1]` vs just `.name`.
+  It's a different language, not just a flag.
+- **Significantly slower.** Every value gets wrapped in a `[[path], value]`
+  tuple, adding allocation and GC overhead. Typical slowdown is 2-5x vs
+  normal mode.
+- **Painful for anything beyond trivial extraction.** Reconstructing
+  objects, filtering nested structures, or doing any real transformation
+  in streaming mode requires writing convoluted path-matching expressions.
+
+Our differentiator is **transparent streaming**: write normal jq filter
+syntax, get streaming memory behavior automatically. The user shouldn't
+need to know or care that streaming is happening.
 
 ### Approach: simdjson iterate_many + structural scanning
 
@@ -781,43 +825,66 @@ single-threaded, 30x multi-threaded for NDJSON.
 | Benchmark | jq | jaq | jx target |
 |-----------|-----|------|-----------|
 | Startup (empty filter) | ~5ms | ~1ms | ≤1ms |
-| Simple field access | baseline | ~2x jq | ≥2x jq |
-| map/select | baseline | ~2-3x jq | ≥2x jq |
-| reduce/fold | baseline | ~2-5x jq | ≥2x jq |
+| Simple field access | baseline | ~2x jq | ~2x jq (match jaq) |
+| map/select | baseline | ~2-3x jq | ~2-3x jq (match jaq) |
+| reduce/fold | baseline | ~2-5x jq | ~2-5x jq (match jaq) |
 
-Filter evaluation speed should match or beat jaq. Both are Rust, both
-use native integers, both can use efficient memory management. No reason
-to be slower. The real win is that for simple path queries, filter
-"evaluation" on the On-Demand path is essentially free — it's just
-navigating the SIMD structural index.
+Filter evaluation speed should match jaq — not beat it. Both are Rust,
+both use native integers, both can use efficient memory management. jaq
+has had years of optimization; claiming we'd beat it on eval is not
+credible. The real win is in parsing and parallelism, not the evaluator.
+
+For simple path queries on the On-Demand fast path, filter "evaluation"
+is essentially free — it's just navigating the SIMD structural index.
+This is where the end-to-end numbers get exciting, but it's a parsing
+win, not an eval win.
+
+### Honest performance comparison: jx vs jaq vs jq
+
+| Scenario | vs jq | vs jaq | Why |
+|----------|-------|--------|-----|
+| Simple filter, large file (1 thread) | 10-15x | 5-10x | SIMD On-Demand parsing |
+| Simple filter, large NDJSON (10 threads) | 50-100x | 30-60x | SIMD + parallelism |
+| Complex filter, large file | 5-8x | 2-4x | SIMD parsing, similar eval |
+| Complex filter, small file | 2-3x | ~1x | Eval-dominated, similar speed |
+| Small file, simple filter | 2-3x | ~1x | Startup-dominated |
+
+The win over jaq is almost entirely in the parser and threading, not
+the evaluator. On eval-dominated workloads (complex filters, small files),
+we're at parity. That's fine — nobody runs `reduce` on a 100-byte JSON
+file and complains about speed. The people who need "faster jq" have
+large inputs, and that's where the 10-50x advantage lives.
 
 ---
 
 ## Positioning
 
-**"jq, but fast."** Three concrete claims:
+**"jq, but fast on large data."** Two concrete claims backed by hardware:
 
 1. **10x faster parsing** via SIMD (simdjson On-Demand, NEON/AVX2)
 2. **10x faster NDJSON** via built-in parallel processing
-3. **100x less memory** for large files via streaming architecture
 
-**Primary audience:** Developers processing JSON at scale. Log pipelines,
-API response processing, data transformation. Anyone who has added
-`parallel | jq` to a pipeline or hit OOM on a large JSON file.
+And one architectural advantage:
 
-**Secondary audience:** LLM coding agents. Claude Code, Cursor, and
-aider parse JSON constantly — tool call responses, package manifests,
-API outputs. A faster JSON processor directly speeds up agent loops.
-Unlike gg (where the 10ms savings compounds over 2000 calls), jx's
-speedup is visible on single invocations with large inputs.
+3. **Transparent streaming** for large files — normal jq syntax, constant
+   memory (jq's `--stream` exists but requires a different programming model)
+
+**What we're NOT claiming:** Faster filter evaluation than jaq. On
+eval-dominated workloads (complex filters, small inputs), jx and jaq
+are roughly equivalent. The performance story is parsing + parallelism.
+
+**Primary audience:** Developers processing large JSON. Log pipelines,
+NDJSON datasets, large API dumps. Specifically: anyone who has added
+`parallel | jq` to a pipeline, hit OOM on a large JSON file, or waited
+more than a second for jq to finish.
 
 **Competitive positioning vs jaq:** jaq is "jq but correct and clean."
 jx is "jq but fast on large data." Different niches. jaq is better for
 people who want a drop-in jq replacement with maximum compatibility.
-jx is better for people processing >10MB of JSON at a time, or anyone
-who wants the fastest possible jq-compatible CLI. They complement rather
-than compete — though if jx matches jaq on eval speed AND adds SIMD
-parsing + parallelism, the "why not just use jx" argument gets strong.
+jx is better for people processing >10MB of JSON at a time. They
+complement rather than compete — though if jx matches jaq on eval speed
+AND adds SIMD parsing + parallelism, the "why not just use jx" argument
+gets strong for large-data workflows.
 
 ---
 
