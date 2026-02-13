@@ -14,15 +14,13 @@ cargo build --release
 
 ## Benchmarks
 
-**2-65x faster than jq** depending on workload. Largest wins on parse-dominated filters (identity, field extraction) over large files; smallest on complex filters where evaluator cost dominates.
+| Tool | Speed vs jq | Parallel NDJSON | SIMD | jq compat |
+|------|-------------|-----------------|------|-----------|
+| jq 1.7 | baseline | — | — | 100% |
+| jaq 2.0 | 1.3–2x | — | — | ~90% |
+| gojq 0.12 | 0.8–2.5x | — | — | ~85% |
+| **jx** | **2–65x** | **yes** | **yes (NEON/AVX2)** | **~60%** |
 
-See [benches/results.md](benches/results.md) for full results from local dedicated hardware. CI also produces [directional results](benches/results_ci.md) on shared runners.
+Largest wins on parse-dominated workloads over large files; smallest on complex filters where evaluator cost dominates.
 
-To reproduce locally:
-
-```bash
-brew install hyperfine jq jaq gojq
-bash benches/download_testdata.sh
-bash benches/gen_large.sh
-bash benches/bench.sh
-```
+See [benches/](benches/) for methodology, full results, and how to reproduce.
