@@ -32,6 +32,12 @@ Run `cargo test` after any code change — it's fast.
   bash tests/jq_compat/run_compat.sh            # summary
   bash tests/jq_compat/run_compat.sh -v          # show failures
   ```
+- **Updating the vendored test suite:** `tests/jq_compat/update_test_suite.sh` — downloads
+  `jq.test` and test modules from a jq release tag and updates `mise.toml`.
+  ```
+  bash tests/jq_compat/update_test_suite.sh          # uses version from mise.toml
+  bash tests/jq_compat/update_test_suite.sh 1.9.0    # upgrade to new version
+  ```
 - **When adding new jq builtins or language features**, always:
   1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
   2. Re-run `bash tests/jq_compat/run_compat.sh` and update jq compat % in `README.md`
