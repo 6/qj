@@ -37,6 +37,9 @@ for tool in jaq gojq; do
     fi
 done
 
+# Cooldown between hyperfine invocations to mitigate thermal throttling.
+COOLDOWN="${COOLDOWN:-10}"
+
 # --- Platform info ---
 
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
@@ -173,6 +176,9 @@ for file in "${FILES[@]}"; do
             median=$(jq ".results[$t].median" "$json_file")
             RESULTS["$i,$file,${cmd_tools[$t]}"]="$median"
         done
+
+        # Cooldown between groups to mitigate thermal throttling
+        sleep "$COOLDOWN"
     done
 done
 

@@ -32,10 +32,7 @@ cmd2), not interleaved. On laptops, later commands run on a warmer CPU.
 Running 10+ hyperfine invocations back-to-back compounds the effect.
 
 Mitigations:
-- **Tool ordering:** Run jx last in each group. This is the conservative
-  approach — thermal throttling penalizes jx (understates its advantage)
-  rather than competitors.
-- **Cooldown between groups:** `sleep $COOLDOWN` (default 3s) between
+- **Cooldown between groups:** `sleep $COOLDOWN` (default 10s) between
   hyperfine invocations. Configurable via environment variable.
 - **CI runners are less affected** — server-grade cooling, but shared
   runners have their own variance (~10-30%).
@@ -126,10 +123,9 @@ Replaces `bench/run_bench.sh` as the primary benchmark script:
 4. **Full tier coverage:** All 5 filter tiers on both small + large files
 5. **Writes `BENCHMARKS.md`:** Markdown table with bold jx column,
    auto-generated from hyperfine results
-6. **Tool ordering:** jq, jaq, gojq, then jx last (conservative for
-   thermal fairness — see "Account for thermal throttling" above)
-7. **Cooldown:** `sleep $COOLDOWN` (default 3s) between hyperfine
-   invocations to mitigate thermal buildup
+6. **Cooldown:** `sleep $COOLDOWN` (default 10s) between hyperfine
+   invocations to mitigate thermal buildup (see "Account for thermal
+   throttling" above)
 
 Existing helper scripts (`download_testdata.sh`, `gen_large.sh`,
 `generate_ndjson.sh`, `build_cpp_bench.sh`) stay unchanged.
