@@ -35,6 +35,10 @@ struct Cli {
     #[arg(short = 'n', long = "null-input")]
     null_input: bool,
 
+    /// Treat input as NDJSON (newline-delimited JSON)
+    #[arg(long)]
+    jsonl: bool,
+
     /// Print timing breakdown to stderr (for profiling)
     #[arg(long = "debug-timing", hide = true)]
     debug_timing: bool,
@@ -89,70 +93,91 @@ fn main() -> Result<()> {
         io::stdin()
             .read_to_end(&mut buf)
             .context("failed to read stdin")?;
-        match &passthrough {
-            Some(jx::filter::PassthroughPath::Identity) => {
-                let json_len = buf.len();
-                let padded = jx::simdjson::pad_buffer(&buf);
-                let minified =
-                    jx::simdjson::minify(&padded, json_len).context("failed to minify JSON")?;
-                out.write_all(&minified)?;
-                out.write_all(b"\n")?;
-                had_output = true;
-            }
-            Some(jx::filter::PassthroughPath::Field(fields)) => {
-                let json_len = buf.len();
-                let padded = jx::simdjson::pad_buffer(&buf);
-                let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                let raw = jx::simdjson::dom_find_field_raw(&padded, json_len, &field_refs)
-                    .context("failed to extract field")?;
-                out.write_all(&raw)?;
-                out.write_all(b"\n")?;
-                had_output = true;
-            }
-            Some(jx::filter::PassthroughPath::FieldLength(fields)) => {
-                let json_len = buf.len();
-                let padded = jx::simdjson::pad_buffer(&buf);
-                let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                match jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
-                    .context("failed to compute length")?
-                {
-                    Some(result) => {
-                        out.write_all(&result)?;
-                        out.write_all(b"\n")?;
-                        had_output = true;
-                    }
-                    None => {
-                        // Unsupported type — fall back to normal pipeline
-                        let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
-                        process_input(text, &filter, &mut out, &config, &mut had_output)?;
+        if cli.jsonl || jx::parallel::ndjson::is_ndjson(&buf) {
+            let (output, ho) = jx::parallel::ndjson::process_ndjson(&buf, &filter, &config)
+                .context("failed to process NDJSON from stdin")?;
+            out.write_all(&output)?;
+            had_output |= ho;
+        } else {
+            match &passthrough {
+                Some(jx::filter::PassthroughPath::Identity) => {
+                    let json_len = buf.len();
+                    let padded = jx::simdjson::pad_buffer(&buf);
+                    let minified =
+                        jx::simdjson::minify(&padded, json_len).context("failed to minify JSON")?;
+                    out.write_all(&minified)?;
+                    out.write_all(b"\n")?;
+                    had_output = true;
+                }
+                Some(jx::filter::PassthroughPath::Field(fields)) => {
+                    let json_len = buf.len();
+                    let padded = jx::simdjson::pad_buffer(&buf);
+                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+                    let raw = jx::simdjson::dom_find_field_raw(&padded, json_len, &field_refs)
+                        .context("failed to extract field")?;
+                    out.write_all(&raw)?;
+                    out.write_all(b"\n")?;
+                    had_output = true;
+                }
+                Some(jx::filter::PassthroughPath::FieldLength(fields)) => {
+                    let json_len = buf.len();
+                    let padded = jx::simdjson::pad_buffer(&buf);
+                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+                    match jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
+                        .context("failed to compute length")?
+                    {
+                        Some(result) => {
+                            out.write_all(&result)?;
+                            out.write_all(b"\n")?;
+                            had_output = true;
+                        }
+                        None => {
+                            // Unsupported type — fall back to normal pipeline
+                            let text =
+                                std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
+                            process_input(text, &filter, &mut out, &config, &mut had_output)?;
+                        }
                     }
                 }
-            }
-            Some(jx::filter::PassthroughPath::FieldKeys(fields)) => {
-                let json_len = buf.len();
-                let padded = jx::simdjson::pad_buffer(&buf);
-                let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                match jx::simdjson::dom_field_keys(&padded, json_len, &field_refs)
-                    .context("failed to compute keys")?
-                {
-                    Some(result) => {
-                        out.write_all(&result)?;
-                        out.write_all(b"\n")?;
-                        had_output = true;
-                    }
-                    None => {
-                        let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
-                        process_input(text, &filter, &mut out, &config, &mut had_output)?;
+                Some(jx::filter::PassthroughPath::FieldKeys(fields)) => {
+                    let json_len = buf.len();
+                    let padded = jx::simdjson::pad_buffer(&buf);
+                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+                    match jx::simdjson::dom_field_keys(&padded, json_len, &field_refs)
+                        .context("failed to compute keys")?
+                    {
+                        Some(result) => {
+                            out.write_all(&result)?;
+                            out.write_all(b"\n")?;
+                            had_output = true;
+                        }
+                        None => {
+                            let text =
+                                std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
+                            process_input(text, &filter, &mut out, &config, &mut had_output)?;
+                        }
                     }
                 }
-            }
-            None => {
-                let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
-                process_input(text, &filter, &mut out, &config, &mut had_output)?;
+                None => {
+                    let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
+                    process_input(text, &filter, &mut out, &config, &mut had_output)?;
+                }
             }
         }
     } else {
         for path in &cli.files {
+            if !cli.debug_timing {
+                let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+                    .with_context(|| format!("failed to read file: {path}"))?;
+                if cli.jsonl || jx::parallel::ndjson::is_ndjson(&padded[..json_len]) {
+                    let (output, ho) =
+                        jx::parallel::ndjson::process_ndjson(&padded[..json_len], &filter, &config)
+                            .with_context(|| format!("failed to process NDJSON: {path}"))?;
+                    out.write_all(&output)?;
+                    had_output |= ho;
+                    continue;
+                }
+            }
             match &passthrough {
                 Some(jx::filter::PassthroughPath::Identity) => {
                     if cli.debug_timing {
