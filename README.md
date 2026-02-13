@@ -14,12 +14,12 @@ cargo build --release
 
 ## Benchmarks
 
-| Tool | Speed vs jq | Parallel NDJSON | SIMD | jq compat |
-|------|-------------|-----------------|------|-----------|
-| jq 1.7 | baseline | — | — | 100% |
-| jaq 2.0 | 1.3–2x | — | — | ~90% |
-| gojq 0.12 | 0.8–2.5x | — | — | ~85% |
-| **jx** | **2–65x** | **yes** | **yes (NEON/AVX2)** | **~60%** |
+|  | jq 1.7 | gojq 0.12 | jaq 2.0 | **jx** |
+|--|--------|-----------|---------|--------|
+| Throughput (49MB, `-c '.'`) | 42 MB/s | 110 MB/s | 194 MB/s | **2.7 GB/s** |
+| Parallel NDJSON | — | — | — | **yes** |
+| SIMD | — | — | — | **yes (NEON/AVX2)** |
+| jq compat | 100% | ~85% | ~90% | **~60%** |
 
 Largest wins on parse-dominated workloads over large files; smallest on complex filters where evaluator cost dominates.
 
