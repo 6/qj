@@ -2802,4 +2802,884 @@ mod tests {
             Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
         );
     }
+
+    // --- Operator precedence ---
+
+    #[test]
+    fn eval_precedence_mul_before_add() {
+        assert_eq!(eval_one(&parse("1 + 2 * 3"), &Value::Null), Value::Int(7));
+    }
+
+    #[test]
+    fn eval_precedence_div_before_sub() {
+        assert_eq!(eval_one(&parse("10 - 6 / 2"), &Value::Null), Value::Int(7));
+    }
+
+    #[test]
+    fn eval_precedence_complex() {
+        // 2 * 3 + 4 * 5 = 6 + 20 = 26
+        assert_eq!(
+            eval_one(&parse("2 * 3 + 4 * 5"), &Value::Null),
+            Value::Int(26)
+        );
+    }
+
+    // --- Cross-type sort ordering ---
+
+    #[test]
+    fn eval_sort_mixed_types() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(3),
+            Value::String("a".into()),
+            Value::Null,
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(1),
+        ]));
+        let result = eval_one(&parse("sort"), &input);
+        assert_eq!(
+            result,
+            Value::Array(Rc::new(vec![
+                Value::Null,
+                Value::Bool(false),
+                Value::Bool(true),
+                Value::Int(1),
+                Value::Int(3),
+                Value::String("a".into()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn eval_values_order_cross_type() {
+        assert_eq!(
+            values_order(&Value::Null, &Value::Bool(false)),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            values_order(&Value::Bool(true), &Value::Int(0)),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            values_order(&Value::Int(999), &Value::String("".into())),
+            Some(std::cmp::Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn eval_values_order_arrays() {
+        let a = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        let b = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)]));
+        assert_eq!(values_order(&a, &b), Some(std::cmp::Ordering::Less));
+        let c = Value::Array(Rc::new(vec![Value::Int(1)]));
+        assert_eq!(values_order(&c, &a), Some(std::cmp::Ordering::Less));
+    }
+
+    #[test]
+    fn eval_unique_sorts() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(3),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(1),
+            Value::Int(3),
+        ]));
+        assert_eq!(
+            eval_one(&parse("unique"), &input),
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+        );
+    }
+
+    // --- range() ---
+
+    #[test]
+    fn eval_range_single() {
+        assert_eq!(
+            eval_all(&parse("range(4)"), &Value::Null),
+            vec![Value::Int(0), Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
+    }
+
+    #[test]
+    fn eval_range_two_args() {
+        assert_eq!(
+            eval_all(&parse("range(2;5)"), &Value::Null),
+            vec![Value::Int(2), Value::Int(3), Value::Int(4)]
+        );
+    }
+
+    #[test]
+    fn eval_range_three_args() {
+        assert_eq!(
+            eval_all(&parse("range(0;10;3)"), &Value::Null),
+            vec![Value::Int(0), Value::Int(3), Value::Int(6), Value::Int(9)]
+        );
+    }
+
+    #[test]
+    fn eval_range_empty() {
+        assert_eq!(eval_all(&parse("range(0)"), &Value::Null), vec![]);
+    }
+
+    // --- Math builtins ---
+
+    #[test]
+    fn eval_floor() {
+        assert_eq!(
+            eval_one(&parse("floor"), &Value::Double(3.7, None)),
+            Value::Int(3)
+        );
+        assert_eq!(
+            eval_one(&parse("floor"), &Value::Double(-1.2, None)),
+            Value::Int(-2)
+        );
+    }
+
+    #[test]
+    fn eval_ceil() {
+        assert_eq!(
+            eval_one(&parse("ceil"), &Value::Double(3.2, None)),
+            Value::Int(4)
+        );
+    }
+
+    #[test]
+    fn eval_round() {
+        assert_eq!(
+            eval_one(&parse("round"), &Value::Double(3.5, None)),
+            Value::Int(4)
+        );
+        assert_eq!(
+            eval_one(&parse("round"), &Value::Double(3.4, None)),
+            Value::Int(3)
+        );
+    }
+
+    #[test]
+    fn eval_sqrt() {
+        assert_eq!(
+            eval_one(&parse("sqrt"), &Value::Int(9)),
+            Value::Double(3.0, None)
+        );
+    }
+
+    #[test]
+    fn eval_fabs() {
+        assert_eq!(
+            eval_one(&parse("fabs"), &Value::Double(-5.5, None)),
+            Value::Double(5.5, None)
+        );
+    }
+
+    #[test]
+    fn eval_nan_isnan() {
+        let nan = eval_one(&parse("nan"), &Value::Null);
+        assert!(matches!(nan, Value::Double(f, _) if f.is_nan()));
+        assert_eq!(
+            eval_one(&parse("nan | isnan"), &Value::Null),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn eval_infinite() {
+        assert_eq!(
+            eval_one(&parse("infinite | isinfinite"), &Value::Null),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval_one(&parse("1 | isinfinite"), &Value::Null),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn eval_isfinite() {
+        assert_eq!(
+            eval_one(&parse("1 | isfinite"), &Value::Null),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn eval_pow() {
+        assert_eq!(
+            eval_one(&parse("pow(2;10)"), &Value::Null),
+            Value::Double(1024.0, None)
+        );
+    }
+
+    #[test]
+    fn eval_log_exp_roundtrip() {
+        // exp(ln(x)) ≈ x
+        let result = eval_one(&parse("log | exp"), &Value::Int(5));
+        match result {
+            Value::Double(f, _) => assert!((f - 5.0).abs() < 1e-10),
+            Value::Int(5) => {} // also fine
+            other => panic!("expected ~5.0, got {other:?}"),
+        }
+    }
+
+    // --- length fixes ---
+
+    #[test]
+    fn eval_length_number_abs() {
+        assert_eq!(eval_one(&parse("length"), &Value::Int(-5)), Value::Int(5));
+        assert_eq!(eval_one(&parse("length"), &Value::Int(0)), Value::Int(0));
+    }
+
+    #[test]
+    fn eval_length_double_abs() {
+        assert_eq!(
+            eval_one(&parse("length"), &Value::Double(-3.14, None)),
+            Value::Double(3.14, None)
+        );
+    }
+
+    #[test]
+    fn eval_length_unicode_codepoints() {
+        // "é" is 1 codepoint, 2 bytes
+        assert_eq!(
+            eval_one(&parse("length"), &Value::String("é".into())),
+            Value::Int(1)
+        );
+        assert_eq!(
+            eval_one(&parse("length"), &Value::String("abc".into())),
+            Value::Int(3)
+        );
+    }
+
+    // --- if with generator condition ---
+
+    #[test]
+    fn eval_if_generator_cond() {
+        // if (1,2) > 1 then "yes" else "no" end → "no", "yes"
+        let results = eval_all(
+            &parse("if (1,2) > 1 then \"yes\" else \"no\" end"),
+            &Value::Null,
+        );
+        assert_eq!(
+            results,
+            vec![Value::String("no".into()), Value::String("yes".into()),]
+        );
+    }
+
+    #[test]
+    fn eval_if_no_else_passthrough() {
+        // if false then "x" end → input (pass-through)
+        assert_eq!(
+            eval_one(&parse("if false then \"x\" end"), &Value::Int(42)),
+            Value::Int(42)
+        );
+    }
+
+    // --- Object construct with generators ---
+
+    #[test]
+    fn eval_object_construct_generator() {
+        let results = eval_all(&parse("{x: (1,2)}"), &Value::Null);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0], obj(&[("x", Value::Int(1))]));
+        assert_eq!(results[1], obj(&[("x", Value::Int(2))]));
+    }
+
+    #[test]
+    fn eval_object_construct_multi_pair_generator() {
+        // {a: (1,2), b: (3,4)} → 4 objects
+        let results = eval_all(&parse("{a: (1,2), b: (3,4)}"), &Value::Null);
+        assert_eq!(results.len(), 4);
+    }
+
+    // --- String builtins ---
+
+    #[test]
+    fn eval_split_empty() {
+        assert_eq!(
+            eval_one(&parse("split(\"\")"), &Value::String("abc".into())),
+            Value::Array(Rc::new(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn eval_ascii_downcase_only_ascii() {
+        assert_eq!(
+            eval_one(&parse("ascii_downcase"), &Value::String("ABCé".into())),
+            Value::String("abcé".into())
+        );
+    }
+
+    #[test]
+    fn eval_explode() {
+        assert_eq!(
+            eval_one(&parse("explode"), &Value::String("abc".into())),
+            Value::Array(Rc::new(vec![
+                Value::Int(97),
+                Value::Int(98),
+                Value::Int(99)
+            ]))
+        );
+    }
+
+    #[test]
+    fn eval_implode() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(97),
+            Value::Int(98),
+            Value::Int(99),
+        ]));
+        assert_eq!(
+            eval_one(&parse("implode"), &input),
+            Value::String("abc".into())
+        );
+    }
+
+    #[test]
+    fn eval_tojson() {
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            eval_one(&parse("tojson"), &input),
+            Value::String("[1,2]".into())
+        );
+    }
+
+    #[test]
+    fn eval_utf8bytelength() {
+        // "é" = 2 bytes in UTF-8
+        assert_eq!(
+            eval_one(&parse("utf8bytelength"), &Value::String("é".into())),
+            Value::Int(2)
+        );
+        assert_eq!(
+            eval_one(&parse("utf8bytelength"), &Value::String("abc".into())),
+            Value::Int(3)
+        );
+    }
+
+    #[test]
+    fn eval_inside() {
+        let input = Value::String("foo".into());
+        assert_eq!(
+            eval_one(&parse("inside(\"foobar\")"), &input),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval_one(&parse("inside(\"bar\")"), &input),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn eval_index_builtin() {
+        assert_eq!(
+            eval_one(&parse("index(\"b\")"), &Value::String("abc".into())),
+            Value::Int(1)
+        );
+        assert_eq!(
+            eval_one(&parse("index(\"z\")"), &Value::String("abc".into())),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn eval_rindex_builtin() {
+        assert_eq!(
+            eval_one(&parse("rindex(\"o\")"), &Value::String("fooboo".into())),
+            Value::Int(5)
+        );
+    }
+
+    #[test]
+    fn eval_indices_builtin() {
+        assert_eq!(
+            eval_one(&parse("indices(\"o\")"), &Value::String("foobar".into())),
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+        );
+    }
+
+    #[test]
+    fn eval_trim() {
+        assert_eq!(
+            eval_one(&parse("trim"), &Value::String("  hi  ".into())),
+            Value::String("hi".into())
+        );
+        assert_eq!(
+            eval_one(&parse("ltrim"), &Value::String("  hi  ".into())),
+            Value::String("hi  ".into())
+        );
+        assert_eq!(
+            eval_one(&parse("rtrim"), &Value::String("  hi  ".into())),
+            Value::String("  hi".into())
+        );
+    }
+
+    // --- String arithmetic ---
+
+    #[test]
+    fn eval_string_repeat() {
+        assert_eq!(
+            eval_one(&parse("\"ab\" * 3"), &Value::Null),
+            Value::String("ababab".into())
+        );
+    }
+
+    #[test]
+    fn eval_string_repeat_zero() {
+        assert_eq!(eval_one(&parse("\"ab\" * 0"), &Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn eval_string_divide() {
+        assert_eq!(
+            eval_one(&parse("\"a,b,c\" / \",\""), &Value::Null),
+            Value::Array(Rc::new(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ]))
+        );
+    }
+
+    // --- Bug fixes ---
+
+    #[test]
+    fn eval_from_entries_capitalized() {
+        let input = Value::Array(Rc::new(vec![Value::Object(Rc::new(vec![
+            ("Key".into(), Value::String("x".into())),
+            ("Value".into(), Value::Int(42)),
+        ]))]));
+        assert_eq!(
+            eval_one(&parse("from_entries"), &input),
+            obj(&[("x", Value::Int(42))])
+        );
+    }
+
+    #[test]
+    fn eval_values_iterates() {
+        let input = obj(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
+        let results = eval_all(&parse("values"), &input);
+        assert_eq!(results, vec![Value::Int(1), Value::Int(2)]);
+    }
+
+    #[test]
+    fn eval_index_generator() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(30),
+        ]));
+        assert_eq!(
+            eval_all(&parse(".[0,2]"), &input),
+            vec![Value::Int(10), Value::Int(30)]
+        );
+    }
+
+    #[test]
+    fn eval_array_subtraction() {
+        let a = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let b = Value::Array(Rc::new(vec![Value::Int(2)]));
+        assert_eq!(
+            arith_values(&a, &ArithOp::Sub, &b),
+            Some(Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])))
+        );
+    }
+
+    #[test]
+    fn eval_object_recursive_merge() {
+        let result = eval_one(
+            &parse("{\"a\":{\"b\":1}} * {\"a\":{\"c\":2}}"),
+            &Value::Null,
+        );
+        // Should have a.b=1 and a.c=2
+        if let Value::Object(outer) = &result {
+            let a_val = &outer.iter().find(|(k, _)| k == "a").unwrap().1;
+            if let Value::Object(inner) = a_val {
+                assert_eq!(inner.len(), 2);
+            } else {
+                panic!("expected inner object");
+            }
+        } else {
+            panic!("expected outer object");
+        }
+    }
+
+    #[test]
+    fn eval_float_modulo() {
+        let result = arith_values(&Value::Double(10.5, None), &ArithOp::Mod, &Value::Int(3));
+        match result {
+            Some(Value::Double(f, _)) => assert!((f - 1.5).abs() < 1e-10),
+            other => panic!("expected Double(1.5), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_int_division_float_result() {
+        // 1 / 3 should produce a float, not truncate to 0
+        let result = arith_values(&Value::Int(1), &ArithOp::Div, &Value::Int(3));
+        match result {
+            Some(Value::Double(f, _)) => assert!((f - 1.0 / 3.0).abs() < 1e-10),
+            other => panic!("expected Double(0.333...), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_int_division_exact() {
+        // 6 / 3 should produce Int(2), not Double
+        assert_eq!(
+            arith_values(&Value::Int(6), &ArithOp::Div, &Value::Int(3)),
+            Some(Value::Int(2))
+        );
+    }
+
+    #[test]
+    fn eval_compare_generator() {
+        // (1,2) > 1 should produce false, true
+        let results = eval_all(&parse("(1,2) > 1"), &Value::Null);
+        assert_eq!(results, vec![Value::Bool(false), Value::Bool(true)]);
+    }
+
+    #[test]
+    fn eval_arith_generator() {
+        // (1,2) + (10,20) should produce 11, 21, 12, 22
+        let results = eval_all(&parse("(1,2) + (10,20)"), &Value::Null);
+        assert_eq!(
+            results,
+            vec![
+                Value::Int(11),
+                Value::Int(21),
+                Value::Int(12),
+                Value::Int(22),
+            ]
+        );
+    }
+
+    // --- Collection builtins ---
+
+    #[test]
+    fn eval_transpose() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
+            Value::Array(Rc::new(vec![Value::Int(3), Value::Int(4)])),
+        ]));
+        assert_eq!(
+            eval_one(&parse("transpose"), &input),
+            Value::Array(Rc::new(vec![
+                Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])),
+                Value::Array(Rc::new(vec![Value::Int(2), Value::Int(4)])),
+            ]))
+        );
+    }
+
+    #[test]
+    fn eval_transpose_uneven() {
+        // [[1],[2,3]] → [[1,2],[null,3]]
+        let input = Value::Array(Rc::new(vec![
+            Value::Array(Rc::new(vec![Value::Int(1)])),
+            Value::Array(Rc::new(vec![Value::Int(2), Value::Int(3)])),
+        ]));
+        let result = eval_one(&parse("transpose"), &input);
+        assert_eq!(
+            result,
+            Value::Array(Rc::new(vec![
+                Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
+                Value::Array(Rc::new(vec![Value::Null, Value::Int(3)])),
+            ]))
+        );
+    }
+
+    #[test]
+    fn eval_map_values_object() {
+        let input = obj(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
+        assert_eq!(
+            eval_one(&parse("map_values(. + 10)"), &input),
+            obj(&[("a", Value::Int(11)), ("b", Value::Int(12))])
+        );
+    }
+
+    #[test]
+    fn eval_limit() {
+        assert_eq!(
+            eval_all(&parse("limit(3; range(100))"), &Value::Null),
+            vec![Value::Int(0), Value::Int(1), Value::Int(2)]
+        );
+    }
+
+    #[test]
+    fn eval_until() {
+        assert_eq!(
+            eval_one(&parse("0 | until(. >= 5; . + 1)"), &Value::Null),
+            Value::Int(5)
+        );
+    }
+
+    #[test]
+    fn eval_while() {
+        let input = Value::Null;
+        let results = eval_all(&parse("[1 | while(. < 8; . * 2)]"), &input);
+        assert_eq!(
+            results,
+            vec![Value::Array(Rc::new(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(4),
+            ]))]
+        );
+    }
+
+    #[test]
+    fn eval_isempty_true() {
+        assert_eq!(
+            eval_one(&parse("isempty(empty)"), &Value::Null),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn eval_isempty_false() {
+        assert_eq!(
+            eval_one(&parse("isempty(range(3))"), &Value::Null),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn eval_getpath() {
+        let input = obj(&[("a", obj(&[("b", Value::Int(42))]))]);
+        assert_eq!(
+            eval_one(&parse("getpath([\"a\",\"b\"])"), &input),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn eval_getpath_missing() {
+        let input = obj(&[("a", Value::Int(1))]);
+        assert_eq!(eval_one(&parse("getpath([\"x\"])"), &input), Value::Null);
+    }
+
+    #[test]
+    fn eval_setpath() {
+        let input = obj(&[("a", obj(&[("b", Value::Int(1))]))]);
+        let result = eval_one(&parse("setpath([\"a\",\"b\"]; 99)"), &input);
+        assert_eq!(result, obj(&[("a", obj(&[("b", Value::Int(99))]))]));
+    }
+
+    #[test]
+    fn eval_delpaths() {
+        let input = obj(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
+        assert_eq!(
+            eval_one(&parse("delpaths([[\"a\"]])"), &input),
+            obj(&[("b", Value::Int(2))])
+        );
+    }
+
+    #[test]
+    fn eval_paths_no_filter() {
+        let input = obj(&[("a", Value::Int(1)), ("b", obj(&[("c", Value::Int(2))]))]);
+        let results = eval_all(&parse("paths"), &input);
+        assert_eq!(results.len(), 3); // ["a"], ["b"], ["b","c"]
+    }
+
+    #[test]
+    fn eval_bsearch_found() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+            Value::Int(5),
+        ]));
+        assert_eq!(eval_one(&parse("bsearch(3)"), &input), Value::Int(2));
+    }
+
+    #[test]
+    fn eval_bsearch_not_found() {
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3), Value::Int(5)]));
+        // 2 would go at index 1, so returns -(1)-1 = -2
+        assert_eq!(eval_one(&parse("bsearch(2)"), &input), Value::Int(-2));
+    }
+
+    #[test]
+    fn eval_in_builtin() {
+        assert_eq!(
+            eval_one(&parse("IN(2, 3)"), &Value::Int(3)),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval_one(&parse("IN(2, 3)"), &Value::Int(5)),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn eval_with_entries() {
+        let input = obj(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
+        let result = eval_one(&parse("with_entries(select(.value > 1))"), &input);
+        assert_eq!(result, obj(&[("b", Value::Int(2))]));
+    }
+
+    #[test]
+    fn eval_abs() {
+        assert_eq!(eval_one(&parse("abs"), &Value::Int(-42)), Value::Int(42));
+        assert_eq!(eval_one(&parse("abs"), &Value::Int(42)), Value::Int(42));
+    }
+
+    #[test]
+    fn eval_debug_passthrough() {
+        // debug should return the input unchanged
+        assert_eq!(eval_one(&parse("debug"), &Value::Int(42)), Value::Int(42));
+    }
+
+    #[test]
+    fn eval_error_no_output() {
+        assert_eq!(eval_all(&parse("error"), &Value::Int(42)), vec![]);
+    }
+
+    #[test]
+    fn eval_nth() {
+        assert_eq!(
+            eval_one(&parse("nth(2; range(5))"), &Value::Null),
+            Value::Int(2)
+        );
+    }
+
+    #[test]
+    fn eval_repeat() {
+        // repeat(f) applies f to same input each time
+        let results = eval_all(&parse("limit(3; 5 | repeat(. + 1))"), &Value::Null);
+        assert_eq!(results, vec![Value::Int(6), Value::Int(6), Value::Int(6)]);
+    }
+
+    #[test]
+    fn eval_recurse_with_filter_and_cond() {
+        let results = eval_all(&parse("2 | recurse(. * .; . < 100)"), &Value::Null);
+        assert_eq!(results, vec![Value::Int(2), Value::Int(4), Value::Int(16)]);
+    }
+
+    // --- Helper function tests ---
+
+    #[test]
+    fn test_to_f64() {
+        assert_eq!(to_f64(&Value::Int(5)), 5.0);
+        assert_eq!(to_f64(&Value::Double(3.14, None)), 3.14);
+        assert_eq!(to_f64(&Value::Null), 0.0);
+    }
+
+    #[test]
+    fn test_f64_to_value_int() {
+        assert_eq!(f64_to_value(5.0), Value::Int(5));
+        assert_eq!(f64_to_value(0.0), Value::Int(0));
+        assert_eq!(f64_to_value(-3.0), Value::Int(-3));
+    }
+
+    #[test]
+    fn test_f64_to_value_double() {
+        assert_eq!(f64_to_value(3.14), Value::Double(3.14, None));
+    }
+
+    #[test]
+    fn test_frexp() {
+        let (m, e) = frexp(0.0);
+        assert_eq!(m, 0.0);
+        assert_eq!(e, 0);
+
+        let (m, e) = frexp(1.0);
+        assert!((m - 0.5).abs() < 1e-10);
+        assert_eq!(e, 1);
+    }
+
+    #[test]
+    fn test_unix_to_datetime_epoch() {
+        let (y, m, d, h, min, sec) = unix_to_datetime(0);
+        assert_eq!((y, m, d, h, min, sec), (1970, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_unix_to_datetime_known() {
+        // 2024-01-15 11:30:45 UTC = 1705318245
+        let (y, m, d, h, min, sec) = unix_to_datetime(1705318245);
+        assert_eq!((y, m, d, h, min, sec), (2024, 1, 15, 11, 30, 45));
+    }
+
+    #[test]
+    fn test_parse_iso8601() {
+        assert_eq!(parse_iso8601("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_iso8601("short"), None);
+    }
+
+    #[test]
+    fn test_parse_iso8601_roundtrip() {
+        let ts = 1705318245_i64;
+        let (y, m, d, h, min, sec) = unix_to_datetime(ts);
+        let s = format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{sec:02}Z");
+        assert_eq!(parse_iso8601(&s), Some(ts));
+    }
+
+    #[test]
+    fn test_value_to_json_string() {
+        let mut buf = Vec::new();
+        value_to_json_string(&mut buf, &Value::Int(42));
+        assert_eq!(String::from_utf8(buf).unwrap(), "42");
+
+        let mut buf = Vec::new();
+        value_to_json_string(&mut buf, &Value::String("he\"llo".into()));
+        assert_eq!(String::from_utf8(buf).unwrap(), r#""he\"llo""#);
+
+        let mut buf = Vec::new();
+        value_to_json_string(&mut buf, &Value::Null);
+        assert_eq!(String::from_utf8(buf).unwrap(), "null");
+    }
+
+    #[test]
+    fn test_set_path_creates_nested() {
+        let result = set_path(&Value::Null, &[Value::String("a".into())], &Value::Int(1));
+        assert_eq!(result, obj(&[("a", Value::Int(1))]));
+    }
+
+    #[test]
+    fn test_del_path_object() {
+        let input = obj(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
+        let result = del_path(&input, &[Value::String("a".into())]);
+        assert_eq!(result, obj(&[("b", Value::Int(2))]));
+    }
+
+    #[test]
+    fn test_del_path_array() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(30),
+        ]));
+        let result = del_path(&input, &[Value::Int(1)]);
+        assert_eq!(
+            result,
+            Value::Array(Rc::new(vec![Value::Int(10), Value::Int(30)]))
+        );
+    }
+
+    #[test]
+    fn test_object_recursive_merge_fn() {
+        let a = Rc::new(vec![(
+            "x".to_string(),
+            Value::Object(Rc::new(vec![("y".to_string(), Value::Int(1))])),
+        )]);
+        let b = Rc::new(vec![(
+            "x".to_string(),
+            Value::Object(Rc::new(vec![("z".to_string(), Value::Int(2))])),
+        )]);
+        let result = object_recursive_merge(&a, &b);
+        if let Value::Object(obj) = result {
+            let x = &obj.iter().find(|(k, _)| k == "x").unwrap().1;
+            if let Value::Object(inner) = x {
+                assert_eq!(inner.len(), 2);
+            } else {
+                panic!("expected nested object");
+            }
+        } else {
+            panic!("expected object");
+        }
+    }
 }
