@@ -34,7 +34,18 @@ bash bench/build_cpp_bench.sh
 ./bench/bench_cpp
 ```
 
-### End-to-end tool comparison
+### End-to-end tool comparison (jx vs jq vs jaq vs gojq)
+```
+bash bench/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
+bash bench/run_bench.sh           # hyperfine across small + large files
+```
+
+### Profiling a single run
+```
+./target/release/jx --debug-timing -c '.' bench/data/large_twitter.json > /dev/null
+```
+
+### Ad-hoc comparison
 Always warm cache with `--warmup 3`.
 ```
 hyperfine --warmup 3 './target/release/jx ".field" test.json' 'jq ".field" test.json' 'jaq ".field" test.json'

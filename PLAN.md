@@ -759,22 +759,70 @@ Large file — large_twitter.json (49MB):
    compact should drop to ~15-20ms (parse only, no Value tree, no
    serialization) — that's **~60x jq, ~13x jaq**.
 
-### Step 2: Tier 0 passthrough (conditional on Step 1 results)
+### Step 2: Rc-wrap Value containers — fix eval cloning overhead
 
-If benchmarks show DOM→Value→serialize is a significant fraction of
-end-to-end time (>30%), implement passthrough. If it's <20%, skip this
-and move to parallelism.
+The profiling reveals two separate bottlenecks: parse+output (79% for
+identity compact) and eval (47% for iterate+field). They need different
+fixes. Passthrough addresses parse+output but doesn't help eval-heavy
+workloads. Rc-wrapping addresses eval and benefits **all** filters.
 
-**Architecture: Value::RawBytes.** Instead of special-casing in main.rs
-to bypass the evaluator, add a `Value::RawBytes(Vec<u8>)` variant that
-carries raw minified JSON bytes. This composes naturally with the
-evaluator — RawBytes is a lazy Value that defers deserialization until
-something actually needs the structure.
+**The problem:** `.statuses[]|.user.name` on 11K objects does ~33K
+deep clones — every field access and iteration deep-copies the entire
+sub-tree. This is why eval takes 113ms (47% of total), and why jaq
+beats jx on iterate+field (172ms vs 256ms).
+
+**The fix:** Wrap Array and Object containers in `Rc`:
 
 ```rust
 pub enum Value {
-    Null, Bool(bool), Int(i64), Double(f64), String(String),
-    Array(Vec<Value>), Object(Vec<(String, Value)>),
+    Null,
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    String(String),
+    Array(Rc<Vec<Value>>),
+    Object(Rc<Vec<(String, Value)>>),
+}
+```
+
+Now `Value::clone()` for arrays/objects is an Rc increment (~1ns)
+instead of a deep copy. Field access, iteration, identity, pipe —
+all become near-free.
+
+**What changes:**
+- `value.rs` — wrap Array/Object in Rc
+- `bridge.rs` — `decode_value` wraps containers in `Rc::new()`
+- `eval.rs` — `.iter()` still works through Rc's Deref; construction
+  uses `Rc::new(vec![...])`. No algorithmic changes.
+- `output.rs` — `.iter()` still works through Deref. Minimal changes.
+- All pattern matches on `Value::Array(arr)` may need `arr.as_ref()`
+  or just work via auto-deref
+
+**Why Rc not Arc:** Values don't cross thread boundaries. Parallel
+NDJSON (Step 4) uses per-thread parsers that produce per-thread Values.
+If this assumption changes, switching to Arc is a one-line change.
+
+**Expected impact:**
+- `.statuses[]|.user.name` eval: 113ms → ~5-10ms. Total: ~130ms
+  (beats jaq's 172ms)
+- `.statuses|length` eval: 64ms → ~5ms. Total: ~135ms (beats jaq's
+  165ms)
+- Identity compact: minimal change (eval is only 15% of total)
+
+### Step 3: Tier 0 passthrough — headline numbers
+
+With eval fixed (Step 2), the remaining bottleneck for simple filters
+is parse (53%) + output (26%). Passthrough eliminates both for
+identity and field extraction with compact output.
+
+**Architecture: Value::RawBytes.** Add a variant that carries raw
+minified JSON bytes. This composes naturally with the evaluator —
+RawBytes is a lazy Value that defers deserialization until something
+actually needs the structure.
+
+```rust
+pub enum Value {
+    ...,
     RawBytes(Vec<u8>),  // Pre-serialized JSON — write directly to output
 }
 ```
@@ -786,8 +834,6 @@ pub enum Value {
 - Field extraction (`.field` with `-c`): DOM parse + field lookup →
   `Value::RawBytes` containing minified sub-object. Evaluator passes it
   through pipes naturally. Output formatter just does `write_all`.
-- Iteration (`.[] | .name`): per-element Values, `.name` on each
-  produces `RawBytes`. Composes naturally.
 - Constructed values (`{a: .x}`): evaluator unpacks `RawBytes` back to
   Value tree when it needs to construct new objects. Fallback path.
 
@@ -801,34 +847,37 @@ pub enum Value {
 - Pretty: parse RawBytes back to Value, then pretty-print (fallback)
 - Raw: same as compact (RawBytes is JSON, not bare string)
 
-**PassthroughPath analysis** in filter/mod.rs as a hint:
-```rust
-pub enum PassthroughPath {
-    Identity,                // `.` — use minify(), skip DOM
-    Fields(Vec<String>),     // `.foo`, `.a.b.c` — DOM + raw field extraction
-}
-```
+**Expected impact:**
+- Identity compact: 260ms → ~15-20ms (just minify, no DOM/Value/serialize)
+- Field compact: 261ms → ~25-30ms (DOM parse + raw field lookup)
 
 **Success criteria:**
 - Passthrough output byte-identical to jq `-c`
 - Identity compact on large files: >=10x faster than jq, >=3x jaq
 - Field compact on large files: >=5x faster than jq, >=2x jaq
 
-### Step 3: Parallel NDJSON (Phase 2)
+**The story after Steps 2+3:** "4-5x faster than jq across all filters.
+1.3x faster than jaq on iterate+field. 13-17x faster than jaq on
+identity/field compact. All single-threaded, before parallelism."
 
-The biggest performance multiplier for large workloads. Design from
-Phase 2 section holds: chunk-split at newline boundaries, per-thread
-simdjson parser, ordered merge of output buffers.
+### Step 4: NDJSON end-to-end benchmarks + parallel NDJSON
+
+The 82MB NDJSON file from Phase 0 (`1m.ndjson`) already exists but
+hasn't been benchmarked end-to-end. This is jx's strongest positioning
+— SIMD parse + parallelism on independent lines.
+
+**Phase 1: benchmark single-threaded NDJSON.** Add 1m.ndjson to
+`bench/run_bench.sh`. Measure jx vs jq vs jaq vs gojq. This gives
+the single-threaded baseline before parallelism.
+
+**Phase 2: parallel NDJSON.** Design from Phase 2 section holds:
+chunk-split at newline boundaries, per-thread simdjson parser, ordered
+merge of output buffers.
 
 **Expected impact:** ~8x additional speedup on 8+ cores. Combined with
-SIMD parsing: 20-40x over jq on large NDJSON. This is the "100x" story
-for `jx '.field' 1gb.jsonl`.
+SIMD parsing + Rc eval + passthrough: 50-100x over jq on large NDJSON.
 
-**Prerequisite:** Steps 1-2 should be done first so we have accurate
-single-thread baselines and the passthrough path works (passthrough +
-parallelism compound multiplicatively).
-
-### Step 4: Missing core filters
+### Step 5: Missing core filters
 
 The most impactful gaps for real-world jq scripts. Not on the critical
 path for performance — do this when the speed story is solid.
@@ -846,20 +895,19 @@ path for performance — do this when the speed story is solid.
 | Medium | `--raw-input` / `-R` | Treat input lines as strings |
 | Medium | `def name: body;` | User-defined functions |
 
-### Step 5: On-Demand fast path (Phase 1.5)
+### Deferred: On-Demand fast path (Phase 1.5)
 
 Skip DOM construction entirely for simple path-only filters. Navigate
 the SIMD structural index directly at ~7 GB/s.
 
-**When to do this:** Only if profiling after Steps 1-2 shows DOM
-construction is still a bottleneck. With passthrough, we already skip
-DOM+Value+serialization. On-Demand would additionally skip the DOM
-parse itself. The marginal gain may not justify the complexity.
+**When to do this:** Only if profiling after Steps 2-3 shows DOM
+construction is still a bottleneck. With Rc + passthrough, simple
+filters are already fast. On-Demand would shave a few more
+milliseconds off the DOM parse step — diminishing returns.
 
 **Eligible filters:** `.field`, `.a.b.c`, `.[n]` — pure path
 navigation with no branching or transformation. Falls back to DOM
-for anything requiring random access (`.{b: .b, a: .a}` accesses
-fields out of document order).
+for anything requiring random access.
 
 ---
 
