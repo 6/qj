@@ -18,3 +18,6 @@ benches/bench_cpp
 
 # Benchmark results (generated)
 benches/results/
+
+# Compat test results (generated)
+tests/jq_compat/results.md

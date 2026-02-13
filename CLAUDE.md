@@ -27,9 +27,10 @@ Run `cargo test` after any code change — it's fast.
   cargo test jq_conformance_verbose -- --nocapture --ignored            # show failures
   ```
 - **Cross-tool compat comparison:** `tests/jq_compat/run_compat.sh` — runs jq.test against
-  jx, jq, jaq, and gojq (whichever are on `$PATH`) and prints pass rates.
+  jx, jq, jaq, and gojq (whichever are on `$PATH`) and prints pass rates plus a
+  per-category breakdown. Results are also written to `tests/jq_compat/results.md`.
   ```
-  bash tests/jq_compat/run_compat.sh            # summary
+  bash tests/jq_compat/run_compat.sh            # summary + category table
   bash tests/jq_compat/run_compat.sh -v          # show failures
   ```
 - **Updating the vendored test suite:** `tests/jq_compat/update_test_suite.sh` — downloads
