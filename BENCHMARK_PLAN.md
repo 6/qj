@@ -25,13 +25,28 @@ and thread count weren't documented. Every benchmark must state:
 - Thread count (single-threaded unless testing parallel mode)
 - CPU architecture (ARM64 vs x86_64 matters for SIMD)
 
+### Account for thermal throttling
+
+hyperfine runs commands sequentially (all runs of cmd1, then all runs of
+cmd2), not interleaved. On laptops, later commands run on a warmer CPU.
+Running 10+ hyperfine invocations back-to-back compounds the effect.
+
+Mitigations:
+- **Tool ordering:** Run jx last in each group. This is the conservative
+  approach — thermal throttling penalizes jx (understates its advantage)
+  rather than competitors.
+- **Cooldown between groups:** `sleep $COOLDOWN` (default 3s) between
+  hyperfine invocations. Configurable via environment variable.
+- **CI runners are less affected** — server-grade cooling, but shared
+  runners have their own variance (~10-30%).
+
 ### Keep it simple
 
 jaq's approach works at this stage: hyperfine tables in the README,
 reproducible with a single script. We don't need a SaaS benchmarking
 platform. The progression is:
-1. **Now:** Shell scripts + hyperfine + manual README updates
-2. **Soon:** CI automation + `github-action-benchmark` for regression tracking
+1. **Done:** Shell scripts + hyperfine + auto-generated `BENCHMARKS.md`
+2. **Next:** CI automation via `benchmark.yml` that commits `BENCHMARKS.md`
 3. **Later:** Comprehensive cross-platform matrix (only if jx gets traction)
 
 ---
@@ -99,21 +114,22 @@ All four are already used in `bench/run_bench.sh`:
 | `bench/build_cpp_bench.sh` | Builds C++ simdjson baseline benchmark |
 | `benches/parse_throughput.rs` | Rust benchmark: simdjson vs serde_json parse speed |
 
-### Refactored script: `bench/bench.sh`
+### `bench/bench.sh` (implemented)
 
-Replace `bench/run_bench.sh` with `bench/bench.sh` that adds:
+Replaces `bench/run_bench.sh` as the primary benchmark script:
 
-1. **JSON export:** `hyperfine --export-json` for every run, saved to
-   `bench/results/{date}-{platform}.json`
-2. **Correctness validation:** Before timing, `diff <(jx ...) <(jq ...)`
-   on every filter to catch regressions
-3. **Platform tagging:** Capture `uname -ms`, CPU model, tool versions
-   in the JSON output
+1. **Correctness validation:** Compares jx vs jq output for every
+   filter+file combo before timing
+2. **JSON export:** `hyperfine --export-json` for every run, saved to
+   `bench/results/`
+3. **Platform tagging:** Captures `uname -ms` and date in output
 4. **Full tier coverage:** All 5 filter tiers on both small + large files
-5. **NDJSON benchmarks:** Add large.jsonl runs for each tool
-
-Keep `bench/run_bench.sh` as a symlink to `bench/bench.sh` or delete it
-once the new script is validated.
+5. **Writes `BENCHMARKS.md`:** Markdown table with bold jx column,
+   auto-generated from hyperfine results
+6. **Tool ordering:** jq, jaq, gojq, then jx last (conservative for
+   thermal fairness — see "Account for thermal throttling" above)
+7. **Cooldown:** `sleep $COOLDOWN` (default 3s) between hyperfine
+   invocations to mitigate thermal buildup
 
 Existing helper scripts (`download_testdata.sh`, `gen_large.sh`,
 `generate_ndjson.sh`, `build_cpp_bench.sh`) stay unchanged.
@@ -346,8 +362,8 @@ Include a short "Understanding the numbers" section at the top of
 
 ## 8. Implementation Order
 
-1. **Refactor `bench/bench.sh`** — correctness checks, platform tagging, all 5 filter tiers, writes `BENCHMARKS.md`
-2. **Add `bench/results/` to `.gitignore`**
-3. **Create `.github/workflows/checks.yml`** — build + test matrix (no benchmarks)
+1. ~~**Create `bench/bench.sh`**~~ — **Done.** Correctness checks, 5 filter tiers, writes `BENCHMARKS.md`, bold jx column.
+2. ~~**Add `bench/results/` to `.gitignore`**~~ — **Done.**
+3. ~~**Create `.github/workflows/checks.yml`**~~ — **Done.** Build + test on ubuntu-24.04 + macos-26, mise-action, rust-cache.
 4. **Create `.github/workflows/benchmark.yml`** — full benchmark suite, commits `BENCHMARKS.md`
 5. **Update README** to link to `BENCHMARKS.md`
