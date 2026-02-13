@@ -48,12 +48,12 @@ performance story is SIMD parsing + parallelism, not a faster evaluator.
 
 ## Competitive landscape
 
-| Tool | Parsing | Parallel | SIMD | On-Demand | Streaming | Memory model | jq compat | Platform |
-|------|---------|----------|------|-----------|-----------|--------------|-----------|----------|
-| jq 1.8 | ~300 MB/s | No | No | No | Yes (`--stream`)* | Full DOM, O(n)+ | 100% | All |
-| jaq 2.3 | ~500 MB/s | No | No | No | No | Full DOM, O(n) | ~90% | All |
-| gojq | ~400 MB/s | No | No | No | No | Full DOM, O(n) | ~85% | All |
-| **jx** | **3-7 GB/s** | **Yes (NDJSON)** | **Yes (NEON/AVX2)** | **Yes** | **Yes (transparent)** | **Streaming** | **~80%** | **All** |
+| Tool | Parsing (measured) | Parallel | SIMD | On-Demand | Streaming | Memory model | jq compat | Platform |
+|------|-------------------|----------|------|-----------|-----------|--------------|-----------|----------|
+| jq 1.7 | 23-62 MB/s e2e | No | No | No | Yes (`--stream`)* | Full DOM, O(n)+ | 100% | All |
+| jaq 2.3 | 93-187 MB/s e2e | No | No | No | No | Full DOM, O(n) | ~90% | All |
+| gojq 0.12 | 47-122 MB/s e2e | No | No | No | No | Full DOM, O(n) | ~85% | All |
+| **jx** | **7-9 GB/s parse** | **Yes (NDJSON)** | **Yes (NEON/AVX2)** | **Yes** | **Yes (transparent)** | **Streaming** | **~80%** | **All** |
 
 \* jq's `--stream` mode parses incrementally, emitting `[[path], value]`
 pairs without loading the full tree. It works for constant-memory
@@ -377,111 +377,97 @@ FFI overhead <5% vs direct C++ calls.
 **Status: COMPLETE — thesis validated.**
 
 Measured throughput on Apple Silicon (NEON) using simdjson v4.2.4 via
-Rust FFI (`cc` crate, C++17, -O3). jq 1.7.1, jaq 2.3.0 via Homebrew.
+Rust FFI (`cc` crate, C++17, -O3). jq 1.7.1, jaq 2.3.0, gojq 0.12.18
+via Homebrew.
 
 Single-file parsing (identity filter `.`):
 
-| File | jq | jaq | serde_json | simdjson On-Demand (FFI) | vs jq | vs jaq |
-|------|-----|------|-----------|------------------------|-------|--------|
-| twitter.json (631KB) | 32 MB/s | 93 MB/s | 553 MB/s | 8,346 MB/s | **264x** | **90x** |
-| citm_catalog.json (1.7MB) | 43 MB/s | 193 MB/s | 810 MB/s | 9,242 MB/s | **213x** | **48x** |
-| canada.json (2.2MB) | 24 MB/s | 117 MB/s | 599 MB/s | 6,748 MB/s | **286x** | **58x** |
+| File | jq | gojq | jaq | serde_json | simdjson (FFI) |
+|------|-----|------|------|-----------|----------------|
+| twitter.json (631KB) | 32 MB/s | 76 MB/s | 93 MB/s | 558 MB/s | 8,577 MB/s |
+| citm_catalog.json (1.7MB) | 44 MB/s | 122 MB/s | 187 MB/s | 814 MB/s | 9,320 MB/s |
+| canada.json (2.2MB) | 23 MB/s | 122 MB/s | 114 MB/s | 599 MB/s | 6,992 MB/s |
 
 NDJSON field extraction (`.name`):
 
-| File | jq | jaq | serde_json | simdjson iterate_many (FFI) | vs jq | vs jaq |
-|------|-----|------|-----------|----------------------------|-------|--------|
-| 100k.ndjson (8MB) | 60 MB/s | 107 MB/s | 243 MB/s | 2,593 MB/s | **43x** | **24x** |
-| 1m.ndjson (82MB) | 64 MB/s | 112 MB/s | 245 MB/s | 2,645 MB/s | **41x** | **24x** |
+| File | jq | gojq | jaq | serde_json | simdjson iterate_many (FFI) |
+|------|-----|------|------|-----------|----------------------------|
+| 100k.ndjson (8MB) | 62 MB/s | 47 MB/s | 108 MB/s | 242 MB/s | 2,601 MB/s |
+| 1m.ndjson (82MB) | 64 MB/s | 50 MB/s | 114 MB/s | 245 MB/s | 2,663 MB/s |
 
-Note: jq/jaq numbers are end-to-end (process spawn + read + parse +
+Speedup ratios (simdjson On-Demand via FFI vs each tool):
+
+| File | vs jq | vs gojq | vs jaq | vs serde_json |
+|------|-------|---------|--------|---------------|
+| twitter.json | 268x | 113x | 92x | 15x |
+| citm_catalog.json | 212x | 76x | 50x | 11x |
+| canada.json | 304x | 57x | 61x | 12x |
+| 100k.ndjson | 42x | 55x | 24x | 11x |
+| 1m.ndjson | 42x | 54x | 23x | 11x |
+
+Note: jq/jaq/gojq numbers are end-to-end (process spawn + read + parse +
 filter + format + write to /dev/null), while simdjson/serde numbers are
 pure in-process parse throughput. The apples-to-apples comparison is
-against serde_json (same measurement method). jq/jaq numbers include
-~1-5ms process startup overhead which penalizes them on small files but
-is negligible on large ones.
+against serde_json (same measurement method). External tool numbers
+include ~1-5ms process startup overhead which penalizes them on small
+files but is negligible on large ones. gojq is notably slower than jaq
+on NDJSON but competitive on single-file float-heavy data (canada.json).
 
 FFI overhead (C++ direct vs Rust FFI):
 
 | Benchmark | C++ direct | Rust FFI | Overhead |
 |-----------|-----------|----------|----------|
-| twitter.json | 8,116 MB/s | 8,346 MB/s | <1% (noise) |
-| canada.json | 6,989 MB/s | 6,748 MB/s | ~3.4% |
-| 1m.ndjson count | 3,088 MB/s | 2,926 MB/s | ~5.2% |
+| twitter.json | 8,116 MB/s | 8,577 MB/s | <1% (noise) |
+| canada.json | 6,989 MB/s | 6,992 MB/s | <1% (noise) |
+| 1m.ndjson count | 3,088 MB/s | 2,943 MB/s | ~4.7% |
 
 Results exceed expectations:
-- On-Demand throughput 6,700-9,200 MB/s (expected 5,000-7,000)
+- On-Demand throughput 7,000-9,300 MB/s (expected 5,000-7,000)
 - ≥11x over serde_json across all files (target was ≥5x) ✓
-- ≥41x over jq across all files (target was ≥10x) ✓
-- ≥24x over jaq on NDJSON, ≥48x on single files ✓
+- ≥42x over jq across all files (target was ≥10x) ✓
+- ≥23x over jaq on NDJSON, ≥50x on single files ✓
 - FFI overhead 0-5% (target was <5%) ✓
 
 ---
 
-## Phase 1: Filter parser, evaluator, and FFI bridge
+## Phase 1: Filter parser, evaluator, and output
 
-**Goal:** Parse and evaluate the Tier 1 filters (`.field`, `.[]`, `|`,
-`select()`, object construction) against simdjson-parsed data. Match
-jaq's filter evaluation speed (the win is in parsing, not eval).
+**Goal:** `jx '.field' file.json` works end-to-end, producing identical
+output to jq. Throughput ≥5x jq on large files.
 
-### 1a. simdjson FFI bridge
+### Phase 0 lessons applied
 
-Build the Rust ↔ C++ bridge:
+Phase 0 revealed several things that change the Phase 1 approach:
 
-```cpp
-// bridge.cpp — C-linkage functions callable from Rust
-extern "C" {
-    // Parser lifecycle
-    void* jx_parser_new();
-    void  jx_parser_free(void* parser);
+1. **Output formatting is the new bottleneck.** At 8+ GB/s parsing, even
+   a moderately fast JSON serializer (~1 GB/s) becomes the dominant cost.
+   Output formatting is not a nice-to-have — it's the critical path.
+   Elevated from "1e afterthought" to core Phase 1 deliverable.
 
-    // Parse document (On-Demand)
-    int jx_parse(void* parser, const char* buf, size_t len, void** doc);
+2. **DOM-only first, On-Demand fast path later.** The On-Demand API is
+   forward-only with strict access ordering constraints (`select` needs
+   re-access, `{b: .b, a: .a}` breaks field order). The simdjson DOM
+   path is still ~2-3 GB/s — already 30-90x faster than jq end-to-end.
+   Ship Phase 1 with DOM-only evaluation. Add On-Demand fast path as
+   Phase 1.5 optimization once the evaluator is solid and we can profile
+   what actually matters.
 
-    // Navigate On-Demand document
-    int jx_doc_get_field(void* doc, const char* key, size_t key_len, void** value);
-    int jx_doc_get_array(void* doc, void** iter);
-    int jx_iter_next(void* iter, void** value);
+3. **End-to-end benchmarks from day one.** Phase 0 numbers compare
+   in-process parse throughput vs external tool end-to-end, which inflates
+   the ratios. Phase 1 must include honest end-to-end benchmarks:
+   `jx '.name' file > /dev/null` vs `jq '.name' file > /dev/null`.
+   The real advantage will be ~10-30x vs jq (not 264x), and that's the
+   number we should report.
 
-    // Extract values
-    int jx_value_get_string(void* value, const char** out, size_t* len);
-    int jx_value_get_int64(void* value, int64_t* out);
-    int jx_value_get_double(void* value, double* out);
-    int jx_value_get_bool(void* value, bool* out);
-    int jx_value_type(void* value);  // 0=null,1=bool,2=int,3=float,4=string,5=array,6=object
+4. **NDJSON iterate_many ceiling is ~2,800 MB/s per thread**, not
+   ~8,000 MB/s. Phase 2 parallelism estimates are adjusted accordingly.
 
-    // DOM fallback (for complex filters that need full tree)
-    int jx_parse_dom(void* parser, char* buf, size_t len, void** dom);
-    // ... DOM navigation functions ...
+### 1a. simdjson FFI bridge — DONE (Phase 0)
 
-    // NDJSON batch parsing
-    void* jx_iterate_many(void* parser, const char* buf, size_t len, size_t batch_size);
-    int jx_iterate_many_next(void* stream, void** doc);
-}
-```
-
-```rust
-// bridge.rs — safe Rust wrapper
-pub struct Parser { ptr: *mut c_void }
-pub struct Document<'a> { ptr: *mut c_void, _marker: PhantomData<&'a Parser> }
-pub struct Value<'a> { ptr: *mut c_void, _marker: PhantomData<&'a Document<'a>> }
-
-impl Parser {
-    pub fn new() -> Self { ... }
-    pub fn parse<'a>(&'a mut self, data: &'a [u8]) -> Result<Document<'a>> { ... }
-    pub fn iterate_many<'a>(&'a mut self, data: &'a [u8]) -> DocumentStream<'a> { ... }
-}
-
-impl<'a> Document<'a> {
-    pub fn get_field(&mut self, key: &str) -> Result<Value<'a>> { ... }
-    pub fn get_array(&mut self) -> Result<ArrayIter<'a>> { ... }
-}
-```
-
-Key design: Rust lifetimes enforce simdjson's buffer reuse model — a
-`Document` borrows the `Parser` (which owns internal buffers), and
-`Value`s borrow the `Document`. This prevents use-after-reparse bugs
-at compile time.
+Completed in Phase 0. The bridge supports On-Demand parse, field
+extraction (string/int64/double), document type checking, and
+iterate_many for NDJSON. Safe Rust wrapper with padding enforcement
+and lifetime tracking.
 
 ### 1b. Filter language parser
 
@@ -493,31 +479,54 @@ Represent it as a flat Vec of nodes with index references (arena
 allocation) rather than heap-allocated tree nodes, to avoid pointer
 chasing and improve cache locality.
 
-### 1c. Two-tier evaluator
+### 1c. DOM-based evaluator
 
-**On-Demand fast path (eval_ondemand.rs):** For filters that are pure
-path navigation — `.field`, `.a.b.c`, `.items[].name`, `.[] | .id` —
-drive simdjson's On-Demand API directly. The filter AST is "compiled"
-into a sequence of On-Demand navigation calls. No DOM is built. This
-is the 7 GB/s path.
+**DOM path only for Phase 1.** Parse via simdjson DOM API (full tree),
+convert to Rust-owned `Value` enum, evaluate filters against that.
+This path is ~2-3 GB/s parse throughput, which is already 30-90x
+faster than jq end-to-end.
 
-Filters eligible for the fast path:
+All Tier 1 filters work against the DOM:
 - Field access chains: `.a.b.c`
-- Array iteration with field access: `.[] | .name`
-- Simple select with comparison: `select(.age > 30)`
-- Object construction from fields: `{name: .name, id: .id}`
-- Pipe chains of the above
+- Array iteration: `.[]`, `.items[]`
+- Pipe: `.[] | .name`
+- Select: `select(.age > 30)`
+- Object construction: `{name: .name, id: .id}`
 
-**DOM fallback path (eval.rs):** For anything the On-Demand path can't
-handle (map, sort_by, reduce, variable binding, etc.), fall back to full
-DOM parsing via simdjson's DOM API. The DOM is materialized as Rust-owned
-values (our own `Value` enum, converted from simdjson DOM). This path is
-still fast (~2-3 GB/s parse) but allocates more memory.
+**Key design choices:**
+- Native i64 for integers (not f64 like jq)
+- Arena-allocated AST with index references (cache-friendly)
+- Per-thread reusable output buffers
+- Avoid unnecessary allocations in the hot loop — reuse Value storage
 
-The evaluator dispatches at filter compile time: analyze the AST, and if
-it fits the On-Demand pattern, use the fast path. Otherwise, fall back.
+### 1d. Output formatting — core deliverable
 
-### 1d. Filter evaluation performance
+Three modes: pretty-print (default TTY), compact (`-c`), raw (`-r`).
+Pretty-print with optional ANSI color (same as jq).
+
+**This is performance-critical.** At 8+ GB/s parse throughput, output
+formatting becomes the bottleneck immediately. Priority optimizations:
+- BufWriter with large buffer (≥64KB) to minimize write syscalls
+- For compact output (`-c`), write directly without intermediate String
+- For raw string output (`-r`), copy simdjson's raw bytes when possible
+- Avoid per-value allocation — write directly to output buffer
+
+**Success criterion:** `jx '.field' file.json` produces identical output
+to `jq '.field' file.json` for all Tier 1 filters. End-to-end throughput
+≥5x jq, ≥2x jaq on large files (measured with real output, not
+parse-only).
+
+### 1.5 (future): On-Demand fast path
+
+Deferred from Phase 1. Once the DOM evaluator and output formatting are
+solid, add an On-Demand fast path for pure path navigation filters.
+This skips DOM construction entirely for `.field`, `.a.b.c`,
+`.[] | .name` — navigating the SIMD structural index directly at
+~7 GB/s. Only add this if profiling shows DOM construction is actually
+a bottleneck for common filters (it may not be, since output formatting
+likely dominates anyway).
+
+### 1e. Filter evaluation performance
 
 **Honest assessment:** jaq is already a well-optimized Rust implementation
 by someone who has spent years on it. It uses native integers, efficient
@@ -527,43 +536,15 @@ the same language. The target is to **match** jaq on eval, and win on
 everything else (parsing, parallelism, streaming).
 
 Where the performance advantage is real:
-- **Parsing**: simdjson On-Demand at 5-7 GB/s vs jaq's hifijson at ~500 MB/s (10-14x)
+- **Parsing**: simdjson DOM at ~2-3 GB/s vs jaq's hifijson at ~500 MB/s (4-6x)
 - **Parallelism**: 10 threads on independent NDJSON lines (~8-9x scaling)
-- **End-to-end large NDJSON**: Parsing dominates, so SIMD + threading = 30-50x
+- **End-to-end large NDJSON**: Parsing dominates, so SIMD + threading = 20-40x
 
 Where we're at parity with jaq:
 - **Pure eval on same parsed data**: `map(select(.x > 0) | {a: .a, b: .b})`
   on an already-parsed DOM — roughly same speed, maybe 10-20% either way
 - **Small inputs**: Parsing takes microseconds regardless. Startup dominates
 - **Complex filters on small data**: Pure eval speed. jaq is already good
-
-**Key design choices for competitive evaluation:**
-- Native i64 for integers (not f64 like jq)
-- Arena-allocated AST with index references (cache-friendly)
-- Per-thread reusable output buffers (same pattern as gg's WorkerState)
-- Small-string optimization for common short strings (field names, "null", etc.)
-- Avoid unnecessary allocations in the hot loop — reuse Value storage
-
-If profiling shows AST-walk overhead matters for complex filters on small
-inputs, consider a simple bytecode compiler as a Phase 5 optimization.
-For Tier 1 filters on large inputs (the target workload), parsing
-dominates and evaluation overhead is negligible.
-
-### 1e. Output formatting
-
-Three modes: pretty-print (default TTY), compact (`-c`), raw (`-r`).
-Pretty-print with optional ANSI color (same as jq).
-
-**Fast-path output:** For On-Demand simple field access with `-c` or
-`-r`, we can often write simdjson's raw bytes directly to output without
-re-serialization. simdjson gives us pointers into the original input
-buffer — for string values, we can write the raw bytes (with unescaping
-if needed) instead of building a Value and re-serializing.
-
-**Success criterion:** `jx '.field' file.json` produces identical output
-to `jq '.field' file.json` for all Tier 1 filters. Throughput ≥5x jq
-on a 100MB file. Filter evaluation speed comparable to jaq (within ±20%)
-on jaq's own benchmark suite.
 
 ---
 
@@ -834,35 +815,36 @@ filters on small inputs (where parsing doesn't dominate), consider:
 
 ---
 
-## Estimated performance targets
+## Estimated performance targets (updated with Phase 0 actuals)
 
-### Parsing throughput (Phase 0)
+### Parsing throughput (Phase 0) — MEASURED
 
-| Input | jq | jaq | simd-json (Rust) | simdjson On-Demand | Speedup vs jq |
-|-------|-----|------|------------------|--------------------|---------------|
-| twitter.json (631KB) | ~400 MB/s | ~500 MB/s | ~1,300 MB/s | ~5,000 MB/s | **12x** |
-| citm_catalog.json (1.7MB) | ~300 MB/s | ~450 MB/s | ~1,400 MB/s | ~6,000 MB/s | **20x** |
-| canada.json (2.2MB, float-heavy) | ~200 MB/s | ~300 MB/s | ~450 MB/s | ~1,500 MB/s | **7x** |
-| 100MB NDJSON | ~300 MB/s | ~450 MB/s | ~1,200 MB/s | ~3,500 MB/s | **12x** |
+See "Phase 0 results" section above for full measured data. Summary:
+simdjson On-Demand delivers 6,700-9,200 MB/s on Apple Silicon.
+11-15x over serde_json, 41-286x over jq end-to-end, 24-90x over jaq.
 
-Note: canada.json is worst-case (dense floats). simdjson acknowledges
-float parsing can't reach GB/s speeds. Typical JSON (mixed types) is
-the best case.
+Original estimates vs actuals:
+- simdjson On-Demand: predicted 5,000-7,000 → **actual 6,700-9,200** MB/s
+- serde_json: predicted 330-560 → **actual 245-810** MB/s (varies by file)
+- jq end-to-end: predicted ~200-400 → **actual 24-64** MB/s (includes output)
+- canada.json was predicted as worst-case 1,500 → **actual 6,748** (NEON handles floats better than expected)
 
-### End-to-end with parallelism (Phase 2)
+### End-to-end targets (Phase 1+2, revised)
+
+These account for output formatting overhead and measured iterate_many
+throughput (~2,800 MB/s per thread, not ~8,000).
 
 | Workload | jq | jx (1 thread) | jx (10 threads) | Speedup |
 |----------|-----|---------------|-----------------|---------|
-| `'.field' 100mb.jsonl` | 0.33s | 0.03s | 0.005s | **66x** |
-| `'.field' 1gb.jsonl` | 3.3s | 0.3s | 0.05s | **66x** |
-| `'select(.x > 0)' 1gb.jsonl` | 5s | 0.5s | 0.08s | **62x** |
-| `'.' 100mb.json` (pretty-print) | 1.5s | 0.15s | — | **10x** |
-| `'.[]' 5gb_array.json` | OOM | — | 2s, <100MB RSS | **∞** |
+| `'.field' 100mb.jsonl` | ~1.5s | ~0.1s | ~0.02s | **75x** |
+| `'.field' 1gb.jsonl` | ~15s | ~1s | ~0.15s | **100x** |
+| `'.' 100mb.json` (pretty-print) | ~3s | ~0.3s | — | **10x** |
+| `'.[]' 5gb_array.json` | OOM | — | ~5s, <100MB RSS | **∞** |
 
-These are optimistic estimates. Real numbers will be lower due to output
-formatting, filter evaluation overhead, thread synchronization, and I/O.
-Even achieving half these targets gives a compelling story: 5x
-single-threaded, 30x multi-threaded for NDJSON.
+Note: jq end-to-end is much slower than "parse throughput" estimates
+because it includes output formatting (pretty-print identity = read +
+parse + serialize + write). The single-threaded jx advantage is ~10-15x
+for end-to-end workloads. Parallelism on NDJSON adds another ~8x.
 
 ### Filter evaluation (Phase 1)
 
@@ -878,20 +860,15 @@ both use native integers, both can use efficient memory management. jaq
 has had years of optimization; claiming we'd beat it on eval is not
 credible. The real win is in parsing and parallelism, not the evaluator.
 
-For simple path queries on the On-Demand fast path, filter "evaluation"
-is essentially free — it's just navigating the SIMD structural index.
-This is where the end-to-end numbers get exciting, but it's a parsing
-win, not an eval win.
-
-### Honest performance comparison: jx vs jaq vs jq
+### Honest performance comparison: jx vs jaq vs jq (revised)
 
 | Scenario | vs jq | vs jaq | Why |
 |----------|-------|--------|-----|
-| Simple filter, large file (1 thread) | 10-15x | 5-10x | SIMD On-Demand parsing |
-| Simple filter, large NDJSON (10 threads) | 50-100x | 30-60x | SIMD + parallelism |
-| Complex filter, large file | 5-8x | 2-4x | SIMD parsing, similar eval |
+| Simple filter, large file (1 thread) | 10-20x | 3-8x | SIMD DOM parsing, fast output |
+| Simple filter, large NDJSON (10 threads) | 50-100x | 20-40x | SIMD + parallelism |
+| Complex filter, large file | 5-10x | 2-4x | SIMD parsing, similar eval |
 | Complex filter, small file | 2-3x | ~1x | Eval-dominated, similar speed |
-| Small file, simple filter | 2-3x | ~1x | Startup-dominated |
+| Small file, simple filter | 2-5x | ~1x | Startup-dominated |
 
 The win over jaq is almost entirely in the parser and threading, not
 the evaluator. On eval-dominated workloads (complex filters, small files),

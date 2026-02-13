@@ -212,13 +212,18 @@ fn main() {
 
     let jq_path = find_tool("jq");
     let jaq_path = find_tool("jaq");
-    if jq_path.is_some() || jaq_path.is_some() {
+    let gojq_path = find_tool("gojq");
+    let has_external = jq_path.is_some() || jaq_path.is_some() || gojq_path.is_some();
+    if has_external {
         print!("External tools:");
         if let Some(p) = &jq_path {
             print!(" jq={p}");
         }
         if let Some(p) = &jaq_path {
             print!(" jaq={p}");
+        }
+        if let Some(p) = &gojq_path {
+            print!(" gojq={p}");
         }
         println!("\n");
     }
@@ -250,6 +255,9 @@ fn main() {
         }
         if let Some(ref jaq) = jaq_path {
             bench_external_tool("jaq '.' (end-to-end)", jaq, ".", &path, json_len as u64);
+        }
+        if let Some(ref gojq) = gojq_path {
+            bench_external_tool("gojq '.' (end-to-end)", gojq, ".", &path, json_len as u64);
         }
         bench_serde_json_parse("serde_json DOM parse", &raw);
         bench_simdjson_ondemand_parse("simdjson On-Demand parse (FFI)", &padded, json_len);
@@ -292,6 +300,15 @@ fn main() {
             bench_external_tool(
                 "jaq '.name' (end-to-end)",
                 jaq,
+                ".name",
+                &path,
+                json_len as u64,
+            );
+        }
+        if let Some(ref gojq) = gojq_path {
+            bench_external_tool(
+                "gojq '.name' (end-to-end)",
+                gojq,
                 ".name",
                 &path,
                 json_len as u64,
