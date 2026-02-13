@@ -1,0 +1,32 @@
+[package]
+name = "jx-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.jx]
+path = ".."
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_parse"
+path = "fuzz_targets/fuzz_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_dom"
+path = "fuzz_targets/fuzz_dom.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_ndjson"
+path = "fuzz_targets/fuzz_ndjson.rs"
+doc = false
