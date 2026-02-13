@@ -1,0 +1,5 @@
+# Build output
+/target/
+
+# rustfmt backup files
+**/*.rs.bk
