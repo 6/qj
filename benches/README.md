@@ -13,7 +13,7 @@
 Prerequisites:
 
 ```bash
-brew install hyperfine jq jaq gojq
+brew install hyperfine jq jaq gojq coreutils
 ```
 
 Generate test data and run:
