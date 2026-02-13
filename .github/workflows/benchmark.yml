@@ -1,0 +1,72 @@
+name: Benchmarks
+on:
+  # push:
+  #   branches: [main]
+  #   paths: ['src/**', 'bench/**', 'benches/**', 'Cargo.toml', 'Cargo.lock']
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+          - os: macos-26
+            platform: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: jdx/mise-action@v2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Install benchmark tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+          curl -sL https://github.com/01mf02/jaq/releases/latest/download/jaq-x86_64-unknown-linux-gnu \
+            -o /usr/local/bin/jaq && sudo chmod +x /usr/local/bin/jaq
+
+          GOJQ_VERSION=$(curl -s https://api.github.com/repos/itchyny/gojq/releases/latest | jq -r .tag_name)
+          curl -sL "https://github.com/itchyny/gojq/releases/download/${GOJQ_VERSION}/gojq_${GOJQ_VERSION#v}_linux_amd64.tar.gz" \
+            | tar xz -C /tmp && sudo mv /tmp/gojq_*/gojq /usr/local/bin/
+
+          cargo install hyperfine
+
+      - name: Install benchmark tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install jq hyperfine
+          brew install jaq || true
+          brew install gojq || true
+
+      - name: Cache test data
+        uses: actions/cache@v4
+        with:
+          path: bench/data
+          key: bench-data-v1
+
+      - name: Download/generate test data
+        run: |
+          bash bench/download_testdata.sh
+          bash bench/gen_large.sh
+          bash bench/generate_ndjson.sh
+
+      - name: Run benchmarks
+        run: COOLDOWN=3 bash bench/bench.sh
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-${{ matrix.platform }}
+          path: |
+            BENCHMARKS.md
+            bench/results/
