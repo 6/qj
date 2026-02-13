@@ -1,3 +1,3 @@
 fn main() {
-    println!("jx");
+    println!("jx — simdjson padding: {} bytes", jx::simdjson::padding());
 }

@@ -20,6 +20,21 @@ diff <(./target/release/jx '.field' test.json) <(jq '.field' test.json)
 ```
 
 ## Benchmarking
+
+### Parse throughput (simdjson vs serde_json)
+```
+bash bench/download_testdata.sh   # twitter.json, citm_catalog.json, canada.json
+bash bench/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
+cargo bench --bench parse_throughput
+```
+
+### C++ baseline (no FFI, for overhead comparison)
+```
+bash bench/build_cpp_bench.sh
+./bench/bench_cpp
+```
+
+### End-to-end tool comparison
 Always warm cache with `--warmup 3`.
 ```
 hyperfine --warmup 3 './target/release/jx ".field" test.json' 'jq ".field" test.json' 'jaq ".field" test.json'

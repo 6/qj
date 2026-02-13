@@ -3,3 +3,9 @@
 
 # rustfmt backup files
 **/*.rs.bk
+
+# Benchmark data (large, generated)
+bench/data/
+
+# Compiled C++ benchmark binary
+bench/bench_cpp
