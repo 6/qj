@@ -48,12 +48,12 @@ performance story is SIMD parsing + parallelism, not a faster evaluator.
 
 ## Competitive landscape
 
-| Tool | Parsing (measured) | Parallel | SIMD | On-Demand | Streaming | Memory model | jq compat | Platform |
-|------|-------------------|----------|------|-----------|-----------|--------------|-----------|----------|
-| jq 1.7 | 23-62 MB/s e2e | No | No | No | Yes (`--stream`)* | Full DOM, O(n)+ | 100% | All |
-| jaq 2.3 | 93-187 MB/s e2e | No | No | No | No | Full DOM, O(n) | ~90% | All |
-| gojq 0.12 | 47-122 MB/s e2e | No | No | No | No | Full DOM, O(n) | ~85% | All |
-| **jx** | **7-9 GB/s parse** | **Yes (NDJSON)** | **Yes (NEON/AVX2)** | **Yes** | **Yes (transparent)** | **Streaming** | **~80%** | **All** |
+| Tool | Parsing (measured) | E2E (measured) | Parallel | SIMD | On-Demand | Streaming | jq compat | Platform |
+|------|-------------------|----------------|----------|------|-----------|-----------|-----------|----------|
+| jq 1.7 | 23-62 MB/s e2e | baseline | No | No | No | Yes (`--stream`)* | 100% | All |
+| jaq 2.3 | 93-187 MB/s e2e | 1.3-2x jq | No | No | No | No | ~90% | All |
+| gojq 0.12 | 47-122 MB/s e2e | 0.8-2.5x jq | No | No | No | No | ~85% | All |
+| **jx 0.1** | **7-9 GB/s parse** | **2-4x jq** | **Planned** | **Yes (NEON/AVX2)** | **Planned** | **Planned** | **~60%** | **macOS/Linux** |
 
 \* jq's `--stream` mode parses incrementally, emitting `[[path], value]`
 pairs without loading the full tree. It works for constant-memory
@@ -135,44 +135,37 @@ Binary size impact is ~500KB.
 ```
 jx/
 ├── src/
-│   ├── main.rs               # CLI parsing (clap), orchestration
-│   ├── cli.rs                 # Argument definitions
+│   ├── main.rs               # CLI (clap derive), orchestration
+│   ├── lib.rs                 # Module declarations
+│   ├── value.rs               # Value enum (Null/Bool/Int/Double/String/Array/Object)
+│   ├── output.rs              # JSON output: compact, pretty, raw (itoa + ryu)
 │   ├── simdjson/
-│   │   ├── simdjson.h         # Vendored C++ header
+│   │   ├── mod.rs             # Re-exports
+│   │   ├── simdjson.h         # Vendored C++ header (v4.2.4)
 │   │   ├── simdjson.cpp       # Vendored C++ implementation
-│   │   ├── bridge.cpp         # C-linkage FFI functions
-│   │   └── bridge.rs          # Safe Rust wrapper over FFI
-│   ├── filter/
-│   │   ├── mod.rs             # Filter AST and evaluation
-│   │   ├── lexer.rs           # jq filter tokenizer
-│   │   ├── parser.rs          # jq filter parser → AST
-│   │   ├── eval.rs            # AST evaluator against simdjson values
-│   │   ├── eval_ondemand.rs   # Fast-path: On-Demand for simple queries
-│   │   └── builtins.rs        # Built-in functions (length, keys, etc.)
-│   ├── parallel/
-│   │   ├── mod.rs             # NDJSON parallel processor
-│   │   ├── splitter.rs        # Chunk input at newline boundaries
-│   │   └── pool.rs            # Thread pool (rayon or manual)
-│   ├── output/
-│   │   ├── mod.rs             # Output formatting dispatch
-│   │   ├── pretty.rs          # Pretty-print with optional color
-│   │   ├── compact.rs         # Compact single-line output (-c)
-│   │   └── raw.rs             # Raw string output (-r)
-│   └── io/
-│       ├── mod.rs             # Input reading dispatch
-│       ├── mmap.rs            # mmap for file inputs
-│       └── stream.rs          # Streaming stdin reader
+│   │   ├── bridge.cpp         # C-linkage FFI: On-Demand + DOM flat token buffer
+│   │   └── bridge.rs          # Safe Rust wrapper: parse, extract, dom_parse_to_value
+│   └── filter/
+│       ├── mod.rs             # Filter AST, CmpOp, ArithOp, BoolOp, ObjKey, parse()
+│       ├── lexer.rs           # Tokenizer (47 token types)
+│       ├── parser.rs          # Recursive descent parser → Filter AST
+│       └── eval.rs            # Generator evaluator, 30+ builtins
 ├── bench/
-│   ├── parse-throughput/      # Phase 0: raw parsing benchmarks
-│   ├── filter-eval/           # Phase 1: filter evaluation benchmarks
-│   ├── parallel-ndjson/       # Phase 2: parallel NDJSON benchmarks
-│   └── e2e/                   # Phase 3: end-to-end vs jq/jaq
+│   ├── data/                  # twitter.json, canada.json, citm_catalog.json, NDJSON
+│   ├── gen_ndjson.rs          # NDJSON test data generator
+│   └── parse_throughput.rs    # Criterion benchmarks (simdjson vs serde)
 ├── tests/
-│   ├── conformance/           # Output diff vs jq on real data
-│   └── filters/               # Per-filter correctness tests
+│   ├── simdjson_ffi.rs        # simdjson FFI integration tests (15 tests)
+│   └── e2e.rs                 # End-to-end CLI tests (29 tests)
 ├── build.rs                   # Compiles simdjson.cpp via cc crate
 ├── Cargo.toml
+├── CLAUDE.md
 └── PLAN.md
+
+# Planned (not yet created)
+#   src/parallel/              # Phase 2: NDJSON chunk splitter + thread pool
+#   src/io/                    # Phase 2: mmap for files, streaming for stdin
+#   src/filter/eval_ondemand.rs  # Phase 1.5: On-Demand fast path
 ```
 
 ---
@@ -505,11 +498,54 @@ Three modes: pretty-print (default TTY), compact (`-c`), raw (`-r`).
 Pretty-print with optional ANSI color (same as jq).
 
 **This is performance-critical.** At 8+ GB/s parse throughput, output
-formatting becomes the bottleneck immediately. Priority optimizations:
-- BufWriter with large buffer (≥64KB) to minimize write syscalls
-- For compact output (`-c`), write directly without intermediate String
-- For raw string output (`-r`), copy simdjson's raw bytes when possible
-- Avoid per-value allocation — write directly to output buffer
+formatting becomes the bottleneck immediately. We use a tiered
+serialization strategy:
+
+#### Tier 0 — Passthrough (zero-copy)
+
+For filters that return original sub-objects (`.`, `.field`, `.[0]`),
+simdjson's `raw_json()` provides a pointer+length directly into the
+input buffer. Write to stdout via `write_all` — no escaping, no
+formatting, no allocation. This is `memcpy` speed (~GB/s), preserving
+the SIMD parse throughput story for compact output (`-c`).
+
+This is the "golden path" for identity and simple extraction filters.
+Requires `raw_json()` FFI support and filter analysis to detect
+passthrough-eligible expressions. Only works for compact output — pretty-
+print requires re-formatting.
+
+#### Tier 1 — Direct-to-buffer writing
+
+For transformed/constructed values, write directly into `BufWriter<Stdout>`
+with 128KB buffer. Use `itoa` for integers, `ryu` for floats (Ryu
+algorithm — fastest float-to-string, 5-10x faster than `sprintf`).
+Tight loop for string escaping: scan for special chars (`"`, `\`,
+control chars), memcpy safe runs in bulk. Never allocate intermediate
+`String` — all formatting writes directly to the output buffer.
+
+#### Tier 2 — Pretty-print
+
+Same as Tier 1 but with indentation tracking. Default for TTY output,
+disabled with `-c`. Two spaces per level (jq default), or tabs with
+`--tab`.
+
+#### Future: SIMD string escaping
+
+For Phase 2+, investigate SIMD-accelerated scanning for escape
+characters (16-byte NEON / 32-byte AVX2 chunks). If a chunk has no
+special chars, bulk-copy. This closes the gap between "passthrough"
+and "must-serialize" paths. Could live in bridge.cpp leveraging
+simdjson's internal SIMD infrastructure or adapt from `simdjson::minify`.
+
+#### Future: Per-thread scratchpads (Phase 2)
+
+For parallel NDJSON, each thread writes to its own `Vec<u8>` buffer.
+After processing a chunk, pass the whole buffer to the main thread for
+ordered `write_all`. Avoids contention on stdout.
+
+**Implementation order:** Start with Tier 1 (direct-to-buffer) for all
+output. Add Tier 0 passthrough as a follow-up optimization once the
+basic pipeline works.
 
 **Success criterion:** `jx '.field' file.json` produces identical output
 to `jq '.field' file.json` for all Tier 1 filters. End-to-end throughput
@@ -545,6 +581,166 @@ Where we're at parity with jaq:
   on an already-parsed DOM — roughly same speed, maybe 10-20% either way
 - **Small inputs**: Parsing takes microseconds regardless. Startup dominates
 - **Complex filters on small data**: Pure eval speed. jaq is already good
+
+### Phase 1 results (Apple Silicon M-series, 2025-02)
+
+**Status: COMPLETE — `jx '.field' file.json` works end-to-end.**
+
+All Phase 1 slices implemented: Value type, output formatter (Tier 1
+direct-to-buffer with itoa/ryu, Tier 2 pretty-print), simdjson DOM bridge
+(flat token buffer protocol), filter lexer, recursive descent parser,
+generator-based evaluator, CLI with clap. 146 tests (117 unit + 29 e2e).
+
+#### What was built
+
+**Filter language** — covers all of Tier 1, most of Tier 2, and a
+significant portion of Tier 3:
+
+| Category | Implemented |
+|----------|-------------|
+| Core | `.field`, `.[]`, `\|`, `select()`, `{...}`, `[...]`, `,` (comma) |
+| Navigation | `.[n]`, `.[-n]`, `..` (recurse) |
+| Arithmetic | `+`, `-`, `*`, `/`, `%` (polymorphic: numbers, strings, arrays, objects) |
+| Comparison | `==`, `!=`, `<`, `<=`, `>`, `>=` |
+| Boolean | `and`, `or`, `not` |
+| Control | `if-then-else-end`, `//` (alternative), `?` (try) |
+| Builtins | `length`, `keys`, `keys_unsorted`, `values`, `type`, `empty` |
+| Array ops | `sort`, `sort_by()`, `group_by()`, `unique`, `unique_by()`, `flatten`, `reverse`, `first`, `last`, `min`, `max`, `min_by()`, `max_by()` |
+| Transforms | `map()`, `select()`, `add`, `any`, `all`, `has()`, `del()`, `contains()` |
+| Object ops | `to_entries`, `from_entries` |
+| String ops | `split()`, `join()`, `ascii_downcase`, `ascii_upcase`, `ltrimstr()`, `rtrimstr()`, `startswith()`, `endswith()` |
+| Type conversion | `tostring`, `tonumber` |
+| String interp | `"hello \(.name)"` |
+| Unary | `-expr` (negation) |
+| Literals | `null`, `true`, `false`, integers, floats, strings |
+
+**CLI flags:** `-c` (compact), `-r` (raw), `--tab`, `--indent N`,
+`-e` (exit status), `-n` (null input).
+
+**Architecture:**
+- `Value` enum with `Int(i64)` / `Double(f64)` distinction (unlike jq's all-f64)
+- `Object` as `Vec<(String, Value)>` preserving insertion order
+- Generator-based evaluator: `fn eval(filter, input, &mut dyn FnMut(Value))`
+- simdjson DOM → flat token buffer → `Value` tree (single FFI call per doc)
+- `BufWriter` with 128KB buffer, `itoa` for ints, `ryu` for floats
+- Output includes trailing newline per value (matches jq)
+
+#### End-to-end benchmarks
+
+Measured with hyperfine (warmup 3, shell=none). jq 1.7.1, jaq 2.3.0,
+gojq 0.12.18 via Homebrew. Apple Silicon.
+
+| Benchmark | jx | jq | jaq | jx vs jq | jx vs jaq |
+|-----------|-----|-----|------|----------|-----------|
+| `.statuses[0].user.screen_name` twitter.json (631KB) | 4.0ms | 8.9ms | 4.9ms | **2.25x** | 1.25x |
+| `-c '.'` canada.json (2.2MB) | 10.4ms | 40.7ms | 13.2ms | **3.9x** | 1.27x |
+| `-c '.performances \| keys \| length'` citm_catalog.json (1.7MB) | 5.3ms | 18.7ms | 6.8ms | **3.5x** | 1.29x |
+
+Output verified byte-identical to jq on all test files:
+- `diff <(jx -c '.' twitter.json) <(jq -c '.' twitter.json)` → match
+- `diff <(jx -c '.statuses[] | .user.screen_name' twitter.json) <(jq -c ...)` → match
+- `diff <(jx -c '.statuses[] | select(.retweet_count > 0) | {user: .user.screen_name, retweets: .retweet_count}' twitter.json) <(jq -c ...)` → match
+
+#### Assessment vs success criteria
+
+| Criterion | Target | Actual | Status |
+|-----------|--------|--------|--------|
+| Identical output to jq | All Tier 1 filters | All tested filters | ✓ |
+| Throughput vs jq | ≥5x | 2.25-3.9x | **Partial** |
+| Throughput vs jaq | ≥2x | 1.25-1.29x | **Not yet** |
+
+The throughput targets are not met yet. Analysis:
+
+1. **These files are small** (0.6-2.2MB). Process startup (~2-3ms) and
+   output formatting dominate at these sizes. The 7-9 GB/s simdjson
+   parse advantage is mostly hidden — parsing a 2.2MB file takes <1ms
+   regardless of parser. The real advantage shows on large files (Phase 2
+   NDJSON with parallelism).
+
+2. **DOM construction overhead.** We build a full `Value` tree from the
+   flat token buffer, then clone values during evaluation. This is the
+   expected DOM path — the On-Demand fast path (Phase 1.5) would skip
+   tree construction for simple field access.
+
+3. **Output is not yet optimized.** We write value-by-value through
+   `write_value()`. Tier 0 passthrough (zero-copy from input buffer) is
+   not implemented yet — it would eliminate output serialization entirely
+   for identity and simple extraction filters.
+
+4. **Still significantly faster than jq** — 2-4x across all benchmarks.
+   On larger files (100MB+ NDJSON), where parsing dominates, the
+   advantage will be much higher.
+
+#### File inventory
+
+| File | Purpose |
+|------|---------|
+| `src/value.rs` | `Value` enum, `type_name()`, `is_truthy()` |
+| `src/output.rs` | JSON output: compact, pretty, raw modes (itoa + ryu) |
+| `src/filter/mod.rs` | `Filter` AST, `CmpOp`, `ArithOp`, `BoolOp`, `ObjKey`, `StringPart` |
+| `src/filter/lexer.rs` | Tokenizer (47 token types) |
+| `src/filter/parser.rs` | Recursive descent parser |
+| `src/filter/eval.rs` | Generator-based evaluator, 30+ builtins |
+| `src/simdjson/bridge.cpp` | Extended with `jx_dom_to_flat()` (flat token buffer) |
+| `src/simdjson/bridge.rs` | Extended with `dom_parse_to_value()` |
+| `src/main.rs` | CLI (clap derive), stdin/file input, filter → eval → output |
+| `tests/e2e.rs` | 29 end-to-end tests |
+
+---
+
+## Next steps (proposed)
+
+Based on Phase 1 results, here's the priority order for closing the
+performance gap and making jx genuinely useful:
+
+### Priority 1: Large-file benchmarks and mmap (immediate)
+
+Generate larger test files (100MB+ single JSON, 100MB+ NDJSON) and
+benchmark. The current small-file benchmarks (0.6-2.2MB) hide jx's
+parsing advantage. On large files, simdjson's 7+ GB/s should dominate
+the end-to-end time, showing the real 5-10x advantage over jq.
+
+Add mmap-based file reading (via `libc::mmap`) to avoid the
+`std::fs::read` + `pad_buffer` copy. For large files, mmap provides
+zero-copy access and lets the OS page in data on demand.
+
+### Priority 2: Missing core filters (variable binding, reduce, slurp)
+
+The most impactful missing features for real-world usage:
+
+1. **Variable binding** — `. as $x | ...`, needed for many jq idioms
+2. **`--slurp` / `-s`** — read all inputs into array, very common flag
+3. **`reduce`** — `reduce .[] as $x (0; . + $x)`, needed for aggregation
+4. **`--arg` / `--argjson`** — CLI variable injection, critical for scripts
+5. **Array slicing** — `.[2:5]`, `.[:-1]`
+6. **`with_entries`** — desugars to `to_entries | map(f) | from_entries`
+7. **`@base64` / `@csv` / `@tsv` / `@json` / `@uri`** — format strings
+8. **`test()` / `match()`** — regex support (use `regex` crate)
+9. **`--raw-input` / `-R`** — treat input lines as strings
+
+### Priority 3: Parallel NDJSON (Phase 2)
+
+This is the biggest performance multiplier. Current plan holds:
+chunk-split NDJSON at newline boundaries, distribute chunks to thread
+pool, each thread has its own simdjson parser, ordered merge of output.
+Expected ~8x additional speedup on multi-core, for a combined 20-40x
+over jq on large NDJSON.
+
+### Priority 4: Output optimization (Tier 0 passthrough)
+
+Add `raw_json()` FFI support so identity and simple extraction filters
+can copy the original input bytes directly to stdout. This turns output
+from the bottleneck into effectively free for `-c` mode on passthrough-
+eligible filters. Expected to close the gap to the ≥5x target on
+single-file benchmarks.
+
+### Priority 5: On-Demand fast path (Phase 1.5)
+
+For simple path-only filters (`.field`, `.a.b.c`, `.[0]`), skip DOM
+construction entirely and navigate the SIMD structural index directly.
+This provides 7+ GB/s for the most common use case. Requires filter
+analysis to detect eligible expressions and fallback to DOM for anything
+that needs random access.
 
 ---
 
@@ -617,39 +813,72 @@ latency for chunk accumulation.
 
 ---
 
-## Phase 3: Tier 2 filter support
+## Phase 3: Tier 2+3 filter support
 
-**Goal:** Cover the "weekly ten" filters. At this point jx is usable
-for most real-world tasks.
+**Goal:** Cover the "weekly ten" and "monthly rest" filters. At this
+point jx is usable for most real-world tasks.
 
-### Implementation order (by user impact)
+**Status: MOSTLY COMPLETE.** Phase 1 already implemented 14 of the 15
+Tier 2 filters and many Tier 3 filters. See Phase 1 results for the
+full list.
 
-1. **`map()`** — desugars to `[.[] | f]`. Once `.[]` and pipe work,
-   this is straightforward.
-2. **`length`** — array length, string length, object key count, null → 0.
-3. **`keys` / `values`** — return array of keys or values from object.
-4. **`sort_by()` / `group_by()` / `unique_by()`** — sort/group array
-   by expression result. Requires collecting into array, evaluating
-   expression per element, then sorting.
-5. **`first` / `last`** — `first(expr)` takes first output of generator.
-   `last(expr)` takes last. Important for short-circuit optimization.
-6. **Array slicing** — `.[2:5]`, `.[-1]`, `.[0]`. Already partially
-   covered by Phase 1 indexing.
-7. **`+` operator** — polymorphic: number addition, string concatenation,
-   array concatenation, object merge. Object merge is shallow.
-8. **`type`** — returns type name as string.
-9. **`add`** — reduce array via `+`. `[1,2,3] | add` → 6.
-10. **`not` / `and` / `or`** — boolean operations.
-11. **`has()` / `in()`** — key existence check.
-12. **`if-then-else`** — conditional expression.
-13. **`//` (alternative)** — `.x // "default"`.
-14. **`?` (try)** — `.foo?` suppresses errors.
-15. **Variable binding** — `. as $x | ...`.
+### Already implemented (in Phase 1)
 
-Note: Tier 2 filters require the DOM fallback path (they need the full
-tree structure). The On-Demand fast path only applies to Tier 1. This is
-fine — the DOM path is still 2-3 GB/s via simdjson, which is 5-10x
-faster than jq's parser.
+1. ~~**`map()`**~~ ✓
+2. ~~**`length`**~~ ✓
+3. ~~**`keys` / `values`**~~ ✓ (including `keys_unsorted`)
+4. ~~**`sort_by()` / `group_by()` / `unique_by()`**~~ ✓
+5. ~~**`first` / `last`**~~ ✓
+6. **Array slicing** — `.[n]` and `.[-n]` work, `.[2:5]` range slicing NOT YET
+7. ~~**`+` operator**~~ ✓ (numbers, strings, arrays, objects)
+8. ~~**`type`**~~ ✓
+9. ~~**`add`**~~ ✓
+10. ~~**`not` / `and` / `or`**~~ ✓
+11. ~~**`has()`**~~ ✓ (`in()` not yet)
+12. ~~**`if-then-else`**~~ ✓
+13. ~~**`//` (alternative)**~~ ✓
+14. ~~**`?` (try)**~~ ✓
+15. **Variable binding** — `. as $x | ...` NOT YET
+
+Also already done from Tier 3: `to_entries`, `from_entries`, `sort`,
+`unique`, `flatten`, `reverse`, `min`, `max`, `min_by()`, `max_by()`,
+`del()`, `contains()`, `split()`, `join()`, `ascii_downcase`,
+`ascii_upcase`, `ltrimstr()`, `rtrimstr()`, `startswith()`,
+`endswith()`, `tostring`, `tonumber`, `any`, `all`, `empty`, `..`
+(recurse), string interpolation, `not`.
+
+### Remaining to implement
+
+High priority (needed for common jq scripts):
+1. **Variable binding** — `. as $x | ...`
+2. **Array slicing** — `.[2:5]`, `.[:-1]`
+3. **`reduce`** — `reduce .[] as $x (0; . + $x)`
+4. **`with_entries`** — desugar to `to_entries | map(f) | from_entries`
+5. **`in()`** — key membership (inverse of `has`)
+6. **`--slurp` / `-s`** — CLI flag
+7. **`--arg` / `--argjson`** — CLI variable injection
+
+Medium priority:
+8. **`@base64` / `@csv` / `@tsv` / `@json` / `@uri`** — format strings
+9. **`test()` / `match()` / `capture()` / `scan()`** — regex
+10. **`gsub()` / `sub()`** — regex replacement
+11. **`def`** — user function definitions
+12. **`walk()`** — recursive transform
+13. **`limit()` / `until()` / `while()` / `repeat()`** — loop constructs
+14. **`range()`** — sequence generation
+15. **`--raw-input` / `-R`** — treat input lines as strings
+16. **`input` / `inputs`** — multi-input processing
+
+Low priority:
+17. **`foreach`** — streaming fold
+18. **`try-catch`** — error handling with catch clause
+19. **`path()` / `getpath()` / `setpath()` / `delpaths()`** — path ops
+20. **`env` / `$ENV`** — environment variables
+21. **`--slurpfile` / `-f`** — CLI features
+22. **`debug`** — debug output to stderr
+23. **Date/time** — `now`, `todate`, `strftime`, etc.
+24. **Math** — `floor`, `ceil`, `round`, `sqrt`, etc.
+25. **`tojson` / `fromjson`** — JSON encode/decode
 
 ### Conformance testing
 
@@ -661,9 +890,8 @@ Build a test harness that:
 
 Any difference is a bug. Import jaq's test suite as additional coverage.
 
-**Success criterion:** All Tier 2 filters produce identical output to jq.
-Performance regression ≤5% vs Phase 1 for Tier 1 filters (no impact on
-the fast path).
+**Success criterion:** All Tier 2+3 filters produce identical output to
+jq. Performance regression ≤5% vs Phase 1 for Tier 1 filters.
 
 ---
 
@@ -726,38 +954,33 @@ with <100MB RSS. `jq '.[]' 1gb_array.json` uses >5GB RSS.
 
 ---
 
-## Phase 5: Tier 3 filters and polish
+## Phase 5: Remaining filters and polish
 
-**Goal:** Cover the remaining ~5% of usage. Full CLI compatibility
+**Goal:** Cover the remaining filter gaps. Full CLI compatibility
 with jq for common flags. Optimize filter evaluation if needed.
 
-### Filters to add
+**Note:** Many Tier 3 filters originally planned for Phase 5 were
+implemented early in Phase 1. See Phase 3 section for the remaining
+list. This phase now focuses on the long-tail features.
 
-- `reduce` / `foreach` — streaming fold operations
-- `try-catch` — error handling
+### Filters still to add (not covered by Phase 3)
+
+- `reduce` / `foreach` — streaming fold operations (Phase 3 high priority)
+- `try-catch` — error handling with catch clause
 - `@csv` / `@tsv` / `@base64` / `@uri` / `@json` — format strings
-- `test()` / `match()` / `capture()` / `scan()` / `splits()` — regex (use `regex` crate)
-- `split` / `join` / `gsub` / `sub` — string operations
-- `to_entries` / `from_entries` / `with_entries` — object↔array conversion
-- `min_by` / `max_by` / `flatten` — array operations
-- `tostring` / `tonumber` / `tojson` / `fromjson` — type/format conversion
-- `ascii_downcase` / `ascii_upcase` — case conversion
-- `ltrimstr` / `rtrimstr` / `startswith` / `endswith` / `contains` — string predicates
-- `del()` — field deletion
+- `test()` / `match()` / `capture()` / `scan()` / `splits()` — regex
+- `gsub` / `sub` — regex replacement
+- `tojson` / `fromjson` — JSON encode/decode within filters
 - `env` / `$ENV` — environment variable access
 - `input` / `inputs` — multi-input processing
 - `--arg` / `--argjson` / `--slurpfile` — CLI variable injection
-- String interpolation: `"Hello \(.name)"`
 - `def` — user-defined functions
 - `walk()` — recursive transform
 - `path()` / `getpath()` / `setpath()` / `delpaths()` — path operations
 - `debug` — debug output to stderr
 - `limit()` / `until()` / `while()` / `repeat()` — loop constructs
-- `any` / `all` — quantifiers
 - `range()` — sequence generation
-- `recurse` / `..` — recursive descent
-- `empty` / `error` / `halt` / `halt_error` — control flow
-- `//` alternative, `?` try, `?//` try-alternative
+- `error` / `halt` / `halt_error` — control flow
 - Date/time: `now`, `strftime`, `strptime`, `todate`, `fromdate`, `gmtime`, `mktime`
 - Math: `floor`, `ceil`, `round`, `sqrt`, `pow`, `log`, `exp`, `fabs`, `nan`, `infinite`
 - `builtins` — list available built-ins

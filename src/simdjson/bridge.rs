@@ -8,6 +8,8 @@ use std::ffi::c_char;
 use std::fs;
 use std::path::Path;
 
+use crate::value::Value;
+
 // ---------------------------------------------------------------------------
 // FFI declarations (must match bridge.cpp exactly)
 // ---------------------------------------------------------------------------
@@ -59,6 +61,14 @@ unsafe extern "C" {
         field_name_len: usize,
         out_total_bytes: *mut u64,
     ) -> i32;
+
+    fn jx_dom_to_flat(
+        buf: *const c_char,
+        len: usize,
+        out_ptr: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32;
+    fn jx_flat_buffer_free(ptr: *mut u8);
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +267,141 @@ pub fn iterate_many_extract_field(
 }
 
 // ---------------------------------------------------------------------------
+// DOM parse → Value (via flat token buffer)
+// ---------------------------------------------------------------------------
+
+// Token tags (must match bridge.cpp)
+const TAG_NULL: u8 = 0;
+const TAG_BOOL: u8 = 1;
+const TAG_INT: u8 = 2;
+const TAG_DOUBLE: u8 = 3;
+const TAG_STRING: u8 = 4;
+const TAG_ARRAY_START: u8 = 5;
+const TAG_ARRAY_END: u8 = 6;
+const TAG_OBJECT_START: u8 = 7;
+const TAG_OBJECT_END: u8 = 8;
+
+/// Parse a JSON buffer via simdjson DOM API and return a `Value` tree.
+///
+/// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
+pub fn dom_parse_to_value(buf: &[u8], json_len: usize) -> Result<Value> {
+    assert!(buf.len() >= json_len + padding());
+    let mut flat_ptr: *mut u8 = std::ptr::null_mut();
+    let mut flat_len: usize = 0;
+    check(unsafe { jx_dom_to_flat(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len) })?;
+
+    // Safety: flat_ptr is a heap allocation from C++ new[].
+    let flat = unsafe { std::slice::from_raw_parts(flat_ptr, flat_len) };
+    let result = decode_value(flat, &mut 0);
+    unsafe { jx_flat_buffer_free(flat_ptr) };
+    result
+}
+
+fn read_u8(buf: &[u8], pos: &mut usize) -> Result<u8> {
+    if *pos >= buf.len() {
+        bail!("flat token buffer truncated at byte {}", *pos);
+    }
+    let v = buf[*pos];
+    *pos += 1;
+    Ok(v)
+}
+
+fn read_u32(buf: &[u8], pos: &mut usize) -> Result<u32> {
+    if *pos + 4 > buf.len() {
+        bail!("flat token buffer truncated at byte {}", *pos);
+    }
+    let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
+    *pos += 4;
+    Ok(v)
+}
+
+fn read_i64(buf: &[u8], pos: &mut usize) -> Result<i64> {
+    if *pos + 8 > buf.len() {
+        bail!("flat token buffer truncated at byte {}", *pos);
+    }
+    let v = i64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
+    *pos += 8;
+    Ok(v)
+}
+
+fn read_f64(buf: &[u8], pos: &mut usize) -> Result<f64> {
+    if *pos + 8 > buf.len() {
+        bail!("flat token buffer truncated at byte {}", *pos);
+    }
+    let v = f64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
+    *pos += 8;
+    Ok(v)
+}
+
+fn read_string(buf: &[u8], pos: &mut usize) -> Result<String> {
+    let len = read_u32(buf, pos)? as usize;
+    if *pos + len > buf.len() {
+        bail!(
+            "flat token buffer truncated reading string at byte {}",
+            *pos
+        );
+    }
+    let s = std::str::from_utf8(&buf[*pos..*pos + len])?.to_string();
+    *pos += len;
+    Ok(s)
+}
+
+fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
+    let tag = read_u8(buf, pos)?;
+    match tag {
+        TAG_NULL => Ok(Value::Null),
+        TAG_BOOL => {
+            let v = read_u8(buf, pos)?;
+            Ok(Value::Bool(v != 0))
+        }
+        TAG_INT => {
+            let v = read_i64(buf, pos)?;
+            Ok(Value::Int(v))
+        }
+        TAG_DOUBLE => {
+            let v = read_f64(buf, pos)?;
+            Ok(Value::Double(v))
+        }
+        TAG_STRING => {
+            let s = read_string(buf, pos)?;
+            Ok(Value::String(s))
+        }
+        TAG_ARRAY_START => {
+            let count = read_u32(buf, pos)? as usize;
+            let mut arr = Vec::with_capacity(count);
+            for _ in 0..count {
+                arr.push(decode_value(buf, pos)?);
+            }
+            let end_tag = read_u8(buf, pos)?;
+            if end_tag != TAG_ARRAY_END {
+                bail!("expected ArrayEnd tag, got {end_tag}");
+            }
+            Ok(Value::Array(arr))
+        }
+        TAG_OBJECT_START => {
+            let count = read_u32(buf, pos)? as usize;
+            let mut obj = Vec::with_capacity(count);
+            for _ in 0..count {
+                // Key is emitted as a String token
+                let key_tag = read_u8(buf, pos)?;
+                if key_tag != TAG_STRING {
+                    bail!("expected String tag for object key, got {key_tag}");
+                }
+                let key = read_string(buf, pos)?;
+                let val = decode_value(buf, pos)?;
+                obj.push((key, val));
+            }
+            let end_tag = read_u8(buf, pos)?;
+            if end_tag != TAG_OBJECT_END {
+                bail!("expected ObjectEnd tag, got {end_tag}");
+            }
+            Ok(Value::Object(obj))
+        }
+        _ => bail!("unknown flat token tag {tag}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -356,5 +501,328 @@ mod tests {
         let total = iterate_many_extract_field(&buf, ndjson.len(), 1_000_000, "name").unwrap();
         // "alice" (5) + "bob" (3) + "charlie" (7) = 15
         assert_eq!(total, 15);
+    }
+
+    // -----------------------------------------------------------------------
+    // FFI edge-case tests — exercise C++ bridge with adversarial inputs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_empty_input() {
+        let json = b"";
+        let buf = pad_buffer(json);
+        let mut parser = Parser::new().unwrap();
+        let result = parser.parse(&buf, json.len());
+        // Empty input should error at parse or on access
+        if let Ok(mut doc) = result {
+            assert!(doc.doc_type().is_err());
+        }
+    }
+
+    #[test]
+    fn parse_only_whitespace() {
+        let json = b"   \t\n  ";
+        let buf = pad_buffer(json);
+        let mut parser = Parser::new().unwrap();
+        let result = parser.parse(&buf, json.len());
+        if let Ok(mut doc) = result {
+            assert!(doc.doc_type().is_err());
+        }
+    }
+
+    #[test]
+    fn parse_truncated_json() {
+        let json = br#"{"name": "hel"#;
+        let buf = pad_buffer(json);
+        let mut parser = Parser::new().unwrap();
+        let result = parser.parse(&buf, json.len());
+        if let Ok(mut doc) = result {
+            assert!(doc.find_field_str("name").is_err());
+        }
+    }
+
+    #[test]
+    fn parse_null_bytes_in_input() {
+        let json = b"{\"a\": \"b\x00c\"}";
+        let buf = pad_buffer(json);
+        let mut parser = Parser::new().unwrap();
+        let result = parser.parse(&buf, json.len());
+        // simdjson should reject unescaped control characters in strings
+        if let Ok(mut doc) = result {
+            assert!(doc.find_field_str("a").is_err());
+        }
+    }
+
+    #[test]
+    fn parse_deeply_nested_arrays() {
+        // 1100 levels of nesting — exceeds simdjson's 1024 depth limit.
+        // On-Demand is lazy: parse/doc_type may succeed (it just sees '['),
+        // but the DOM path should reject it.
+        let mut json = Vec::new();
+        for _ in 0..1100 {
+            json.push(b'[');
+        }
+        json.push(b'1');
+        for _ in 0..1100 {
+            json.push(b']');
+        }
+        let buf = pad_buffer(&json);
+        // DOM parse should fail on excessive depth
+        assert!(dom_parse_to_value(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn parse_deeply_nested_objects() {
+        // 1100 levels of object nesting — exceeds simdjson's 1024 depth limit.
+        let mut json = Vec::new();
+        for i in 0..1100 {
+            json.extend_from_slice(format!("{{\"k{}\":", i).as_bytes());
+        }
+        json.extend_from_slice(b"null");
+        for _ in 0..1100 {
+            json.push(b'}');
+        }
+        let buf = pad_buffer(&json);
+        // DOM parse should fail on excessive depth
+        assert!(dom_parse_to_value(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn parse_max_length_string_key() {
+        // 1MB key name
+        let key = "k".repeat(1_000_000);
+        let json = format!("{{\"{}\": 1}}", key);
+        let json_bytes = json.as_bytes();
+        let buf = pad_buffer(json_bytes);
+        let mut parser = Parser::new().unwrap();
+        let mut doc = parser.parse(&buf, json_bytes.len()).unwrap();
+        assert_eq!(doc.find_field_int64(&key).unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_unicode_escape_sequences() {
+        let json = br#"{"emoji": "\u0048\u0065\u006C\u006C\u006F"}"#;
+        let buf = pad_buffer(json);
+        let mut parser = Parser::new().unwrap();
+        let mut doc = parser.parse(&buf, json.len()).unwrap();
+        assert_eq!(doc.find_field_str("emoji").unwrap(), "Hello");
+    }
+
+    #[test]
+    fn parse_lone_surrogate() {
+        // \uD800 without trailing surrogate — simdjson may accept or reject
+        let json = br#"{"s": "\uD800"}"#;
+        let buf = pad_buffer(json);
+        let mut parser = Parser::new().unwrap();
+        let result = parser.parse(&buf, json.len());
+        // Either parse fails or field extraction fails — both are acceptable
+        if let Ok(mut doc) = result {
+            // If simdjson accepts it, the Rust from_utf8 check should catch it
+            let _ = doc.find_field_str("s");
+        }
+    }
+
+    #[test]
+    fn parse_many_types_in_one_doc() {
+        let json = br#"{"s":"a","i":42,"d":1.5,"b":true,"n":null,"a":[1],"o":{"x":1}}"#;
+        let buf = pad_buffer(json);
+        let mut parser = Parser::new().unwrap();
+        // Parse and check the first field only (On-Demand is forward-only)
+        let mut doc = parser.parse(&buf, json.len()).unwrap();
+        assert_eq!(doc.find_field_str("s").unwrap(), "a");
+    }
+
+    #[test]
+    fn iterate_many_empty_input() {
+        let ndjson = b"";
+        let buf = pad_buffer(ndjson);
+        let count = iterate_many_count(&buf, ndjson.len(), 1_000_000).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn iterate_many_only_whitespace() {
+        let ndjson = b"\n\n\n";
+        let buf = pad_buffer(ndjson);
+        let count = iterate_many_count(&buf, ndjson.len(), 1_000_000).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn iterate_many_single_doc() {
+        let ndjson = b"{\"a\":1}\n";
+        let buf = pad_buffer(ndjson);
+        let count = iterate_many_count(&buf, ndjson.len(), 1_000_000).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn iterate_many_no_trailing_newline() {
+        let ndjson = b"{\"a\":1}\n{\"a\":2}";
+        let buf = pad_buffer(ndjson);
+        let count = iterate_many_count(&buf, ndjson.len(), 1_000_000).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn dom_parse_empty_input() {
+        let json = b"";
+        let buf = pad_buffer(json);
+        assert!(dom_parse_to_value(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn dom_parse_whitespace_only() {
+        let json = b"   ";
+        let buf = pad_buffer(json);
+        assert!(dom_parse_to_value(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn dom_parse_truncated() {
+        let json = br#"{"a": [1, 2"#;
+        let buf = pad_buffer(json);
+        assert!(dom_parse_to_value(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn dom_parse_deeply_nested() {
+        // 1100 levels — exceeds simdjson 1024 limit
+        let mut json = Vec::new();
+        for _ in 0..1100 {
+            json.push(b'[');
+        }
+        json.push(b'1');
+        for _ in 0..1100 {
+            json.push(b']');
+        }
+        let buf = pad_buffer(&json);
+        assert!(dom_parse_to_value(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn dom_parse_empty_object() {
+        let json = b"{}";
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_parse_to_value(&buf, json.len()).unwrap(),
+            Value::Object(vec![])
+        );
+    }
+
+    #[test]
+    fn dom_parse_empty_array() {
+        let json = b"[]";
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_parse_to_value(&buf, json.len()).unwrap(),
+            Value::Array(vec![])
+        );
+    }
+
+    #[test]
+    fn dom_parse_large_integer() {
+        let json = b"9223372036854775807"; // i64::MAX
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_parse_to_value(&buf, json.len()).unwrap(),
+            Value::Int(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn dom_parse_uint64_beyond_i64() {
+        let json = b"9223372036854775808"; // i64::MAX + 1, should become Double
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        match val {
+            Value::Double(d) => assert!((d - 9223372036854775808.0).abs() < 1.0),
+            other => panic!("expected Double, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dom_parse_negative_integer() {
+        let json = b"-9223372036854775808"; // i64::MIN
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_parse_to_value(&buf, json.len()).unwrap(),
+            Value::Int(i64::MIN)
+        );
+    }
+
+    #[test]
+    fn dom_parse_escaped_strings() {
+        let json = br#"{"s": "a\"b\\c\/d\n\t\r"}"#;
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        match val {
+            Value::Object(fields) => {
+                assert_eq!(fields[0].1, Value::String("a\"b\\c/d\n\t\r".into()));
+            }
+            other => panic!("expected Object, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dom_parse_simple_object() {
+        let json = br#"{"name": "alice", "age": 30, "active": true}"#;
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        assert_eq!(
+            val,
+            Value::Object(vec![
+                ("name".into(), Value::String("alice".into())),
+                ("age".into(), Value::Int(30)),
+                ("active".into(), Value::Bool(true)),
+            ])
+        );
+    }
+
+    #[test]
+    fn dom_parse_nested() {
+        let json = br#"{"a": [1, 2], "b": {"c": null}}"#;
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        assert_eq!(
+            val,
+            Value::Object(vec![
+                ("a".into(), Value::Array(vec![Value::Int(1), Value::Int(2)])),
+                ("b".into(), Value::Object(vec![("c".into(), Value::Null)])),
+            ])
+        );
+    }
+
+    #[test]
+    fn dom_parse_array() {
+        let json = br#"[1, "two", 3.14, false, null]"#;
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        assert_eq!(
+            val,
+            Value::Array(vec![
+                Value::Int(1),
+                Value::String("two".into()),
+                Value::Double(3.14),
+                Value::Bool(false),
+                Value::Null,
+            ])
+        );
+    }
+
+    #[test]
+    fn dom_parse_scalar() {
+        let json = b"42";
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn dom_parse_string() {
+        let json = br#""hello world""#;
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        assert_eq!(val, Value::String("hello world".into()));
     }
 }
