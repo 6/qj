@@ -688,59 +688,119 @@ The throughput targets are not met yet. Analysis:
 
 ---
 
-## Next steps (proposed)
+## Next steps
 
-Based on Phase 1 results, here's the priority order for closing the
-performance gap and making jx genuinely useful:
+Based on Phase 1 results, the core problem is clear: on small files
+(0.6-2.2MB), we're only 1.25-1.3x faster than jaq. The 7-9 GB/s
+simdjson parse advantage is invisible because **parsing is <1ms
+regardless of parser at this size**. The time goes to:
 
-### Priority 1: Large-file benchmarks and mmap (immediate)
+- Process startup: ~2-3ms (both tools)
+- DOM→Value tree construction + cloning during eval: ~3-4ms (jx-specific overhead)
+- Output serialization: ~2-3ms (both tools, fundamentally same speed)
 
-Generate larger test files (100MB+ single JSON, 100MB+ NDJSON) and
-benchmark. The current small-file benchmarks (0.6-2.2MB) hide jx's
-parsing advantage. On large files, simdjson's 7+ GB/s should dominate
-the end-to-end time, showing the real 5-10x advantage over jq.
+We need to (a) eliminate unnecessary work on small files, and (b)
+benchmark on large files where SIMD parsing actually dominates.
 
-Add mmap-based file reading (via `libc::mmap`) to avoid the
-`std::fs::read` + `pad_buffer` copy. For large files, mmap provides
-zero-copy access and lets the OS page in data on demand.
+### Step 1: Tier 0 passthrough — zero-copy output
 
-### Priority 2: Missing core filters (variable binding, reduce, slurp)
+**The single highest-impact optimization.** For filters that return
+original sub-documents (`.`, `.field`, `.[0]`), skip Value construction
+and output serialization entirely. Instead, use simdjson's `raw_json()`
+to get a pointer+length into the original input buffer, and `write_all`
+it directly to stdout.
 
-The most impactful missing features for real-world usage:
+**What this eliminates** (for eligible filters):
+- DOM→Value tree construction (~3ms on canada.json)
+- Value cloning during eval
+- Output serialization (~2ms on canada.json)
 
-1. **Variable binding** — `. as $x | ...`, needed for many jq idioms
-2. **`--slurp` / `-s`** — read all inputs into array, very common flag
-3. **`reduce`** — `reduce .[] as $x (0; . + $x)`, needed for aggregation
-4. **`--arg` / `--argjson`** — CLI variable injection, critical for scripts
-5. **Array slicing** — `.[2:5]`, `.[:-1]`
-6. **`with_entries`** — desugars to `to_entries | map(f) | from_entries`
-7. **`@base64` / `@csv` / `@tsv` / `@json` / `@uri`** — format strings
-8. **`test()` / `match()`** — regex support (use `regex` crate)
-9. **`--raw-input` / `-R`** — treat input lines as strings
+**Expected result:** `jx -c '.' canada.json` drops from 10.4ms to
+~3-4ms (parse + write_all). That's **10x jq** (40.7ms) and **3-4x
+jaq** (13.2ms) — meets or exceeds both targets.
 
-### Priority 3: Parallel NDJSON (Phase 2)
+**Implementation:**
+1. Add `raw_json()` FFI to bridge.cpp — returns pointer+length into
+   the padded input buffer for any element (document, field value,
+   array element)
+2. Add `dom_extract_raw()` to bridge.rs — for a given field path,
+   return the raw JSON bytes without constructing a Value
+3. In main.rs, detect passthrough-eligible filters (Identity, Field
+   chains, Index) and use the raw path instead of eval→write_value
+4. Only works for compact output (`-c`). Pretty-print still needs
+   the Value path for re-formatting
 
-This is the biggest performance multiplier. Current plan holds:
-chunk-split NDJSON at newline boundaries, distribute chunks to thread
-pool, each thread has its own simdjson parser, ordered merge of output.
-Expected ~8x additional speedup on multi-core, for a combined 20-40x
-over jq on large NDJSON.
+**Passthrough-eligible filters:** `.` (identity), `.field`,
+`.field.nested`, `.[n]`, `.field[n]`. Anything that selects a
+contiguous sub-document from the input without transformation.
 
-### Priority 4: Output optimization (Tier 0 passthrough)
+**NOT eligible:** `select()`, `{...}` (construction), `map()`,
+arithmetic, any filter that transforms or combines values.
 
-Add `raw_json()` FFI support so identity and simple extraction filters
-can copy the original input bytes directly to stdout. This turns output
-from the bottleneck into effectively free for `-c` mode on passthrough-
-eligible filters. Expected to close the gap to the ≥5x target on
-single-file benchmarks.
+### Step 2: Large-file benchmarks + mmap
 
-### Priority 5: On-Demand fast path (Phase 1.5)
+**Validate the thesis on real-world file sizes.** The current 0.6-2.2MB
+test files are too small to show the SIMD advantage. We need:
 
-For simple path-only filters (`.field`, `.a.b.c`, `.[0]`), skip DOM
-construction entirely and navigate the SIMD structural index directly.
-This provides 7+ GB/s for the most common use case. Requires filter
-analysis to detect eligible expressions and fallback to DOM for anything
-that needs random access.
+1. Generate 100MB+ single JSON file (replicate twitter.json structure)
+2. Benchmark `jx -c '.field'` vs `jq -c '.field'` vs `jaq -c '.field'`
+   on 100MB — this is where simdjson's 7 GB/s should deliver 10-20x
+3. Also benchmark on the existing 8MB and 82MB NDJSON files end-to-end
+
+**mmap for file input:** Replace `std::fs::read` + `pad_buffer` with
+mmap via `libc::mmap`. Benefits:
+- No copy into userspace for the initial read
+- simdjson can parse directly from the mmap'd region (already padded
+  by the OS to page boundaries, but we still need SIMDJSON_PADDING)
+- For very large files, only pages actually accessed get loaded
+
+### Step 3: Missing core filters
+
+The most impactful gaps for real-world jq scripts:
+
+| Priority | Feature | Why it matters |
+|----------|---------|----------------|
+| High | `. as $x \| ...` (variable binding) | Required for many jq idioms |
+| High | `--slurp` / `-s` | Very common flag, reads all input into array |
+| High | `reduce .[] as $x (init; update)` | Aggregation — needs variable binding |
+| High | `--arg name val` / `--argjson` | CLI variable injection, critical for scripts |
+| High | `.[2:5]` (array slicing) | Common, partially implemented (index works, range doesn't) |
+| Medium | `with_entries(f)` | Desugars to `to_entries \| map(f) \| from_entries` |
+| Medium | `@base64` / `@csv` / `@tsv` / `@json` / `@uri` | Format strings |
+| Medium | `test()` / `match()` / `capture()` | Regex (add `regex` crate) |
+| Medium | `--raw-input` / `-R` | Treat input lines as strings |
+| Medium | `def name: body;` | User-defined functions |
+
+### Step 4: Parallel NDJSON (Phase 2)
+
+The biggest performance multiplier for large workloads. Design from
+Phase 2 section holds: chunk-split at newline boundaries, per-thread
+simdjson parser, ordered merge of output buffers.
+
+**Expected impact:** ~8x additional speedup on 8+ cores. Combined with
+SIMD parsing: 20-40x over jq on large NDJSON. This is the "100x" story
+for `jx '.field' 1gb.jsonl`.
+
+**Prerequisite:** Steps 1-2 should be done first so we have accurate
+single-thread baselines and the passthrough path works (passthrough +
+parallelism compound multiplicatively).
+
+### Step 5: On-Demand fast path (Phase 1.5)
+
+Skip DOM construction entirely for simple path-only filters. Navigate
+the SIMD structural index directly at ~7 GB/s.
+
+**When to do this:** Only if profiling after Step 1 shows DOM
+construction is still a bottleneck. With passthrough (Step 1), we
+already skip DOM+Value+serialization. On-Demand would additionally
+skip the DOM parse itself — going from ~3ms (parse + write_all) to
+<1ms (structural scan + write_all) on canada.json. The marginal gain
+may not justify the complexity.
+
+**Eligible filters:** `.field`, `.a.b.c`, `.[n]` — pure path
+navigation with no branching or transformation. Falls back to DOM
+for anything requiring random access (`.{b: .b, a: .a}` accesses
+fields out of document order).
 
 ---
 
