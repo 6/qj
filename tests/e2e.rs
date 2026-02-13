@@ -476,6 +476,169 @@ fn passthrough_field_keys_array_value() {
     assert_eq!(out.trim(), "[0,1]");
 }
 
+// --- Number literal preservation ---
+
+#[test]
+fn number_trailing_zeros_preserved() {
+    assert_eq!(jx_compact(".x", r#"{"x":75.80}"#).trim(), "75.80");
+    assert_eq!(jx_compact(".x", r#"{"x":1.00}"#).trim(), "1.00");
+    assert_eq!(jx_compact(".x", r#"{"x":0.10}"#).trim(), "0.10");
+}
+
+#[test]
+fn number_scientific_notation_preserved() {
+    assert_eq!(jx_compact(".x", r#"{"x":1.5e2}"#).trim(), "1.5e2");
+    assert_eq!(jx_compact(".x", r#"{"x":1e10}"#).trim(), "1e10");
+    assert_eq!(jx_compact(".x", r#"{"x":2.5E-3}"#).trim(), "2.5E-3");
+}
+
+#[test]
+fn number_identity_preserves_formatting() {
+    // Compact identity should preserve all number formatting
+    assert_eq!(
+        jx_compact(".", r#"{"a":75.80,"b":1.0e3}"#).trim(),
+        r#"{"a":75.80,"b":1.0e3}"#
+    );
+}
+
+#[test]
+fn number_arithmetic_drops_raw_text() {
+    // Arithmetic produces computed values — no raw text preservation
+    assert_eq!(jx_compact(".x + .x", r#"{"x":37.9}"#).trim(), "75.8");
+    assert_eq!(jx_compact(".x * 2", r#"{"x":1.50}"#).trim(), "3");
+}
+
+#[test]
+fn number_integers_unchanged() {
+    assert_eq!(jx_compact(".x", r#"{"x":42}"#).trim(), "42");
+    assert_eq!(jx_compact(".x", r#"{"x":-1}"#).trim(), "-1");
+    assert_eq!(jx_compact(".x", r#"{"x":0}"#).trim(), "0");
+    assert_eq!(
+        jx_compact(".x", r#"{"x":9223372036854775807}"#).trim(),
+        "9223372036854775807"
+    );
+}
+
+#[test]
+fn number_pretty_preserves_formatting() {
+    // Pretty mode should also preserve number literals
+    let out = jx(".", r#"{"x":75.80}"#);
+    assert!(
+        out.contains("75.80"),
+        "pretty output should preserve 75.80, got: {out}"
+    );
+}
+
+// --- jq conformance tests ---
+// These run both jx and jq and verify identical output.
+// If jq is not installed, the tests pass (they only assert when both are available).
+
+fn jq_available() -> bool {
+    Command::new("jq")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn run_jq_compact(filter: &str, input: &str) -> Option<String> {
+    let output = Command::new("jq")
+        .args(["-c", filter])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8(output.stdout).ok()?)
+}
+
+/// Assert that jx and jq produce identical output for a given filter+input.
+fn assert_jq_compat(filter: &str, input: &str) {
+    if !jq_available() {
+        return;
+    }
+    let jx_out = jx_compact(filter, input);
+    let jq_out = run_jq_compact(filter, input)
+        .unwrap_or_else(|| panic!("jq failed on filter={filter:?} input={input:?}"));
+    assert_eq!(
+        jx_out.trim(),
+        jq_out.trim(),
+        "jx vs jq mismatch: filter={filter:?} input={input:?}"
+    );
+}
+
+#[test]
+fn jq_compat_number_formatting() {
+    assert_jq_compat(".x", r#"{"x":75.80}"#);
+    assert_jq_compat(".x", r#"{"x":0.10}"#);
+    assert_jq_compat(".", r#"{"a":75.80}"#);
+    // Note: jq normalizes scientific notation (e.g. 1.5e2 → 1.5E+2)
+    // while jx preserves the exact original text. Both are valid.
+}
+
+#[test]
+fn jq_compat_arithmetic() {
+    assert_jq_compat(".x + .y", r#"{"x":1,"y":2}"#);
+    assert_jq_compat(".x + .x", r#"{"x":37.9}"#);
+    assert_jq_compat(".x * 2", r#"{"x":3.14}"#);
+}
+
+#[test]
+fn jq_compat_field_access() {
+    assert_jq_compat(".name", r#"{"name":"alice","age":30}"#);
+    assert_jq_compat(".a.b.c", r#"{"a":{"b":{"c":42}}}"#);
+    assert_jq_compat(".missing", r#"{"name":"alice"}"#);
+}
+
+#[test]
+fn jq_compat_iteration() {
+    assert_jq_compat(".[]", "[1,2,3]");
+    assert_jq_compat(".[] | .name", r#"[{"name":"alice"},{"name":"bob"}]"#);
+}
+
+#[test]
+fn jq_compat_builtins() {
+    assert_jq_compat("length", "[1,2,3]");
+    assert_jq_compat("keys", r#"{"b":2,"a":1}"#);
+    assert_jq_compat("sort", "[3,1,2]");
+    assert_jq_compat("map(. + 10)", "[1,2,3]");
+    assert_jq_compat("add", "[1,2,3]");
+    assert_jq_compat("reverse", "[1,2,3]");
+}
+
+#[test]
+fn jq_compat_select() {
+    assert_jq_compat(".[] | select(. > 2)", "[1,2,3,4,5]");
+}
+
+#[test]
+fn jq_compat_string_ops() {
+    assert_jq_compat(r#"split(" ")"#, r#""hello world""#);
+    assert_jq_compat(r#"join("-")"#, r#"["a","b","c"]"#);
+    assert_jq_compat("ascii_downcase", r#""HELLO""#);
+    assert_jq_compat("ascii_upcase", r#""hello""#);
+}
+
+#[test]
+fn jq_compat_conditionals() {
+    assert_jq_compat(r#"if . > 5 then "big" else "small" end"#, "10");
+    assert_jq_compat(".x // 42", r#"{"y":1}"#);
+}
+
 // --- File input ---
 
 #[test]

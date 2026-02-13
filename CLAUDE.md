@@ -13,7 +13,13 @@ cargo test
 Run `cargo test` after any code change — it's fast.
 
 - **Unit tests:** `#[cfg(test)]` modules alongside code.
-- **Integration tests:** `tests/` directory. Run the `jx` binary against known JSON inputs, compare output to `jq`.
+- **Integration tests:** `tests/e2e.rs` — runs the `jx` binary against known JSON inputs.
+  - Includes **jq conformance tests** (`assert_jq_compat`) that run both jx and jq and
+    compare output. These run automatically when jq is installed, and are skipped otherwise.
+  - Includes **number literal preservation tests** — verifies trailing zeros, scientific
+    notation, and raw text are preserved from JSON input through output.
+- **NDJSON tests:** `tests/ndjson.rs` — parallel NDJSON processing integration tests.
+- **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
 - **Conformance:** compare output against jq on real data.
 ```
 diff <(./target/release/jx '.field' test.json) <(jq '.field' test.json)

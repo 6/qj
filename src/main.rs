@@ -109,16 +109,6 @@ fn main() -> Result<()> {
                     out.write_all(b"\n")?;
                     had_output = true;
                 }
-                Some(jx::filter::PassthroughPath::Field(fields)) => {
-                    let json_len = buf.len();
-                    let padded = jx::simdjson::pad_buffer(&buf);
-                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                    let raw = jx::simdjson::dom_find_field_raw(&padded, json_len, &field_refs)
-                        .context("failed to extract field")?;
-                    out.write_all(&raw)?;
-                    out.write_all(b"\n")?;
-                    had_output = true;
-                }
                 Some(jx::filter::PassthroughPath::FieldLength(fields)) => {
                     let json_len = buf.len();
                     let padded = jx::simdjson::pad_buffer(&buf);
@@ -189,21 +179,6 @@ fn main() -> Result<()> {
                         let minified = jx::simdjson::minify(&padded, json_len)
                             .with_context(|| format!("failed to minify: {path}"))?;
                         out.write_all(&minified)?;
-                        out.write_all(b"\n")?;
-                        had_output = true;
-                    }
-                }
-                Some(jx::filter::PassthroughPath::Field(fields)) => {
-                    if cli.debug_timing {
-                        field_raw_timed(path, fields, &mut out, &mut had_output)?;
-                    } else {
-                        let (padded, json_len) =
-                            jx::simdjson::read_padded_file(std::path::Path::new(path))
-                                .with_context(|| format!("failed to read file: {path}"))?;
-                        let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                        let raw = jx::simdjson::dom_find_field_raw(&padded, json_len, &field_refs)
-                            .with_context(|| format!("failed to extract field: {path}"))?;
-                        out.write_all(&raw)?;
                         out.write_all(b"\n")?;
                         had_output = true;
                     }
@@ -361,60 +336,6 @@ fn minify_timed(path: &str, out: &mut impl Write, had_output: &mut bool) -> Resu
         "  minify: {:>8.2}ms  ({:.0}%)  [simdjson::minify]",
         t_minify.as_secs_f64() * 1000.0,
         t_minify.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  write:  {:>8.2}ms  ({:.0}%)",
-        t_write.as_secs_f64() * 1000.0,
-        t_write.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  total:  {:>8.2}ms  ({:.0} MB/s)",
-        total.as_secs_f64() * 1000.0,
-        mb / total.as_secs_f64()
-    );
-
-    Ok(())
-}
-
-fn field_raw_timed(
-    path: &str,
-    fields: &[String],
-    out: &mut impl Write,
-    had_output: &mut bool,
-) -> Result<()> {
-    use std::time::Instant;
-
-    let t0 = Instant::now();
-    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
-        .with_context(|| format!("failed to read file: {path}"))?;
-    let t_read = t0.elapsed();
-
-    let t1 = Instant::now();
-    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-    let raw = jx::simdjson::dom_find_field_raw(&padded, json_len, &field_refs)
-        .with_context(|| format!("failed to extract field: {path}"))?;
-    let t_field = t1.elapsed();
-
-    let t2 = Instant::now();
-    out.write_all(&raw)?;
-    out.write_all(b"\n")?;
-    out.flush()?;
-    *had_output = true;
-    let t_write = t2.elapsed();
-
-    let total = t_read + t_field + t_write;
-    let mb = json_len as f64 / (1024.0 * 1024.0);
-    let field_path = fields.join(".");
-    eprintln!("--- debug-timing (field passthrough .{field_path}): {path} ({mb:.1} MB) ---");
-    eprintln!(
-        "  read:   {:>8.2}ms  ({:.0}%)",
-        t_read.as_secs_f64() * 1000.0,
-        t_read.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  field:  {:>8.2}ms  ({:.0}%)  [DOM parse + find + to_string]",
-        t_field.as_secs_f64() * 1000.0,
-        t_field.as_secs_f64() / total.as_secs_f64() * 100.0
     );
     eprintln!(
         "  write:  {:>8.2}ms  ({:.0}%)",

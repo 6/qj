@@ -21,8 +21,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                 }
                 output(Value::Null);
             }
-            Value::Null => output(Value::Null),
-            _ => {} // jq produces error on non-object, we silently drop
+            _ => output(Value::Null),
         },
 
         Filter::Index(idx_filter) => {
@@ -232,7 +231,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                         eval(f, input, &mut |v| match v {
                             Value::String(s) => result.push_str(&s),
                             Value::Int(n) => result.push_str(itoa::Buffer::new().format(n)),
-                            Value::Double(f) => result.push_str(ryu::Buffer::new().format(f)),
+                            Value::Double(f, _) => result.push_str(ryu::Buffer::new().format(f)),
                             Value::Bool(b) => result.push_str(if b { "true" } else { "false" }),
                             Value::Null => result.push_str("null"),
                             _ => {} // arrays/objects: skip for now
@@ -246,7 +245,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         Filter::Neg(inner) => {
             eval(inner, input, &mut |v| match v {
                 Value::Int(n) => output(Value::Int(-n)),
-                Value::Double(f) => output(Value::Double(-f)),
+                Value::Double(f, _) => output(Value::Double(-f, None)),
                 _ => {}
             });
         }
@@ -275,9 +274,9 @@ fn values_equal(left: &Value, right: &Value) -> bool {
         (Value::Null, Value::Null) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Int(a), Value::Int(b)) => a == b,
-        (Value::Double(a), Value::Double(b)) => a == b,
-        (Value::Int(a), Value::Double(b)) => (*a as f64) == *b,
-        (Value::Double(a), Value::Int(b)) => *a == (*b as f64),
+        (Value::Double(a, _), Value::Double(b, _)) => a == b,
+        (Value::Int(a), Value::Double(b, _)) => (*a as f64) == *b,
+        (Value::Double(a, _), Value::Int(b)) => *a == (*b as f64),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Array(a), Value::Array(b)) => {
             Rc::ptr_eq(a, b)
@@ -297,9 +296,9 @@ fn values_equal(left: &Value, right: &Value) -> bool {
 fn values_order(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
-        (Value::Double(a), Value::Double(b)) => a.partial_cmp(b),
-        (Value::Int(a), Value::Double(b)) => (*a as f64).partial_cmp(b),
-        (Value::Double(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
+        (Value::Double(a, _), Value::Double(b, _)) => a.partial_cmp(b),
+        (Value::Int(a), Value::Double(b, _)) => (*a as f64).partial_cmp(b),
+        (Value::Double(a, _), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
         (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
         _ => None,
@@ -310,9 +309,9 @@ fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<Value> {
     match op {
         ArithOp::Add => match (left, right) {
             (Value::Int(a), Value::Int(b)) => Some(Value::Int(a.wrapping_add(*b))),
-            (Value::Double(a), Value::Double(b)) => Some(Value::Double(a + b)),
-            (Value::Int(a), Value::Double(b)) => Some(Value::Double(*a as f64 + b)),
-            (Value::Double(a), Value::Int(b)) => Some(Value::Double(a + *b as f64)),
+            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a + b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 + b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a + *b as f64, None)),
             (Value::String(a), Value::String(b)) => Some(Value::String(format!("{a}{b}"))),
             (Value::Array(a), Value::Array(b)) => {
                 let mut result = Vec::with_capacity(a.len() + b.len());
@@ -337,23 +336,23 @@ fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<Value> {
         },
         ArithOp::Sub => match (left, right) {
             (Value::Int(a), Value::Int(b)) => Some(Value::Int(a.wrapping_sub(*b))),
-            (Value::Double(a), Value::Double(b)) => Some(Value::Double(a - b)),
-            (Value::Int(a), Value::Double(b)) => Some(Value::Double(*a as f64 - b)),
-            (Value::Double(a), Value::Int(b)) => Some(Value::Double(a - *b as f64)),
+            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a - b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 - b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a - *b as f64, None)),
             _ => None,
         },
         ArithOp::Mul => match (left, right) {
             (Value::Int(a), Value::Int(b)) => Some(Value::Int(a.wrapping_mul(*b))),
-            (Value::Double(a), Value::Double(b)) => Some(Value::Double(a * b)),
-            (Value::Int(a), Value::Double(b)) => Some(Value::Double(*a as f64 * b)),
-            (Value::Double(a), Value::Int(b)) => Some(Value::Double(a * *b as f64)),
+            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a * b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 * b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a * *b as f64, None)),
             _ => None,
         },
         ArithOp::Div => match (left, right) {
             (Value::Int(a), Value::Int(b)) if *b != 0 => Some(Value::Int(a / b)),
-            (Value::Double(a), Value::Double(b)) => Some(Value::Double(a / b)),
-            (Value::Int(a), Value::Double(b)) => Some(Value::Double(*a as f64 / b)),
-            (Value::Double(a), Value::Int(b)) => Some(Value::Double(a / *b as f64)),
+            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a / b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 / b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a / *b as f64, None)),
             _ => None,
         },
         ArithOp::Mod => match (left, right) {
@@ -387,7 +386,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             Value::Array(a) => output(Value::Int(a.len() as i64)),
             Value::Object(o) => output(Value::Int(o.len() as i64)),
             Value::Null => output(Value::Int(0)),
-            Value::Int(_) | Value::Double(_) | Value::Bool(_) => {
+            Value::Int(_) | Value::Double(..) | Value::Bool(_) => {
                 // jq returns absolute value for numbers, error for bool
                 // We'll output null for unsupported
                 output(Value::Null);
@@ -575,18 +574,18 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         "tostring" => match input {
             Value::String(_) => output(input.clone()),
             Value::Int(n) => output(Value::String(itoa::Buffer::new().format(*n).into())),
-            Value::Double(f) => output(Value::String(ryu::Buffer::new().format(*f).into())),
+            Value::Double(f, _) => output(Value::String(ryu::Buffer::new().format(*f).into())),
             Value::Bool(b) => output(Value::String(if *b { "true" } else { "false" }.into())),
             Value::Null => output(Value::String("null".into())),
             _ => output(input.clone()), // arrays/objects: would need JSON serialization
         },
         "tonumber" => match input {
-            Value::Int(_) | Value::Double(_) => output(input.clone()),
+            Value::Int(_) | Value::Double(..) => output(input.clone()),
             Value::String(s) => {
                 if let Ok(n) = s.parse::<i64>() {
                     output(Value::Int(n));
                 } else if let Ok(f) = s.parse::<f64>() {
-                    output(Value::Double(f));
+                    output(Value::Double(f, None));
                 }
             }
             _ => {}
@@ -883,7 +882,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                         .filter_map(|v| match v {
                             Value::String(s) => Some(s.clone()),
                             Value::Int(n) => Some(itoa::Buffer::new().format(*n).into()),
-                            Value::Double(f) => Some(ryu::Buffer::new().format(*f).into()),
+                            Value::Double(f, _) => Some(ryu::Buffer::new().format(*f).into()),
                             Value::Null => Some(String::new()),
                             Value::Bool(b) => Some(if *b { "true" } else { "false" }.into()),
                             _ => None,

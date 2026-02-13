@@ -415,7 +415,21 @@ fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
         }
         TAG_DOUBLE => {
             let v = read_f64(buf, pos)?;
-            Ok(Value::Double(v))
+            let raw_len = read_u32(buf, pos)? as usize;
+            let raw = if raw_len > 0 {
+                if *pos + raw_len > buf.len() {
+                    bail!(
+                        "flat token buffer truncated reading raw double text at byte {}",
+                        *pos
+                    );
+                }
+                let s = std::str::from_utf8(&buf[*pos..*pos + raw_len])?.to_string();
+                *pos += raw_len;
+                Some(s.into_boxed_str())
+            } else {
+                None
+            };
+            Ok(Value::Double(v, raw))
         }
         TAG_STRING => {
             let s = read_string(buf, pos)?;
@@ -922,7 +936,7 @@ mod tests {
         let buf = pad_buffer(json);
         let val = dom_parse_to_value(&buf, json.len()).unwrap();
         match val {
-            Value::Double(d) => assert!((d - 9223372036854775808.0).abs() < 1.0),
+            Value::Double(d, _) => assert!((d - 9223372036854775808.0).abs() < 1.0),
             other => panic!("expected Double, got {:?}", other),
         }
     }
@@ -995,7 +1009,7 @@ mod tests {
             Value::Array(Rc::new(vec![
                 Value::Int(1),
                 Value::String("two".into()),
-                Value::Double(3.14),
+                Value::Double(3.14, None),
                 Value::Bool(false),
                 Value::Null,
             ]))

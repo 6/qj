@@ -65,7 +65,7 @@ fn write_compact<W: Write>(w: &mut W, value: &Value) -> io::Result<()> {
             let mut buf = itoa::Buffer::new();
             w.write_all(buf.format(*n).as_bytes())
         }
-        Value::Double(f) => write_double(w, *f),
+        Value::Double(f, raw) => write_double(w, *f, raw.as_deref()),
         Value::String(s) => write_json_string(w, s),
         Value::Array(arr) => {
             w.write_all(b"[")?;
@@ -105,7 +105,7 @@ fn write_pretty<W: Write>(w: &mut W, value: &Value, depth: usize, indent: &str) 
             let mut buf = itoa::Buffer::new();
             w.write_all(buf.format(*n).as_bytes())
         }
-        Value::Double(f) => write_double(w, *f),
+        Value::Double(f, raw) => write_double(w, *f, raw.as_deref()),
         Value::String(s) => write_json_string(w, s),
         Value::Array(arr) if arr.is_empty() => w.write_all(b"[]"),
         Value::Array(arr) => {
@@ -206,17 +206,19 @@ fn write_json_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
 
 /// Write a double in jq-compatible format.
 ///
-/// jq outputs integers-that-are-doubles as "1" not "1.0", and uses
-/// a limited number of significant digits. We use ryu for speed, but
-/// need to match jq's conventions.
-fn write_double<W: Write>(w: &mut W, f: f64) -> io::Result<()> {
+/// If `raw` is `Some`, uses the original JSON literal text (preserving
+/// trailing zeros, scientific notation, etc.) to match jq 1.7+ behavior.
+/// Otherwise uses ryu for computed values.
+fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()> {
     if f.is_nan() {
         return w.write_all(b"null");
     }
     if f.is_infinite() {
-        // jq outputs very large numbers for infinity, but we follow
-        // the JSON spec: no infinity representation, output null.
         return w.write_all(b"null");
+    }
+    // Use raw JSON text when available (literal preservation)
+    if let Some(text) = raw {
+        return w.write_all(text.as_bytes());
     }
     // If the double is an exact integer in i64 range, output as integer
     if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
@@ -284,10 +286,20 @@ mod tests {
 
     #[test]
     fn compact_double() {
-        assert_eq!(compact(&Value::Double(3.14)), "3.14");
+        assert_eq!(compact(&Value::Double(3.14, None)), "3.14");
         // Integer-valued doubles render without .0
-        assert_eq!(compact(&Value::Double(1.0)), "1");
-        assert_eq!(compact(&Value::Double(-0.0)), "0");
+        assert_eq!(compact(&Value::Double(1.0, None)), "1");
+        assert_eq!(compact(&Value::Double(-0.0, None)), "0");
+    }
+
+    #[test]
+    fn compact_double_raw_preserved() {
+        // Raw text preserves original formatting
+        assert_eq!(compact(&Value::Double(75.8, Some("75.80".into()))), "75.80");
+        assert_eq!(
+            compact(&Value::Double(150.0, Some("1.5e2".into()))),
+            "1.5e2"
+        );
     }
 
     #[test]
@@ -366,12 +378,12 @@ mod tests {
 
     #[test]
     fn double_nan() {
-        assert_eq!(compact(&Value::Double(f64::NAN)), "null");
+        assert_eq!(compact(&Value::Double(f64::NAN, None)), "null");
     }
 
     #[test]
     fn double_infinity() {
-        assert_eq!(compact(&Value::Double(f64::INFINITY)), "null");
+        assert_eq!(compact(&Value::Double(f64::INFINITY, None)), "null");
     }
 
     #[test]

@@ -180,13 +180,14 @@ int jx_iterate_many_extract_field(const char* buf, size_t len,
 }
 
 // ---------------------------------------------------------------------------
-// DOM API — parse to flat token buffer for Rust Value construction.
+// Parse to flat token buffer for Rust Value construction.
+// Uses On-Demand API to preserve raw number text (jq literal compat).
 //
 // Token format (little-endian):
 //   Null:        tag=0
 //   Bool:        tag=1, u8 (0 or 1)
 //   Int:         tag=2, i64
-//   Double:      tag=3, f64
+//   Double:      tag=3, f64, u32 raw_len, bytes[raw_len]
 //   String:      tag=4, u32 len, bytes[len]
 //   ArrayStart:  tag=5, u32 count
 //   ArrayEnd:    tag=6
@@ -194,6 +195,8 @@ int jx_iterate_many_extract_field(const char* buf, size_t len,
 //   ObjectEnd:   tag=8
 //
 // Object keys are emitted as String tokens before each value.
+// Double includes raw_len + raw text from JSON source (for literal
+// preservation). raw_len=0 means no raw text (e.g. uint64 overflow).
 // ---------------------------------------------------------------------------
 
 static const uint8_t TAG_NULL = 0;
@@ -239,90 +242,190 @@ static void emit_string(std::vector<uint8_t>& out, std::string_view sv) {
     out.insert(out.end(), sv.begin(), sv.end());
 }
 
-static void flatten_element(std::vector<uint8_t>& out, dom::element el) {
-    switch (el.type()) {
-        case dom::element_type::NULL_VALUE:
-            emit_u8(out, TAG_NULL);
+// Trim raw_json_token() result to valid JSON number characters.
+// raw_json_token() may include trailing whitespace or punctuation.
+static size_t trim_number_len(std::string_view raw) {
+    size_t len = 0;
+    for (size_t i = 0; i < raw.size(); i++) {
+        char c = raw[i];
+        if ((c >= '0' && c <= '9') || c == '.' || c == '-' ||
+            c == '+' || c == 'e' || c == 'E') {
+            len = i + 1;
+        } else {
             break;
-        case dom::element_type::BOOL:
-            emit_u8(out, TAG_BOOL);
-            emit_u8(out, el.get_bool().value() ? 1 : 0);
-            break;
-        case dom::element_type::INT64:
+        }
+    }
+    return len;
+}
+
+// Emit a double with its raw JSON text for literal preservation.
+static void emit_double_with_raw(std::vector<uint8_t>& out, double v,
+                                  std::string_view raw) {
+    emit_u8(out, TAG_DOUBLE);
+    emit_f64(out, v);
+    size_t raw_len = trim_number_len(raw);
+    emit_u32(out, static_cast<uint32_t>(raw_len));
+    if (raw_len > 0) {
+        out.insert(out.end(), raw.begin(), raw.begin() + raw_len);
+    }
+}
+
+// Emit a double without raw text (uint64 overflow case).
+static void emit_double_no_raw(std::vector<uint8_t>& out, double v) {
+    emit_u8(out, TAG_DOUBLE);
+    emit_f64(out, v);
+    emit_u32(out, 0);
+}
+
+// Patch a u32 value at a specific position in the output buffer.
+static void patch_u32(std::vector<uint8_t>& out, size_t pos, uint32_t v) {
+    out[pos]     = static_cast<uint8_t>(v);
+    out[pos + 1] = static_cast<uint8_t>(v >> 8);
+    out[pos + 2] = static_cast<uint8_t>(v >> 16);
+    out[pos + 3] = static_cast<uint8_t>(v >> 24);
+}
+
+static const int MAX_DEPTH = 1024;
+
+// Emit a number value from its raw token and number info.
+static void emit_number(std::vector<uint8_t>& out,
+                         std::string_view raw,
+                         ondemand::number num) {
+    switch (num.get_number_type()) {
+        case ondemand::number_type::signed_integer:
             emit_u8(out, TAG_INT);
-            emit_i64(out, el.get_int64().value());
+            emit_i64(out, num.get_int64());
             break;
-        case dom::element_type::UINT64: {
-            // If it fits in i64, use INT; otherwise use DOUBLE.
-            uint64_t u = el.get_uint64().value();
+        case ondemand::number_type::unsigned_integer: {
+            uint64_t u = num.get_uint64();
             if (u <= static_cast<uint64_t>(INT64_MAX)) {
                 emit_u8(out, TAG_INT);
                 emit_i64(out, static_cast<int64_t>(u));
             } else {
-                emit_u8(out, TAG_DOUBLE);
-                emit_f64(out, static_cast<double>(u));
+                emit_double_no_raw(out, static_cast<double>(u));
             }
             break;
         }
-        case dom::element_type::DOUBLE:
-            emit_u8(out, TAG_DOUBLE);
-            emit_f64(out, el.get_double().value());
+        case ondemand::number_type::floating_point_number:
+        case ondemand::number_type::big_integer:
+            emit_double_with_raw(out, num.get_double(), raw);
             break;
-        case dom::element_type::STRING:
-            emit_string(out, el.get_string().value());
-            break;
-        case dom::element_type::ARRAY: {
-            dom::array arr = el.get_array().value();
-            // Count elements first
-            uint32_t count = 0;
-            for (auto it = arr.begin(); it != arr.end(); ++it) count++;
-            emit_u8(out, TAG_ARRAY_START);
-            emit_u32(out, count);
-            for (dom::element child : arr) {
-                flatten_element(out, child);
-            }
-            emit_u8(out, TAG_ARRAY_END);
-            break;
-        }
-        case dom::element_type::OBJECT: {
-            dom::object obj = el.get_object().value();
-            uint32_t count = 0;
-            for (auto it = obj.begin(); it != obj.end(); ++it) count++;
-            emit_u8(out, TAG_OBJECT_START);
-            emit_u32(out, count);
-            for (auto field : obj) {
-                // Key
-                emit_string(out, field.key);
-                // Value
-                flatten_element(out, field.value);
-            }
-            emit_u8(out, TAG_OBJECT_END);
-            break;
-        }
     }
 }
 
-// Parse a JSON document using the DOM API and write a flat token buffer.
+static void flatten_ondemand(std::vector<uint8_t>& out,
+                              ondemand::value val, int depth) {
+    if (depth > MAX_DEPTH) {
+        throw simdjson::simdjson_error(simdjson::DEPTH_ERROR);
+    }
+    auto type = val.type().value();
+    switch (type) {
+        case ondemand::json_type::null:
+            val.is_null().value();  // consume
+            emit_u8(out, TAG_NULL);
+            break;
+        case ondemand::json_type::boolean:
+            emit_u8(out, TAG_BOOL);
+            emit_u8(out, val.get_bool().value() ? 1 : 0);
+            break;
+        case ondemand::json_type::number: {
+            std::string_view raw = val.raw_json_token();
+            ondemand::number num = val.get_number().value();
+            val.get_double(); // consume the value
+            emit_number(out, raw, num);
+            break;
+        }
+        case ondemand::json_type::string:
+            emit_string(out, val.get_string().value());
+            break;
+        case ondemand::json_type::array: {
+            emit_u8(out, TAG_ARRAY_START);
+            size_t count_pos = out.size();
+            emit_u32(out, 0); // placeholder
+            uint32_t count = 0;
+            for (auto element : val.get_array()) {
+                flatten_ondemand(out, element.value(), depth + 1);
+                count++;
+            }
+            patch_u32(out, count_pos, count);
+            emit_u8(out, TAG_ARRAY_END);
+            break;
+        }
+        case ondemand::json_type::object: {
+            emit_u8(out, TAG_OBJECT_START);
+            size_t count_pos = out.size();
+            emit_u32(out, 0); // placeholder
+            uint32_t count = 0;
+            for (auto field : val.get_object()) {
+                emit_string(out, field.unescaped_key().value());
+                flatten_ondemand(out, field.value(), depth + 1);
+                count++;
+            }
+            patch_u32(out, count_pos, count);
+            emit_u8(out, TAG_OBJECT_END);
+            break;
+        }
+        default:
+            // json_type::unknown — shouldn't occur in valid JSON
+            emit_u8(out, TAG_NULL);
+            break;
+    }
+}
+
+// Parse a JSON document and write a flat token buffer.
+// Uses On-Demand API to preserve raw number text.
 // Caller provides `buf` with SIMDJSON_PADDING extra zeroed bytes.
 // On success, sets *out_ptr and *out_len to a heap-allocated buffer
 // that the caller must free with jx_flat_buffer_free().
 int jx_dom_to_flat(const char* buf, size_t len,
                    uint8_t** out_ptr, size_t* out_len) {
     try {
-        dom::parser parser;
-        dom::element doc;
-        auto err = parser.parse(buf, len).get(doc);
-        if (err) return static_cast<int>(err);
+        ondemand::parser parser;
+        auto padded = padded_string_view(buf, len, len + SIMDJSON_PADDING);
+        ondemand::document doc = parser.iterate(padded).value();
 
         std::vector<uint8_t> flat;
         flat.reserve(len); // Rough pre-allocation
-        flatten_element(flat, doc);
+
+        auto type = doc.type().value();
+        if (type == ondemand::json_type::array ||
+            type == ondemand::json_type::object) {
+            // Non-scalar: use get_value() + recursive flatten
+            flatten_ondemand(flat, doc.get_value().value(), 0);
+        } else {
+            // Scalar document: handle directly from document
+            switch (type) {
+                case ondemand::json_type::null:
+                    doc.is_null().value();
+                    emit_u8(flat, TAG_NULL);
+                    break;
+                case ondemand::json_type::boolean:
+                    emit_u8(flat, TAG_BOOL);
+                    emit_u8(flat, doc.get_bool().value() ? 1 : 0);
+                    break;
+                case ondemand::json_type::number: {
+                    std::string_view raw = doc.raw_json_token();
+                    ondemand::number num = doc.get_number().value();
+                    doc.get_double(); // consume
+                    emit_number(flat, raw, num);
+                    break;
+                }
+                case ondemand::json_type::string:
+                    emit_string(flat, doc.get_string().value());
+                    break;
+                default:
+                    emit_u8(flat, TAG_NULL);
+                    break;
+            }
+        }
 
         // Copy to heap buffer for Rust ownership.
         *out_len = flat.size();
         *out_ptr = new uint8_t[flat.size()];
         std::memcpy(*out_ptr, flat.data(), flat.size());
         return 0;
+    } catch (simdjson::simdjson_error& e) {
+        return static_cast<int>(e.error());
     } catch (...) {
         return -1;
     }

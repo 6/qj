@@ -95,9 +95,6 @@ pub enum StringPart {
 pub enum PassthroughPath {
     /// `.` — identity; with compact output, use simdjson::minify() directly.
     Identity,
-    /// `.field` or `.a.b.c` — field chain; with compact output, use DOM
-    /// parse + field lookup + `to_string()` directly.
-    Field(Vec<String>),
     /// `.field | length` or bare `length` — compute length in C++.
     FieldLength(Vec<String>),
     /// `.field | keys` or bare `keys` — compute keys in C++.
@@ -109,7 +106,7 @@ impl PassthroughPath {
     /// Scalar results like `length` look the same in any mode.
     pub fn requires_compact(&self) -> bool {
         match self {
-            PassthroughPath::Identity | PassthroughPath::Field(_) => true,
+            PassthroughPath::Identity => true,
             PassthroughPath::FieldLength(_) => false,
             PassthroughPath::FieldKeys(_) => false,
         }
@@ -154,7 +151,6 @@ fn decompose_field_builtin(filter: &Filter) -> Option<(Vec<String>, &str)> {
 pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
     match filter {
         Filter::Identity => Some(PassthroughPath::Identity),
-        Filter::Field(name) => Some(PassthroughPath::Field(vec![name.clone()])),
         // Bare `length` or `keys` (no field prefix)
         Filter::Builtin(name, args) if args.is_empty() => match name.as_str() {
             "length" => Some(PassthroughPath::FieldLength(vec![])),
@@ -170,13 +166,7 @@ pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
                     _ => {}
                 }
             }
-            // Plain field chain: .a.b.c
-            let mut fields = Vec::new();
-            if collect_field_chain(filter, &mut fields) {
-                Some(PassthroughPath::Field(fields))
-            } else {
-                None
-            }
+            None
         }
         _ => None,
     }

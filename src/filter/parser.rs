@@ -299,7 +299,7 @@ impl<'a> Parser<'a> {
                     Token::Float(f) => *f,
                     _ => unreachable!(),
                 };
-                Ok(Filter::Literal(Value::Double(f)))
+                Ok(Filter::Literal(Value::Double(f, None)))
             }
             Some(Token::Str(_)) => {
                 let s = match self.advance().unwrap() {
