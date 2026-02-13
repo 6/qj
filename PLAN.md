@@ -1517,3 +1517,169 @@ JSONL in 50ms" is a number that gets attention.
 - No SQL-like query language (different paradigm entirely).
 - No GUI / TUI. Pipe-friendly CLI only.
 - No Windows support in MVP (add later if there's demand).
+
+---
+
+## Launch readiness
+
+Practical requirements and risks for a successful public release.
+
+### Distribution
+
+Homebrew formula and prebuilt binaries from day one. If users can't
+install in under 30 seconds, adoption stalls. Needs:
+- Homebrew tap with formula (compile from source via `cc` crate)
+- GitHub Releases with prebuilt binaries for macOS ARM, macOS x86,
+  Linux x86, Linux ARM
+- `cargo install jx` support (already works, but slow — C++ compile)
+
+### First impressions and compatibility
+
+At ~60% jq compatibility, someone will try `--slurp`, `$var`, or
+`.[2:5]` in the first 30 seconds and it will fail. This is the biggest
+adoption risk. Requirements:
+
+- **≥80% jq compatibility before release.** At minimum: `--slurp`,
+  `--arg`/`--argjson`, array slicing, variable binding, `reduce`.
+- **Clear error messages for unsupported features.** "jx does not yet
+  support `def`. See https://github.com/.../issues/..." is much better
+  than a cryptic parse error.
+- **Document incompatibilities explicitly** rather than pretending to be
+  a drop-in replacement. A `COMPAT.md` listing what works and what
+  doesn't saves users time and sets honest expectations.
+
+### The "just use jaq" question
+
+This will be the first question from anyone who knows the space. Have a
+clear, honest answer: jx wins on large data (SIMD parsing + automatic
+parallelism), jaq wins on compatibility (~90% vs ~80%). They're
+complementary, not competing. jx is for people processing >10MB of
+JSON; jaq is for people who want maximum jq compatibility.
+
+If jx reaches ~85% compat AND has parallel NDJSON, the argument shifts:
+"why not just use jx" becomes strong for anyone with large-data
+workloads, and jx is no worse than jaq for small-data use.
+
+### Real-world demo
+
+Microbenchmarks alone aren't convincing. Need at least one concrete
+real-world story alongside the numbers:
+- "1GB CloudTrail log: jq takes 2 minutes, jx takes 2 seconds"
+- "NDJSON pipeline: replaced `parallel -j8 | jq` with `jx`, same
+  result, zero configuration"
+- Show a real log processing or data pipeline task, not synthetic data
+
+### jq compatibility long tail
+
+The first 80% of jq's filter language is straightforward. 80→90% is
+where subtle edge cases live (generator semantics, backtracking, error
+propagation). The last 10% (full module system, `label`/`break`, TCO)
+requires reimplementing jq's entire VM and is not worth the effort.
+
+**Strategy:** Target 80-85% compatibility. Document what's missing.
+Accept that some complex jq scripts won't work and be upfront about it.
+The target user has simple-to-moderate filters on large data, not
+complex 50-line jq programs.
+
+### Maintenance burden
+
+jq's language surface area is large. The risk is building 80% compat,
+launching, then facing a steady stream of "jx doesn't support X" issues
+that slowly consume all development time.
+
+**Mitigation:** Be explicit about scope. Core filters are maintained;
+niche features (module system, `label`/`break`, `$__loc__`) are
+documented as out of scope. Focus ongoing effort on performance
+(parallelism, streaming) rather than chasing 100% compat.
+
+---
+
+## Small-file performance optimization
+
+jx already beats jaq ~2x on small files (2ms vs 5ms on 631KB
+twitter.json). These optimizations target widening that to 3-4x, which
+matters for the "why not just use jx for everything" argument — making
+jx dominant at all file sizes, not just large ones.
+
+### Where time goes (631KB twitter.json, ~3ms total)
+
+| Component | Time | % | Opportunity |
+|-----------|------|---|-------------|
+| File I/O | 0.2ms | 7% | Optimal |
+| simdjson DOM parse | 0.8ms | 27% | Optimal (C++ baseline) |
+| Flat buffer serialize (C++) | 0.3ms | 10% | Avoidable for some filters |
+| Flat buffer deserialize (Rust) | 0.6ms | 20% | String alloc heavy |
+| Eval + output | 0.5ms | 17% | Cloning overhead |
+| Process startup + clap | 0.6ms | 19% | Fixed cost |
+
+The flat buffer roundtrip (serialize in C++ → deserialize in Rust)
+takes ~0.9ms — 30% of total time. String allocation during
+deserialization is the single largest source of overhead after simdjson
+parsing itself.
+
+### Optimization ideas (priority order)
+
+**1. Compact string representation (SmallString)**
+
+Object keys and short strings dominate allocation count. A small-string
+optimization (inline ≤24 bytes on the stack, heap-allocate only longer
+strings) would eliminate most heap allocations during Value construction.
+Most JSON keys ("name", "id", "status", "user") are well under 24
+bytes. The `compact_str` or `smol_str` crates provide this.
+
+Expected impact: ~0.2-0.3ms saved on string-heavy JSON.
+
+**2. On-Demand evaluator for `.[] | .field` patterns**
+
+This is the most common non-passthrough filter. Currently builds the
+full DOM→Value tree, then iterates. An On-Demand path could:
+- Use simdjson On-Demand to iterate array elements
+- For each element, navigate directly to the target field
+- Materialize only the accessed value, not the entire element
+- Skip building the full Value tree entirely
+
+This is essentially the Phase 1.5 On-Demand fast path, but scoped to
+the highest-value pattern. Would bring `.[] | .field` close to
+passthrough speed.
+
+Expected impact: 2-3x faster for iterate+field patterns.
+
+**3. Direct DOM→Value without flat buffer**
+
+The two-pass approach (C++ → flat tokens → Rust Values) exists to
+minimize FFI crossings. But for small files, the serialization +
+deserialization overhead (~0.9ms) is 30% of total time. A tighter FFI
+that walks the simdjson DOM and constructs Rust Values directly (more
+FFI calls, but no intermediate buffer) could be faster. Trade FFI call
+count for elimination of the intermediate copy.
+
+Expected impact: ~0.3-0.5ms saved.
+
+**4. Arena allocation for Values**
+
+Instead of individual heap allocations per Value, use a bump allocator
+(`bumpalo` crate) for the entire Value tree of a single document. All
+Values are freed together after output. Eliminates per-allocation
+overhead and improves cache locality.
+
+Expected impact: ~0.1-0.2ms saved, better cache behavior.
+
+**5. String interning for object keys**
+
+JSON documents reuse the same key names across array elements ("name",
+"id", "type" repeated in every object). Intern these during DOM→Value
+conversion so repeated keys share a single allocation. A simple HashMap
+during decoding would deduplicate ~80% of key strings in typical JSON.
+
+Expected impact: ~0.1-0.2ms saved on key-heavy JSON.
+
+### Priority assessment
+
+Items 1-2 have the best effort-to-impact ratio. SmallString is a
+crate swap + Value type change. On-Demand iterate+field is more
+complex but addresses the single most common non-passthrough pattern.
+Items 3-5 are diminishing returns and should only be pursued if
+profiling shows they matter after 1-2 are implemented.
+
+**None of these block launch.** jx is already faster than jaq on small
+files. These are post-launch optimizations that widen the gap.
