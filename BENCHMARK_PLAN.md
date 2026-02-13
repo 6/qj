@@ -133,12 +133,12 @@ Gitignored. CI uploads these as artifacts.
 
 ## 4. GitHub Actions CI
 
-### a. `ci.yml` — every push/PR (fast, no benchmarks)
+### a. `checks.yml` — every push/PR (fast, no benchmarks)
 
 Runs on every push and PR. Tests correctness only.
 
 ```yaml
-name: CI
+name: Checks
 on:
   push:
     branches: [main]
@@ -155,7 +155,7 @@ jobs:
         with:
           submodules: true
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: jdx/mise-action@v2
 
       - uses: Swatinem/rust-cache@v2
 
@@ -173,6 +173,8 @@ jobs:
 ```
 
 Notes:
+- `jdx/mise-action@v2` installs Rust from `mise.toml` (pinned version),
+  keeping CI in sync with local dev.
 - `macos-latest` resolves to ARM64 runners (macos-14+).
 - `cargo bench --no-run` validates benchmark code compiles without
   actually running (what ripgrep and tokio do).
@@ -368,7 +370,7 @@ Include a short "Understanding the numbers" section in the README:
 
 1. **Refactor `bench/bench.sh`** — JSON export, correctness checks, platform tagging, all 5 filter tiers
 2. **Add `bench/results/` to `.gitignore`**
-3. **Create `.github/workflows/ci.yml`** — build + test matrix (no benchmarks)
+3. **Create `.github/workflows/checks.yml`** — build + test matrix (no benchmarks)
 4. **Create `.github/workflows/benchmark.yml`** — full benchmark suite with `github-action-benchmark`
 5. **Enable GitHub Pages** on `gh-pages` branch for benchmark charts
 6. **Update README** with benchmark table and methodology notes

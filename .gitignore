@@ -15,3 +15,6 @@ bench/data/
 
 # Compiled C++ benchmark binary
 bench/bench_cpp
+
+# Benchmark results (generated)
+bench/results/
