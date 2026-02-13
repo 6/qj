@@ -89,6 +89,22 @@ pub enum StringPart {
     Expr(Filter),
 }
 
+/// Detected passthrough-eligible filter patterns that can bypass the
+/// full DOM parse → Value → eval → output pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassthroughPath {
+    /// `.` — identity; with compact output, use simdjson::minify() directly.
+    Identity,
+}
+
+/// Check if a parsed filter is eligible for a fast passthrough path.
+pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
+    match filter {
+        Filter::Identity => Some(PassthroughPath::Identity),
+        _ => None,
+    }
+}
+
 /// Parse a jq filter expression string into a `Filter` AST.
 pub fn parse(input: &str) -> anyhow::Result<Filter> {
     let tokens = lexer::lex(input)?;

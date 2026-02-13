@@ -296,6 +296,41 @@ fn raw_string_output() {
     assert_eq!(out.trim(), "hello world");
 }
 
+// --- Identity compact passthrough ---
+
+#[test]
+fn passthrough_identity_compact_object() {
+    let out = jx_compact(".", r#"{"a": 1, "b": [2, 3]}"#);
+    assert_eq!(out.trim(), r#"{"a":1,"b":[2,3]}"#);
+}
+
+#[test]
+fn passthrough_identity_compact_array() {
+    let out = jx_compact(".", r#"[ 1 , 2 , 3 ]"#);
+    assert_eq!(out.trim(), "[1,2,3]");
+}
+
+#[test]
+fn passthrough_identity_compact_nested() {
+    let out = jx_compact(".", r#"{"a": {"b": {"c": [1, 2, 3]}}}"#);
+    assert_eq!(out.trim(), r#"{"a":{"b":{"c":[1,2,3]}}}"#);
+}
+
+#[test]
+fn passthrough_identity_compact_scalar() {
+    assert_eq!(jx_compact(".", "42").trim(), "42");
+    assert_eq!(jx_compact(".", "true").trim(), "true");
+    assert_eq!(jx_compact(".", "null").trim(), "null");
+    assert_eq!(jx_compact(".", r#""hello""#).trim(), r#""hello""#);
+}
+
+#[test]
+fn passthrough_identity_pretty_not_affected() {
+    // Non-compact identity should still go through the normal pretty-print path
+    let out = jx(".", r#"{"a": 1}"#);
+    assert_eq!(out, "{\n  \"a\": 1\n}\n");
+}
+
 // --- File input ---
 
 #[test]

@@ -332,4 +332,25 @@ void jx_flat_buffer_free(uint8_t* ptr) {
     delete[] ptr;
 }
 
+// ---------------------------------------------------------------------------
+// Minify — compact JSON without DOM construction (~10 GB/s).
+// ---------------------------------------------------------------------------
+
+int jx_minify(const char* buf, size_t len,
+              char** out_ptr, size_t* out_len) {
+    try {
+        char* dst = new char[len];  // minified output is always <= input
+        size_t dst_len;
+        auto err = simdjson::minify(buf, len, dst, dst_len);
+        if (err) { delete[] dst; return static_cast<int>(err); }
+        *out_ptr = dst;
+        *out_len = dst_len;
+        return 0;
+    } catch (...) { return -1; }
+}
+
+void jx_minify_free(char* ptr) {
+    delete[] ptr;
+}
+
 } // extern "C"

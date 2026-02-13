@@ -70,6 +70,14 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
     fn jx_flat_buffer_free(ptr: *mut u8);
+
+    fn jx_minify(
+        buf: *const c_char,
+        len: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+    fn jx_minify_free(ptr: *mut c_char);
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +424,27 @@ fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
         }
         _ => bail!("unknown flat token tag {tag}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Minify — compact JSON via simdjson::minify(), no DOM construction.
+// ---------------------------------------------------------------------------
+
+/// Minify JSON using simdjson's SIMD-accelerated minifier.
+///
+/// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
+/// Returns the compacted JSON as a `Vec<u8>`.
+pub fn minify(buf: &[u8], json_len: usize) -> Result<Vec<u8>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+    check(unsafe { jx_minify(buf.as_ptr().cast(), json_len, &mut out_ptr, &mut out_len) })?;
+    let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -847,5 +876,41 @@ mod tests {
         let buf = pad_buffer(json);
         let val = dom_parse_to_value(&buf, json.len()).unwrap();
         assert_eq!(val, Value::String("hello world".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Minify tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn minify_object() {
+        let json = br#"{ "a" : 1 , "b" : [2, 3] }"#;
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"{"a":1,"b":[2,3]}"#);
+    }
+
+    #[test]
+    fn minify_already_compact() {
+        let json = br#"{"a":1}"#;
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn minify_scalar() {
+        let json = b"42";
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "42");
+    }
+
+    #[test]
+    fn minify_empty_input() {
+        let json = b"";
+        let buf = pad_buffer(json);
+        // Empty input may succeed with empty output or error — both acceptable
+        let _ = minify(&buf, json.len());
     }
 }

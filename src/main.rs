@@ -70,6 +70,14 @@ fn main() -> Result<()> {
         }
     };
 
+    // Detect identity-compact passthrough: `. -c` can use simdjson::minify()
+    // directly, skipping DOM parse, Value tree, eval, and output serialization.
+    let passthrough = if cli.compact {
+        jx::filter::passthrough_path(&filter)
+    } else {
+        None
+    };
+
     let mut had_output = false;
 
     if cli.null_input {
@@ -79,14 +87,38 @@ fn main() -> Result<()> {
             write_value_line(&mut out, &v, &config).ok();
         });
     } else if cli.files.is_empty() {
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         io::stdin()
-            .read_to_string(&mut buf)
+            .read_to_end(&mut buf)
             .context("failed to read stdin")?;
-        process_input(&buf, &filter, &mut out, &config, &mut had_output)?;
+        if passthrough == Some(jx::filter::PassthroughPath::Identity) {
+            let json_len = buf.len();
+            let padded = jx::simdjson::pad_buffer(&buf);
+            let minified =
+                jx::simdjson::minify(&padded, json_len).context("failed to minify JSON")?;
+            out.write_all(&minified)?;
+            out.write_all(b"\n")?;
+            had_output = true;
+        } else {
+            let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
+            process_input(text, &filter, &mut out, &config, &mut had_output)?;
+        }
     } else {
         for path in &cli.files {
-            if cli.debug_timing {
+            if passthrough == Some(jx::filter::PassthroughPath::Identity) {
+                if cli.debug_timing {
+                    minify_timed(path, &mut out, &mut had_output)?;
+                } else {
+                    let (padded, json_len) =
+                        jx::simdjson::read_padded_file(std::path::Path::new(path))
+                            .with_context(|| format!("failed to read file: {path}"))?;
+                    let minified = jx::simdjson::minify(&padded, json_len)
+                        .with_context(|| format!("failed to minify: {path}"))?;
+                    out.write_all(&minified)?;
+                    out.write_all(b"\n")?;
+                    had_output = true;
+                }
+            } else if cli.debug_timing {
                 process_padded_timed(path, &filter, &mut out, &config, &mut had_output)?;
             } else {
                 let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
@@ -141,6 +173,53 @@ fn process_padded(
         *had_output = true;
         write_value_line(out, &v, config).ok();
     });
+
+    Ok(())
+}
+
+fn minify_timed(path: &str, out: &mut impl Write, had_output: &mut bool) -> Result<()> {
+    use std::time::Instant;
+
+    let t0 = Instant::now();
+    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+        .with_context(|| format!("failed to read file: {path}"))?;
+    let t_read = t0.elapsed();
+
+    let t1 = Instant::now();
+    let minified = jx::simdjson::minify(&padded, json_len)
+        .with_context(|| format!("failed to minify: {path}"))?;
+    let t_minify = t1.elapsed();
+
+    let t2 = Instant::now();
+    out.write_all(&minified)?;
+    out.write_all(b"\n")?;
+    out.flush()?;
+    *had_output = true;
+    let t_write = t2.elapsed();
+
+    let total = t_read + t_minify + t_write;
+    let mb = json_len as f64 / (1024.0 * 1024.0);
+    eprintln!("--- debug-timing (minify passthrough): {path} ({mb:.1} MB) ---");
+    eprintln!(
+        "  read:   {:>8.2}ms  ({:.0}%)",
+        t_read.as_secs_f64() * 1000.0,
+        t_read.as_secs_f64() / total.as_secs_f64() * 100.0
+    );
+    eprintln!(
+        "  minify: {:>8.2}ms  ({:.0}%)  [simdjson::minify]",
+        t_minify.as_secs_f64() * 1000.0,
+        t_minify.as_secs_f64() / total.as_secs_f64() * 100.0
+    );
+    eprintln!(
+        "  write:  {:>8.2}ms  ({:.0}%)",
+        t_write.as_secs_f64() * 1000.0,
+        t_write.as_secs_f64() / total.as_secs_f64() * 100.0
+    );
+    eprintln!(
+        "  total:  {:>8.2}ms  ({:.0} MB/s)",
+        total.as_secs_f64() * 1000.0,
+        mb / total.as_secs_f64()
+    );
 
     Ok(())
 }
