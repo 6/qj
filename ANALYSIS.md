@@ -115,23 +115,128 @@ The test suite overweights some rarely-used features and underweights common one
 - NDJSON/streaming behavior
 - Pretty-print formatting
 
-### Adjusted "effective compatibility" estimate
+---
 
-Weighting by real-world usage frequency (giving higher weight to field access,
-builtins, conditionals, and string ops; lower weight to toliteral, walk, and
-module system):
+## Failure analysis: ERRORs vs wrong output
 
-| Tool | Raw score | Weighted estimate |
-|------|-----------|-------------------|
-| jx | 26% | ~35-40% |
-| jaq | 69% | ~75-80% |
-| gojq | 85% | ~85-90% |
+Of jx's 366 failures against jq.test, the breakdown is:
 
-jx's weighted score is higher because it does well on high-frequency categories
-(field access 57%, builtins 60%, conditionals 57%) and poorly on low-frequency
-ones (toliteral 7%, walk 0%, module system 12%). But even at ~35-40% weighted,
-there are major gaps: zero support for variables, slices, negative indices,
-assignment, and paths.
+- **282 ERRORs** — jx produces no output at all (unknown builtins, parse failures
+  on unsupported syntax like `as $var`, `def`, `try-catch`, `.[start:end]`, etc.)
+- **83 FAILs** — jx produces output but it's wrong (bugs in existing implementations)
+- **1 test** — counted in both (edge case)
+
+### Wrong-output bugs (83 FAILs) — easy wins
+
+These are bugs in *already-implemented* features. Many are one-line fixes:
+
+**Operator precedence (parser bug, ~3 tests)**
+`1 + 2 * 2 + 10 / 2` evaluates left-to-right instead of respecting `*`/`/`
+binding tighter than `+`/`-`. The `parse_arith` function in `parser.rs` treats
+all five operators at the same precedence level. Fix: split into `parse_add`
+(+/-) and `parse_mul` (*/ /%) with mul binding tighter.
+
+**Cross-type sort ordering (~2 tests)**
+jq defines a total ordering across types: `null < false < true < numbers <
+strings < arrays < objects`. jx's `sort`/`unique` don't implement this,
+producing wrong results when arrays contain mixed types.
+
+**`from_entries` key variants (~1 test)**
+jq accepts `key`, `Key`, `name`, `Name` for the key field and `value`, `Value`
+for the value field. jx only accepts `key`/`value`.
+
+**`values` on non-objects (~1 test)**
+`[.[]|values]` on `[1,2,"foo",[],[3,[]],{},true,false,null]` — `values` should
+be a type selector that filters to non-null values, not just object values.
+
+**Object construction with multiple outputs (~1 test)**
+`{x: (1,2)},{x:3} | .x` — comma expressions in object value positions should
+produce multiple objects. Currently doesn't work.
+
+**Negative array indexing edge cases (~2 tests)**
+`[.[-4,-3,-2,-1,0,1,2,3]]` on `[1,2,3]` — out-of-range negative indices
+should return `null`, not error.
+
+**`ascii_upcase`/`ascii_downcase` on non-ASCII (~1 test)**
+`ascii_upcase` on `"useful but not for é"` — non-ASCII characters should pass
+through unchanged. Currently fails on multi-byte UTF-8.
+
+**`if` with multiple condition outputs (~2 tests)**
+`[if 1,null,2 then 3 else 4 end]` should produce `[3,4,3]` — the condition
+can produce multiple values, each generating a then/else branch.
+
+**`length` on null (~1 test)**
+`length` on `null` should return `0`, not error or produce no output.
+
+**String `split("")` (~1 test)**
+`split("")` should split into individual characters. Currently fails.
+
+**`range` with arguments (~6 tests)**
+`range(n)`, `range(from;to)`, `range(from;to;step)` all produce wrong output.
+The evaluator has `range` but only handles it as a zero-arg identity-like
+builtin. Needs proper multi-arg evaluation producing multiple outputs.
+
+**`floor`/`sqrt`/`cos`/`sin` (~4 tests)**
+These are matched as builtins but produce wrong output — likely dispatching
+to the wrong implementation or not handling the Value type correctly.
+
+**`abs`/`fabs` (~3 tests)**
+Partially implemented but incorrect for edge cases like `-0`, large integers,
+and `null`.
+
+### Missing language features (282 ERRORs)
+
+These errors come from syntax jx can't parse or builtins it doesn't recognize:
+
+**Language constructs not in parser:**
+- `try expr catch expr` — only the `?` suffix form works, not `try-catch` blocks
+- `elif` chains — parser only handles `if/then/else/end`, not `elif`
+- `.[start:end]` array/string slicing — no `Slice` AST node
+- `expr as $var | body` — no variable binding
+- `reduce expr as $var (init; update)` — no reduce
+- `foreach expr as $var (init; update; extract)` — no foreach
+- `def name(args): body;` — token exists in lexer but parser ignores it
+- `label $name | ... break $name` — no label/break control flow
+- `@format` strings (`@base64`, `@csv`, `@uri`, etc.) — no format string support
+- `\(expr)` string interpolation — parser comment notes "For now, just literal"
+- `?//` alternative destructuring operator
+
+**Unimplemented builtins (partial list of most impactful):**
+- Math: `floor`, `ceil`, `round`, `pow`, `log`, `exp`, `nan`, `infinite`,
+  `isnan`, `isinfinite`, `sin`, `cos`, etc.
+- String: `trim`, `ltrim`, `rtrim`, `indices`, `index`, `rindex`, `explode`,
+  `implode`, `tojson`, `fromjson`, `utf8bytelength`, `inside`, `gsub`, `test`,
+  `match`, `capture`, `scan`
+- Path: `path`, `paths`, `leaf_paths`, `getpath`, `setpath`, `delpaths`
+- Collection: `transpose`, `walk`, `pick`, `with_entries`, `input`, `inputs`,
+  `env`, `$ENV`, `builtins`, `debug`, `stderr`, `halt`
+- Assignment: `|=`, `+=`, `-=`, `*=`, `/=`, `%=`, `//=`
+- Date/time: `now`, `todate`, `fromdate`, `strftime`, `strptime`, `mktime`,
+  `gmtime`
+
+### The `def` multiplier effect
+
+User-defined functions (`def`) account for 59 tests (12% of the suite) directly.
+But their impact is much larger: once `def` works, many "builtins" can be
+implemented as jq definitions rather than Rust code:
+
+```jq
+def with_entries(f): to_entries | map(f) | from_entries;
+def walk(f): if type == "array" then map(walk(f)) | f
+             elif type == "object" then to_entries | map(.value |= walk(f)) | from_entries | f
+             else f end;
+def paths: path(recurse(if (type|. == "array" or . == "object") then .[] else empty end))|select(length > 0);
+def leaf_paths: . as $dot | paths | select(. as $p | $dot | getpath($p) | type | . != "array" and . != "object");
+def isempty(f): first((f|false), true);
+def limit(n; f): foreach f as $x (n; .-1; $x, if . <= 0 then error else empty end);
+def until(cond; update): def _until: if cond then . else (update | _until) end; _until;
+def while(cond; update): def _while: if cond then ., (update | _while) else . end; first(_while);
+def repeat(f): def _repeat: f | _repeat; _repeat;
+```
+
+This means implementing `def` is a force multiplier — it unlocks not just the
+59 direct tests but potentially 20-30 more tests across `walk` (27 tests),
+multiple outputs/iteration, and other categories.
 
 ---
 
@@ -201,6 +306,24 @@ parse+construct step dominates.
 | **jaq** | 69% | 1.3-2x | Rust, hifijson parser | Years, well-maintained |
 | **jx** | 26% | 2-63x | Rust + C++ simdjson FFI | Half a day |
 
+### Why jaq is at 69% (not higher)
+
+jaq has 153 failures: 99 ERRORs (no output) and 54 wrong-output FAILs:
+
+| Gap area | Failures | Notes |
+|----------|---------|-------|
+| `path()` expressions | ~15 errors | Not supported in many contexts |
+| `?//` destructuring | ~12 errors | Alternative destructuring not implemented |
+| `foreach` edge cases | 2 errors | Parser limitation with division |
+| Newer builtins (`toboolean`, `pick`) | 3+ errors | Not implemented |
+| Path ops (`getpath`/`setpath`/`delpaths`) | ~8 errors | Partial support |
+| Module system | 20/26 failures | Partial module support |
+| Error message differences | ~15 fails | Different wording causes comparison failures |
+
+jaq's compat is genuinely strong for core features (variables, `def`, `reduce`,
+`try-catch`, slicing all work) but has real gaps in path operations, modules,
+and newer jq additions. 69% is a fair score.
+
 ### Where each tool wins
 
 - **jq**: Maximum compatibility, the standard. Use when correctness matters more
@@ -216,7 +339,7 @@ parse+construct step dominates.
 
 No other tool combines:
 1. SIMD parsing (simdjson On-Demand, 7-9 GB/s)
-2. Automatic parallel NDJSON processing
+2. Automatic parallel NDJL processing
 3. Passthrough fast paths that bypass the Value pipeline entirely
 
 jaq would need to replace its parser with simdjson bindings AND add threading to
@@ -225,27 +348,126 @@ incremental improvement.
 
 ---
 
+## Roadmap to 50% compatibility
+
+### Prioritized implementation plan
+
+| Priority | Feature | Tests gained | Effort | Key files |
+|:--------:|---------|:-----------:|:------:|-----------|
+| 1 | Fix operator precedence (`*`/`/` before `+`/`-`) | ~3 | Trivial | `parser.rs` |
+| 2 | Math builtins (`floor`..`atan2`, `nan`, `infinite`, `isnan`...) | ~15 | Small | `eval.rs` |
+| 3 | String builtins (`trim`, `indices`, `explode`/`implode`, `tojson`/`fromjson`) | ~12 | Small | `eval.rs` |
+| 4 | Fix wrong-output bugs (sort ordering, `from_entries`, `length` null, etc.) | ~10 | Small | `eval.rs` |
+| 5 | `range`/`limit`/`until`/`while` with proper multi-arg support | ~10 | Small | `eval.rs` |
+| 6 | Array/string slicing `.[start:end]` | ~5 | Medium | `mod.rs`, `parser.rs`, `eval.rs` |
+| 7 | `try expr catch expr` + `elif` chains | ~10 | Medium | `lexer.rs`, `parser.rs`, `mod.rs`, `eval.rs` |
+| 8 | Variable binding (`expr as $var \| body`) | ~11 | Medium | `mod.rs`, `parser.rs`, `eval.rs` |
+| 9 | `reduce expr as $var (init; update)` | ~5 | Medium | `mod.rs`, `parser.rs`, `eval.rs` |
+| 10 | `def name(args): body;` (user-defined functions) | ~30 | Large | `mod.rs`, `parser.rs`, `eval.rs` |
+| 11 | `walk(f)` (recursive transform) | ~15 | Small | `eval.rs` (or as jq `def` once #10 lands) |
+| 12 | Path builtins (`getpath`/`setpath`/`delpaths`/`paths`) | ~10 | Medium | `eval.rs` |
+
+**Milestones:**
+- Items 1-5: ~181/497 (**36%**) — no parser changes needed
+- Items 6-9: ~236/497 (**47%**) — language features
+- Items 10-12: ~256/497 (**51%+**) — `def` is the big unlock
+
+### Phase 1: Fix existing bugs + add simple builtins (~50 new tests)
+
+No parser changes — just new match arms in `eval_builtin()` and bug fixes.
+
+**Math builtins to add** (`eval.rs`):
+`floor`, `ceil`, `round`, `fabs`, `abs` (fix existing), `sqrt` (fix existing),
+`pow(base;exp)`, `log`, `log2`, `log10`, `exp`, `exp2`, `nan`, `infinite`,
+`isnan`, `isinfinite`, `isfinite`, `isnormal`, `significand`, `exponent`,
+`logb`, `nearbyint`, `rint`, `trunc`, `sin`, `cos`, `asin`, `acos`, `atan`,
+`atan2(y;x)`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `cbrt`,
+`fma(x;y)`, `remainder(x;y)`, `hypot(x;y)`, `j0`, `j1`
+
+**String builtins to add** (`eval.rs`):
+`trim`, `ltrim`, `rtrim`, `indices(s)`, `index(s)`, `rindex(s)`, `explode`,
+`implode`, `tojson`, `fromjson`, `utf8bytelength`, `inside`
+
+**String arithmetic to add** (`eval.rs`, Arith handler):
+- `string * number` — repeat string
+- `string / string` — split into array
+
+**Collection builtins to add** (`eval.rs`):
+`transpose`, `with_entries(f)`, `getpath(p)`, `setpath(p;v)`, `delpaths(ps)`,
+`paths`, `leaf_paths`, `builtins`, `range(n)`, `range(from;to)`,
+`range(from;to;step)`, `limit(n;f)`, `until(cond;update)`, `while(cond;update)`
+
+**Bug fixes** (`eval.rs` and `parser.rs`):
+- Operator precedence: split `parse_arith` into additive and multiplicative
+- `sort`/`unique`: implement jq's cross-type ordering
+- `from_entries`: accept `Key`/`Value`/`Name`/`name` variants
+- `values`: make it a type selector (non-null), not just object values
+- `length` on null: return 0
+- `ascii_upcase`/`ascii_downcase`: pass through non-ASCII unchanged
+- `if` with multiple condition outputs: iterate over condition values
+- Negative index edge cases: out-of-range returns null
+- `split("")`: split into individual characters
+- `abs`/`fabs`: handle `-0`, large integers, null
+
+### Phase 2: Language features (~55 new tests)
+
+Parser + AST + evaluator changes.
+
+**Array/string slicing** (`mod.rs`, `parser.rs`, `eval.rs`):
+- New AST: `Slice(Option<Box<Filter>>, Option<Box<Filter>>)` — either bound optional
+- Parse `.[expr:expr]`, `.[expr:]`, `.[:expr]` in postfix position
+- Evaluate for both arrays and strings; support negative indices
+
+**`try expr catch expr`** (`lexer.rs`, `mod.rs`, `parser.rs`, `eval.rs`):
+- New token: `Catch` keyword
+- New AST: `TryCatch(Box<Filter>, Box<Filter>)`
+- Parse: after `try`, parse expression, then optional `catch` expression
+
+**`elif` chains** (`parser.rs`):
+- When parsing `if-then`, after `then` branch, check for `elif` token
+- Desugar `elif` to nested `if-then-else-end`
+
+**Variable binding** (`mod.rs`, `parser.rs`, `eval.rs`):
+- New AST: `Bind(Box<Filter>, String, Box<Filter>)` — `expr as $name | body`
+- Add `env: HashMap<String, Value>` parameter to `eval()`
+- Parse `as` in pipe position (lower precedence than most operators)
+
+**`reduce`** (`mod.rs`, `parser.rs`, `eval.rs`):
+- New AST: `Reduce(Box<Filter>, String, Box<Filter>, Box<Filter>)` —
+  `reduce expr as $var (init; update)`
+- Requires variable binding context
+
+**`def`** (`mod.rs`, `parser.rs`, `eval.rs`):
+- New AST: `FuncDef { name, params, body, rest }` — `def name(args): body; rest`
+- Add function environment to eval context
+- Parse `def` as a prefix to any expression (binds until end of scope)
+- Support recursive definitions and closures over variables
+
+### Phase 3: Stretch to 50%+ (~20 more tests)
+
+**`walk(f)`** — implement as builtin or as jq `def` once #10 lands
+
+**`label $name | ... break $name`** — exception-like control flow mechanism
+
+**Format strings** (`@base64`, `@base64d`, `@uri`, `@csv`, `@tsv`, `@html`,
+`@sh`, `@json`) — new `Format(String)` AST node, `@ident` lexer token
+
+**String interpolation `\(expr)`** — detect `\(` during string lexing, switch
+to expression parsing mode, produce `StringInterp` AST (already exists in
+`mod.rs` but parser doesn't use it)
+
+### Not in jq.test but critical for real-world use
+
+These don't move the test score but are essential for adoption:
+- `--slurp` / `-s` — extremely common
+- `--arg name value` / `--argjson name value` — scripts can't use jx without these
+- `--null-input` / `-n` — needed for generators like `range`, `null | ...`
+- `--raw-output` / `-r` — check if already implemented; essential for shell pipelines
+- `--sort-keys` / `-S` — common for diffable output
+
+---
+
 ## Next steps / ideas
-
-### Quick wins to move the needle on compatibility
-
-These are relatively simple to implement and would unlock common real-world usage:
-
-| Feature | Est. effort | Compat impact | Why it matters |
-|---------|:-----------:|:-------------:|:---------------|
-| Negative indices (`[-1]`, `[-2:]`) | Small | +5 tests | Very common pattern |
-| Array slicing (`[2:5]`, `[:-1]`) | Small | +5 tests | Common, simple extension of existing index code |
-| Variables (`. as $x \| ...`) | Medium | +11 tests | Required for many jq idioms |
-| `--slurp` / `-s` | Medium | 0 (untested) | Extremely common CLI flag |
-| `--arg` / `--argjson` | Medium | 0 (untested) | Scripts can't use jx without this |
-| Math builtins (`floor`, `ceil`, `sqrt`, etc.) | Small | +18 tests | Basic numbers category goes from 0 to ~18 |
-| Assignment operators (`\|=`, `+=`, etc.) | Medium | +19 tests | Common in data transformation |
-| `reduce` | Medium | indirect | Aggregation patterns |
-| `path`/`getpath`/`setpath` | Medium | +22 tests | Path operations category |
-
-Implementing negative indices, slicing, math builtins, and variables alone would
-add ~39 tests, bringing the raw score from 26% to ~34%. Adding assignment and
-paths would push to ~42%.
 
 ### Build a real-world test suite
 
@@ -291,12 +513,13 @@ effort with diminishing returns against jaq and gojq.
 
 | Target | Features needed | Est. effort |
 |--------|:----------------|:-----------:|
-| 35% (~170 tests) | Negative indices, slicing, math builtins, variables | 1-2 days |
-| 45% (~225 tests) | + assignment, paths, `walk`, number formatting | 3-5 days |
-| 55% (~275 tests) | + regex, format strings, `reduce`, `foreach` | 1-2 weeks |
-| 65% (~325 tests) | + full `def` support, complex string ops, edge cases | 2-4 weeks |
-| 80% (~400 tests) | + generator semantics edge cases, error handling | 1-2 months |
+| 36% (~181 tests) | Bug fixes, math/string/collection builtins | 2-3 days |
+| 47% (~236 tests) | + slicing, try-catch, elif, variables, reduce, def | 1-2 weeks |
+| 51% (~256 tests) | + walk, format strings, string interpolation | 2-3 weeks |
+| 65% (~325 tests) | + assignment, regex, full path ops, edge cases | 1-2 months |
+| 80% (~400 tests) | + generator semantics edge cases, error handling | 2-4 months |
 
-The first 35% is low-hanging fruit. 35-55% is solid incremental work. Beyond 65%,
-you hit the long tail of jq's quirky semantics where each percentage point costs
+The first 36% is largely bug fixes and adding builtin functions — no parser changes.
+36-51% requires real language features (the parser/AST work). Beyond 65%, you hit
+the long tail of jq's quirky semantics where each percentage point costs
 significantly more effort.
