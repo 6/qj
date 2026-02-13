@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 use std::ffi::c_char;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::value::Value;
 
@@ -392,7 +393,7 @@ fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
             if end_tag != TAG_ARRAY_END {
                 bail!("expected ArrayEnd tag, got {end_tag}");
             }
-            Ok(Value::Array(arr))
+            Ok(Value::Array(Rc::new(arr)))
         }
         TAG_OBJECT_START => {
             let count = read_u32(buf, pos)? as usize;
@@ -411,7 +412,7 @@ fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
             if end_tag != TAG_OBJECT_END {
                 bail!("expected ObjectEnd tag, got {end_tag}");
             }
-            Ok(Value::Object(obj))
+            Ok(Value::Object(Rc::new(obj)))
         }
         _ => bail!("unknown flat token tag {tag}"),
     }
@@ -722,7 +723,7 @@ mod tests {
         let buf = pad_buffer(json);
         assert_eq!(
             dom_parse_to_value(&buf, json.len()).unwrap(),
-            Value::Object(vec![])
+            Value::Object(Rc::new(vec![]))
         );
     }
 
@@ -732,7 +733,7 @@ mod tests {
         let buf = pad_buffer(json);
         assert_eq!(
             dom_parse_to_value(&buf, json.len()).unwrap(),
-            Value::Array(vec![])
+            Value::Array(Rc::new(vec![]))
         );
     }
 
@@ -787,11 +788,11 @@ mod tests {
         let val = dom_parse_to_value(&buf, json.len()).unwrap();
         assert_eq!(
             val,
-            Value::Object(vec![
+            Value::Object(Rc::new(vec![
                 ("name".into(), Value::String("alice".into())),
                 ("age".into(), Value::Int(30)),
                 ("active".into(), Value::Bool(true)),
-            ])
+            ]))
         );
     }
 
@@ -802,10 +803,16 @@ mod tests {
         let val = dom_parse_to_value(&buf, json.len()).unwrap();
         assert_eq!(
             val,
-            Value::Object(vec![
-                ("a".into(), Value::Array(vec![Value::Int(1), Value::Int(2)])),
-                ("b".into(), Value::Object(vec![("c".into(), Value::Null)])),
-            ])
+            Value::Object(Rc::new(vec![
+                (
+                    "a".into(),
+                    Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+                ),
+                (
+                    "b".into(),
+                    Value::Object(Rc::new(vec![("c".into(), Value::Null)]))
+                ),
+            ]))
         );
     }
 
@@ -816,13 +823,13 @@ mod tests {
         let val = dom_parse_to_value(&buf, json.len()).unwrap();
         assert_eq!(
             val,
-            Value::Array(vec![
+            Value::Array(Rc::new(vec![
                 Value::Int(1),
                 Value::String("two".into()),
                 Value::Double(3.14),
                 Value::Bool(false),
                 Value::Null,
-            ])
+            ]))
         );
     }
 

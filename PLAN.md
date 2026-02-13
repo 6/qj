@@ -761,59 +761,56 @@ Large file — large_twitter.json (49MB):
 
 ### Step 2: Rc-wrap Value containers — fix eval cloning overhead
 
-The profiling reveals two separate bottlenecks: parse+output (79% for
-identity compact) and eval (47% for iterate+field). They need different
-fixes. Passthrough addresses parse+output but doesn't help eval-heavy
-workloads. Rc-wrapping addresses eval and benefits **all** filters.
+**Status: COMPLETE.**
 
-**The problem:** `.statuses[]|.user.name` on 11K objects does ~33K
-deep clones — every field access and iteration deep-copies the entire
-sub-tree. This is why eval takes 113ms (47% of total), and why jaq
-beats jx on iterate+field (172ms vs 256ms).
+Wrapped `Array(Vec<Value>)` → `Array(Rc<Vec<Value>>)` and
+`Object(Vec<(String, Value)>)` → `Object(Rc<Vec<(String, Value)>>)`.
+Value::clone() for containers is now an Rc refcount bump (~1ns) instead
+of a deep copy. Also added `Rc::ptr_eq` fast-path in `values_equal`.
 
-**The fix:** Wrap Array and Object containers in `Rc`:
+**Files changed:** `value.rs`, `bridge.rs`, `eval.rs`, `output.rs`,
+`parser.rs` (all pattern matches updated to use `.iter()` for
+IntoIterator, `Rc::new()` for construction).
 
-```rust
-pub enum Value {
-    Null,
-    Bool(bool),
-    Int(i64),
-    Double(f64),
-    String(String),
-    Array(Rc<Vec<Value>>),
-    Object(Rc<Vec<(String, Value)>>),
-}
-```
+**Profiling results** (large_twitter.json, `--debug-timing`):
 
-Now `Value::clone()` for arrays/objects is an Rc increment (~1ns)
-instead of a deep copy. Field access, iteration, identity, pipe —
-all become near-free.
+`.statuses[]|.user.name` (iterate+field) — the eval-heavy workload:
 
-**What changes:**
-- `value.rs` — wrap Array/Object in Rc
-- `bridge.rs` — `decode_value` wraps containers in `Rc::new()`
-- `eval.rs` — `.iter()` still works through Rc's Deref; construction
-  uses `Rc::new(vec![...])`. No algorithmic changes.
-- `output.rs` — `.iter()` still works through Deref. Minimal changes.
-- All pattern matches on `Value::Array(arr)` may need `arr.as_ref()`
-  or just work via auto-deref
+| Phase | Before Rc | After Rc |
+|-------|-----------|----------|
+| Parse | 114ms | 112ms |
+| Eval | 33ms | **5ms** |
+| Output | ~1ms | ~0.3ms |
+| **Total** | **~150ms** | **~129ms** |
 
-**Why Rc not Arc:** Values don't cross thread boundaries. Parallel
-NDJSON (Step 4) uses per-thread parsers that produce per-thread Values.
-If this assumption changes, switching to Arc is a one-line change.
+`-c '.'` (identity compact) — the parse+output workload:
 
-**Expected impact:**
-- `.statuses[]|.user.name` eval: 113ms → ~5-10ms. Total: ~130ms
-  (beats jaq's 172ms)
-- `.statuses|length` eval: 64ms → ~5ms. Total: ~135ms (beats jaq's
-  165ms)
-- Identity compact: minimal change (eval is only 15% of total)
+| Phase | Before Rc | After Rc |
+|-------|-----------|----------|
+| Parse | 114ms | 115ms |
+| Eval | 0ms | 0ms |
+| Output | 56ms | 45ms |
+| **Total** | **~216ms** | **~172ms** |
+
+**Benchmark results** (iterate+field, large file):
+
+| Tool | Before Rc | After Rc |
+|------|-----------|----------|
+| jx | 256ms | **157ms** |
+| jaq | 172ms | 169ms |
+| jq | 398ms | 390ms |
+| jx vs jaq | **0.67x** (jaq wins) | **1.08x** (jx wins) |
+
+**Key outcome:** jx now beats jaq on iterate+field — was 1.5x slower,
+now 1.08x faster. Eval dropped from 33ms to 5ms (6.6x improvement).
+Total improved from 256ms to 157ms (1.6x).
 
 ### Step 3: Tier 0 passthrough — headline numbers
 
-With eval fixed (Step 2), the remaining bottleneck for simple filters
-is parse (53%) + output (26%). Passthrough eliminates both for
-identity and field extraction with compact output.
+With eval fixed (Step 2 complete — eval is now ~5ms), the remaining
+bottleneck for simple filters is parse (67%) + output (26%).
+Passthrough eliminates both for identity and field extraction with
+compact output.
 
 **Architecture: Value::RawBytes.** Add a variant that carries raw
 minified JSON bytes. This composes naturally with the evaluator —
@@ -856,9 +853,10 @@ pub enum Value {
 - Identity compact on large files: >=10x faster than jq, >=3x jaq
 - Field compact on large files: >=5x faster than jq, >=2x jaq
 
-**The story after Steps 2+3:** "4-5x faster than jq across all filters.
-1.3x faster than jaq on iterate+field. 13-17x faster than jaq on
-identity/field compact. All single-threaded, before parallelism."
+**The story after Steps 2+3:** "2.5-7.5x faster than jq across all
+filters. 1.1x faster than jaq on iterate+field (already achieved in
+Step 2). 13-17x faster than jaq on identity/field compact (Step 3).
+All single-threaded, before parallelism."
 
 ### Step 4: NDJSON end-to-end benchmarks + parallel NDJSON
 

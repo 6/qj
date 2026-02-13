@@ -4,6 +4,7 @@
 /// each result, avoiding intermediate Vec allocations.
 use crate::filter::{ArithOp, BoolOp, CmpOp, Filter, ObjKey};
 use crate::value::Value;
+use std::rc::Rc;
 
 /// Evaluate a filter against an input value, calling `output` for each result.
 pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
@@ -12,7 +13,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
 
         Filter::Field(name) => match input {
             Value::Object(obj) => {
-                for (k, v) in obj {
+                for (k, v) in obj.iter() {
                     if k == name {
                         output(v.clone());
                         return;
@@ -43,7 +44,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                     }
                 }
                 (Value::Object(obj), Value::String(key)) => {
-                    for (k, v) in obj {
+                    for (k, v) in obj.iter() {
                         if k == key {
                             output(v.clone());
                             return;
@@ -64,12 +65,12 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
 
         Filter::Iterate => match input {
             Value::Array(arr) => {
-                for v in arr {
+                for v in arr.iter() {
                     output(v.clone());
                 }
             }
             Value::Object(obj) => {
-                for (_, v) in obj {
+                for (_, v) in obj.iter() {
                     output(v.clone());
                 }
             }
@@ -110,7 +111,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                 });
                 obj.push((key_str, val));
             }
-            output(Value::Object(obj));
+            output(Value::Object(Rc::new(obj)));
         }
 
         Filter::ArrayConstruct(expr) => {
@@ -118,7 +119,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
             eval(expr, input, &mut |v| {
                 arr.push(v);
             });
-            output(Value::Array(arr));
+            output(Value::Array(Rc::new(arr)));
         }
 
         Filter::Literal(val) => output(val.clone()),
@@ -279,13 +280,15 @@ fn values_equal(left: &Value, right: &Value) -> bool {
         (Value::Double(a), Value::Int(b)) => *a == (*b as f64),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y))
+            Rc::ptr_eq(a, b)
+                || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y)))
         }
         (Value::Object(a), Value::Object(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b.iter())
-                    .all(|((k1, v1), (k2, v2))| k1 == k2 && values_equal(v1, v2))
+            Rc::ptr_eq(a, b)
+                || (a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|((k1, v1), (k2, v2))| k1 == k2 && values_equal(v1, v2)))
         }
         _ => false,
     }
@@ -312,21 +315,22 @@ fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<Value> {
             (Value::Double(a), Value::Int(b)) => Some(Value::Double(a + *b as f64)),
             (Value::String(a), Value::String(b)) => Some(Value::String(format!("{a}{b}"))),
             (Value::Array(a), Value::Array(b)) => {
-                let mut result = a.clone();
+                let mut result = Vec::with_capacity(a.len() + b.len());
+                result.extend_from_slice(a);
                 result.extend_from_slice(b);
-                Some(Value::Array(result))
+                Some(Value::Array(Rc::new(result)))
             }
             (Value::Object(a), Value::Object(b)) => {
                 // Shallow merge: b's keys override a's
-                let mut result = a.clone();
-                for (k, v) in b {
+                let mut result: Vec<(String, Value)> = a.as_ref().clone();
+                for (k, v) in b.iter() {
                     if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
                         existing.1 = v.clone();
                     } else {
                         result.push((k.clone(), v.clone()));
                     }
                 }
-                Some(Value::Object(result))
+                Some(Value::Object(Rc::new(result)))
             }
             (Value::Null, other) | (other, Value::Null) => Some(other.clone()),
             _ => None,
@@ -363,12 +367,12 @@ fn recurse(value: &Value, output: &mut dyn FnMut(Value)) {
     output(value.clone());
     match value {
         Value::Array(arr) => {
-            for v in arr {
+            for v in arr.iter() {
                 recurse(v, output);
             }
         }
         Value::Object(obj) => {
-            for (_, v) in obj {
+            for (_, v) in obj.iter() {
                 recurse(v, output);
             }
         }
@@ -402,17 +406,19 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                         }
                     });
                 }
-                output(Value::Array(keys));
+                output(Value::Array(Rc::new(keys)));
             }
             Value::Array(arr) => {
                 let keys: Vec<Value> = (0..arr.len() as i64).map(Value::Int).collect();
-                output(Value::Array(keys));
+                output(Value::Array(Rc::new(keys)));
             }
             _ => {}
         },
         "values" => match input {
             Value::Object(obj) => {
-                output(Value::Array(obj.iter().map(|(_, v)| v.clone()).collect()));
+                output(Value::Array(Rc::new(
+                    obj.iter().map(|(_, v)| v.clone()).collect(),
+                )));
             }
             Value::Array(arr) => {
                 output(Value::Array(arr.clone()));
@@ -434,10 +440,10 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         "map" => {
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
                 let mut result = Vec::with_capacity(arr.len());
-                for item in arr {
+                for item in arr.iter() {
                     eval(f, item, &mut |v| result.push(v));
                 }
-                output(Value::Array(result));
+                output(Value::Array(Rc::new(result)));
             }
         }
         "select" => {
@@ -470,7 +476,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             if let Value::Array(arr) = input {
                 if let Some(f) = args.first() {
                     let mut found = false;
-                    for item in arr {
+                    for item in arr.iter() {
                         eval(f, item, &mut |v| {
                             if v.is_truthy() {
                                 found = true;
@@ -491,7 +497,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             if let Value::Array(arr) = input {
                 if let Some(f) = args.first() {
                     let mut all_true = true;
-                    for item in arr {
+                    for item in arr.iter() {
                         let mut item_true = false;
                         eval(f, item, &mut |v| {
                             if v.is_truthy() {
@@ -532,19 +538,19 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                 let entries: Vec<Value> = obj
                     .iter()
                     .map(|(k, v)| {
-                        Value::Object(vec![
+                        Value::Object(Rc::new(vec![
                             ("key".into(), Value::String(k.clone())),
                             ("value".into(), v.clone()),
-                        ])
+                        ]))
                     })
                     .collect();
-                output(Value::Array(entries));
+                output(Value::Array(Rc::new(entries)));
             }
         }
         "from_entries" => {
             if let Value::Array(arr) = input {
                 let mut obj = Vec::new();
-                for entry in arr {
+                for entry in arr.iter() {
                     if let Value::Object(fields) = entry {
                         let key = fields
                             .iter()
@@ -563,7 +569,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                         obj.push((key, val));
                     }
                 }
-                output(Value::Object(obj));
+                output(Value::Object(Rc::new(obj)));
             }
         }
         "tostring" => match input {
@@ -597,9 +603,9 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         }
         "sort" => {
             if let Value::Array(arr) = input {
-                let mut sorted = arr.clone();
+                let mut sorted: Vec<Value> = arr.as_ref().clone();
                 sorted.sort_by(|a, b| values_order(a, b).unwrap_or(std::cmp::Ordering::Equal));
-                output(Value::Array(sorted));
+                output(Value::Array(Rc::new(sorted)));
             }
         }
         "sort_by" => {
@@ -615,7 +621,9 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                 pairs.sort_by(|(a, _), (b, _)| {
                     values_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
                 });
-                output(Value::Array(pairs.into_iter().map(|(_, v)| v).collect()));
+                output(Value::Array(Rc::new(
+                    pairs.into_iter().map(|(_, v)| v).collect(),
+                )));
             }
         }
         "group_by" => {
@@ -639,34 +647,34 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                         current_group.push(val);
                     } else {
                         if !current_group.is_empty() {
-                            groups.push(Value::Array(std::mem::take(&mut current_group)));
+                            groups.push(Value::Array(Rc::new(std::mem::take(&mut current_group))));
                         }
                         current_key = Some(key);
                         current_group.push(val);
                     }
                 }
                 if !current_group.is_empty() {
-                    groups.push(Value::Array(current_group));
+                    groups.push(Value::Array(Rc::new(current_group)));
                 }
-                output(Value::Array(groups));
+                output(Value::Array(Rc::new(groups)));
             }
         }
         "unique" => {
             if let Value::Array(arr) = input {
                 let mut result: Vec<Value> = Vec::new();
-                for item in arr {
+                for item in arr.iter() {
                     if !result.iter().any(|v| values_equal(v, item)) {
                         result.push(item.clone());
                     }
                 }
-                output(Value::Array(result));
+                output(Value::Array(Rc::new(result)));
             }
         }
         "unique_by" => {
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
                 let mut seen_keys: Vec<Value> = Vec::new();
                 let mut result: Vec<Value> = Vec::new();
-                for item in arr {
+                for item in arr.iter() {
                     let mut key = Value::Null;
                     eval(f, item, &mut |v| key = v);
                     if !seen_keys.iter().any(|k| values_equal(k, &key)) {
@@ -674,7 +682,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                         result.push(item.clone());
                     }
                 }
-                output(Value::Array(result));
+                output(Value::Array(Rc::new(result)));
             }
         }
         "flatten" => {
@@ -689,7 +697,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                 });
                 let mut result = Vec::new();
                 flatten_array(arr, depth, &mut result);
-                output(Value::Array(result));
+                output(Value::Array(Rc::new(result)));
             }
         }
         "first" => {
@@ -722,9 +730,9 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         }
         "reverse" => {
             if let Value::Array(arr) = input {
-                let mut result = arr.clone();
+                let mut result: Vec<Value> = arr.as_ref().clone();
                 result.reverse();
-                output(Value::Array(result));
+                output(Value::Array(Rc::new(result)));
             } else if let Value::String(s) = input {
                 output(Value::String(s.chars().rev().collect()));
             }
@@ -756,7 +764,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         "min_by" => {
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
                 let mut best: Option<(Value, Value)> = None;
-                for item in arr {
+                for item in arr.iter() {
                     let mut key = Value::Null;
                     eval(f, item, &mut |v| key = v);
                     if best.as_ref().is_none_or(|(bk, _)| {
@@ -775,7 +783,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         "max_by" => {
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
                 let mut best: Option<(Value, Value)> = None;
-                for item in arr {
+                for item in arr.iter() {
                     let mut key = Value::Null;
                     eval(f, item, &mut |v| key = v);
                     if best.as_ref().is_none_or(|(bk, _)| {
@@ -798,7 +806,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             {
                 let result: Vec<(String, Value)> =
                     obj.iter().filter(|(k, _)| k != name).cloned().collect();
-                output(Value::Object(result));
+                output(Value::Object(Rc::new(result)));
                 return;
             }
             output(input.clone());
@@ -861,7 +869,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                 if let Value::String(p) = sep {
                     let parts: Vec<Value> =
                         s.split(&p).map(|part| Value::String(part.into())).collect();
-                    output(Value::Array(parts));
+                    output(Value::Array(Rc::new(parts)));
                 }
             }
         }
@@ -938,12 +946,12 @@ mod tests {
     }
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        Value::Object(
+        Value::Object(Rc::new(
             pairs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
-        )
+        ))
     }
 
     #[test]
@@ -975,7 +983,7 @@ mod tests {
 
     #[test]
     fn eval_iterate_array() {
-        let input = Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_all(&parse(".[]"), &input),
             vec![Value::Int(1), Value::Int(2), Value::Int(3)]
@@ -991,10 +999,10 @@ mod tests {
 
     #[test]
     fn eval_pipe() {
-        let input = Value::Array(vec![
+        let input = Value::Array(Rc::new(vec![
             obj(&[("name", Value::String("alice".into()))]),
             obj(&[("name", Value::String("bob".into()))]),
-        ]);
+        ]));
         assert_eq!(
             eval_all(&parse(".[] | .name"), &input),
             vec![Value::String("alice".into()), Value::String("bob".into()),]
@@ -1003,11 +1011,11 @@ mod tests {
 
     #[test]
     fn eval_select() {
-        let input = Value::Array(vec![
+        let input = Value::Array(Rc::new(vec![
             obj(&[("x", Value::Int(1))]),
             obj(&[("x", Value::Int(5))]),
             obj(&[("x", Value::Int(3))]),
-        ]);
+        ]));
         let results = eval_all(&parse(".[] | select(.x > 2)"), &input);
         assert_eq!(results.len(), 2);
     }
@@ -1024,23 +1032,34 @@ mod tests {
 
     #[test]
     fn eval_array_construct() {
-        let input = Value::Array(vec![
+        let input = Value::Array(Rc::new(vec![
             obj(&[("x", Value::Int(1))]),
             obj(&[("x", Value::Int(2))]),
-        ]);
+        ]));
         let result = eval_one(&parse("[.[] | .x]"), &input);
-        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            result,
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+        );
     }
 
     #[test]
     fn eval_index() {
-        let input = Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]);
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(30),
+        ]));
         assert_eq!(eval_one(&parse(".[1]"), &input), Value::Int(20));
     }
 
     #[test]
     fn eval_negative_index() {
-        let input = Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]);
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(30),
+        ]));
         assert_eq!(eval_one(&parse(".[-1]"), &input), Value::Int(30));
     }
 
@@ -1074,7 +1093,7 @@ mod tests {
         assert_eq!(
             eval_one(
                 &parse("length"),
-                &Value::Array(vec![Value::Int(1), Value::Int(2)])
+                &Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
             ),
             Value::Int(2)
         );
@@ -1089,7 +1108,10 @@ mod tests {
         let input = obj(&[("b", Value::Int(2)), ("a", Value::Int(1))]);
         assert_eq!(
             eval_one(&parse("keys"), &input),
-            Value::Array(vec![Value::String("a".into()), Value::String("b".into()),])
+            Value::Array(Rc::new(vec![
+                Value::String("a".into()),
+                Value::String("b".into())
+            ]))
         );
     }
 
@@ -1123,16 +1145,20 @@ mod tests {
 
     #[test]
     fn eval_map() {
-        let input = Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_one(&parse("map(. + 10)"), &input),
-            Value::Array(vec![Value::Int(11), Value::Int(12), Value::Int(13)])
+            Value::Array(Rc::new(vec![
+                Value::Int(11),
+                Value::Int(12),
+                Value::Int(13)
+            ]))
         );
     }
 
     #[test]
     fn eval_add() {
-        let input = Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(eval_one(&parse("add"), &input), Value::Int(6));
     }
 
@@ -1145,10 +1171,10 @@ mod tests {
 
     #[test]
     fn eval_sort() {
-        let input = Value::Array(vec![Value::Int(3), Value::Int(1), Value::Int(2)]);
+        let input = Value::Array(Rc::new(vec![Value::Int(3), Value::Int(1), Value::Int(2)]));
         assert_eq!(
             eval_one(&parse("sort"), &input),
-            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
         );
     }
 }

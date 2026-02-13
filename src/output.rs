@@ -231,6 +231,7 @@ fn write_double<W: Write>(w: &mut W, f: f64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::rc::Rc;
 
     fn compact(v: &Value) -> String {
         let config = OutputConfig {
@@ -312,44 +313,44 @@ mod tests {
 
     #[test]
     fn compact_array() {
-        let v = Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let v = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(compact(&v), "[1,2,3]");
     }
 
     #[test]
     fn compact_empty_array() {
-        assert_eq!(compact(&Value::Array(vec![])), "[]");
+        assert_eq!(compact(&Value::Array(Rc::new(vec![]))), "[]");
     }
 
     #[test]
     fn compact_object() {
-        let v = Value::Object(vec![
+        let v = Value::Object(Rc::new(vec![
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Bool(true)),
-        ]);
+        ]));
         assert_eq!(compact(&v), r#"{"a":1,"b":true}"#);
     }
 
     #[test]
     fn compact_empty_object() {
-        assert_eq!(compact(&Value::Object(vec![])), "{}");
+        assert_eq!(compact(&Value::Object(Rc::new(vec![]))), "{}");
     }
 
     #[test]
     fn pretty_object() {
-        let v = Value::Object(vec![
+        let v = Value::Object(Rc::new(vec![
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Int(2)),
-        ]);
+        ]));
         assert_eq!(pretty(&v), "{\n  \"a\": 1,\n  \"b\": 2\n}");
     }
 
     #[test]
     fn pretty_nested() {
-        let v = Value::Object(vec![(
+        let v = Value::Object(Rc::new(vec![(
             "arr".into(),
-            Value::Array(vec![Value::Int(1), Value::Int(2)]),
-        )]);
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
+        )]));
         assert_eq!(pretty(&v), "{\n  \"arr\": [\n    1,\n    2\n  ]\n}");
     }
 

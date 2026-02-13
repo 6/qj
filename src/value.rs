@@ -1,8 +1,13 @@
+use std::rc::Rc;
+
 /// JSON value representation.
 ///
 /// Uses `Int(i64)` for integers (not `f64` like jq) to preserve precision
 /// on large IDs. `Object` uses `Vec<(String, Value)>` to preserve key
 /// insertion order (matching jq behavior).
+///
+/// Array and Object use `Rc<Vec<...>>` so that cloning during filter
+/// evaluation is O(1) reference-count bump instead of deep copy.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -10,8 +15,8 @@ pub enum Value {
     Int(i64),
     Double(f64),
     String(String),
-    Array(Vec<Value>),
-    Object(Vec<(String, Value)>),
+    Array(Rc<Vec<Value>>),
+    Object(Rc<Vec<(String, Value)>>),
 }
 
 impl Value {
@@ -45,8 +50,8 @@ mod tests {
         assert_eq!(Value::Int(42).type_name(), "number");
         assert_eq!(Value::Double(3.14).type_name(), "number");
         assert_eq!(Value::String("hi".into()).type_name(), "string");
-        assert_eq!(Value::Array(vec![]).type_name(), "array");
-        assert_eq!(Value::Object(vec![]).type_name(), "object");
+        assert_eq!(Value::Array(Rc::new(vec![])).type_name(), "array");
+        assert_eq!(Value::Object(Rc::new(vec![])).type_name(), "object");
     }
 
     #[test]
@@ -57,7 +62,7 @@ mod tests {
         assert!(Value::Int(0).is_truthy());
         assert!(Value::Double(0.0).is_truthy());
         assert!(Value::String("".into()).is_truthy());
-        assert!(Value::Array(vec![]).is_truthy());
-        assert!(Value::Object(vec![]).is_truthy());
+        assert!(Value::Array(Rc::new(vec![])).is_truthy());
+        assert!(Value::Object(Rc::new(vec![])).is_truthy());
     }
 }

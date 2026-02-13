@@ -16,6 +16,7 @@ use anyhow::{Result, bail};
 use super::lexer::Token;
 use super::{ArithOp, BoolOp, CmpOp, Filter, ObjKey};
 use crate::value::Value;
+use std::rc::Rc;
 
 struct Parser<'a> {
     tokens: &'a [Token],
@@ -232,7 +233,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 if self.peek() == Some(&Token::RBrack) {
                     self.advance();
-                    return Ok(Filter::Literal(Value::Array(vec![])));
+                    return Ok(Filter::Literal(Value::Array(Rc::new(vec![]))));
                 }
                 let expr = self.parse_expr()?;
                 self.expect(&Token::RBrack)?;
