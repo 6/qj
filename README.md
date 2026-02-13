@@ -12,11 +12,17 @@ mise install
 cargo build --release
 ```
 
-## Benchmarking
+## Benchmarks
+
+**2-65x faster than jq** depending on workload. Largest wins on parse-dominated filters (identity, field extraction) over large files; smallest on complex filters where evaluator cost dominates.
+
+See [BENCHMARKS.md](BENCHMARKS.md) for full results across filter tiers and file sizes.
+
+To reproduce locally:
 
 ```bash
-brew install hyperfine jq
-hyperfine --warmup 3 \
-  './target/release/jx ".field" large.json' \
-  'jq ".field" large.json'
+brew install hyperfine jq jaq gojq
+bash bench/download_testdata.sh
+bash bench/gen_large.sh
+bash bench/bench.sh
 ```

@@ -364,5 +364,5 @@ Include a short "Understanding the numbers" section at the top of
 1. ~~**Create `bench/bench.sh`**~~ — **Done.** Correctness checks, 5 filter tiers, writes `BENCHMARKS.md`, bold jx column.
 2. ~~**Add `bench/results/` to `.gitignore`**~~ — **Done.**
 3. ~~**Create `.github/workflows/checks.yml`**~~ — **Done.** Build + test on ubuntu-24.04 + macos-26, mise-action, rust-cache.
-4. **Create `.github/workflows/benchmark.yml`** — full benchmark suite, commits `BENCHMARKS.md`
-5. **Update README** to link to `BENCHMARKS.md`
+4. ~~**Create `.github/workflows/benchmark.yml`**~~ — **Done.** Full benchmark suite with cross-platform matrix, merges results, commits `BENCHMARKS.md`.
+5. ~~**Update README**~~ — **Done.** Links to `BENCHMARKS.md`, shows speedup range, includes repro command.
