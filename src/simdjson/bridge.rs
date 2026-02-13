@@ -90,6 +90,22 @@ pub fn read_padded(path: &Path) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Read a file directly into a padded buffer — single allocation, no copy.
+///
+/// Returns `(buffer, json_len)` where `buffer` has `json_len` bytes of JSON
+/// followed by SIMDJSON_PADDING zeroed bytes.
+pub fn read_padded_file(path: &Path) -> Result<(Vec<u8>, usize)> {
+    use std::io::Read;
+    let meta = fs::metadata(path)?;
+    let file_len = meta.len() as usize;
+    let pad = padding();
+    let mut buf = vec![0u8; file_len + pad];
+    let mut f = fs::File::open(path)?;
+    f.read_exact(&mut buf[..file_len])?;
+    // Padding bytes are already zeroed from vec! initialization
+    Ok((buf, file_len))
+}
+
 /// Create a padded copy of an in-memory slice.
 pub fn pad_buffer(data: &[u8]) -> Vec<u8> {
     let pad = padding();

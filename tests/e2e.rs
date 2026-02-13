@@ -159,10 +159,7 @@ fn iterate_object_values() {
 
 #[test]
 fn pipe_field_from_array() {
-    let out = jx_compact(
-        ".[] | .name",
-        r#"[{"name":"alice"},{"name":"bob"}]"#,
-    );
+    let out = jx_compact(".[] | .name", r#"[{"name":"alice"},{"name":"bob"}]"#);
     assert_eq!(out.trim(), "\"alice\"\n\"bob\"");
 }
 
@@ -170,10 +167,7 @@ fn pipe_field_from_array() {
 
 #[test]
 fn select_filter() {
-    let out = jx_compact(
-        ".[] | select(.x > 2)",
-        r#"[{"x":1},{"x":3},{"x":5}]"#,
-    );
+    let out = jx_compact(".[] | select(.x > 2)", r#"[{"x":1},{"x":3},{"x":5}]"#);
     assert_eq!(out.trim(), "{\"x\":3}\n{\"x\":5}");
 }
 
@@ -181,10 +175,7 @@ fn select_filter() {
 
 #[test]
 fn object_construct() {
-    let out = jx_compact(
-        "{name: .name}",
-        r#"{"name":"alice","age":30}"#,
-    );
+    let out = jx_compact("{name: .name}", r#"{"name":"alice","age":30}"#);
     assert_eq!(out.trim(), r#"{"name":"alice"}"#);
 }
 
@@ -192,10 +183,7 @@ fn object_construct() {
 
 #[test]
 fn array_construct() {
-    let out = jx_compact(
-        "[.[] | .x]",
-        r#"[{"x":1},{"x":2},{"x":3}]"#,
-    );
+    let out = jx_compact("[.[] | .x]", r#"[{"x":1},{"x":2},{"x":3}]"#);
     assert_eq!(out.trim(), "[1,2,3]");
 }
 
@@ -313,8 +301,7 @@ fn raw_string_output() {
 #[test]
 fn file_input() {
     // twitter.json is a real test file
-    let twitter = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("bench/data/twitter.json");
+    let twitter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/data/twitter.json");
     if twitter.exists() {
         let output = Command::new(env!("CARGO_BIN_EXE_jx"))
             .args(["-c", ".statuses | length", twitter.to_str().unwrap()])

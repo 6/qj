@@ -708,39 +708,56 @@ implement passthrough if the data justifies it.
 
 ### Step 1: Large-file benchmarks + profiling
 
-**Validate the thesis on real-world file sizes.** The current 0.6-2.2MB
-test files are too small to show the SIMD advantage.
+**Status: COMPLETE.**
 
-**Generate large test data (~50MB each):**
-- `bench/data/large_twitter.json` — wrap twitter.json's statuses array
-  repeated ~80x into a single large array
-- `bench/data/large.jsonl` — NDJSON: twitter.json statuses as individual
-  lines, repeated
+Generated ~49MB test files, benchmarked all tools, profiled jx internals.
+Also fixed double-allocation in file reading (`read_padded_file()` in
+`bridge.rs` — single alloc, no copy). Added `--debug-timing` flag for
+profiling breakdown.
 
-**Benchmark matrix** (small 0.6MB + large 50MB, hyperfine --warmup 3):
+**Benchmark results** (Apple Silicon, hyperfine --warmup 3):
 
-| Filter | jx | jq | jaq | gojq |
-|--------|----|----|-----|------|
-| `-c '.'` (identity compact) | | | | |
-| `-c '.statuses'` (field compact) | | | | |
-| `.statuses \| length` (pipe+builtin) | | | | |
-| `.statuses[] \| .user.name` (iterate+field) | | | | |
+Small file — twitter.json (631KB):
 
-**Profile breakdown** — measure where time goes on large files:
-1. File read time
-2. simdjson DOM parse time (the `jx_dom_to_flat` call)
-3. Token buffer → Value tree construction (the `decode_value` call)
-4. Filter evaluation time
-5. Output serialization time
+| Filter | jx | jq | jaq | gojq | jx vs jq | jx vs jaq |
+|--------|----|----|-----|------|----------|-----------|
+| `-c '.'` | 4.1ms | 16.5ms | 5.8ms | 8.2ms | **4.0x** | **1.4x** |
+| `-c '.statuses'` | 4.2ms | 16.7ms | 5.7ms | 8.2ms | **4.0x** | **1.4x** |
+| `.statuses\|length` | 3.8ms | 9.7ms | 5.5ms | 7.2ms | **2.5x** | **1.4x** |
+| `.statuses[]\|.user.name` | 5.0ms | 10.1ms | 5.5ms | 7.2ms | **2.0x** | **1.1x** |
 
-This tells us whether passthrough is worth it, and if so, where the
-biggest wins are.
+Large file — large_twitter.json (49MB):
 
-**Optimized file reading** — fix the double-allocation in the current
-path. Currently `main.rs` does `std::fs::read(path)` then `pad_buffer()`
-copies again. Replace with `read_padded_file()` in `bridge.rs`: stat
-the file, allocate `vec![0u8; size + SIMDJSON_PADDING]`, read directly.
-Single allocation, no copy.
+| Filter | jx | jq | jaq | gojq | jx vs jq | jx vs jaq |
+|--------|----|----|-----|------|----------|-----------|
+| `-c '.'` | 260ms | 1178ms | 259ms | 453ms | **4.5x** | **1.0x** |
+| `-c '.statuses'` | 261ms | 1173ms | 258ms | 448ms | **4.5x** | **1.0x** |
+| `.statuses\|length` | 208ms | 391ms | 165ms | 293ms | **1.9x** | 0.79x |
+| `.statuses[]\|.user.name` | 256ms | 398ms | 172ms | 299ms | **1.6x** | 0.67x |
+
+**Profiling breakdown** (large_twitter.json, `-c '.'`, `--debug-timing`):
+
+| Phase | Time | % of total |
+|-------|------|------------|
+| File read | 12ms | 6% |
+| Parse (DOM→flat + flat→Value) | 114ms | 53% |
+| Filter eval | 33ms | 15% |
+| Output serialization | 56ms | 26% |
+| **Total** | **216ms** | **227 MB/s** |
+
+**Key findings:**
+1. Parse + output = **79% of total time** on identity compact. Passthrough
+   (skip Value construction + output serialization) would eliminate most
+   of this. **Decision: proceed with passthrough (Step 2).**
+2. On large files, jaq is neck-and-neck with jx on identity/field compact
+   (~259ms vs ~260ms). jaq pulls ahead on iterate+field (172ms vs 256ms)
+   — likely because jaq's evaluator avoids cloning Values.
+3. jx is consistently 4-4.5x faster than jq on identity/field compact
+   (both small and large), but only 1.6-2x on iterate+field.
+4. The 7-9 GB/s simdjson advantage is hidden behind DOM→Value construction
+   (114ms) and output serialization (56ms). With passthrough, identity
+   compact should drop to ~15-20ms (parse only, no Value tree, no
+   serialization) — that's **~60x jq, ~13x jaq**.
 
 ### Step 2: Tier 0 passthrough (conditional on Step 1 results)
 
