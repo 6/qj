@@ -357,6 +357,51 @@ void jx_minify_free(char* ptr) {
 // DOM field extraction — parse, navigate nested fields, serialize sub-tree.
 // ---------------------------------------------------------------------------
 
+// Navigate a chain of field names from the document root.
+// Returns: 0 = found (result set), 1 = null (field missing / non-object parent),
+//          2 = error (parse failed).
+static int navigate_fields(
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    dom::parser& parser, dom::element& result)
+{
+    auto err = parser.parse(buf, len).get(result);
+    if (err) return 2;
+
+    for (size_t i = 0; i < field_count; i++) {
+        std::string_view key(fields[i], field_lens[i]);
+        if (result.type() != dom::element_type::OBJECT) return 1;
+        auto field_err = result.at_key(key).get(result);
+        if (field_err) return 1; // field not found
+    }
+    return 0;
+}
+
+// JSON-escape a string for output (adds surrounding quotes).
+static void json_escape(const std::string_view sv, std::string& out) {
+    out.push_back('"');
+    for (char c : sv) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char hex[8];
+                    snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned char>(c));
+                    out += hex;
+                } else {
+                    out.push_back(c);
+                }
+        }
+    }
+    out.push_back('"');
+}
+
 int jx_dom_find_field_raw(
     const char* buf, size_t len,
     const char** fields, const size_t* field_lens, size_t field_count,
@@ -364,38 +409,150 @@ int jx_dom_find_field_raw(
 {
     try {
         dom::parser parser;
-        dom::element doc;
-        auto err = parser.parse(buf, len).get(doc);
-        if (err) return static_cast<int>(err);
-
-        // Navigate nested fields: .a.b.c
-        dom::element current = doc;
-        for (size_t i = 0; i < field_count; i++) {
-            std::string_view key(fields[i], field_lens[i]);
-            // at_key only works on objects; non-object → null (jq semantics)
-            if (current.type() != dom::element_type::OBJECT) {
-                const char* null_str = "null";
-                *out_ptr = new char[4];
-                std::memcpy(*out_ptr, null_str, 4);
-                *out_len = 4;
-                return 0;
-            }
-            auto field_err = current.at_key(key).get(current);
-            if (field_err) {
-                // Field not found → output "null" (jq semantics)
-                const char* null_str = "null";
-                *out_ptr = new char[4];
-                std::memcpy(*out_ptr, null_str, 4);
-                *out_len = 4;
-                return 0;
-            }
+        dom::element result;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, parser, result);
+        if (nav == 2) return -1; // parse error
+        if (nav == 1) {
+            const char* null_str = "null";
+            *out_ptr = new char[4];
+            std::memcpy(*out_ptr, null_str, 4);
+            *out_len = 4;
+            return 0;
         }
 
-        std::string result = simdjson::to_string(current);
-        *out_len = result.size();
-        *out_ptr = new char[result.size()];
-        std::memcpy(*out_ptr, result.data(), result.size());
+        std::string s = simdjson::to_string(result);
+        *out_len = s.size();
+        *out_ptr = new char[s.size()];
+        std::memcpy(*out_ptr, s.data(), s.size());
         return 0;
+    } catch (...) { return -1; }
+}
+
+// ---------------------------------------------------------------------------
+// DOM field + length — navigate fields, then compute length.
+//
+// Return codes via *out_len:
+//   >= 0 : success (length value written as decimal string in *out_ptr)
+//   -2   : unsupported type (caller should fall back to normal pipeline)
+// Function return: 0 = success, -1 = error.
+// ---------------------------------------------------------------------------
+
+int jx_dom_field_length(
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::parser parser;
+        dom::element result;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, parser, result);
+        if (nav == 2) return -1; // parse error
+        if (nav == 1) {
+            // null → length 0
+            *out_ptr = new char[1];
+            (*out_ptr)[0] = '0';
+            *out_len = 1;
+            return 0;
+        }
+
+        int64_t length;
+        switch (result.type()) {
+            case dom::element_type::ARRAY:
+                length = static_cast<int64_t>(dom::array(result).size());
+                break;
+            case dom::element_type::OBJECT:
+                length = static_cast<int64_t>(dom::object(result).size());
+                break;
+            case dom::element_type::STRING:
+                length = static_cast<int64_t>(result.get_string().value().size());
+                break;
+            case dom::element_type::NULL_VALUE:
+                length = 0;
+                break;
+            default:
+                // Int/Double/Bool — unsupported, signal fallback
+                *out_ptr = nullptr;
+                *out_len = static_cast<size_t>(-2);
+                return 0;
+        }
+
+        std::string s = std::to_string(length);
+        *out_len = s.size();
+        *out_ptr = new char[s.size()];
+        std::memcpy(*out_ptr, s.data(), s.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
+// ---------------------------------------------------------------------------
+// DOM field + keys — navigate fields, then compute keys.
+//
+// Return: 0 = success, -1 = error.
+// *out_len = -2 means unsupported type (caller falls back).
+// ---------------------------------------------------------------------------
+
+int jx_dom_field_keys(
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::parser parser;
+        dom::element result;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, parser, result);
+        if (nav == 2) return -1; // parse error
+        if (nav == 1) {
+            // null → no output (jq produces no output for keys on null)
+            *out_ptr = nullptr;
+            *out_len = static_cast<size_t>(-2);
+            return 0;
+        }
+
+        switch (result.type()) {
+            case dom::element_type::OBJECT: {
+                dom::object obj = dom::object(result);
+                // Collect keys
+                std::vector<std::string_view> keys;
+                for (auto field : obj) {
+                    keys.push_back(field.key);
+                }
+                // Sort (jq `keys` sorts)
+                std::sort(keys.begin(), keys.end());
+                // Build JSON array string
+                std::string s;
+                s.push_back('[');
+                for (size_t i = 0; i < keys.size(); i++) {
+                    if (i > 0) s.push_back(',');
+                    json_escape(keys[i], s);
+                }
+                s.push_back(']');
+                *out_len = s.size();
+                *out_ptr = new char[s.size()];
+                std::memcpy(*out_ptr, s.data(), s.size());
+                return 0;
+            }
+            case dom::element_type::ARRAY: {
+                dom::array arr = dom::array(result);
+                size_t count = arr.size();
+                // Build [0,1,2,...,n-1]
+                std::string s;
+                s.push_back('[');
+                for (size_t i = 0; i < count; i++) {
+                    if (i > 0) s.push_back(',');
+                    s += std::to_string(i);
+                }
+                s.push_back(']');
+                *out_len = s.size();
+                *out_ptr = new char[s.size()];
+                std::memcpy(*out_ptr, s.data(), s.size());
+                return 0;
+            }
+            default:
+                // Unsupported type — signal fallback
+                *out_ptr = nullptr;
+                *out_len = static_cast<size_t>(-2);
+                return 0;
+        }
     } catch (...) { return -1; }
 }
 

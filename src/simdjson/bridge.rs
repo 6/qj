@@ -88,6 +88,26 @@ unsafe extern "C" {
         out_ptr: *mut *mut c_char,
         out_len: *mut usize,
     ) -> i32;
+
+    fn jx_dom_field_length(
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
+    fn jx_dom_field_keys(
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +511,80 @@ pub fn dom_find_field_raw(buf: &[u8], json_len: usize, fields: &[&str]) -> Resul
     // Reuse jx_minify_free — both allocate with new char[]
     unsafe { jx_minify_free(out_ptr) };
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// DOM field + length — navigate fields, compute length in C++.
+// ---------------------------------------------------------------------------
+
+/// DOM parse, navigate fields, and compute `length` in C++.
+///
+/// Returns `Ok(Some(bytes))` on success (decimal string), `Ok(None)` if the
+/// target type is unsupported (Int/Double/Bool — caller should fall back).
+pub fn dom_field_length(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Option<Vec<u8>>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let field_ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast()).collect();
+    let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+    check(unsafe {
+        jx_dom_field_length(
+            buf.as_ptr().cast(),
+            json_len,
+            field_ptrs.as_ptr(),
+            field_lens.as_ptr(),
+            fields.len(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    })?;
+    // out_len == usize::MAX - 1 (i.e. -2 as size_t) means unsupported type
+    if out_len == usize::MAX - 1 {
+        return Ok(None);
+    }
+    let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(Some(result))
+}
+
+// ---------------------------------------------------------------------------
+// DOM field + keys — navigate fields, compute keys in C++.
+// ---------------------------------------------------------------------------
+
+/// DOM parse, navigate fields, and compute `keys` in C++.
+///
+/// Returns `Ok(Some(bytes))` on success (JSON array string), `Ok(None)` if the
+/// target type is unsupported (caller should fall back).
+pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Option<Vec<u8>>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let field_ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast()).collect();
+    let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+    check(unsafe {
+        jx_dom_field_keys(
+            buf.as_ptr().cast(),
+            json_len,
+            field_ptrs.as_ptr(),
+            field_lens.as_ptr(),
+            fields.len(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    })?;
+    // out_len == usize::MAX - 1 (i.e. -2 as size_t) means unsupported type
+    if out_len == usize::MAX - 1 {
+        return Ok(None);
+    }
+    let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(Some(result))
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,5 +1136,164 @@ mod tests {
         let buf = pad_buffer(json);
         let out = dom_find_field_raw(&buf, json.len(), &["items"]).unwrap();
         assert_eq!(std::str::from_utf8(&out).unwrap(), "[1,2,3]");
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_field_length tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn field_length_array() {
+        let json = br#"{"items":[1,2,3]}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &["items"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "3");
+    }
+
+    #[test]
+    fn field_length_object() {
+        let json = br#"{"data":{"a":1,"b":2}}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &["data"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "2");
+    }
+
+    #[test]
+    fn field_length_string() {
+        let json = br#"{"name":"hello"}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &["name"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "5");
+    }
+
+    #[test]
+    fn field_length_missing_is_zero() {
+        let json = br#"{"name":"alice"}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &["missing"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "0");
+    }
+
+    #[test]
+    fn field_length_null_is_zero() {
+        let json = br#"{"val":null}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &["val"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "0");
+    }
+
+    #[test]
+    fn field_length_number_unsupported() {
+        let json = br#"{"n":42}"#;
+        let buf = pad_buffer(json);
+        assert!(
+            dom_field_length(&buf, json.len(), &["n"])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn field_length_bare_array() {
+        let json = b"[1,2,3,4,5]";
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &[]).unwrap().unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "5");
+    }
+
+    #[test]
+    fn field_length_bare_string() {
+        let json = br#""hello""#;
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &[]).unwrap().unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "5");
+    }
+
+    #[test]
+    fn field_length_nested() {
+        let json = br#"{"a":{"b":[1,2]}}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_length(&buf, json.len(), &["a", "b"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "2");
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_field_keys tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn field_keys_object() {
+        let json = br#"{"data":{"b":2,"a":1}}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_keys(&buf, json.len(), &["data"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["a","b"]"#);
+    }
+
+    #[test]
+    fn field_keys_array() {
+        let json = br#"{"items":["x","y","z"]}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_keys(&buf, json.len(), &["items"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "[0,1,2]");
+    }
+
+    #[test]
+    fn field_keys_bare_object() {
+        let json = br#"{"b":2,"a":1,"c":3}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_keys(&buf, json.len(), &[]).unwrap().unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["a","b","c"]"#);
+    }
+
+    #[test]
+    fn field_keys_missing_unsupported() {
+        let json = br#"{"name":"alice"}"#;
+        let buf = pad_buffer(json);
+        // missing field → null → unsupported for keys
+        assert!(
+            dom_field_keys(&buf, json.len(), &["missing"])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn field_keys_string_unsupported() {
+        let json = br#"{"name":"alice"}"#;
+        let buf = pad_buffer(json);
+        assert!(
+            dom_field_keys(&buf, json.len(), &["name"])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn field_keys_escaped_key() {
+        let json = br#"{"data":{"key\"with\\escape":1}}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_keys(&buf, json.len(), &["data"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            r#"["key\"with\\escape"]"#
+        );
     }
 }

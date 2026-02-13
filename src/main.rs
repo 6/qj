@@ -70,13 +70,11 @@ fn main() -> Result<()> {
         }
     };
 
-    // Detect identity-compact passthrough: `. -c` can use simdjson::minify()
-    // directly, skipping DOM parse, Value tree, eval, and output serialization.
-    let passthrough = if cli.compact {
-        jx::filter::passthrough_path(&filter)
-    } else {
-        None
-    };
+    // Detect passthrough-eligible patterns. Some (Identity, Field) require
+    // compact output; others (FieldLength, FieldKeys) produce scalars/arrays
+    // that look the same in any mode.
+    let passthrough =
+        jx::filter::passthrough_path(&filter).filter(|p| !p.requires_compact() || cli.compact);
 
     let mut had_output = false;
 
@@ -110,6 +108,43 @@ fn main() -> Result<()> {
                 out.write_all(&raw)?;
                 out.write_all(b"\n")?;
                 had_output = true;
+            }
+            Some(jx::filter::PassthroughPath::FieldLength(fields)) => {
+                let json_len = buf.len();
+                let padded = jx::simdjson::pad_buffer(&buf);
+                let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+                match jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
+                    .context("failed to compute length")?
+                {
+                    Some(result) => {
+                        out.write_all(&result)?;
+                        out.write_all(b"\n")?;
+                        had_output = true;
+                    }
+                    None => {
+                        // Unsupported type — fall back to normal pipeline
+                        let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
+                        process_input(text, &filter, &mut out, &config, &mut had_output)?;
+                    }
+                }
+            }
+            Some(jx::filter::PassthroughPath::FieldKeys(fields)) => {
+                let json_len = buf.len();
+                let padded = jx::simdjson::pad_buffer(&buf);
+                let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+                match jx::simdjson::dom_field_keys(&padded, json_len, &field_refs)
+                    .context("failed to compute keys")?
+                {
+                    Some(result) => {
+                        out.write_all(&result)?;
+                        out.write_all(b"\n")?;
+                        had_output = true;
+                    }
+                    None => {
+                        let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
+                        process_input(text, &filter, &mut out, &config, &mut had_output)?;
+                    }
+                }
             }
             None => {
                 let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
@@ -146,6 +181,64 @@ fn main() -> Result<()> {
                         out.write_all(&raw)?;
                         out.write_all(b"\n")?;
                         had_output = true;
+                    }
+                }
+                Some(jx::filter::PassthroughPath::FieldLength(fields)) => {
+                    if cli.debug_timing {
+                        field_length_timed(path, fields, &mut out, &mut had_output)?;
+                    } else {
+                        let (padded, json_len) =
+                            jx::simdjson::read_padded_file(std::path::Path::new(path))
+                                .with_context(|| format!("failed to read file: {path}"))?;
+                        let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+                        match jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
+                            .with_context(|| format!("failed to compute length: {path}"))?
+                        {
+                            Some(result) => {
+                                out.write_all(&result)?;
+                                out.write_all(b"\n")?;
+                                had_output = true;
+                            }
+                            None => {
+                                std::str::from_utf8(&padded[..json_len])
+                                    .with_context(|| format!("file is not valid UTF-8: {path}"))?;
+                                process_padded(
+                                    &padded,
+                                    json_len,
+                                    &filter,
+                                    &mut out,
+                                    &config,
+                                    &mut had_output,
+                                )?;
+                            }
+                        }
+                    }
+                }
+                Some(jx::filter::PassthroughPath::FieldKeys(fields)) => {
+                    let (padded, json_len) =
+                        jx::simdjson::read_padded_file(std::path::Path::new(path))
+                            .with_context(|| format!("failed to read file: {path}"))?;
+                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+                    match jx::simdjson::dom_field_keys(&padded, json_len, &field_refs)
+                        .with_context(|| format!("failed to compute keys: {path}"))?
+                    {
+                        Some(result) => {
+                            out.write_all(&result)?;
+                            out.write_all(b"\n")?;
+                            had_output = true;
+                        }
+                        None => {
+                            std::str::from_utf8(&padded[..json_len])
+                                .with_context(|| format!("file is not valid UTF-8: {path}"))?;
+                            process_padded(
+                                &padded,
+                                json_len,
+                                &filter,
+                                &mut out,
+                                &config,
+                                &mut had_output,
+                            )?;
+                        }
                     }
                 }
                 None => {
@@ -297,6 +390,68 @@ fn field_raw_timed(
         "  field:  {:>8.2}ms  ({:.0}%)  [DOM parse + find + to_string]",
         t_field.as_secs_f64() * 1000.0,
         t_field.as_secs_f64() / total.as_secs_f64() * 100.0
+    );
+    eprintln!(
+        "  write:  {:>8.2}ms  ({:.0}%)",
+        t_write.as_secs_f64() * 1000.0,
+        t_write.as_secs_f64() / total.as_secs_f64() * 100.0
+    );
+    eprintln!(
+        "  total:  {:>8.2}ms  ({:.0} MB/s)",
+        total.as_secs_f64() * 1000.0,
+        mb / total.as_secs_f64()
+    );
+
+    Ok(())
+}
+
+fn field_length_timed(
+    path: &str,
+    fields: &[String],
+    out: &mut impl Write,
+    had_output: &mut bool,
+) -> Result<()> {
+    use std::time::Instant;
+
+    let t0 = Instant::now();
+    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+        .with_context(|| format!("failed to read file: {path}"))?;
+    let t_read = t0.elapsed();
+
+    let t1 = Instant::now();
+    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+    let result = jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
+        .with_context(|| format!("failed to compute length: {path}"))?;
+    let t_length = t1.elapsed();
+
+    let t2 = Instant::now();
+    if let Some(data) = result {
+        out.write_all(&data)?;
+        out.write_all(b"\n")?;
+        *had_output = true;
+    }
+    out.flush()?;
+    let t_write = t2.elapsed();
+
+    let total = t_read + t_length + t_write;
+    let mb = json_len as f64 / (1024.0 * 1024.0);
+    let field_path = if fields.is_empty() {
+        ".".to_string()
+    } else {
+        format!(".{}", fields.join("."))
+    };
+    eprintln!(
+        "--- debug-timing (field length passthrough {field_path} | length): {path} ({mb:.1} MB) ---"
+    );
+    eprintln!(
+        "  read:   {:>8.2}ms  ({:.0}%)",
+        t_read.as_secs_f64() * 1000.0,
+        t_read.as_secs_f64() / total.as_secs_f64() * 100.0
+    );
+    eprintln!(
+        "  length: {:>8.2}ms  ({:.0}%)  [DOM parse + navigate + length]",
+        t_length.as_secs_f64() * 1000.0,
+        t_length.as_secs_f64() / total.as_secs_f64() * 100.0
     );
     eprintln!(
         "  write:  {:>8.2}ms  ({:.0}%)",

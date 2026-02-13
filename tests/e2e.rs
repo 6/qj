@@ -384,6 +384,98 @@ fn passthrough_field_pretty_not_affected() {
     assert_eq!(out, "{\n  \"x\": 1\n}\n");
 }
 
+// --- Passthrough: .field | length ---
+
+#[test]
+fn passthrough_field_length_compact() {
+    let out = jx_compact(".items | length", r#"{"items":[1,2,3]}"#);
+    assert_eq!(out.trim(), "3");
+}
+
+#[test]
+fn passthrough_field_length_pretty() {
+    // length produces a scalar — same output regardless of compact mode
+    let out = jx(".items | length", r#"{"items":[1,2,3]}"#);
+    assert_eq!(out.trim(), "3");
+}
+
+#[test]
+fn passthrough_nested_field_length() {
+    let out = jx(".a.b | length", r#"{"a":{"b":[10,20]}}"#);
+    assert_eq!(out.trim(), "2");
+}
+
+#[test]
+fn passthrough_missing_field_length() {
+    let out = jx(".missing | length", r#"{"name":"alice"}"#);
+    assert_eq!(out.trim(), "0");
+}
+
+#[test]
+fn passthrough_bare_length_array() {
+    let out = jx("length", "[1,2,3,4]");
+    assert_eq!(out.trim(), "4");
+}
+
+#[test]
+fn passthrough_bare_length_string() {
+    let out = jx("length", r#""hello""#);
+    assert_eq!(out.trim(), "5");
+}
+
+#[test]
+fn passthrough_bare_length_object() {
+    let out = jx("length", r#"{"a":1,"b":2,"c":3}"#);
+    assert_eq!(out.trim(), "3");
+}
+
+#[test]
+fn passthrough_field_length_object_value() {
+    let out = jx(".data | length", r#"{"data":{"x":1,"y":2}}"#);
+    assert_eq!(out.trim(), "2");
+}
+
+#[test]
+fn passthrough_field_length_string_value() {
+    let out = jx(".name | length", r#"{"name":"hello"}"#);
+    assert_eq!(out.trim(), "5");
+}
+
+// --- Passthrough: .field | keys ---
+
+#[test]
+fn passthrough_field_keys_object() {
+    let out = jx_compact(".data | keys", r#"{"data":{"b":2,"a":1}}"#);
+    assert_eq!(out.trim(), r#"["a","b"]"#);
+}
+
+#[test]
+fn passthrough_field_keys_pretty() {
+    // keys produces an array — should work without -c too
+    let out = jx(".data | keys", r#"{"data":{"b":2,"a":1}}"#);
+    // Pretty output should have newlines
+    assert!(out.contains("\"a\""));
+    assert!(out.contains("\"b\""));
+}
+
+#[test]
+fn passthrough_bare_keys_object() {
+    let out = jx_compact("keys", r#"{"b":2,"a":1,"c":3}"#);
+    assert_eq!(out.trim(), r#"["a","b","c"]"#);
+}
+
+#[test]
+fn passthrough_bare_keys_array() {
+    let out = jx_compact("keys", "[10,20,30]");
+    assert_eq!(out.trim(), "[0,1,2]");
+}
+
+#[test]
+fn passthrough_field_keys_array_value() {
+    let out = jx_compact(".items | keys", r#"{"items":["x","y"]}"#);
+    assert_eq!(out.trim(), "[0,1]");
+}
+
 // --- File input ---
 
 #[test]

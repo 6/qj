@@ -156,7 +156,7 @@ jx/
 │   └── parse_throughput.rs    # Criterion benchmarks (simdjson vs serde)
 ├── tests/
 │   ├── simdjson_ffi.rs        # simdjson FFI integration tests (15 tests)
-│   └── e2e.rs                 # End-to-end CLI tests (42 tests)
+│   └── e2e.rs                 # End-to-end CLI tests (56 tests)
 ├── build.rs                   # Compiles simdjson.cpp via cc crate
 ├── Cargo.toml
 ├── CLAUDE.md
@@ -590,7 +590,7 @@ Where we're at parity with jaq:
 All Phase 1 slices implemented: Value type, output formatter (Tier 1
 direct-to-buffer with itoa/ryu, Tier 2 pretty-print), simdjson DOM bridge
 (flat token buffer protocol), filter lexer, recursive descent parser,
-generator-based evaluator, CLI with clap. 188 tests (131 unit + 42 e2e + 15 FFI).
+generator-based evaluator, CLI with clap. 217 tests (146 unit + 56 e2e + 15 FFI).
 
 #### What was built
 
@@ -881,7 +881,7 @@ This bypasses Value construction, eval, and Rust output serialization.
   Added `collect_field_chain()` to detect `.a.b.c` pipe chains.
 - `main.rs`: Added field match arm in passthrough pre-check for both
   file and stdin paths. Added `field_raw_timed()` for `--debug-timing`.
-- 188 tests (131 unit + 42 e2e + 15 FFI), all passing.
+- 217 tests (146 unit + 56 e2e + 15 FFI), all passing.
 
 **Profiling** (large_twitter.json, 49MB, `--debug-timing`):
 
@@ -931,6 +931,79 @@ improvement would require On-Demand parsing or a sub-tree minify approach.
 |--------|----|----|-----|----------|-----------|
 | `-c '.'` | **18ms** | 1,157ms | 253ms | 63x | 14x |
 | `-c '.statuses'` | **74ms** | 1,132ms | 246ms | 15x | 3.3x |
+
+### Step 3c: Length/keys passthrough — `.field | length`, `.field | keys`
+
+**Status: COMPLETE.**
+
+`.field | length` and `.field | keys` (plus bare `length` / `keys`) now
+use dedicated C++ functions that DOM parse, navigate to the target field,
+and compute length/keys directly — bypassing Value construction, eval,
+and Rust output serialization.
+
+**Implementation:**
+- `bridge.cpp`: Factored out `navigate_fields()` shared helper (dedup
+  from `jx_dom_find_field_raw`). Added `json_escape()` for key
+  serialization. New `jx_dom_field_length()` (array/object→size,
+  string→byte length, null→0, other→fallback signal) and
+  `jx_dom_field_keys()` (object→sorted keys, array→indices, other→fallback).
+- `bridge.rs`: FFI declarations + safe `dom_field_length()` /
+  `dom_field_keys()` wrappers returning `Result<Option<Vec<u8>>>`.
+  `None` = unsupported type (caller falls back to normal pipeline).
+- `filter/mod.rs`: Extended `PassthroughPath` with `FieldLength(Vec<String>)`
+  and `FieldKeys(Vec<String>)`. Added `requires_compact()` method — returns
+  `false` for length/keys (scalar/array output is mode-independent).
+  Detection via `decompose_field_builtin()` for `Pipe(field_chain, Builtin)`
+  and bare `Builtin("length"|"keys", [])`.
+- `main.rs`: Relaxed passthrough check to `filter(|p| !p.requires_compact() || cli.compact)`.
+  New match arms for both stdin and file paths with fallback on unsupported types.
+  Added `field_length_timed()` for `--debug-timing`.
+- 217 tests (146 unit + 56 e2e + 15 FFI), all passing.
+
+**Profiling** (large_twitter.json, 49MB, `--debug-timing`):
+
+`.statuses | length`:
+
+| Phase | Time | % of total |
+|-------|------|------------|
+| Read | 4ms | 16% |
+| DOM parse + navigate + length | 23ms | 84% |
+| Write | 0ms | 0% |
+| **Total** | **28ms** | **1,765 MB/s** |
+
+**Benchmark results** (Apple Silicon, hyperfine --warmup 3, 49MB file):
+
+| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+|--------|----|----|-----|----------|-----------|
+| `.statuses \| length` | **33ms** | 398ms | 167ms | **12.2x** | **5.1x** |
+| `-c '.statuses \| keys'` | **31ms** | 393ms | 165ms | **12.6x** | **5.3x** |
+| `length` (bare) | **32ms** | 391ms | 166ms | **12.3x** | **5.2x** |
+
+Small file (twitter.json, 631KB):
+
+| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+|--------|----|----|-----|----------|-----------|
+| `.statuses \| length` | **2.0ms** | 9.3ms | 5.3ms | **4.6x** | **2.6x** |
+
+**Before vs after** (49MB file, `.statuses | length`):
+
+| | Before (Step 1) | After (Step 3c) | Improvement |
+|---|-----------------|-----------------|-------------|
+| jx | 208ms | **33ms** | **6.3x** |
+| jx vs jaq | 0.79x (jaq wins) | **5.1x** |
+| jx vs jq | 1.9x | **12.2x** |
+
+**Verification:** Output byte-identical to jq for `.statuses | length`
+and `.statuses | keys` on both twitter.json and large_twitter.json.
+
+**Updated cumulative performance table** (49MB large_twitter.json):
+
+| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+|--------|----|----|-----|----------|-----------|
+| `-c '.'` | **18ms** | 1,157ms | 253ms | 63x | 14x |
+| `-c '.statuses'` | **74ms** | 1,132ms | 246ms | 15x | 3.3x |
+| `.statuses \| length` | **33ms** | 398ms | 167ms | 12x | 5.1x |
+| `-c '.statuses \| keys'` | **31ms** | 393ms | 165ms | 13x | 5.3x |
 
 ### Step 4: NDJSON end-to-end benchmarks + parallel NDJSON
 

@@ -98,6 +98,22 @@ pub enum PassthroughPath {
     /// `.field` or `.a.b.c` — field chain; with compact output, use DOM
     /// parse + field lookup + `to_string()` directly.
     Field(Vec<String>),
+    /// `.field | length` or bare `length` — compute length in C++.
+    FieldLength(Vec<String>),
+    /// `.field | keys` or bare `keys` — compute keys in C++.
+    FieldKeys(Vec<String>),
+}
+
+impl PassthroughPath {
+    /// Whether this passthrough requires compact output mode (`-c`).
+    /// Scalar results like `length` look the same in any mode.
+    pub fn requires_compact(&self) -> bool {
+        match self {
+            PassthroughPath::Identity | PassthroughPath::Field(_) => true,
+            PassthroughPath::FieldLength(_) => false,
+            PassthroughPath::FieldKeys(_) => false,
+        }
+    }
 }
 
 /// Collect a chain of Field accesses from a Pipe tree.
@@ -113,12 +129,48 @@ fn collect_field_chain(filter: &Filter, fields: &mut Vec<String>) -> bool {
     }
 }
 
+/// Decompose `Pipe(field_chain, Builtin(name, []))` patterns.
+/// Returns `Some((fields, builtin_name))` if the filter is a field chain piped
+/// into a zero-arg builtin; `None` otherwise.
+fn decompose_field_builtin(filter: &Filter) -> Option<(Vec<String>, &str)> {
+    match filter {
+        Filter::Pipe(lhs, rhs) => {
+            if let Filter::Builtin(name, args) = rhs.as_ref() {
+                if !args.is_empty() {
+                    return None;
+                }
+                let mut fields = Vec::new();
+                if collect_field_chain(lhs, &mut fields) {
+                    return Some((fields, name.as_str()));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Check if a parsed filter is eligible for a fast passthrough path.
 pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
     match filter {
         Filter::Identity => Some(PassthroughPath::Identity),
         Filter::Field(name) => Some(PassthroughPath::Field(vec![name.clone()])),
+        // Bare `length` or `keys` (no field prefix)
+        Filter::Builtin(name, args) if args.is_empty() => match name.as_str() {
+            "length" => Some(PassthroughPath::FieldLength(vec![])),
+            "keys" => Some(PassthroughPath::FieldKeys(vec![])),
+            _ => None,
+        },
         Filter::Pipe(_, _) => {
+            // Check for .field | length / .field | keys first
+            if let Some((fields, builtin)) = decompose_field_builtin(filter) {
+                match builtin {
+                    "length" => return Some(PassthroughPath::FieldLength(fields)),
+                    "keys" => return Some(PassthroughPath::FieldKeys(fields)),
+                    _ => {}
+                }
+            }
+            // Plain field chain: .a.b.c
             let mut fields = Vec::new();
             if collect_field_chain(filter, &mut fields) {
                 Some(PassthroughPath::Field(fields))
