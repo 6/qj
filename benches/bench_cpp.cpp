@@ -127,7 +127,7 @@ static void bench_iterate_many_extract(const char* label, const padded_string& d
 }
 
 int main(int argc, char** argv) {
-    const char* data_dir = "bench/data";
+    const char* data_dir = "benches/data";
     if (argc > 1) data_dir = argv[1];
 
     printf("=== C++ simdjson benchmark (no FFI) ===\n\n");

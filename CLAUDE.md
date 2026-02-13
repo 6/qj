@@ -21,28 +21,30 @@ diff <(./target/release/jx '.field' test.json) <(jq '.field' test.json)
 
 ## Benchmarking
 
+All benchmark scripts, data generators, and results live in `benches/`.
+
 ### Parse throughput (simdjson vs serde_json)
 ```
-bash bench/download_testdata.sh   # twitter.json, citm_catalog.json, canada.json
-bash bench/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
+bash benches/download_testdata.sh   # twitter.json, citm_catalog.json, canada.json
+bash benches/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
 cargo bench --bench parse_throughput
 ```
 
 ### C++ baseline (no FFI, for overhead comparison)
 ```
-bash bench/build_cpp_bench.sh
-./bench/bench_cpp
+bash benches/build_cpp_bench.sh
+./benches/bench_cpp
 ```
 
 ### End-to-end tool comparison (jx vs jq vs jaq vs gojq)
 ```
-bash bench/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
-bash bench/bench.sh               # hyperfine across small + large files, writes BENCHMARKS.md
+bash benches/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
+bash benches/bench.sh               # hyperfine across small + large files, writes benches/results.md
 ```
 
 ### Profiling a single run
 ```
-./target/release/jx --debug-timing -c '.' bench/data/large_twitter.json > /dev/null
+./target/release/jx --debug-timing -c '.' benches/data/large_twitter.json > /dev/null
 ```
 
 ### Ad-hoc comparison
@@ -57,3 +59,4 @@ hyperfine --warmup 3 './target/release/jx ".field" test.json' 'jq ".field" test.
 - `src/parallel/` — NDJSON chunk splitter + thread pool
 - `src/output/` — pretty-print, compact, raw output formatters
 - `src/io/` — mmap for files, streaming for stdin
+- `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks

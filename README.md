@@ -16,13 +16,13 @@ cargo build --release
 
 **2-65x faster than jq** depending on workload. Largest wins on parse-dominated filters (identity, field extraction) over large files; smallest on complex filters where evaluator cost dominates.
 
-See [BENCHMARKS.md](BENCHMARKS.md) for full results across filter tiers and file sizes.
+See [benches/results.md](benches/results.md) for full results from local dedicated hardware. CI also produces [directional results](benches/results_ci.md) on shared runners.
 
 To reproduce locally:
 
 ```bash
 brew install hyperfine jq jaq gojq
-bash bench/download_testdata.sh
-bash bench/gen_large.sh
-bash bench/bench.sh
+bash benches/download_testdata.sh
+bash benches/gen_large.sh
+bash benches/bench.sh
 ```

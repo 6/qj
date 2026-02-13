@@ -228,7 +228,7 @@ fn main() {
         println!("\n");
     }
 
-    let data_dir = Path::new("bench/data");
+    let data_dir = Path::new("benches/data");
 
     // --- Single-file benchmarks ---
     // (field, None) = no top-level string field to test find_field_str against.
@@ -241,7 +241,7 @@ fn main() {
     for &(fname, field) in files {
         let path = data_dir.join(fname);
         if !path.exists() {
-            println!("{fname:<40} SKIPPED (run bench/download_testdata.sh)");
+            println!("{fname:<40} SKIPPED (run benches/download_testdata.sh)");
             continue;
         }
 
@@ -278,7 +278,7 @@ fn main() {
     for &fname in ndjson_files {
         let path = data_dir.join(fname);
         if !path.exists() {
-            println!("{fname:<40} SKIPPED (run bench/generate_ndjson.sh)");
+            println!("{fname:<40} SKIPPED (run benches/generate_ndjson.sh)");
             continue;
         }
 

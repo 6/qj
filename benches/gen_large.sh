@@ -7,7 +7,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)/data"
 TWITTER="$DIR/twitter.json"
 
 if [ ! -f "$TWITTER" ]; then
-    echo "Error: $TWITTER not found. Run bench/download_testdata.sh first."
+    echo "Error: $TWITTER not found. Run benches/download_testdata.sh first."
     exit 1
 fi
 

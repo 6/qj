@@ -61,13 +61,13 @@ Already exist or are trivial to generate via existing scripts:
 
 | File | Size | Type | Generator |
 |------|------|------|-----------|
-| `twitter.json` | 631 KB | Single JSON | `bench/download_testdata.sh` |
-| `citm_catalog.json` | 1.7 MB | Single JSON | `bench/download_testdata.sh` |
-| `canada.json` | 2.2 MB | Single JSON (numeric-heavy) | `bench/download_testdata.sh` |
-| `large_twitter.json` | ~49 MB | Single JSON | `bench/gen_large.sh` |
-| `large.jsonl` | ~50 MB | NDJSON | `bench/gen_large.sh` |
-| `100k.ndjson` | ~8 MB | NDJSON (synthetic) | `bench/generate_ndjson.sh` |
-| `1m.ndjson` | ~82 MB | NDJSON (synthetic) | `bench/generate_ndjson.sh` |
+| `twitter.json` | 631 KB | Single JSON | `benches/download_testdata.sh` |
+| `citm_catalog.json` | 1.7 MB | Single JSON | `benches/download_testdata.sh` |
+| `canada.json` | 2.2 MB | Single JSON (numeric-heavy) | `benches/download_testdata.sh` |
+| `large_twitter.json` | ~49 MB | Single JSON | `benches/gen_large.sh` |
+| `large.jsonl` | ~50 MB | NDJSON | `benches/gen_large.sh` |
+| `100k.ndjson` | ~8 MB | NDJSON (synthetic) | `benches/generate_ndjson.sh` |
+| `1m.ndjson` | ~82 MB | NDJSON (synthetic) | `benches/generate_ndjson.sh` |
 
 **Future (for parallel benchmarks):**
 - `xl.ndjson` — 500MB+ generated NDJSON, needed to show parallel scaling
@@ -92,7 +92,7 @@ both tells an honest story.
 
 ### Tools compared
 
-All four are already used in `bench/run_bench.sh`:
+All four are already used in `benches/run_bench.sh`:
 - **jx** (this project)
 - **jq** 1.7+ (reference implementation)
 - **jaq** 2.x (fastest Rust alternative)
@@ -106,22 +106,22 @@ All four are already used in `bench/run_bench.sh`:
 
 | Script | Purpose |
 |--------|---------|
-| `bench/run_bench.sh` | Hyperfine: jx vs jq vs jaq vs gojq on twitter.json + large_twitter.json |
-| `bench/compare_tools.sh` | Older baseline script (jq vs jaq only, no jx) |
-| `bench/download_testdata.sh` | Downloads twitter.json, citm_catalog.json, canada.json |
-| `bench/gen_large.sh` | Generates large_twitter.json (~49MB) + large.jsonl (~50MB) |
-| `bench/generate_ndjson.sh` | Generates 100k.ndjson + 1m.ndjson via gen_ndjson binary |
-| `bench/build_cpp_bench.sh` | Builds C++ simdjson baseline benchmark |
+| `benches/run_bench.sh` | Hyperfine: jx vs jq vs jaq vs gojq on twitter.json + large_twitter.json |
+| `benches/compare_tools.sh` | Older baseline script (jq vs jaq only, no jx) |
+| `benches/download_testdata.sh` | Downloads twitter.json, citm_catalog.json, canada.json |
+| `benches/gen_large.sh` | Generates large_twitter.json (~49MB) + large.jsonl (~50MB) |
+| `benches/generate_ndjson.sh` | Generates 100k.ndjson + 1m.ndjson via gen_ndjson binary |
+| `benches/build_cpp_bench.sh` | Builds C++ simdjson baseline benchmark |
 | `benches/parse_throughput.rs` | Rust benchmark: simdjson vs serde_json parse speed |
 
-### `bench/bench.sh` (implemented)
+### `benches/bench.sh` (implemented)
 
-Replaces `bench/run_bench.sh` as the primary benchmark script:
+Replaces `benches/run_bench.sh` as the primary benchmark script:
 
 1. **Correctness validation:** Compares jx vs jq output for every
    filter+file combo before timing
 2. **JSON export:** `hyperfine --export-json` for every run, saved to
-   `bench/results/`
+   `benches/results/`
 3. **Platform tagging:** Captures `uname -ms` and date in output
 4. **Full tier coverage:** All 5 filter tiers on both small + large files
 5. **Writes `BENCHMARKS.md`:** Markdown table with bold jx column,
@@ -136,7 +136,7 @@ Existing helper scripts (`download_testdata.sh`, `gen_large.sh`,
 ### Results directory
 
 ```
-bench/results/
+benches/results/
   2025-06-15-darwin-arm64.json
   2025-06-15-linux-x86_64.json
   ...
@@ -206,7 +206,7 @@ name: Benchmarks
 on:
   push:
     branches: [main]
-    paths: ['src/**', 'bench/**', 'benches/**', 'Cargo.toml', 'Cargo.lock']
+    paths: ['src/**', 'benches/**', 'Cargo.toml', 'Cargo.lock']
   workflow_dispatch:
 
 permissions:
@@ -255,18 +255,18 @@ jobs:
 
       - name: Download/generate test data
         run: |
-          bash bench/download_testdata.sh
-          bash bench/gen_large.sh
-          bash bench/generate_ndjson.sh
+          bash benches/download_testdata.sh
+          bash benches/gen_large.sh
+          bash benches/generate_ndjson.sh
 
       - name: Cache test data
         uses: actions/cache@v4
         with:
-          path: bench/data
+          path: benches/data
           key: bench-data-v1
 
       - name: Run benchmarks
-        run: bash bench/bench.sh
+        run: bash benches/bench.sh
 
       - name: Commit BENCHMARKS.md
         run: |
@@ -278,9 +278,9 @@ jobs:
 ```
 
 Notes:
-- No `schedule:` trigger. Path filter on `src/**`, `bench/**`, `Cargo.toml`
+- No `schedule:` trigger. Path filter on `src/**`, `benches/**`, `Cargo.toml`
   ensures benchmarks only run when code actually changes.
-- `bench/bench.sh` writes `BENCHMARKS.md` directly — no external actions needed.
+- `benches/bench.sh` writes results directly — no external actions needed.
 - `[skip ci]` in the commit message prevents an infinite loop.
 - `git diff --staged --quiet ||` ensures no empty commits when results are unchanged.
 
@@ -307,7 +307,7 @@ contributors that regressions become frequent, upgrade to
 
 ### `BENCHMARKS.md` (auto-generated by CI)
 
-`bench/bench.sh` writes a markdown file with tables per platform:
+`benches/bench.sh` writes a markdown file with tables per platform:
 
 ```markdown
 # Benchmarks
@@ -361,8 +361,8 @@ Include a short "Understanding the numbers" section at the top of
 
 ## 8. Implementation Order
 
-1. ~~**Create `bench/bench.sh`**~~ — **Done.** Correctness checks, 5 filter tiers, writes `BENCHMARKS.md`, bold jx column.
-2. ~~**Add `bench/results/` to `.gitignore`**~~ — **Done.**
+1. ~~**Create `benches/bench.sh`**~~ — **Done.** Correctness checks, 5 filter tiers, writes `BENCHMARKS.md`, bold jx column.
+2. ~~**Add `benches/results/` to `.gitignore`**~~ — **Done.**
 3. ~~**Create `.github/workflows/checks.yml`**~~ — **Done.** Build + test on ubuntu-24.04 + macos-26, mise-action, rust-cache.
 4. ~~**Create `.github/workflows/benchmark.yml`**~~ — **Done.** Full benchmark suite with cross-platform matrix, merges results, commits `BENCHMARKS.md`.
 5. ~~**Update README**~~ — **Done.** Links to `BENCHMARKS.md`, shows speedup range, includes repro command.

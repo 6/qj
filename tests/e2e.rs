@@ -481,7 +481,8 @@ fn passthrough_field_keys_array_value() {
 #[test]
 fn file_input() {
     // twitter.json is a real test file
-    let twitter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/data/twitter.json");
+    let twitter =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/data/twitter.json");
     if twitter.exists() {
         let output = Command::new(env!("CARGO_BIN_EXE_jx"))
             .args(["-c", ".statuses | length", twitter.to_str().unwrap()])

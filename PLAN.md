@@ -150,7 +150,7 @@ jx/
 │       ├── lexer.rs           # Tokenizer (47 token types)
 │       ├── parser.rs          # Recursive descent parser → Filter AST
 │       └── eval.rs            # Generator evaluator, 30+ builtins
-├── bench/
+├── benches/
 │   ├── data/                  # twitter.json, canada.json, citm_catalog.json, NDJSON
 │   ├── gen_ndjson.rs          # NDJSON test data generator
 │   └── parse_throughput.rs    # Criterion benchmarks (simdjson vs serde)
@@ -325,7 +325,7 @@ expected throughput advantage over serde_json, simd-json (Rust port), and
 jq's parser. This is the entire thesis — if simdjson's On-Demand API isn't
 5x+ faster than serde_json, the project doesn't have a compelling story.
 
-**What to build:** `bench/parse-throughput/`
+**What to build:** `benches/parse-throughput/`
 
 Two benchmark binaries:
 1. **Rust benchmark** (`bench.rs`): Parses test files via serde_json and
@@ -1012,7 +1012,7 @@ hasn't been benchmarked end-to-end. This is jx's strongest positioning
 — SIMD parse + parallelism on independent lines.
 
 **Phase 1: benchmark single-threaded NDJSON.** Add 1m.ndjson to
-`bench/run_bench.sh`. Measure jx vs jq vs jaq vs gojq. This gives
+`benches/run_bench.sh`. Measure jx vs jq vs jaq vs gojq. This gives
 the single-threaded baseline before parallelism.
 
 **Phase 2: parallel NDJSON.** Design from Phase 2 section holds:
@@ -1157,7 +1157,7 @@ confirms rayon is using multiple cores effectively.
 - `src/parallel/mod.rs` — module root
 - `src/main.rs` — `--jsonl` flag, NDJSON detection in stdin + file paths
 - `tests/ndjson.rs` — 18 integration tests
-- `bench/bench.sh` — NDJSON benchmark sections
+- `benches/bench.sh` — NDJSON benchmark sections
 
 **Deviations from plan:**
 - Used DOM parse per line (not `iterate_many`) for the general case.

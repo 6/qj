@@ -2,6 +2,7 @@
 name = "jx"
 version = "0.1.0"
 edition = "2024"
+autobenches = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -28,4 +29,4 @@ harness = false
 
 [[bin]]
 name = "gen_ndjson"
-path = "bench/gen_ndjson.rs"
+path = "benches/gen_ndjson.rs"

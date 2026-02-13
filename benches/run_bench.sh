@@ -4,7 +4,7 @@
 set -euo pipefail
 
 JX="./target/release/jx"
-DATA="bench/data"
+DATA="benches/data"
 
 if [ ! -f "$JX" ]; then
     echo "Error: $JX not found. Run: cargo build --release"
@@ -57,7 +57,7 @@ run_bench "Filter: '.statuses[]|.user.name' (iterate+field)" \
     "gojq .statuses[]|.user.name $DATA/twitter.json"
 
 if [ ! -f "$DATA/large_twitter.json" ]; then
-    echo "Skipping large file benchmarks. Run: bash bench/gen_large.sh"
+    echo "Skipping large file benchmarks. Run: bash benches/gen_large.sh"
     exit 0
 fi
 

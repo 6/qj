@@ -11,10 +11,10 @@ target/
 **/*.rs.bk
 
 # Benchmark data (large, generated)
-bench/data/
+benches/data/
 
 # Compiled C++ benchmark binary
-bench/bench_cpp
+benches/bench_cpp
 
 # Benchmark results (generated)
-bench/results/
+benches/results/
