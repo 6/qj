@@ -196,6 +196,61 @@ fn ndjson_output_order_preserved() {
     assert_eq!(out, expected);
 }
 
+// --- Error handling ---
+
+fn jx_stdin_lossy(args: &[&str], input: &str) -> (String, String, bool) {
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (stdout, stderr, output.status.success())
+}
+
+#[test]
+fn ndjson_malformed_line_mixed() {
+    // Mix of valid and invalid JSON lines
+    let input = "{\"a\":1}\nnot json\n{\"b\":2}\n";
+    let (stdout, _stderr, _success) = jx_stdin_lossy(&["-c", "."], input);
+    // Valid lines should still produce output
+    assert!(stdout.contains("{\"a\":1}"));
+    assert!(stdout.contains("{\"b\":2}"));
+}
+
+#[test]
+fn ndjson_whitespace_only_lines() {
+    // Lines with only whitespace between valid JSON
+    let input = "{\"a\":1}\n   \n\t\n{\"b\":2}\n";
+    let out = jx_stdin(&["-c", "."], input);
+    assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
+}
+
+#[test]
+fn ndjson_large_line_count_ordering() {
+    // 10,000 lines — verify ordering is preserved
+    let mut input = String::new();
+    for i in 0..10_000 {
+        input.push_str(&format!("{{\"i\":{i}}}\n"));
+    }
+    let out = jx_stdin(&["-c", ".i"], &input);
+    let expected: String = (0..10_000).map(|i| format!("{i}\n")).collect();
+    assert_eq!(out, expected);
+}
+
 // --- Array NDJSON ---
 
 #[test]

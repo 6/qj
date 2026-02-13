@@ -20,6 +20,21 @@ Run `cargo test` after any code change — it's fast.
     notation, and raw text are preserved from JSON input through output.
 - **NDJSON tests:** `tests/ndjson.rs` — parallel NDJSON processing integration tests.
 - **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
+- **jq conformance suite:** `tests/jq_conformance.rs` — runs jq's official test suite
+  (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against jx and reports pass rate.
+  ```
+  cargo test jq_conformance -- --nocapture                              # summary
+  cargo test jq_conformance_verbose -- --nocapture --ignored            # show failures
+  ```
+- **Cross-tool compat comparison:** `tests/jq_compat/run_compat.sh` — runs jq.test against
+  jx, jq, jaq, and gojq (whichever are on `$PATH`) and prints pass rates.
+  ```
+  bash tests/jq_compat/run_compat.sh            # summary
+  bash tests/jq_compat/run_compat.sh -v          # show failures
+  ```
+- **When adding new jq builtins or language features**, always:
+  1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
+  2. Re-run `bash tests/jq_compat/run_compat.sh` and update jq compat % in `README.md`
 - **Conformance:** compare output against jq on real data.
 ```
 diff <(./target/release/jx '.field' test.json) <(jq '.field' test.json)

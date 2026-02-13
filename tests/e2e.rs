@@ -529,6 +529,617 @@ fn number_pretty_preserves_formatting() {
     );
 }
 
+// --- Error helper ---
+
+fn jx_err(filter: &str, input: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .arg(filter)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+    assert!(
+        !output.status.success(),
+        "expected jx to fail but it succeeded with stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    String::from_utf8(output.stderr).unwrap_or_default()
+}
+
+fn jx_args(args: &[&str], input: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+    assert!(
+        output.status.success(),
+        "jx {:?} exited with {}: stderr={}",
+        args,
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("jx output was not valid UTF-8")
+}
+
+// --- Builtin: any ---
+
+#[test]
+fn builtin_any_with_condition() {
+    assert_eq!(jx_compact("any(. > 2)", "[1,2,3]").trim(), "true");
+}
+
+#[test]
+fn builtin_any_bare() {
+    assert_eq!(jx_compact("any", "[false,null,1]").trim(), "true");
+}
+
+#[test]
+fn builtin_any_all_false() {
+    assert_eq!(jx_compact("any", "[false,null,false]").trim(), "false");
+}
+
+// --- Builtin: all ---
+
+#[test]
+fn builtin_all_with_condition() {
+    assert_eq!(jx_compact("all(. > 0)", "[1,2,3]").trim(), "true");
+}
+
+#[test]
+fn builtin_all_fails() {
+    assert_eq!(jx_compact("all(. > 2)", "[1,2,3]").trim(), "false");
+}
+
+#[test]
+fn builtin_all_bare() {
+    assert_eq!(jx_compact("all", "[true,1,\"yes\"]").trim(), "true");
+}
+
+// --- Builtin: contains ---
+
+#[test]
+fn builtin_contains_string() {
+    assert_eq!(jx_compact(r#"contains("ll")"#, r#""hello""#).trim(), "true");
+}
+
+#[test]
+fn builtin_contains_array() {
+    assert_eq!(jx_compact("contains([2])", "[1,2,3]").trim(), "true");
+}
+
+#[test]
+fn builtin_contains_object() {
+    assert_eq!(
+        jx_compact(r#"contains({"a":1})"#, r#"{"a":1,"b":2}"#).trim(),
+        "true"
+    );
+}
+
+// --- Builtin: to_entries / from_entries ---
+
+#[test]
+fn builtin_to_entries() {
+    assert_eq!(
+        jx_compact("to_entries", r#"{"a":1}"#).trim(),
+        r#"[{"key":"a","value":1}]"#
+    );
+}
+
+#[test]
+fn builtin_from_entries() {
+    assert_eq!(
+        jx_compact("from_entries", r#"[{"key":"a","value":1}]"#).trim(),
+        r#"{"a":1}"#
+    );
+}
+
+#[test]
+fn builtin_from_entries_name_value() {
+    assert_eq!(
+        jx_compact("from_entries", r#"[{"name":"a","value":1}]"#).trim(),
+        r#"{"a":1}"#
+    );
+}
+
+// --- Builtin: flatten ---
+
+#[test]
+fn builtin_flatten() {
+    assert_eq!(jx_compact("flatten", "[[1,[2]],3]").trim(), "[1,2,3]");
+}
+
+#[test]
+fn builtin_flatten_depth() {
+    assert_eq!(jx_compact("flatten(1)", "[[1,[2]],3]").trim(), "[1,[2],3]");
+}
+
+// --- Builtin: first / last ---
+
+#[test]
+fn builtin_first_bare() {
+    assert_eq!(jx_compact("first", "[1,2,3]").trim(), "1");
+}
+
+#[test]
+fn builtin_first_generator() {
+    assert_eq!(jx_compact("first(.[])", "[10,20,30]").trim(), "10");
+}
+
+#[test]
+fn builtin_last_bare() {
+    assert_eq!(jx_compact("last", "[1,2,3]").trim(), "3");
+}
+
+#[test]
+fn builtin_last_generator() {
+    assert_eq!(jx_compact("last(.[])", "[10,20,30]").trim(), "30");
+}
+
+// --- Builtin: group_by ---
+
+#[test]
+fn builtin_group_by() {
+    let out = jx_compact(
+        "group_by(.a)",
+        r#"[{"a":1,"b":"x"},{"a":2,"b":"y"},{"a":1,"b":"z"}]"#,
+    );
+    assert_eq!(
+        out.trim(),
+        r#"[[{"a":1,"b":"x"},{"a":1,"b":"z"}],[{"a":2,"b":"y"}]]"#
+    );
+}
+
+// --- Builtin: unique / unique_by ---
+
+#[test]
+fn builtin_unique() {
+    assert_eq!(jx_compact("unique", "[1,2,1,3]").trim(), "[1,2,3]");
+}
+
+#[test]
+fn builtin_unique_by() {
+    let out = jx_compact(
+        "unique_by(.a)",
+        r#"[{"a":1,"b":1},{"a":2,"b":2},{"a":1,"b":3}]"#,
+    );
+    assert_eq!(out.trim(), r#"[{"a":1,"b":1},{"a":2,"b":2}]"#);
+}
+
+// --- Builtin: min / max ---
+
+#[test]
+fn builtin_min() {
+    assert_eq!(jx_compact("min", "[3,1,2]").trim(), "1");
+}
+
+#[test]
+fn builtin_max() {
+    assert_eq!(jx_compact("max", "[3,1,2]").trim(), "3");
+}
+
+#[test]
+fn builtin_min_empty() {
+    assert_eq!(jx_compact("min", "[]").trim(), "null");
+}
+
+#[test]
+fn builtin_max_empty() {
+    assert_eq!(jx_compact("max", "[]").trim(), "null");
+}
+
+// --- Builtin: min_by / max_by ---
+
+#[test]
+fn builtin_min_by() {
+    assert_eq!(
+        jx_compact("min_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#).trim(),
+        r#"{"x":1}"#
+    );
+}
+
+#[test]
+fn builtin_max_by() {
+    assert_eq!(
+        jx_compact("max_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#).trim(),
+        r#"{"x":3}"#
+    );
+}
+
+// --- Builtin: sort_by ---
+
+#[test]
+fn builtin_sort_by() {
+    assert_eq!(
+        jx_compact("sort_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#).trim(),
+        r#"[{"x":1},{"x":2},{"x":3}]"#
+    );
+}
+
+// --- Builtin: del ---
+
+#[test]
+fn builtin_del() {
+    assert_eq!(
+        jx_compact("del(.a)", r#"{"a":1,"b":2}"#).trim(),
+        r#"{"b":2}"#
+    );
+}
+
+// --- Builtin: ltrimstr / rtrimstr ---
+
+#[test]
+fn builtin_ltrimstr() {
+    assert_eq!(
+        jx_compact(r#"ltrimstr("hel")"#, r#""hello""#).trim(),
+        r#""lo""#
+    );
+}
+
+#[test]
+fn builtin_rtrimstr() {
+    assert_eq!(
+        jx_compact(r#"rtrimstr("lo")"#, r#""hello""#).trim(),
+        r#""hel""#
+    );
+}
+
+// --- Builtin: startswith / endswith ---
+
+#[test]
+fn builtin_startswith() {
+    assert_eq!(
+        jx_compact(r#"startswith("hel")"#, r#""hello""#).trim(),
+        "true"
+    );
+    assert_eq!(
+        jx_compact(r#"startswith("xyz")"#, r#""hello""#).trim(),
+        "false"
+    );
+}
+
+#[test]
+fn builtin_endswith() {
+    assert_eq!(
+        jx_compact(r#"endswith("llo")"#, r#""hello""#).trim(),
+        "true"
+    );
+    assert_eq!(
+        jx_compact(r#"endswith("xyz")"#, r#""hello""#).trim(),
+        "false"
+    );
+}
+
+// --- Builtin: tonumber / tostring ---
+
+#[test]
+fn builtin_tonumber() {
+    assert_eq!(jx_compact("tonumber", r#""42""#).trim(), "42");
+    assert_eq!(jx_compact("tonumber", r#""3.14""#).trim(), "3.14");
+    assert_eq!(jx_compact("tonumber", "42").trim(), "42");
+}
+
+#[test]
+fn builtin_tostring() {
+    assert_eq!(jx_compact("tostring", "42").trim(), r#""42""#);
+    assert_eq!(jx_compact("tostring", "null").trim(), r#""null""#);
+    assert_eq!(jx_compact("tostring", "true").trim(), r#""true""#);
+}
+
+// --- Builtin: values ---
+
+#[test]
+fn builtin_values_object() {
+    let out = jx_compact("values", r#"{"a":1,"b":2}"#);
+    assert_eq!(out.trim(), "[1,2]");
+}
+
+#[test]
+fn builtin_values_array() {
+    let out = jx_compact("values", "[10,20,30]");
+    assert_eq!(out.trim(), "[10,20,30]");
+}
+
+// --- Builtin: empty ---
+
+#[test]
+fn builtin_empty() {
+    let out = jx_compact("[1, empty, 2]", "null");
+    assert_eq!(out.trim(), "[1,2]");
+}
+
+// --- Builtin: not ---
+
+#[test]
+fn builtin_not_true() {
+    assert_eq!(jx_compact("not", "true").trim(), "false");
+}
+
+#[test]
+fn builtin_not_false() {
+    assert_eq!(jx_compact("not", "false").trim(), "true");
+}
+
+#[test]
+fn builtin_not_null() {
+    assert_eq!(jx_compact("not", "null").trim(), "true");
+}
+
+// --- Builtin: keys_unsorted ---
+
+#[test]
+fn builtin_keys_unsorted() {
+    let out = jx_compact("keys_unsorted", r#"{"b":2,"a":1}"#);
+    // keys_unsorted preserves insertion order
+    assert_eq!(out.trim(), r#"["b","a"]"#);
+}
+
+// --- Builtin: has (e2e) ---
+
+#[test]
+fn builtin_has_object() {
+    assert_eq!(jx_compact(r#"has("a")"#, r#"{"a":1,"b":2}"#).trim(), "true");
+    assert_eq!(
+        jx_compact(r#"has("z")"#, r#"{"a":1,"b":2}"#).trim(),
+        "false"
+    );
+}
+
+#[test]
+fn builtin_has_array() {
+    assert_eq!(jx_compact("has(1)", "[10,20,30]").trim(), "true");
+    assert_eq!(jx_compact("has(5)", "[10,20,30]").trim(), "false");
+}
+
+// --- Builtin: type (e2e) ---
+
+#[test]
+fn builtin_type_all() {
+    assert_eq!(jx_compact("type", "42").trim(), r#""number""#);
+    assert_eq!(jx_compact("type", r#""hi""#).trim(), r#""string""#);
+    assert_eq!(jx_compact("type", "true").trim(), r#""boolean""#);
+    assert_eq!(jx_compact("type", "false").trim(), r#""boolean""#);
+    assert_eq!(jx_compact("type", "null").trim(), r#""null""#);
+    assert_eq!(jx_compact("type", "[1]").trim(), r#""array""#);
+    assert_eq!(jx_compact("type", r#"{"a":1}"#).trim(), r#""object""#);
+}
+
+// --- Builtin: ascii_downcase / ascii_upcase (dedicated e2e) ---
+
+#[test]
+fn builtin_ascii_downcase() {
+    assert_eq!(
+        jx_compact("ascii_downcase", r#""HELLO WORLD""#).trim(),
+        r#""hello world""#
+    );
+}
+
+#[test]
+fn builtin_ascii_upcase() {
+    assert_eq!(
+        jx_compact("ascii_upcase", r#""hello world""#).trim(),
+        r#""HELLO WORLD""#
+    );
+}
+
+// --- Language: Recursive descent ---
+
+#[test]
+fn recursive_descent_numbers() {
+    let out = jx_compact("[.. | numbers]", r#"{"a":1,"b":{"c":2},"d":[3]}"#);
+    assert_eq!(out.trim(), "[1,2,3]");
+}
+
+#[test]
+fn recursive_descent_strings() {
+    let out = jx_compact("[.. | strings]", r#"{"a":"x","b":{"c":"y"}}"#);
+    assert_eq!(out.trim(), r#"["x","y"]"#);
+}
+
+// --- Language: Boolean and/or ---
+
+#[test]
+fn boolean_and() {
+    assert_eq!(jx_compact("true and false", "null").trim(), "false");
+    assert_eq!(jx_compact("true and true", "null").trim(), "true");
+}
+
+#[test]
+fn boolean_or() {
+    assert_eq!(jx_compact("false or true", "null").trim(), "true");
+    assert_eq!(jx_compact("false or false", "null").trim(), "false");
+}
+
+// --- Language: not (as filter) ---
+
+#[test]
+fn not_in_select() {
+    let out = jx_compact("[.[] | select(. > 2 | not)]", "[1,2,3,4,5]");
+    assert_eq!(out.trim(), "[1,2]");
+}
+
+// --- Language: Try (?) ---
+
+#[test]
+fn try_operator_suppresses_error() {
+    // .foo? on a non-object should produce no output instead of error
+    let out = jx_compact(".foo?", "[1,2,3]");
+    assert_eq!(out.trim(), "null");
+}
+
+#[test]
+fn try_operator_on_iteration() {
+    // .[]? on null should produce no output
+    let out = jx_compact(".[]?", "null");
+    assert!(out.trim().is_empty(), "expected no output, got: {out}");
+}
+
+// --- Language: Unary negation ---
+
+#[test]
+fn unary_negation() {
+    // Filter starts with '-', so we need '--' to prevent CLI arg parsing
+    let out = jx_args(&["-c", "--", "-(. + 1)"], "5");
+    assert_eq!(out.trim(), "-6");
+}
+
+#[test]
+fn negative_literal() {
+    let out = jx_args(&["-c", "--", "-3"], "null");
+    assert_eq!(out.trim(), "-3");
+}
+
+// --- Language: If-then (no else) ---
+
+#[test]
+fn if_then_no_else_true() {
+    let out = jx_compact(r#"if . > 5 then "big" end"#, "10");
+    assert_eq!(out.trim(), r#""big""#);
+}
+
+#[test]
+fn if_then_no_else_false() {
+    // When condition is false and no else, jq passes through the input
+    let out = jx_compact(r#"if . > 5 then "big" end"#, "3");
+    assert_eq!(out.trim(), "3");
+}
+
+// --- Language: Object shorthand ---
+
+#[test]
+fn object_shorthand() {
+    let out = jx_compact("{name}", r#"{"name":"alice","age":30}"#);
+    assert_eq!(out.trim(), r#"{"name":"alice"}"#);
+}
+
+// --- Language: Computed object keys ---
+
+#[test]
+fn computed_object_keys() {
+    let out = jx_compact("{(.key): .value}", r#"{"key":"name","value":"alice"}"#);
+    assert_eq!(out.trim(), r#"{"name":"alice"}"#);
+}
+
+// --- Language: Parenthesized expressions ---
+
+#[test]
+fn parenthesized_expression() {
+    assert_eq!(jx_compact("(.a + .b) * 2", r#"{"a":3,"b":4}"#).trim(), "14");
+}
+
+// --- Edge cases: Error handling ---
+
+#[test]
+fn error_invalid_json_input() {
+    let stderr = jx_err(".", "not json");
+    assert!(!stderr.is_empty(), "expected error message on stderr");
+}
+
+#[test]
+fn error_invalid_filter_syntax() {
+    let stderr = jx_err(".[", "{}");
+    assert!(!stderr.is_empty(), "expected parse error on stderr");
+}
+
+// --- Edge cases: Null propagation ---
+
+#[test]
+fn null_propagation_deep() {
+    assert_eq!(jx_compact(".missing.deep.path", "{}").trim(), "null");
+}
+
+// --- Edge cases: Null iteration ---
+
+#[test]
+fn null_iteration_no_output() {
+    let out = jx_compact(".[]?", "null");
+    assert!(out.trim().is_empty());
+}
+
+// --- Edge cases: Field on array ---
+
+#[test]
+fn field_on_array_returns_null() {
+    assert_eq!(jx_compact(".x", "[1,2]").trim(), "null");
+}
+
+// --- Edge cases: Index out of bounds ---
+
+#[test]
+fn index_out_of_bounds() {
+    assert_eq!(jx_compact(".[99]", "[1,2,3]").trim(), "null");
+}
+
+// --- Edge cases: Deeply nested JSON ---
+
+#[test]
+fn deeply_nested_json() {
+    // Build 100-level nested object: {"a":{"a":{"a":...42...}}}
+    let mut json = String::new();
+    for _ in 0..100 {
+        json.push_str(r#"{"a":"#);
+    }
+    json.push_str("42");
+    for _ in 0..100 {
+        json.push('}');
+    }
+    let out = jx_compact(".", &json);
+    assert!(out.contains("42"));
+}
+
+// --- Edge cases: Empty object/array ---
+
+#[test]
+fn empty_object_keys() {
+    assert_eq!(jx_compact("keys", "{}").trim(), "[]");
+}
+
+#[test]
+fn empty_array_length() {
+    assert_eq!(jx_compact("length", "[]").trim(), "0");
+}
+
+// --- Edge cases: Null-input flag ---
+
+#[test]
+fn null_input_flag() {
+    let out = jx_args(&["-n", "-c", "null"], "");
+    assert_eq!(out.trim(), "null");
+}
+
+// --- Edge cases: Large integers ---
+
+#[test]
+fn large_integer_i64_max() {
+    assert_eq!(
+        jx_compact(".", "9223372036854775807").trim(),
+        "9223372036854775807"
+    );
+}
+
 // --- jq conformance tests ---
 // These run both jx and jq and verify identical output.
 // If jq is not installed, the tests pass (they only assert when both are available).
@@ -637,6 +1248,50 @@ fn jq_compat_string_ops() {
 fn jq_compat_conditionals() {
     assert_jq_compat(r#"if . > 5 then "big" else "small" end"#, "10");
     assert_jq_compat(".x // 42", r#"{"y":1}"#);
+}
+
+// --- Extended jq conformance ---
+
+#[test]
+fn jq_compat_to_entries_from_entries_roundtrip() {
+    assert_jq_compat("to_entries | from_entries", r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn jq_compat_unique() {
+    assert_jq_compat("unique", "[1,2,1,3,2]");
+}
+
+#[test]
+fn jq_compat_flatten() {
+    assert_jq_compat("flatten", "[[1,[2]],3]");
+}
+
+#[test]
+fn jq_compat_group_by() {
+    assert_jq_compat("group_by(.a)", r#"[{"a":1},{"a":2},{"a":1}]"#);
+}
+
+#[test]
+fn jq_compat_min_max() {
+    assert_jq_compat("min", "[3,1,2]");
+    assert_jq_compat("max", "[3,1,2]");
+}
+
+#[test]
+fn jq_compat_del() {
+    assert_jq_compat("del(.a)", r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn jq_compat_recursive_descent() {
+    assert_jq_compat("[.. | numbers]", r#"{"a":1,"b":{"c":2}}"#);
+}
+
+#[test]
+fn jq_compat_any_all() {
+    assert_jq_compat("any(. > 2)", "[1,2,3]");
+    assert_jq_compat("all(. > 0)", "[1,2,3]");
 }
 
 // --- File input ---

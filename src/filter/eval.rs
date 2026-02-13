@@ -436,6 +436,47 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         "null" => output(Value::Null),
         "true" => output(Value::Bool(true)),
         "false" => output(Value::Bool(false)),
+        // Type-selector builtins — act like select(type == T)
+        "numbers" => {
+            if matches!(input, Value::Int(_) | Value::Double(..)) {
+                output(input.clone());
+            }
+        }
+        "strings" => {
+            if matches!(input, Value::String(_)) {
+                output(input.clone());
+            }
+        }
+        "booleans" => {
+            if matches!(input, Value::Bool(_)) {
+                output(input.clone());
+            }
+        }
+        "nulls" => {
+            if matches!(input, Value::Null) {
+                output(input.clone());
+            }
+        }
+        "arrays" => {
+            if matches!(input, Value::Array(_)) {
+                output(input.clone());
+            }
+        }
+        "objects" => {
+            if matches!(input, Value::Object(_)) {
+                output(input.clone());
+            }
+        }
+        "iterables" => {
+            if matches!(input, Value::Array(_) | Value::Object(_)) {
+                output(input.clone());
+            }
+        }
+        "scalars" => {
+            if !matches!(input, Value::Array(_) | Value::Object(_)) {
+                output(input.clone());
+            }
+        }
         "map" => {
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
                 let mut result = Vec::with_capacity(arr.len());
