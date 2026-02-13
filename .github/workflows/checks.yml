@@ -12,8 +12,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: jdx/mise-action@v2
 
