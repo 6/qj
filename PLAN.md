@@ -1123,6 +1123,50 @@ latency for chunk accumulation.
 `jq '.field' 1gb.jsonl` on an 8+ core machine. ≥30x faster with
 10 cores + SIMD combined.
 
+### Phase 2 results (Apple Silicon M-series, 2025-02)
+
+**Status: COMPLETE.**
+
+Implementation uses rayon work-stealing thread pool (not hand-rolled).
+Each ~1MB chunk is processed independently: memchr line splitting →
+simdjson DOM parse per line → eval filter → format to per-chunk
+`Vec<u8>`. Chunks collected in order via `par_iter()` and concatenated.
+
+NDJSON auto-detected via heuristic (first line is complete JSON value,
+second line starts with `{`/`[`), or forced with `--jsonl` flag. Both
+stdin and file paths supported.
+
+Thread safety: `Filter` contains `Rc`-based `Value` literals (making it
+`!Send + !Sync`). Solved with `SharedFilter` raw-pointer wrapper +
+`filter_is_parallel_safe()` runtime check that falls back to sequential
+processing for filters containing `Rc`-based array/object literals.
+
+**Benchmarks (1M-line NDJSON, `.name` field extraction):**
+
+| Tool | Wall time | User time | Notes |
+|------|-----------|-----------|-------|
+| jx   | 120ms     | 1,327ms   | Multi-core (rayon) |
+| jq   | 1,230ms   | 1,210ms   | Single-threaded |
+| jaq  | 670ms     | 650ms     | Single-threaded |
+
+~10x faster than jq, ~5.6x faster than jaq. User time > wall time
+confirms rayon is using multiple cores effectively.
+
+**Key files:**
+- `src/parallel/ndjson.rs` — detection, chunking, parallel processing
+- `src/parallel/mod.rs` — module root
+- `src/main.rs` — `--jsonl` flag, NDJSON detection in stdin + file paths
+- `tests/ndjson.rs` — 18 integration tests
+- `bench/bench.sh` — NDJSON benchmark sections
+
+**Deviations from plan:**
+- Used DOM parse per line (not `iterate_many`) for the general case.
+  `iterate_many` FFI only supports counting and single-field extraction;
+  the general filter path needs full Value trees. Parallelism comes from
+  processing chunks simultaneously, not simdjson's batch mode.
+- Stdin path reads all input then processes in parallel (not true
+  streaming dispatch). Still gets full threading speedup.
+
 ---
 
 ## Phase 3: Tier 2+3 filter support

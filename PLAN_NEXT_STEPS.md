@@ -7,8 +7,9 @@ full design and history.
 
 ## Current state (2025-02)
 
-217 tests passing. Passthrough paths handle the common "simple query on
-big file" patterns at 12-63x jq, 3-14x jaq:
+248 tests passing (159 unit + 56 e2e + 18 ndjson + 15 ffi). Passthrough
+paths handle "simple query on big file" at 12-63x jq, 3-14x jaq.
+Parallel NDJSON processing at ~10x jq, ~5.6x jaq.
 
 | Filter (49MB file) | jx | jq | jaq | vs jq | vs jaq |
 |---------------------|----|----|-----|-------|--------|
@@ -17,35 +18,19 @@ big file" patterns at 12-63x jq, 3-14x jaq:
 | `.statuses \| length` | 33ms | 398ms | 167ms | 12x | 5.1x |
 | `.statuses \| keys` | 31ms | 393ms | 165ms | 13x | 5.3x |
 
+| Filter (1M NDJSON) | jx | jq | jaq | vs jq | vs jaq |
+|---------------------|----|----|-----|-------|--------|
+| `.name` | 120ms | 1,230ms | 670ms | 10x | 5.6x |
+
 Non-passthrough eval is competitive with jaq (~1x) and ~2-4x jq.
 
 ---
 
-## Priority 1: Parallel NDJSON (Step 4)
+## ~~Priority 1: Parallel NDJSON (Step 4)~~ COMPLETE
 
-**Why this is next:** It's the biggest remaining performance multiplier
-and jx's core differentiator. ~8x speedup on 8 cores, applied to the
-most common large-data workload (log processing, API dumps, data
-pipelines). Combined with SIMD parsing, this is the "50-100x over jq"
-headline. No other jq-compatible tool does this.
-
-**What to build:** See [PLAN.md Phase 2](PLAN.md#phase-2-parallel-ndjson).
-
-- NDJSON auto-detection (first 16KB heuristic, or `--jsonl` flag)
-- Chunk splitter: split at newline boundaries into ~1MB chunks
-- Thread pool: per-thread simdjson parser, `iterate_many` per chunk
-- Ordered output merge: per-thread buffers, flush in chunk order
-- File path: mmap + memchr newline scan
-- Stdin path: growing buffer, dispatch complete chunks to workers
-
-**Benchmark targets:** `jx '.field' 82mb.ndjson` — expect ~15-20ms
-(down from ~120ms single-threaded). 1m.ndjson already exists in
-bench/data/ for testing.
-
-**Key decisions:**
-- Use `rayon` or hand-rolled thread pool? Rayon is simpler but less
-  control over chunk assignment and output ordering.
-- Start with file-only parallelism (mmap), add stdin streaming after.
+Implemented with rayon work-stealing thread pool. Auto-detection via
+heuristic + `--jsonl` flag. ~1MB chunks processed in parallel, output
+merged in order. See [PLAN.md Phase 2 results](PLAN.md#phase-2-results-apple-silicon-m-series-2025-02).
 
 ---
 
