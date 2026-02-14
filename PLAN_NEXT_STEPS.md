@@ -7,9 +7,9 @@ full design and history.
 
 ## Current state (2026-02)
 
-736 tests passing (390 unit + 308 e2e + 21 ndjson + 15 ffi + 2 conformance).
-95 builtins implemented. jq conformance at **51.9%** (258/497 on jq's
-official test suite). Feature compatibility at **80.7%** (133/166 features
+773 tests passing (410 unit + 325 e2e + 21 ndjson + 15 ffi + 2 conformance).
+~105 builtins implemented. jq conformance at **56.3%** (280/497 on jq's
+official test suite). Feature compatibility at **83.4%** (138/166 features
 fully passing). Passthrough paths handle "simple query on big file" at
 12-63x jq, 3-14x jaq. Parallel NDJSON processing at ~10x jq, ~5.6x jaq.
 
@@ -31,15 +31,16 @@ Non-passthrough eval is competitive with jaq (~1x) and ~2-4x jq.
 | Category | jx | jq | jaq | gojq |
 |---|---|---|---|---|
 | Conditionals | 37/44 (84%) | 44/44 | 40/44 | 41/44 |
-| Builtin functions | 34/42 (81%) | 42/42 | 38/42 | 39/42 |
+| Builtin functions | 34/42 (81%) | 42/42 | 37/42 | 39/42 |
+| String operations | 60/88 (68%) | 88/88 | 72/88 | 79/88 |
 | Multiple outputs/iteration | 33/49 (67%) | 49/49 | 44/49 | 48/49 |
-| String operations | 57/88 (65%) | 88/88 | 72/88 | 79/88 |
-| Paths | 9/22 (41%) | 22/22 | 1/22 | 16/22 |
+| Assignment | 10/19 (53%) | 19/19 | 11/19 | 14/19 |
+| Paths | 10/22 (45%) | 22/22 | 1/22 | 16/22 |
 | User-defined functions | 25/59 (42%) | 59/59 | 44/59 | 59/59 |
-| toliteral number | 12/43 (28%) | 43/43 | 25/43 | 26/43 |
-| Assignment | 1/19 (5%) | 19/19 | 11/19 | 14/19 |
+| toliteral number | 17/43 (40%) | 43/43 | 25/43 | 26/43 |
+| walk | 8/27 (30%) | 27/27 | 7/27 | 17/27 |
 | Module system | 3/26 (12%) | 26/26 | 6/26 | 15/26 |
-| **Total** | **259/497 (52%)** | **497/497** | **344/497** | **425/497** |
+| **Total** | **280/497 (56%)** | **497/497** | **343/497** | **425/497** |
 
 ---
 
@@ -61,34 +62,22 @@ From the original Priority 2 list, these are done:
 - **`foreach`** — bonus, wasn't in original plan
 
 Remaining from original Priority 2 (`--slurp`, `--arg`/`--argjson`) folded
-into Priority 3 below.
+into CLI flags below.
 
 ---
 
-## Priority 2: Assignment operators
+## ~~Priority 2: Assignment operators~~ COMPLETE
 
-**Why:** 18/19 conformance tests failing, 0/8 feature tests passing.
-Assignment is extremely common in real jq scripts — `.foo |= . + 1`,
-`.[] |= select(. > 0)`, `.config.debug = true`. Without these, most
-non-trivial jq scripts can't run.
-
-**Operators:** `|=`, `+=`, `-=`, `*=`, `/=`, `%=`, `//=`, `=`
-
-**Core complexity:** Path evaluation. jq's `|=` operates on paths, not
-values. `.foo |= . + 1` means "resolve `.foo` as a path, get value,
-apply filter, set result back." This needs:
-- New AST variants: `Update`, `Assign`, `UpdateOp`
-- Lexer tokens: `|=`, `+=`, `-=`, `*=`, `/=`, `%=`, `//=`
-- Path evaluation function: `filter → Vec<PathComponent>`
-- Set-at-path function (can reuse existing `setpath` logic)
-- Special handling for `.[]` in path context (update all elements)
-
-**Files:** `src/filter/lexer.rs`, `src/filter/parser.rs`,
-`src/filter/eval.rs`, `src/filter/mod.rs`
+All 8 operators implemented: `|=`, `+=`, `-=`, `*=`, `/=`, `%=`, `//=`, `=`.
+`Filter::Assign` AST node with `AssignOp` enum, right-recursive parsing,
+fast O(N) `update_recursive()` path for common patterns plus `eval_assign_via_paths()`
+fallback. Supports auto-structure creation, element deletion via `|= empty`,
+cross-reference semantics for `=` vs `|=`. Feature compat: 0/8 → 8/8.
+Conformance: 1/19 → 10/19 (remaining 9 depend on `def` and other missing features).
 
 ---
 
-## ~~Priority 3: CLI flags~~ COMPLETE
+## ~~Priority 2.5: CLI flags~~ COMPLETE
 
 All 7 flags implemented: `--slurp`/`-s`, `--arg`, `--argjson`,
 `--raw-input`/`-R`, `--sort-keys`/`-S`, `--join-output`/`-j`,
@@ -98,11 +87,11 @@ functions, sequential fallback for NDJSON when env is non-empty.
 
 ---
 
-## Priority 4: Regex
+## Priority 3: Regex
 
 **Why:** 0/9 feature tests. Regex is heavily used in real jq scripts
 for log parsing, field extraction, data cleaning. Contributes to
-31/88 string operations conformance tests failing.
+28/88 string operations conformance tests failing.
 
 **Functions:** `test(re)`, `test(re; flags)`, `match(re)`,
 `match(re; flags)`, `capture(re)`, `scan(re)`, `sub(re; repl)`,
@@ -116,7 +105,7 @@ structure.
 
 ---
 
-## Priority 5: Format strings
+## Priority 4: Format strings
 
 **Why:** 0/10 feature tests. Used for data export (`@csv`, `@tsv`),
 encoding (`@base64`, `@uri`), and serialization (`@json`).
@@ -132,24 +121,21 @@ Each format is a small, independent implementation.
 
 ---
 
-## Priority 6: Smaller gaps
+## Priority 5: Smaller gaps
 
 Individually small but collectively improve conformance and real-world
 compatibility.
 
 | Feature | Status | Impact |
 |---------|--------|--------|
-| String interpolation `"\(.x)"` | 0/2 feature tests | Common, likely parser fix |
+| String interpolation `"\(.x)"` | 0/2 feature tests | Common; AST+eval exist, lexer/parser missing |
 | `in` builtin | 0/2 feature tests | Inverse of `has` |
 | `combinations` | 0/2 feature tests | Cartesian product |
 | `pick` | 0/1 feature tests | Extract paths from object |
 | `INDEX` | 0/1 feature tests | Index array by key |
 | `values` type selector | 0/1 feature tests | Filter non-null values |
-| Negative array indices | 0/5 conformance tests | Edge cases in indexing |
 | `strptime`/`gmtime`/`mktime` | 0/3 feature tests | Date/time gaps |
 | `del` edge cases | 1/3 feature tests | Path-based deletion |
-| `with_entries` edge cases | 1/2 feature tests | Object transformation |
-| `explode`/`implode` edge cases | 0/3 conformance tests | Unicode handling |
 
 ---
 
@@ -157,17 +143,16 @@ compatibility.
 
 | After | Est. Tests | Est. % | Key unlock |
 |-------|-----------|--------|------------|
-| Current | 258/497 | 52% | — |
-| + assignment | ~276/497 | ~56% | update operators |
-| + regex | ~290/497 | ~58% | string operations |
-| + format strings | ~300/497 | ~60% | @base64, @csv, @tsv |
-| + smaller gaps | ~315/497 | ~63% | cross-cutting fixes |
+| Current | 280/497 | 56% | — |
+| + regex | ~294/497 | ~59% | string operations |
+| + format strings | ~304/497 | ~61% | @base64, @csv, @tsv |
+| + smaller gaps | ~319/497 | ~64% | cross-cutting fixes |
 
 ---
 
 ## Later
 
-None of these block the next push. Revisit after Priorities 2-6.
+None of these block the next push. Revisit after Priorities 3-5.
 
 ### `def` (user-defined functions)
 
@@ -184,7 +169,7 @@ refactor of `Value::String(String)` → `Value::String(CompactString)`.
 
 ### Number literal preservation
 
-31/43 toliteral number conformance tests failing. The `Value::Double(f64,
+26/43 toliteral number conformance tests failing. The `Value::Double(f64,
 Option<Box<str>>)` raw text tracking exists but has edge cases around
 arithmetic operations, conversions, and output formatting.
 
