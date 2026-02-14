@@ -1,5 +1,8 @@
 # Real-world jq compatibility
 
+> The feature matrix below is also available as an executable test suite:
+> `bash tests/jq_compat/run_features.sh`
+
 The jq.test conformance suite (497 tests) only exercises filter expressions piped through
 `printf '%s' "$input" | tool -c -- "$filter"`. It tests zero CLI flags, zero error handling,
 zero real JSON shapes, and zero pipeline behavior. A tool could hit 100% on jq.test while
