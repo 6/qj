@@ -23,6 +23,6 @@ cargo build --release
 
 Largest wins on parse-dominated workloads over large files; smallest on complex filters where evaluator cost dominates.
 
-jq compat % = pass rate on [jq's official test suite](https://github.com/jqlang/jq/blob/jq-1.8.1/tests/jq.test) (497 tests, JSON-aware comparison). Run `bash tests/jq_compat/run_compat.sh` to reproduce.
+jq compat % = pass rate on [jq's official test suite](https://github.com/jqlang/jq/blob/jq-1.8.1/tests/jq.test) (497 tests, JSON-aware comparison). Run `cargo test jq_compat -- --nocapture` to reproduce.
 
 See [benches/](benches/) for methodology, full results, and how to reproduce.

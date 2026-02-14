@@ -31,12 +31,12 @@ Run `cargo test` after any code change — it's fast.
   cargo test jq_conformance -- --nocapture                              # summary
   cargo test jq_conformance_verbose -- --nocapture --ignored            # show failures
   ```
-- **Cross-tool compat comparison:** `tests/jq_compat/run_compat.sh` — runs jq.test against
-  jx, jq, jaq, and gojq (whichever are on `$PATH`) and prints pass rates plus a
-  per-category breakdown. Results are also written to `tests/jq_compat/results.md`.
+- **Cross-tool compat comparison:** `tests/jq_compat_runner.rs` — runs jq.test against
+  jx, jq, jaq, and gojq (whichever are on `$PATH`), per-category breakdown.
+  Results are also written to `tests/jq_compat/results.md`.
   ```
-  bash tests/jq_compat/run_compat.sh            # summary + category table
-  bash tests/jq_compat/run_compat.sh -v          # show failures
+  cargo test jq_compat -- --nocapture              # summary + category table
+  cargo test jq_compat_verbose -- --nocapture --ignored  # show failures
   ```
 - **Updating the vendored test suite:** `tests/jq_compat/update_test_suite.sh` — downloads
   `jq.test` and test modules from a jq release tag and updates `mise.toml`.
@@ -52,7 +52,7 @@ Run `cargo test` after any code change — it's fast.
   ```
 - **When adding new jq builtins or language features**, always:
   1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
-  2. Re-run `bash tests/jq_compat/run_compat.sh` and update jq compat % in `README.md`
+  2. Re-run `cargo test jq_compat -- --nocapture` and update jq compat % in `README.md`
 - **Conformance:** compare output against jq on real data.
 ```
 diff <(./target/release/jx '.field' test.json) <(jq '.field' test.json)

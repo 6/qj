@@ -12,8 +12,9 @@
 /// To see each failing test case, run the ignored verbose test:
 ///
 ///   cargo test feature_compat_verbose -- --nocapture --ignored
+mod common;
+
 use serde::Deserialize;
-use std::io::Write;
 use std::process::Command;
 
 extern crate serde_json;
@@ -38,11 +39,6 @@ struct TestCase {
     flags: Option<String>,
 }
 
-struct Tool {
-    name: String,
-    path: String,
-}
-
 fn load_test_file() -> TestFile {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/jq_compat/features.toml");
@@ -50,96 +46,18 @@ fn load_test_file() -> TestFile {
     toml::from_str(&content).expect("failed to parse features.toml")
 }
 
-fn discover_tools() -> Vec<Tool> {
-    let mut tools = vec![Tool {
-        name: "jx".to_string(),
-        path: env!("CARGO_BIN_EXE_jx").to_string(),
-    }];
-    for name in ["jq", "jaq", "gojq"] {
-        if let Ok(output) = Command::new("which").arg(name).output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    tools.push(Tool {
-                        name: name.to_string(),
-                        path,
-                    });
-                }
-            }
-        }
-    }
-    tools
-}
-
-fn run_tool(tool: &Tool, filter: &str, input: &str, flags: Option<&str>) -> Option<String> {
-    let mut cmd = Command::new(&tool.path);
-
+fn run_tool_with_flags(
+    tool: &common::Tool,
+    filter: &str,
+    input: &str,
+    flags: Option<&str>,
+) -> Option<String> {
     if let Some(flags_str) = flags {
         let parts: Vec<&str> = flags_str.split_whitespace().collect();
-        cmd.args(&parts);
+        common::run_tool(tool, filter, input, &parts)
     } else {
-        cmd.args(["-c", "--"]);
+        common::run_tool(tool, filter, input, &["-c", "--"])
     }
-    cmd.arg(filter);
-
-    let output = cmd
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .ok()?;
-
-    // Capture stdout regardless of exit status (like bash's || true)
-    String::from_utf8(output.stdout).ok()
-}
-
-/// Recursively compare JSON values with numeric coercion (3 == 3.0),
-/// matching jq's `==` semantics used by the old bash runner.
-fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    use serde_json::Value;
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| json_values_equal(x, y))
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .all(|(k, v)| b.get(k).is_some_and(|bv| json_values_equal(v, bv)))
-        }
-        _ => a == b,
-    }
-}
-
-/// JSON-aware line comparison. Parses both sides as JSON; if both parse,
-/// compares with numeric coercion (so 3 == 3.0). Falls back to string comparison.
-fn json_lines_equal(actual: &[&str], expected: &[&str]) -> bool {
-    if actual.len() != expected.len() {
-        return false;
-    }
-    actual.iter().zip(expected.iter()).all(|(a, e)| {
-        if a == e {
-            return true;
-        }
-        // Try JSON-aware comparison with numeric coercion
-        if let (Ok(va), Ok(ve)) = (
-            serde_json::from_str::<serde_json::Value>(a),
-            serde_json::from_str::<serde_json::Value>(e),
-        ) {
-            json_values_equal(&va, &ve)
-        } else {
-            false
-        }
-    })
 }
 
 fn test_passes(output: Option<&str>, expected: &str) -> bool {
@@ -164,12 +82,12 @@ fn test_passes(output: Option<&str>, expected: &str) -> bool {
         return false;
     }
 
-    json_lines_equal(&actual_lines, &expected_lines)
+    common::json_lines_equal(&actual_lines, &expected_lines)
 }
 
 fn run_all(verbose: bool) {
     let test_file = load_test_file();
-    let tools = discover_tools();
+    let tools = common::discover_tools();
 
     println!();
     println!(
@@ -195,7 +113,8 @@ fn run_all(verbose: bool) {
             let mut feature_results = Vec::new();
             for test in &feature.tests {
                 total_tests += 1;
-                let output = run_tool(tool, &test.filter, &test.input, test.flags.as_deref());
+                let output =
+                    run_tool_with_flags(tool, &test.filter, &test.input, test.flags.as_deref());
                 let passed = test_passes(output.as_deref(), &test.expected);
                 if passed {
                     total_pass += 1;

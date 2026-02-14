@@ -11,7 +11,8 @@
 /// To see each failing test case, run the ignored verbose test:
 ///
 ///   cargo test jq_conformance_verbose -- --nocapture --ignored
-use std::process::Command;
+mod common;
+
 extern crate serde_json;
 
 struct TestCase {
@@ -86,69 +87,22 @@ fn parse_jq_test_file(content: &str) -> Vec<TestCase> {
     cases
 }
 
-fn run_jx(filter: &str, input: &str) -> Option<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
-        .args(["-c", "--", filter])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
-}
-
-/// JSON-aware line comparison. Parses both sides as JSON; if both parse,
-/// compares as serde_json::Value (so 2 == 2.0). Falls back to string comparison.
-fn json_lines_equal(actual: &[String], expected: &[String]) -> bool {
-    if actual.len() != expected.len() {
-        return false;
-    }
-    actual.iter().zip(expected.iter()).all(|(a, e)| {
-        if a == e {
-            return true;
-        }
-        // Try JSON-aware comparison
-        if let (Ok(va), Ok(ve)) = (
-            serde_json::from_str::<serde_json::Value>(a),
-            serde_json::from_str::<serde_json::Value>(e),
-        ) {
-            va == ve
-        } else {
-            false
-        }
-    })
-}
-
 fn run_test_case(case: &TestCase) -> TestResult {
-    match run_jx(&case.filter, &case.input) {
+    let jx = common::Tool {
+        name: "jx".to_string(),
+        path: env!("CARGO_BIN_EXE_jx").to_string(),
+    };
+    match common::run_tool(&jx, &case.filter, &case.input, &["-c", "--"]) {
         Some(output) => {
-            let actual_lines: Vec<String> = output
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect();
-            let expected_lines: Vec<String> = case.expected.clone();
+            let actual_lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+            let expected_lines: Vec<&str> = case.expected.iter().map(|s| s.as_str()).collect();
 
-            if json_lines_equal(&actual_lines, &expected_lines) {
+            if common::json_lines_equal(&actual_lines, &expected_lines) {
                 TestResult::Pass
             } else {
                 TestResult::Fail {
-                    expected: expected_lines,
-                    actual: actual_lines,
+                    expected: case.expected.clone(),
+                    actual: actual_lines.into_iter().map(String::from).collect(),
                 }
             }
         }
