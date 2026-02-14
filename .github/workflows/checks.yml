@@ -28,3 +28,6 @@ jobs:
 
       - name: Check benchmarks compile
         run: cargo bench --no-run
+
+      - name: Shellcheck
+        run: git ls-files '*.sh' | xargs shellcheck

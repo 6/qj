@@ -38,7 +38,7 @@ done
 
 echo ""
 echo "=== NDJSON benchmarks ==="
-for file in 100k.ndjson; do
+for file in 100k.ndjson 1m.ndjson; do
     if [ ! -f "$DIR/$file" ]; then
         echo "Skipping $file (not found). Run generate_ndjson.sh first."
         continue

@@ -9,6 +9,11 @@ cargo clippy --release -- -D warnings
 cargo test
 ```
 
+## After writing shell scripts
+```
+shellcheck <file>.sh
+```
+
 ## Testing
 Run `cargo test` after any code change — it's fast.
 

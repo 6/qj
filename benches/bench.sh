@@ -160,8 +160,8 @@ for file in "${FILES[@]}"; do
         flags="${FILTER_FLAGS[$i]}"
         filter="${FILTER_EXPRS[$i]}"
         if [ -n "$flags" ]; then
-            jx_out=$("$JX" $flags "$filter" "$DATA/$file" 2>&1) || true
-            jq_out=$(jq $flags "$filter" "$DATA/$file" 2>&1) || true
+            jx_out=$("$JX" "$flags" "$filter" "$DATA/$file" 2>&1) || true
+            jq_out=$(jq "$flags" "$filter" "$DATA/$file" 2>&1) || true
         else
             jx_out=$("$JX" "$filter" "$DATA/$file" 2>&1) || true
             jq_out=$(jq "$filter" "$DATA/$file" 2>&1) || true
@@ -206,7 +206,7 @@ for file in "${FILES[@]}"; do
             cmd="${TOOL_CMDS[$t]}"
             # Test that this tool can run the filter
             if [ -n "$flags" ]; then
-                test_ok=$($cmd $flags "$filter" "$DATA/$file" >/dev/null 2>&1 && echo yes || echo no)
+                test_ok=$($cmd "$flags" "$filter" "$DATA/$file" >/dev/null 2>&1 && echo yes || echo no)
             else
                 test_ok=$($cmd "$filter" "$DATA/$file" >/dev/null 2>&1 && echo yes || echo no)
             fi
@@ -257,7 +257,7 @@ if [ ${#NDJSON_FILES[@]} -gt 0 ]; then
                 tool="${TOOLS[$t]}"
                 cmd="${TOOL_CMDS[$t]}"
                 if [ -n "$flags" ]; then
-                    test_ok=$($cmd $flags "$filter" "$DATA/$file" >/dev/null 2>&1 && echo yes || echo no)
+                    test_ok=$($cmd "$flags" "$filter" "$DATA/$file" >/dev/null 2>&1 && echo yes || echo no)
                 else
                     test_ok=$($cmd "$filter" "$DATA/$file" >/dev/null 2>&1 && echo yes || echo no)
                 fi
