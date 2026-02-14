@@ -1140,6 +1140,26 @@ fn large_integer_i64_max() {
     );
 }
 
+#[test]
+fn integer_overflow_promotes_to_float() {
+    // i64::MAX + 1 should promote to f64, not wrap to negative
+    let result = jx_compact(". + 1", "9223372036854775807")
+        .trim()
+        .to_string();
+    let val: f64 = result.parse().expect("should be a valid number");
+    assert!(val > 0.0, "must not wrap to negative: {result}");
+    assert!(val > 9e18, "should be near 2^63: {result}");
+}
+
+#[test]
+fn large_integer_arithmetic_more_precise_than_jq() {
+    // Twitter-style ID: 505874924095815681 (> 2^53, fits in i64)
+    // jx does exact i64 arithmetic: +1 = 505874924095815682
+    // jq uses f64 and loses precision: +1 = 505874924095815700
+    let result = jx_compact(". + 1", "505874924095815681").trim().to_string();
+    assert_eq!(result, "505874924095815682");
+}
+
 // --- jq conformance tests ---
 // These run both jx and jq and verify identical output.
 // If jq is not installed, the tests pass (they only assert when both are available).

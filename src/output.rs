@@ -220,8 +220,10 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
     if let Some(text) = raw {
         return w.write_all(text.as_bytes());
     }
-    // If the double is an exact integer in i64 range, output as integer
-    if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+    // If the double is an exact integer in i64 range, output as integer.
+    // Use strict < for upper bound: i64::MAX (2^63-1) as f64 rounds up to
+    // 2^63 which doesn't fit in i64, so `f as i64` would saturate incorrectly.
+    if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 {
         let mut buf = itoa::Buffer::new();
         return w.write_all(buf.format(f as i64).as_bytes());
     }
@@ -392,5 +394,25 @@ mod tests {
             compact(&Value::Int(9223372036854775807)),
             "9223372036854775807"
         );
+    }
+
+    #[test]
+    fn double_at_i64_max_boundary() {
+        // 2^63 = 9223372036854775808.0 is one above i64::MAX — must NOT format as i64
+        let val = Value::Double(9223372036854775808.0, None);
+        let s = compact(&val);
+        // Should use ryu/scientific notation, not truncate to i64::MAX
+        assert_ne!(s, "9223372036854775807");
+        assert!(
+            s.contains('e') || s.contains('E') || s.parse::<f64>().unwrap() >= 9.2e18,
+            "unexpected format: {s}"
+        );
+    }
+
+    #[test]
+    fn double_at_i64_min_formats_as_int() {
+        // i64::MIN = -2^63 is exactly representable in f64 and fits in i64
+        let val = Value::Double(i64::MIN as f64, None);
+        assert_eq!(compact(&val), "-9223372036854775808");
     }
 }

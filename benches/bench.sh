@@ -79,6 +79,13 @@ FILTER_NAMES=(
     "unique + sort"
     "paths(scalars)"
     "map_values + tojson"
+    # Phase 2 language features
+    "reduce (sum)"
+    "variable binding"
+    "slicing"
+    "try (error suppression)"
+    "elif"
+    "walk"
 )
 # Extra flags for each filter (e.g. -c for compact output)
 FILTER_FLAGS=(
@@ -92,6 +99,13 @@ FILTER_FLAGS=(
     ""
     ""
     ""
+    # Phase 2 language features
+    ""
+    ""
+    ""
+    ""
+    ""
+    "-c"
 )
 # The jq filter expression itself
 FILTER_EXPRS=(
@@ -105,6 +119,13 @@ FILTER_EXPRS=(
     '[.statuses[]|.user.screen_name]|unique|length'
     '[paths(scalars)]|length'
     '.statuses[0]|map_values(tojson)'
+    # Phase 2 language features
+    'reduce .statuses[] as $s (0; . + $s.retweet_count)'
+    '.statuses[] | . as $s | {name: $s.user.screen_name, rts: $s.retweet_count}'
+    '[.statuses[].user.screen_name][:5]'
+    '[.statuses[] | try (1 / .retweet_count)]'
+    '[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'
+    'walk(if type == "boolean" then not else . end)'
 )
 
 # Files to benchmark (small first, then large if available)

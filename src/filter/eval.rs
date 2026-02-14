@@ -284,7 +284,10 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
 
         Filter::Neg(inner) => {
             eval(inner, input, env, &mut |v| match v {
-                Value::Int(n) => output(Value::Int(-n)),
+                Value::Int(n) => output(
+                    n.checked_neg()
+                        .map_or_else(|| Value::Double(-(n as f64), None), Value::Int),
+                ),
                 Value::Double(f, _) => output(Value::Double(-f, None)),
                 _ => {}
             });
@@ -494,7 +497,10 @@ pub(super) fn values_order(left: &Value, right: &Value) -> Option<std::cmp::Orde
 pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<Value> {
     match op {
         ArithOp::Add => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(Value::Int(a.wrapping_add(*b))),
+            (Value::Int(a), Value::Int(b)) => Some(
+                a.checked_add(*b)
+                    .map_or_else(|| Value::Double(*a as f64 + *b as f64, None), Value::Int),
+            ),
             (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a + b, None)),
             (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 + b, None)),
             (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a + *b as f64, None)),
@@ -521,7 +527,10 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<
             _ => None,
         },
         ArithOp::Sub => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(Value::Int(a.wrapping_sub(*b))),
+            (Value::Int(a), Value::Int(b)) => Some(
+                a.checked_sub(*b)
+                    .map_or_else(|| Value::Double(*a as f64 - *b as f64, None), Value::Int),
+            ),
             (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a - b, None)),
             (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 - b, None)),
             (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a - *b as f64, None)),
@@ -536,7 +545,10 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<
             _ => None,
         },
         ArithOp::Mul => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(Value::Int(a.wrapping_mul(*b))),
+            (Value::Int(a), Value::Int(b)) => Some(
+                a.checked_mul(*b)
+                    .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int),
+            ),
             (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a * b, None)),
             (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 * b, None)),
             (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a * *b as f64, None)),
@@ -2013,5 +2025,72 @@ mod tests {
             eval_one(&f, &input),
             Value::Object(Rc::new(vec![("a".into(), Value::String("X".into()))]))
         );
+    }
+
+    // --- Integer overflow promotion tests ---
+
+    #[test]
+    fn overflow_add_promotes_to_double() {
+        let f = parse(". + 1");
+        let result = eval_one(&f, &Value::Int(i64::MAX));
+        // i64::MAX + 1 overflows i64 → should promote to f64
+        match result {
+            Value::Double(v, _) => {
+                // At f64 precision, i64::MAX as f64 rounds to 2^63 = 9223372036854775808.0
+                // Adding 1.0 doesn't change it (1 < ULP of 1024), so result ≈ 2^63
+                assert!((v - 9.223372036854776e18).abs() < 1e4);
+            }
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overflow_sub_promotes_to_double() {
+        let f = parse(". - 1");
+        let result = eval_one(&f, &Value::Int(i64::MIN));
+        // i64::MIN - 1 overflows → promotes to f64, but at f64 precision
+        // -2^63 - 1.0 rounds back to -2^63 (1 < ULP of 1024), so the
+        // output formatter may convert it back to integer i64::MIN.
+        match result {
+            Value::Double(v, _) => assert!((v - (-9.223372036854776e18)).abs() < 1e4),
+            Value::Int(n) => assert_eq!(n, i64::MIN),
+            other => panic!("expected Double or Int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overflow_mul_promotes_to_double() {
+        let f = parse(". * 2");
+        let result = eval_one(&f, &Value::Int(i64::MAX));
+        match result {
+            Value::Double(v, _) => assert!(v > i64::MAX as f64),
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overflow_neg_promotes_to_double() {
+        // -i64::MIN overflows since |i64::MIN| > i64::MAX
+        let f = parse("-.");
+        let result = eval_one(&f, &Value::Int(i64::MIN));
+        match result {
+            Value::Double(v, _) => assert!(v > 0.0),
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_overflow_stays_int() {
+        let f = parse(". + 1");
+        assert_eq!(eval_one(&f, &Value::Int(100)), Value::Int(101));
+
+        let f = parse(". - 1");
+        assert_eq!(eval_one(&f, &Value::Int(-100)), Value::Int(-101));
+
+        let f = parse(". * 2");
+        assert_eq!(eval_one(&f, &Value::Int(50)), Value::Int(100));
+
+        let f = parse("-.");
+        assert_eq!(eval_one(&f, &Value::Int(-42)), Value::Int(42));
     }
 }
