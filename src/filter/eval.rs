@@ -2290,4 +2290,488 @@ mod tests {
         let results = eval_all(&parse("limit(3; range(10))"), &Value::Null);
         assert_eq!(results, vec![Value::Int(0), Value::Int(1), Value::Int(2)]);
     }
+
+    // --- String builtin edge cases ---
+
+    #[test]
+    fn split_empty_string() {
+        // split("") → individual characters (matches jq behavior, no empty edge strings)
+        let input = Value::String("abc".into());
+        let result = eval_one(&parse(r#"split("")"#), &input);
+        assert_eq!(
+            result,
+            Value::Array(Rc::new(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn split_no_match() {
+        let input = Value::String("hello".into());
+        let result = eval_one(&parse(r#"split("xyz")"#), &input);
+        assert_eq!(
+            result,
+            Value::Array(Rc::new(vec![Value::String("hello".into())]))
+        );
+    }
+
+    #[test]
+    fn join_empty_array() {
+        let input = Value::Array(Rc::new(vec![]));
+        let result = eval_one(&parse(r#"join(",")"#), &input);
+        assert_eq!(result, Value::String("".into()));
+    }
+
+    #[test]
+    fn ltrimstr_no_match() {
+        let input = Value::String("hello".into());
+        let result = eval_one(&parse(r#"ltrimstr("xyz")"#), &input);
+        assert_eq!(result, Value::String("hello".into()));
+    }
+
+    #[test]
+    fn rtrimstr_no_match() {
+        let input = Value::String("hello".into());
+        let result = eval_one(&parse(r#"rtrimstr("xyz")"#), &input);
+        assert_eq!(result, Value::String("hello".into()));
+    }
+
+    #[test]
+    fn ascii_downcase_non_ascii() {
+        // Non-ASCII chars should pass through unchanged
+        let input = Value::String("Héllo".into());
+        let result = eval_one(&parse("ascii_downcase"), &input);
+        assert_eq!(result, Value::String("héllo".into()));
+    }
+
+    #[test]
+    fn tostring_types() {
+        assert_eq!(
+            eval_one(&parse("tostring"), &Value::Int(42)),
+            Value::String("42".into())
+        );
+        assert_eq!(
+            eval_one(&parse("tostring"), &Value::Null),
+            Value::String("null".into())
+        );
+        assert_eq!(
+            eval_one(&parse("tostring"), &Value::Bool(true)),
+            Value::String("true".into())
+        );
+        // String input → unchanged
+        assert_eq!(
+            eval_one(&parse("tostring"), &Value::String("hi".into())),
+            Value::String("hi".into())
+        );
+    }
+
+    // --- Array builtin edge cases ---
+
+    #[test]
+    fn add_empty_array() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(eval_one(&parse("add"), &input), Value::Null);
+    }
+
+    #[test]
+    fn add_single_element() {
+        let input = Value::Array(Rc::new(vec![Value::Int(5)]));
+        assert_eq!(eval_one(&parse("add"), &input), Value::Int(5));
+    }
+
+    #[test]
+    fn add_strings() {
+        let input = Value::Array(Rc::new(vec![
+            Value::String("a".into()),
+            Value::String("b".into()),
+        ]));
+        assert_eq!(eval_one(&parse("add"), &input), Value::String("ab".into()));
+    }
+
+    #[test]
+    fn flatten_already_flat() {
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            eval_one(&parse("flatten"), &input),
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+        );
+    }
+
+    #[test]
+    fn flatten_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("flatten"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    #[test]
+    fn flatten_depth_zero() {
+        // flatten(0) should not flatten at all
+        let inner = Value::Array(Rc::new(vec![Value::Int(1)]));
+        let input = Value::Array(Rc::new(vec![inner.clone()]));
+        assert_eq!(
+            eval_one(&parse("flatten(0)"), &input),
+            Value::Array(Rc::new(vec![inner]))
+        );
+    }
+
+    #[test]
+    fn first_empty_array() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert!(eval_all(&parse("first"), &input).is_empty());
+    }
+
+    #[test]
+    fn last_empty_array() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert!(eval_all(&parse("last"), &input).is_empty());
+    }
+
+    #[test]
+    fn reverse_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("reverse"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    #[test]
+    fn reverse_string() {
+        let input = Value::String("abc".into());
+        assert_eq!(
+            eval_one(&parse("reverse"), &input),
+            Value::String("cba".into())
+        );
+    }
+
+    #[test]
+    fn sort_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("sort"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    #[test]
+    fn unique_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("unique"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    #[test]
+    fn group_by_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("group_by(.)"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    #[test]
+    fn min_by_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(eval_one(&parse("min_by(.)"), &input), Value::Null);
+    }
+
+    #[test]
+    fn max_by_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(eval_one(&parse("max_by(.)"), &input), Value::Null);
+    }
+
+    #[test]
+    fn transpose_ragged() {
+        // [[1,2],[3]] → [[1,3],[2,null]]
+        let input = Value::Array(Rc::new(vec![
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
+            Value::Array(Rc::new(vec![Value::Int(3)])),
+        ]));
+        let result = eval_one(&parse("transpose"), &input);
+        assert_eq!(
+            result,
+            Value::Array(Rc::new(vec![
+                Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])),
+                Value::Array(Rc::new(vec![Value::Int(2), Value::Null])),
+            ]))
+        );
+    }
+
+    #[test]
+    fn transpose_empty() {
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("transpose"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    // --- Path operation edge cases ---
+
+    #[test]
+    fn getpath_missing() {
+        let input = Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]));
+        assert_eq!(eval_one(&parse(r#"getpath(["b"])"#), &input), Value::Null);
+    }
+
+    #[test]
+    fn getpath_deep_missing() {
+        assert_eq!(
+            eval_one(&parse(r#"getpath(["a","b","c"])"#), &Value::Null),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn getpath_empty_path() {
+        let input = Value::Int(42);
+        assert_eq!(eval_one(&parse("getpath([])"), &input), Value::Int(42));
+    }
+
+    #[test]
+    fn setpath_creates_nested() {
+        let result = eval_one(&parse(r#"setpath(["a","b"]; 1)"#), &Value::Null);
+        // Should create {"a":{"b":1}}
+        if let Value::Object(obj) = &result {
+            if let Some((_, Value::Object(inner))) = obj.iter().find(|(k, _)| k == "a") {
+                assert_eq!(
+                    inner.iter().find(|(k, _)| k == "b").map(|(_, v)| v),
+                    Some(&Value::Int(1))
+                );
+                return;
+            }
+        }
+        panic!("expected {{\"a\":{{\"b\":1}}}}, got {result:?}");
+    }
+
+    // --- Type conversion edge cases ---
+
+    #[test]
+    fn fromjson_invalid() {
+        let input = Value::String("not json".into());
+        assert!(eval_all(&parse("fromjson"), &input).is_empty());
+    }
+
+    #[test]
+    fn fromjson_valid() {
+        let input = Value::String(r#"{"a":1}"#.into());
+        let result = eval_one(&parse("fromjson"), &input);
+        assert_eq!(
+            result,
+            Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]))
+        );
+    }
+
+    #[test]
+    fn tojson_roundtrip() {
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Bool(true)]));
+        let json_str = eval_one(&parse("tojson"), &input);
+        let roundtrip = eval_one(&parse("fromjson"), &json_str);
+        assert_eq!(roundtrip, input);
+    }
+
+    // --- contains / inside edge cases ---
+
+    #[test]
+    fn contains_partial_object() {
+        let input = Value::Object(Rc::new(vec![
+            ("a".into(), Value::Int(1)),
+            ("b".into(), Value::Int(2)),
+        ]));
+        assert_eq!(
+            eval_one(&parse(r#"contains({"a":1})"#), &input),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn contains_missing_key() {
+        let input = Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]));
+        assert_eq!(
+            eval_one(&parse(r#"contains({"x":1})"#), &input),
+            Value::Bool(false)
+        );
+    }
+
+    // --- select / empty edge cases ---
+
+    #[test]
+    fn select_false_no_output() {
+        assert!(eval_all(&parse("select(false)"), &Value::Int(1)).is_empty());
+    }
+
+    #[test]
+    fn select_null_no_output() {
+        assert!(eval_all(&parse("select(null)"), &Value::Int(1)).is_empty());
+    }
+
+    #[test]
+    fn empty_no_output() {
+        assert!(eval_all(&parse("empty"), &Value::Int(1)).is_empty());
+    }
+
+    // --- type / null checks ---
+
+    #[test]
+    fn type_of_all_types() {
+        assert_eq!(
+            eval_one(&parse("type"), &Value::Null),
+            Value::String("null".into())
+        );
+        assert_eq!(
+            eval_one(&parse("type"), &Value::Bool(true)),
+            Value::String("boolean".into())
+        );
+        assert_eq!(
+            eval_one(&parse("type"), &Value::Int(1)),
+            Value::String("number".into())
+        );
+        assert_eq!(
+            eval_one(&parse("type"), &Value::Double(1.5, None)),
+            Value::String("number".into())
+        );
+        assert_eq!(
+            eval_one(&parse("type"), &Value::String("x".into())),
+            Value::String("string".into())
+        );
+        assert_eq!(
+            eval_one(&parse("type"), &Value::Array(Rc::new(vec![]))),
+            Value::String("array".into())
+        );
+        assert_eq!(
+            eval_one(&parse("type"), &Value::Object(Rc::new(vec![]))),
+            Value::String("object".into())
+        );
+    }
+
+    #[test]
+    fn length_all_types() {
+        assert_eq!(eval_one(&parse("length"), &Value::Null), Value::Int(0));
+        assert_eq!(
+            eval_one(&parse("length"), &Value::String("hello".into())),
+            Value::Int(5)
+        );
+        assert_eq!(
+            eval_one(
+                &parse("length"),
+                &Value::Array(Rc::new(vec![Value::Int(1)]))
+            ),
+            Value::Int(1)
+        );
+        assert_eq!(
+            eval_one(&parse("length"), &Value::Object(Rc::new(vec![]))),
+            Value::Int(0)
+        );
+        // length of number = abs value
+        assert_eq!(eval_one(&parse("length"), &Value::Int(-5)), Value::Int(5));
+    }
+
+    // --- keys / values on empty ---
+
+    #[test]
+    fn keys_empty_object() {
+        let input = Value::Object(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("keys"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    #[test]
+    fn values_empty_object() {
+        let input = Value::Object(Rc::new(vec![]));
+        assert_eq!(
+            eval_one(&parse("[.[]]"), &input),
+            Value::Array(Rc::new(vec![]))
+        );
+    }
+
+    #[test]
+    fn keys_array() {
+        let input = Value::Array(Rc::new(vec![
+            Value::String("a".into()),
+            Value::String("b".into()),
+        ]));
+        assert_eq!(
+            eval_one(&parse("keys"), &input),
+            Value::Array(Rc::new(vec![Value::Int(0), Value::Int(1)]))
+        );
+    }
+
+    // --- Negative array indexing ---
+
+    #[test]
+    fn array_index_negative() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(30),
+        ]));
+        assert_eq!(eval_one(&parse(".[-1]"), &input), Value::Int(30));
+        assert_eq!(eval_one(&parse(".[-2]"), &input), Value::Int(20));
+    }
+
+    #[test]
+    fn array_index_out_of_bounds() {
+        let input = Value::Array(Rc::new(vec![Value::Int(1)]));
+        assert_eq!(eval_one(&parse(".[99]"), &input), Value::Null);
+    }
+
+    #[test]
+    fn field_on_null() {
+        assert_eq!(eval_one(&parse(".x"), &Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn field_on_wrong_type() {
+        assert_eq!(eval_one(&parse(".x"), &Value::Int(5)), Value::Null);
+    }
+
+    // --- Explode/implode roundtrip ---
+
+    #[test]
+    fn explode_implode_roundtrip() {
+        let input = Value::String("Hello".into());
+        let result = eval_one(&parse("explode | implode"), &input);
+        assert_eq!(result, input);
+    }
+
+    // --- until / while safety ---
+
+    #[test]
+    fn until_terminates() {
+        assert_eq!(
+            eval_one(&parse("0 | until(. >= 5; . + 1)"), &Value::Null),
+            Value::Int(5)
+        );
+    }
+
+    // --- Alternative operator ---
+
+    #[test]
+    fn alternative_null() {
+        assert_eq!(eval_one(&parse("null // 42"), &Value::Null), Value::Int(42));
+    }
+
+    #[test]
+    fn alternative_false() {
+        assert_eq!(
+            eval_one(&parse("false // 42"), &Value::Null),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn alternative_non_null() {
+        assert_eq!(eval_one(&parse("1 // 42"), &Value::Null), Value::Int(1));
+    }
 }
