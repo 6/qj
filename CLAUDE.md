@@ -101,6 +101,10 @@ Always warm cache with `--warmup 3`.
 hyperfine --warmup 3 './target/release/jx ".field" test.json' 'jq ".field" test.json' 'jaq ".field" test.json'
 ```
 
+### Important
+Never run benchmarks concurrently with tests or other CPU-intensive processes.
+Benchmarks require exclusive CPU access for reliable results.
+
 ## Architecture
 - `src/simdjson/` — vendored simdjson.h/cpp + C-linkage bridge + safe Rust FFI wrapper
 - `src/filter/` — jq filter lexer, parser, AST evaluator (On-Demand fast path + DOM fallback)
