@@ -233,20 +233,20 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | Exit status | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | Tab indentation | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | Indent | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Slurp | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Sort keys | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 0/1 N |
-| Raw input | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Join output | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
-| --arg | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
-| --argjson | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Monochrome output | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
+| Slurp | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| Sort keys | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 0/1 N |
+| Raw input | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| Join output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| --arg | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| --argjson | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| Monochrome output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | --jsonl | 1 | **1/1 Y** | 0/1 N | 0/1 N | 0/1 N |
 
 ## Summary
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **jx** | **126** | **2** | **38** | **76.5%** |
+| **jx** | **133** | **2** | **31** | **80.7%** |
 | jq | 165 | 0 | 1 | 99.4% |
 | jaq | 150 | 3 | 13 | 91.3% |
 | gojq | 163 | 0 | 3 | 98.2% |
