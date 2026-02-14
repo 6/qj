@@ -45,7 +45,7 @@ jobs:
           bash benches/generate_ndjson.sh
 
       - name: Run benchmarks
-        run: OUTPUT=benches/results_ci.md COOLDOWN=3 bash benches/bench.sh
+        run: cargo run --release --bin bench_tools -- --runs 3 --cooldown 3 --output benches/results_ci.md
 
       - name: Upload results
         uses: actions/upload-artifact@v4
