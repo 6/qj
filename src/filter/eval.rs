@@ -244,7 +244,11 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                             Value::Double(f, _) => result.push_str(ryu::Buffer::new().format(f)),
                             Value::Bool(b) => result.push_str(if b { "true" } else { "false" }),
                             Value::Null => result.push_str("null"),
-                            _ => {} // arrays/objects: skip for now
+                            Value::Array(_) | Value::Object(_) => {
+                                let mut buf = Vec::new();
+                                value_to_json_string(&mut buf, &v);
+                                result.push_str(&String::from_utf8(buf).unwrap_or_default());
+                            }
                         });
                     }
                 }
@@ -729,7 +733,11 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             Value::Double(f, _) => output(Value::String(ryu::Buffer::new().format(*f).into())),
             Value::Bool(b) => output(Value::String(if *b { "true" } else { "false" }.into())),
             Value::Null => output(Value::String("null".into())),
-            _ => output(input.clone()), // arrays/objects: would need JSON serialization
+            Value::Array(_) | Value::Object(_) => {
+                let mut buf = Vec::new();
+                value_to_json_string(&mut buf, input);
+                output(Value::String(String::from_utf8(buf).unwrap_or_default()));
+            }
         },
         "tonumber" => match input {
             Value::Int(_) | Value::Double(..) => output(input.clone()),
@@ -1161,8 +1169,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         }
         "logb" => {
             if let Some(f) = input_as_f64(input) {
-                // logb returns the exponent of the float
-                output(Value::Double(f.log2().floor(), None));
+                output(Value::Double(unsafe { logb(f) }, None));
             }
         }
         "exp" => {
@@ -1235,26 +1242,33 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                 output(Value::Double(f.atanh(), None));
             }
         }
-        "significand" | "scalb" | "nearbyint" | "rint" => {
+        "significand" | "nearbyint" | "rint" => {
             if let Some(f) = input_as_f64(input) {
                 let result = match name {
                     "significand" => {
                         if f == 0.0 {
                             0.0
                         } else {
-                            let (_, exp) = frexp(f);
+                            let (_, exp) = libc_frexp(f);
                             f * (2.0_f64).powi(-(exp - 1))
                         }
                     }
-                    "nearbyint" | "rint" => f.round(),
-                    _ => f,
+                    _ => f.round(),
                 };
                 output(Value::Double(result, None));
             }
         }
+        "scalb" => {
+            // scalb(x; e) = x * 2^e — two-arg builtin
+            if let (Some(base), Some(arg)) = (input_as_f64(input), args.first()) {
+                let mut exp = 0i32;
+                eval(arg, input, &mut |v| exp = to_f64(&v) as i32);
+                output(f64_to_value(unsafe { ldexp(base, exp) }));
+            }
+        }
         "exponent" => {
             if let Some(f) = input_as_f64(input) {
-                let (_, exp) = frexp(f);
+                let (_, exp) = libc_frexp(f);
                 output(Value::Int(exp as i64));
             }
         }
@@ -1566,7 +1580,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         "until" => {
             if args.len() == 2 {
                 let mut current = input.clone();
-                for _ in 0..10000 {
+                for _ in 0..1_000_000 {
                     let mut done = false;
                     eval(&args[0], &current, &mut |v| done = v.is_truthy());
                     if done {
@@ -1574,6 +1588,9 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                     }
                     let mut next = current.clone();
                     eval(&args[1], &current, &mut |v| next = v);
+                    if values_equal(&next, &current) {
+                        break;
+                    }
                     current = next;
                 }
                 output(current);
@@ -1582,7 +1599,7 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
         "while" => {
             if args.len() == 2 {
                 let mut current = input.clone();
-                for _ in 0..10000 {
+                for _ in 0..1_000_000 {
                     let mut cont = false;
                     eval(&args[0], &current, &mut |v| cont = v.is_truthy());
                     if !cont {
@@ -1591,14 +1608,18 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                     output(current.clone());
                     let mut next = current.clone();
                     eval(&args[1], &current, &mut |v| next = v);
+                    if values_equal(&next, &current) {
+                        break;
+                    }
                     current = next;
                 }
             }
         }
         "repeat" => {
-            // repeat(f) = f, repeat(f) — applies f to same input each time
+            // repeat(f) = def repeat(f): f, repeat(f)
+            // Applies f to the same input each time, producing infinite stream
             if let Some(f) = args.first() {
-                for _ in 0..10000 {
+                for _ in 0..1_000_000 {
                     eval(f, input, output);
                 }
             }
@@ -1810,8 +1831,8 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             output(Value::Array(Rc::new(arr)));
         }
         "input" => {
-            // In filter context, pass through (for test compat)
-            output(input.clone());
+            // TODO: requires input stream plumbing to read next JSON value from stdin
+            // Producing no output is safer than identity (which gives wrong results)
         }
         "debug" => {
             if let Some(arg) = args.first() {
@@ -1845,8 +1866,10 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             // Produce no output (error in jq)
         }
         "env" | "$ENV" => {
-            // Return empty object stub for compatibility
-            output(Value::Object(Rc::new(Vec::new())));
+            let vars: Vec<(String, Value)> = std::env::vars()
+                .map(|(k, v)| (k, Value::String(v)))
+                .collect();
+            output(Value::Object(Rc::new(vars)));
         }
         "ascii" => {
             if let Value::String(s) = input
@@ -1883,10 +1906,10 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                 // recurse with no args = ..
                 recurse(input, output);
             } else if args.len() == 1 {
-                recurse_with_filter(&args[0], input, output, 1000);
+                recurse_with_filter(&args[0], input, output, 100_000);
             } else if args.len() == 2 {
                 // recurse(f; cond) — recurse while cond is truthy
-                recurse_with_cond(&args[0], &args[1], input, output, 1000);
+                recurse_with_cond(&args[0], &args[1], input, output, 100_000);
             }
         }
         "bsearch" => {
@@ -1985,18 +2008,13 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             }
         }
         "todate" => {
-            // todate: convert unix timestamp to ISO 8601 string
-            if let Some(ts) = input_as_f64(input) {
-                let secs = ts as i64;
-                // Simple UTC date formatting without external crate
-                let (y, m, d, h, min, sec) = unix_to_datetime(secs);
-                output(Value::String(format!(
-                    "{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{sec:02}Z"
-                )));
+            if let Some(ts) = input_as_f64(input)
+                && let Some(tm) = unix_to_tm(ts as i64)
+            {
+                output(Value::String(format_strftime("%Y-%m-%dT%H:%M:%SZ", &tm)));
             }
         }
         "fromdate" => {
-            // fromdate: parse ISO 8601 string to unix timestamp
             if let Value::String(s) = input
                 && let Some(ts) = parse_iso8601(s)
             {
@@ -2011,7 +2029,6 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
             }
         }
         "strftime" => {
-            // strftime(fmt): format unix timestamp (basic implementation)
             if let (Some(arg), Some(ts)) = (args.first(), input_as_f64(input)) {
                 let mut fmt = String::new();
                 eval(arg, input, &mut |v| {
@@ -2019,17 +2036,9 @@ fn eval_builtin(name: &str, args: &[Filter], input: &Value, output: &mut dyn FnM
                         fmt = s;
                     }
                 });
-                let secs = ts as i64;
-                let (y, m, d, h, min, sec) = unix_to_datetime(secs);
-                let result = fmt
-                    .replace("%Y", &format!("{y:04}"))
-                    .replace("%m", &format!("{m:02}"))
-                    .replace("%d", &format!("{d:02}"))
-                    .replace("%H", &format!("{h:02}"))
-                    .replace("%M", &format!("{min:02}"))
-                    .replace("%S", &format!("{sec:02}"))
-                    .replace("%Z", "UTC");
-                output(Value::String(result));
+                if let Some(tm) = unix_to_tm(ts as i64) {
+                    output(Value::String(format_strftime(&fmt, &tm)));
+                }
             }
         }
         _ => {
@@ -2087,19 +2096,77 @@ fn f64_to_value(f: f64) -> Value {
     }
 }
 
-fn frexp(f: f64) -> (f64, i32) {
-    if f == 0.0 {
-        return (0.0, 0);
-    }
-    let bits = f.to_bits();
-    let exp = ((bits >> 52) & 0x7FF) as i32 - 1022;
-    let mantissa = f64::from_bits((bits & 0x800F_FFFF_FFFF_FFFF) | 0x3FE0_0000_0000_0000);
-    (mantissa, exp)
-}
-
 unsafe extern "C" {
     fn j0(x: f64) -> f64;
     fn j1(x: f64) -> f64;
+    fn frexp(x: f64, exp: *mut i32) -> f64;
+    fn logb(x: f64) -> f64;
+    fn ldexp(x: f64, exp: i32) -> f64;
+    fn gmtime_r(time: *const LibcTimeT, result: *mut LibcTm) -> *mut LibcTm;
+    fn timegm(tm: *mut LibcTm) -> LibcTimeT;
+    #[link_name = "strftime"]
+    fn libc_strftime(s: *mut u8, max: usize, fmt: *const u8, tm: *const LibcTm) -> usize;
+}
+
+// Alias so we can use the same type as C's time_t (i64 on 64-bit platforms)
+type LibcTimeT = i64;
+
+#[repr(C)]
+#[derive(Clone)]
+struct LibcTm {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+    tm_gmtoff: i64,
+    tm_zone: *const u8,
+}
+
+fn libc_frexp(f: f64) -> (f64, i32) {
+    let mut exp: i32 = 0;
+    let mantissa = unsafe { frexp(f, &mut exp) };
+    (mantissa, exp)
+}
+
+fn new_libc_tm() -> LibcTm {
+    LibcTm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        tm_gmtoff: 0,
+        tm_zone: std::ptr::null(),
+    }
+}
+
+fn unix_to_tm(ts: i64) -> Option<LibcTm> {
+    let mut tm = new_libc_tm();
+    let result = unsafe { gmtime_r(&ts, &mut tm) };
+    if result.is_null() { None } else { Some(tm) }
+}
+
+fn tm_to_unix(tm: &mut LibcTm) -> i64 {
+    unsafe { timegm(tm) }
+}
+
+fn format_strftime(fmt: &str, tm: &LibcTm) -> String {
+    let mut buf = vec![0u8; 256];
+    let fmt_cstr = format!("{fmt}\0");
+    let len = unsafe { libc_strftime(buf.as_mut_ptr(), buf.len(), fmt_cstr.as_ptr(), tm) };
+    if len == 0 && !fmt.is_empty() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buf[..len]).into_owned()
 }
 
 fn value_to_json_string(buf: &mut Vec<u8>, v: &Value) {
@@ -2448,55 +2515,27 @@ fn recurse_with_cond(
     });
 }
 
-fn unix_to_datetime(ts: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let secs_per_day: i64 = 86400;
-    let mut days = ts / secs_per_day;
-    let mut rem = ts % secs_per_day;
-    if rem < 0 {
-        days -= 1;
-        rem += secs_per_day;
-    }
-    let h = (rem / 3600) as u32;
-    rem %= 3600;
-    let min = (rem / 60) as u32;
-    let sec = (rem % 60) as u32;
-
-    // Days since epoch (1970-01-01)
-    days += 719468; // shift to 0000-03-01
-    let era = days.div_euclid(146097);
-    let doe = days.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d, h, min, sec)
-}
-
 fn parse_iso8601(s: &str) -> Option<i64> {
-    // Basic ISO 8601 parser: YYYY-MM-DDTHH:MM:SSZ
     let s = s.trim();
     if s.len() < 19 {
         return None;
     }
-    let y: i64 = s[0..4].parse().ok()?;
-    let m: u32 = s[5..7].parse().ok()?;
-    let d: u32 = s[8..10].parse().ok()?;
-    let h: i64 = s[11..13].parse().ok()?;
-    let min: i64 = s[14..16].parse().ok()?;
-    let sec: i64 = s[17..19].parse().ok()?;
+    let y: i32 = s[0..4].parse().ok()?;
+    let m: i32 = s[5..7].parse().ok()?;
+    let d: i32 = s[8..10].parse().ok()?;
+    let h: i32 = s[11..13].parse().ok()?;
+    let min: i32 = s[14..16].parse().ok()?;
+    let sec: i32 = s[17..19].parse().ok()?;
 
-    // Days from epoch
-    let (y_adj, m_adj) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
-    let era = y_adj.div_euclid(400);
-    let yoe = y_adj.rem_euclid(400);
-    let doy = (153 * m_adj as i64 + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-
-    Some(days * 86400 + h * 3600 + min * 60 + sec)
+    let mut tm = new_libc_tm();
+    tm.tm_year = y - 1900;
+    tm.tm_mon = m - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min = min;
+    tm.tm_sec = sec;
+    tm.tm_isdst = 0;
+    Some(tm_to_unix(&mut tm))
 }
 
 #[cfg(test)]
@@ -3498,7 +3537,7 @@ mod tests {
 
     #[test]
     fn eval_repeat() {
-        // repeat(f) applies f to same input each time
+        // repeat(f) applies f to same input each time: f, repeat(f)
         let results = eval_all(&parse("limit(3; 5 | repeat(. + 1))"), &Value::Null);
         assert_eq!(results, vec![Value::Int(6), Value::Int(6), Value::Int(6)]);
     }
@@ -3507,6 +3546,73 @@ mod tests {
     fn eval_recurse_with_filter_and_cond() {
         let results = eval_all(&parse("2 | recurse(. * .; . < 100)"), &Value::Null);
         assert_eq!(results, vec![Value::Int(2), Value::Int(4), Value::Int(16)]);
+    }
+
+    #[test]
+    fn eval_string_interp_with_array() {
+        // Build StringInterp AST directly since parser doesn't support \(...) yet
+        use crate::filter::StringPart;
+        let filter = Filter::StringInterp(vec![
+            StringPart::Lit("items: ".to_string()),
+            StringPart::Expr(Filter::Literal(Value::Array(Rc::new(vec![
+                Value::Int(1),
+                Value::Int(2),
+            ])))),
+        ]);
+        let result = eval_one(&filter, &Value::Null);
+        assert_eq!(result, Value::String("items: [1,2]".to_string()));
+    }
+
+    #[test]
+    fn eval_string_interp_with_object() {
+        use crate::filter::StringPart;
+        let filter = Filter::StringInterp(vec![
+            StringPart::Lit("obj: ".to_string()),
+            StringPart::Expr(Filter::Literal(Value::Object(Rc::new(vec![(
+                "a".to_string(),
+                Value::Int(1),
+            )])))),
+        ]);
+        let result = eval_one(&filter, &Value::Null);
+        assert_eq!(result, Value::String(r#"obj: {"a":1}"#.to_string()));
+    }
+
+    #[test]
+    fn eval_tostring_array() {
+        let result = eval_one(&parse("[1,2,3] | tostring"), &Value::Null);
+        assert_eq!(result, Value::String("[1,2,3]".to_string()));
+    }
+
+    #[test]
+    fn eval_tostring_object() {
+        let result = eval_one(&parse(r#"{"a":1} | tostring"#), &Value::Null);
+        assert_eq!(result, Value::String(r#"{"a":1}"#.to_string()));
+    }
+
+    #[test]
+    fn eval_logb() {
+        let result = eval_one(&parse("1 | logb"), &Value::Null);
+        assert_eq!(result, Value::Double(0.0, None));
+        let result = eval_one(&parse("8 | logb"), &Value::Null);
+        assert_eq!(result, Value::Double(3.0, None));
+    }
+
+    #[test]
+    fn eval_scalb() {
+        let result = eval_one(&parse("2 | scalb(3)"), &Value::Null);
+        assert_eq!(result, Value::Int(16));
+        let result = eval_one(&parse("1 | scalb(10)"), &Value::Null);
+        assert_eq!(result, Value::Int(1024));
+    }
+
+    #[test]
+    fn eval_env() {
+        // env should return a non-empty object
+        let result = eval_one(&parse("env | keys | length"), &Value::Null);
+        match result {
+            Value::Int(n) => assert!(n > 0, "env should have entries"),
+            _ => panic!("expected int from env | keys | length"),
+        }
     }
 
     // --- Helper function tests ---
@@ -3532,26 +3638,58 @@ mod tests {
 
     #[test]
     fn test_frexp() {
-        let (m, e) = frexp(0.0);
+        let (m, e) = libc_frexp(0.0);
         assert_eq!(m, 0.0);
         assert_eq!(e, 0);
 
-        let (m, e) = frexp(1.0);
+        let (m, e) = libc_frexp(1.0);
         assert!((m - 0.5).abs() < 1e-10);
         assert_eq!(e, 1);
+
+        let (m, e) = libc_frexp(-0.5);
+        assert!((m - (-0.5)).abs() < 1e-10);
+        assert_eq!(e, 0);
+
+        let (m, _) = libc_frexp(f64::INFINITY);
+        assert!(m.is_infinite());
+
+        let (m, _) = libc_frexp(f64::NAN);
+        assert!(m.is_nan());
     }
 
     #[test]
-    fn test_unix_to_datetime_epoch() {
-        let (y, m, d, h, min, sec) = unix_to_datetime(0);
-        assert_eq!((y, m, d, h, min, sec), (1970, 1, 1, 0, 0, 0));
+    fn test_unix_to_tm_epoch() {
+        let tm = unix_to_tm(0).unwrap();
+        assert_eq!(tm.tm_year, 70); // years since 1900
+        assert_eq!(tm.tm_mon, 0); // 0-indexed
+        assert_eq!(tm.tm_mday, 1);
+        assert_eq!(tm.tm_hour, 0);
+        assert_eq!(tm.tm_min, 0);
+        assert_eq!(tm.tm_sec, 0);
     }
 
     #[test]
-    fn test_unix_to_datetime_known() {
+    fn test_unix_to_tm_known() {
         // 2024-01-15 11:30:45 UTC = 1705318245
-        let (y, m, d, h, min, sec) = unix_to_datetime(1705318245);
-        assert_eq!((y, m, d, h, min, sec), (2024, 1, 15, 11, 30, 45));
+        let tm = unix_to_tm(1705318245).unwrap();
+        assert_eq!(tm.tm_year + 1900, 2024);
+        assert_eq!(tm.tm_mon + 1, 1);
+        assert_eq!(tm.tm_mday, 15);
+        assert_eq!(tm.tm_hour, 11);
+        assert_eq!(tm.tm_min, 30);
+        assert_eq!(tm.tm_sec, 45);
+    }
+
+    #[test]
+    fn test_unix_to_tm_negative() {
+        // Before epoch: 1969-12-31 23:59:59 = -1
+        let tm = unix_to_tm(-1).unwrap();
+        assert_eq!(tm.tm_year + 1900, 1969);
+        assert_eq!(tm.tm_mon + 1, 12);
+        assert_eq!(tm.tm_mday, 31);
+        assert_eq!(tm.tm_hour, 23);
+        assert_eq!(tm.tm_min, 59);
+        assert_eq!(tm.tm_sec, 59);
     }
 
     #[test]
@@ -3563,9 +3701,25 @@ mod tests {
     #[test]
     fn test_parse_iso8601_roundtrip() {
         let ts = 1705318245_i64;
-        let (y, m, d, h, min, sec) = unix_to_datetime(ts);
-        let s = format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{sec:02}Z");
+        let tm = unix_to_tm(ts).unwrap();
+        let s = format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour,
+            tm.tm_min,
+            tm.tm_sec
+        );
         assert_eq!(parse_iso8601(&s), Some(ts));
+    }
+
+    #[test]
+    fn test_format_strftime() {
+        let tm = unix_to_tm(0).unwrap();
+        assert_eq!(format_strftime("%Y-%m-%d", &tm), "1970-01-01");
+        assert_eq!(format_strftime("%A", &tm), "Thursday");
+        assert_eq!(format_strftime("%j", &tm), "001");
     }
 
     #[test]

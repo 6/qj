@@ -1884,3 +1884,87 @@ fn file_input() {
         assert!(n > 0, "expected positive length from twitter.json");
     }
 }
+
+// --- Red flag fix tests ---
+
+#[test]
+fn jq_compat_logb() {
+    assert_jq_compat("1 | logb", "null");
+    assert_jq_compat("8 | logb", "null");
+    assert_jq_compat("0.5 | logb", "null");
+}
+
+#[test]
+fn logb_basic() {
+    assert_eq!(jx("1 | logb", "null").trim(), "0");
+    assert_eq!(jx("8 | logb", "null").trim(), "3");
+    assert_eq!(jx("0.5 | logb", "null").trim(), "-1");
+}
+
+#[test]
+fn scalb_basic() {
+    // scalb(x; e) = x * 2^e
+    assert_eq!(jx("2 | scalb(3)", "null").trim(), "16");
+    assert_eq!(jx("1 | scalb(10)", "null").trim(), "1024");
+    assert_eq!(jx("0.5 | scalb(1)", "null").trim(), "1");
+}
+
+#[test]
+fn jq_compat_tostring_arrays_objects() {
+    assert_jq_compat("[1,2,3] | tostring", "null");
+    assert_jq_compat(r#"{"a":1} | tostring"#, "null");
+    assert_jq_compat("null | tostring", "null");
+    assert_jq_compat("true | tostring", "null");
+}
+
+#[test]
+fn tostring_json_encodes() {
+    // tostring on arrays/objects should produce JSON strings
+    assert_eq!(jx("[1,2,3] | tostring", "null").trim(), r#""[1,2,3]""#);
+    assert_eq!(jx(r#"{"a":1} | tostring"#, "null").trim(), r#""{\"a\":1}""#);
+}
+
+#[test]
+fn env_returns_real_vars() {
+    // $ENV should contain at least PATH
+    let out = jx("$ENV | keys | length", "null");
+    let n: i64 = out.trim().parse().unwrap_or(0);
+    assert!(n > 0, "env should have entries, got: {}", out.trim());
+}
+
+#[test]
+fn jq_compat_strftime_extended() {
+    assert_jq_compat(r#"0 | strftime("%Y-%m-%d")"#, "null");
+    assert_jq_compat(r#"0 | strftime("%H:%M:%S")"#, "null");
+    assert_jq_compat(r#"0 | strftime("%A")"#, "null");
+    assert_jq_compat(r#"0 | strftime("%j")"#, "null");
+}
+
+#[test]
+fn jq_compat_todate_fromdate_roundtrip() {
+    assert_jq_compat("0 | todate", "null");
+    assert_jq_compat("1705318245 | todate", "null");
+    assert_jq_compat(r#""1970-01-01T00:00:00Z" | fromdate"#, "null");
+    assert_jq_compat(r#""2024-01-15T11:30:45Z" | fromdate"#, "null");
+}
+
+#[test]
+fn jq_compat_significand() {
+    assert_jq_compat("1 | significand", "null");
+    assert_jq_compat("8 | significand", "null");
+    assert_jq_compat("0 | significand", "null");
+}
+
+#[test]
+fn until_terminates_on_unchanged() {
+    // until(false; .) should terminate (structural check: input unchanged)
+    let out = jx("0 | until(false; .)", "null");
+    assert_eq!(out.trim(), "0");
+}
+
+#[test]
+fn while_terminates_on_unchanged() {
+    // while(true; .) should terminate (structural check: input unchanged)
+    let out = jx_compact("0 | [limit(1; while(true; .))]", "null");
+    assert_eq!(out.trim(), "[0]");
+}
