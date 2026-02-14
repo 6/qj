@@ -389,12 +389,116 @@ filter_display() {
         done
     fi
 
+    # --- Throughput ---
+    # Compute throughput for identity compact on the largest JSON file.
+    largest_file="${FILES[${#FILES[@]}-1]}"
+    largest_bytes=$(wc -c < "$DATA/$largest_file" | tr -d ' ')
+    jx_identity="${RESULTS["0,$largest_file,jx"]:-}"
+    if [ -n "$jx_identity" ] && [ "$jx_identity" != "null" ]; then
+        throughput=$(echo "$largest_bytes $jx_identity" | awk '{
+            mbps = ($1 / $2) / (1024*1024)
+            if (mbps >= 1024) printf "%.1f GB/s", mbps/1024
+            else printf "%.0f MB/s", mbps
+        }')
+        echo ""
+        echo "### Throughput"
+        echo ""
+        echo "Peak throughput (\`-c '.'\` on ${largest_file}, $(echo "$largest_bytes" | awk '{printf "%.0fMB", $1/(1024*1024)}')): **$throughput**"
+    fi
+
+    # --- Summary: geometric-mean speedup vs jq ---
+    # Categories: JSON (large file only if available, else small), NDJSON
     echo ""
-    echo "### Understanding the numbers"
+    echo "### Summary (times faster than jq)"
     echo ""
-    echo "- jx is fastest on **parse-dominated workloads** (identity, field extraction) thanks to SIMD parsing"
-    echo "- On **eval-heavy filters** (math, string ops, paths), jx remains 2-5x faster than jq and competitive with or faster than jaq"
-    echo "- On **NDJSON**, jx parallelizes across all cores for significant speedups over single-threaded tools"
+
+    # Build summary header
+    sum_header="| Category |"
+    sum_sep="|----------|"
+    for tool in "${TOOLS[@]}"; do
+        if [ "$tool" = "jq" ]; then continue; fi
+        if [ "$tool" = "jx" ]; then
+            sum_header="$sum_header **$tool** |"
+        else
+            sum_header="$sum_header $tool |"
+        fi
+        sum_sep="$sum_sep------|"
+    done
+    echo "$sum_header"
+    echo "$sum_sep"
+
+    # Geometric mean helper: reads lines of "jq_time tool_time" pairs, outputs geomean ratio
+    geomean_ratio() {
+        awk 'BEGIN { sum=0; n=0 }
+        {
+            if ($1 > 0 && $2 > 0) { sum += log($1/$2); n++ }
+        }
+        END {
+            if (n > 0) printf "%.1fx", exp(sum/n)
+            else printf "-"
+        }'
+    }
+
+    # JSON category: use large file if available, else small
+    json_file="${FILES[${#FILES[@]}-1]}"
+    for tool in "${TOOLS[@]}"; do
+        if [ "$tool" = "jq" ]; then continue; fi
+        pairs=""
+        for i in "${!FILTER_NAMES[@]}"; do
+            jq_val="${RESULTS["$i,$json_file,jq"]:-}"
+            tool_val="${RESULTS["$i,$json_file,$tool"]:-}"
+            if [ -n "$jq_val" ] && [ "$jq_val" != "null" ] && [ -n "$tool_val" ] && [ "$tool_val" != "null" ]; then
+                pairs="${pairs}${jq_val} ${tool_val}\n"
+            fi
+        done
+        eval "json_speedup_${tool//-/_}=$(echo -e "$pairs" | geomean_ratio)"
+    done
+
+    json_row="| JSON (${json_file}) |"
+    for tool in "${TOOLS[@]}"; do
+        if [ "$tool" = "jq" ]; then continue; fi
+        varname="json_speedup_${tool//-/_}"
+        val="${!varname}"
+        if [ "$tool" = "jx" ]; then
+            json_row="$json_row **$val** |"
+        else
+            json_row="$json_row $val |"
+        fi
+    done
+    echo "$json_row"
+
+    # NDJSON category
+    if [ ${#NDJSON_FILES[@]} -gt 0 ]; then
+        ndjson_file="${NDJSON_FILES[${#NDJSON_FILES[@]}-1]}"
+        for tool in "${TOOLS[@]}"; do
+            if [ "$tool" = "jq" ]; then continue; fi
+            pairs=""
+            for i in "${!NDJSON_FILTER_NAMES[@]}"; do
+                jq_val="${RESULTS["ndjson_$i,$ndjson_file,jq"]:-}"
+                tool_val="${RESULTS["ndjson_$i,$ndjson_file,$tool"]:-}"
+                if [ -n "$jq_val" ] && [ "$jq_val" != "null" ] && [ -n "$tool_val" ] && [ "$tool_val" != "null" ]; then
+                    pairs="${pairs}${jq_val} ${tool_val}\n"
+                fi
+            done
+            eval "ndjson_speedup_${tool//-/_}=$(echo -e "$pairs" | geomean_ratio)"
+        done
+
+        ndjson_row="| NDJSON (${ndjson_file}) |"
+        for tool in "${TOOLS[@]}"; do
+            if [ "$tool" = "jq" ]; then continue; fi
+            varname="ndjson_speedup_${tool//-/_}"
+            val="${!varname}"
+            if [ "$tool" = "jx" ]; then
+                ndjson_row="$ndjson_row **$val** |"
+            else
+                ndjson_row="$ndjson_row $val |"
+            fi
+        done
+        echo "$ndjson_row"
+    fi
+
+    echo ""
+    echo "Geometric mean of per-filter speedups (median time). Higher is better."
 } > "$OUTPUT"
 
 echo "=== Done ==="
