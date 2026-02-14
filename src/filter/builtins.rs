@@ -1362,6 +1362,17 @@ pub(super) fn eval_builtin(
                 "sub",
                 "gsub",
                 "splits",
+                "@base64",
+                "@base64d",
+                "@uri",
+                "@csv",
+                "@tsv",
+                "@html",
+                "@sh",
+                "@json",
+                "@text",
+                "in",
+                "combinations",
             ];
             let arr: Vec<Value> = names.iter().map(|n| Value::String(n.to_string())).collect();
             output(Value::Array(Rc::new(arr)));
@@ -1748,6 +1759,219 @@ pub(super) fn eval_builtin(
                 }
             }
         }
+        // --- Format string builtins ---
+        "@json" => {
+            let mut buf = Vec::new();
+            crate::output::write_compact(&mut buf, input, false).unwrap();
+            output(Value::String(String::from_utf8(buf).unwrap_or_default()));
+        }
+        "@text" => match input {
+            Value::String(_) => output(input.clone()),
+            Value::Int(n) => output(Value::String(itoa::Buffer::new().format(*n).into())),
+            Value::Double(f, _) => output(Value::String(ryu::Buffer::new().format(*f).into())),
+            Value::Bool(b) => output(Value::String(if *b { "true" } else { "false" }.into())),
+            Value::Null => output(Value::String("null".into())),
+            Value::Array(_) | Value::Object(_) => {
+                let mut buf = Vec::new();
+                crate::output::write_compact(&mut buf, input, false).unwrap();
+                output(Value::String(String::from_utf8(buf).unwrap_or_default()));
+            }
+        },
+        "@html" => {
+            if let Value::String(s) = input {
+                let mut out = String::with_capacity(s.len());
+                for c in s.chars() {
+                    match c {
+                        '&' => out.push_str("&amp;"),
+                        '<' => out.push_str("&lt;"),
+                        '>' => out.push_str("&gt;"),
+                        '\'' => out.push_str("&#39;"),
+                        _ => out.push(c),
+                    }
+                }
+                output(Value::String(out));
+            }
+        }
+        "@uri" => {
+            if let Value::String(s) = input {
+                let mut out = String::with_capacity(s.len());
+                for byte in s.bytes() {
+                    match byte {
+                        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                            out.push(byte as char)
+                        }
+                        _ => {
+                            out.push('%');
+                            out.push(
+                                char::from_digit((byte >> 4) as u32, 16)
+                                    .unwrap()
+                                    .to_ascii_uppercase(),
+                            );
+                            out.push(
+                                char::from_digit((byte & 0xf) as u32, 16)
+                                    .unwrap()
+                                    .to_ascii_uppercase(),
+                            );
+                        }
+                    }
+                }
+                output(Value::String(out));
+            }
+        }
+        "@csv" => {
+            if let Value::Array(arr) = input {
+                let parts: Vec<String> = arr
+                    .iter()
+                    .map(|v| match v {
+                        Value::String(s) => {
+                            let escaped = s.replace('"', "\"\"");
+                            format!("\"{escaped}\"")
+                        }
+                        Value::Int(n) => itoa::Buffer::new().format(*n).to_string(),
+                        Value::Double(f, _) => ryu::Buffer::new().format(*f).to_string(),
+                        Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
+                        Value::Null => "".to_string(),
+                        _ => String::new(),
+                    })
+                    .collect();
+                output(Value::String(parts.join(",")));
+            }
+        }
+        "@tsv" => {
+            if let Value::Array(arr) = input {
+                let parts: Vec<String> = arr
+                    .iter()
+                    .map(|v| match v {
+                        Value::String(s) => s
+                            .replace('\\', "\\\\")
+                            .replace('\t', "\\t")
+                            .replace('\n', "\\n")
+                            .replace('\r', "\\r"),
+                        Value::Int(n) => itoa::Buffer::new().format(*n).to_string(),
+                        Value::Double(f, _) => ryu::Buffer::new().format(*f).to_string(),
+                        Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
+                        Value::Null => "".to_string(),
+                        _ => String::new(),
+                    })
+                    .collect();
+                output(Value::String(parts.join("\t")));
+            }
+        }
+        "@sh" => {
+            if let Value::String(s) = input {
+                let escaped = s.replace('\'', "'\\''");
+                output(Value::String(format!("'{escaped}'")));
+            }
+        }
+        "@base64" => {
+            if let Value::String(s) = input {
+                use base64::Engine;
+                output(Value::String(
+                    base64::engine::general_purpose::STANDARD.encode(s.as_bytes()),
+                ));
+            }
+        }
+        "@base64d" => {
+            if let Value::String(s) = input {
+                use base64::Engine;
+                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s.as_bytes())
+                    && let Ok(text) = String::from_utf8(decoded)
+                {
+                    output(Value::String(text));
+                }
+            }
+        }
+        // --- Small builtins ---
+        "in" => {
+            if let Some(arg) = args.first() {
+                let mut container = Value::Null;
+                eval(arg, input, env, &mut |v| container = v);
+                match (&container, input) {
+                    (Value::Object(obj), Value::String(key)) => {
+                        output(Value::Bool(obj.iter().any(|(k, _)| k == key)));
+                    }
+                    (Value::Array(arr), Value::Int(idx)) => {
+                        output(Value::Bool(*idx >= 0 && (*idx as usize) < arr.len()));
+                    }
+                    _ => output(Value::Bool(false)),
+                }
+            }
+        }
+        "combinations" => {
+            if let Value::Array(arr) = input {
+                if args.is_empty() {
+                    // combinations on array of arrays: cartesian product
+                    let arrays: Vec<&[Value]> = arr
+                        .iter()
+                        .filter_map(|v| {
+                            if let Value::Array(a) = v {
+                                Some(a.as_ref().as_slice())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if arrays.is_empty() {
+                        return;
+                    }
+                    let mut indices = vec![0usize; arrays.len()];
+                    loop {
+                        let combo: Vec<Value> = indices
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &j)| arrays[i][j].clone())
+                            .collect();
+                        output(Value::Array(Rc::new(combo)));
+                        // Increment indices from the right
+                        let mut carry = true;
+                        for k in (0..indices.len()).rev() {
+                            if carry {
+                                indices[k] += 1;
+                                if indices[k] < arrays[k].len() {
+                                    carry = false;
+                                } else {
+                                    indices[k] = 0;
+                                }
+                            }
+                        }
+                        if carry {
+                            break;
+                        }
+                    }
+                } else {
+                    // combinations(n): repeat input array n times, then cartesian product
+                    let mut n = 0i64;
+                    eval(&args[0], input, env, &mut |v| n = to_f64(&v) as i64);
+                    if n <= 0 {
+                        return;
+                    }
+                    let arrays: Vec<&[Value]> = (0..n).map(|_| arr.as_ref().as_slice()).collect();
+                    let mut indices = vec![0usize; n as usize];
+                    loop {
+                        let combo: Vec<Value> = indices
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &j)| arrays[i][j].clone())
+                            .collect();
+                        output(Value::Array(Rc::new(combo)));
+                        let mut carry = true;
+                        for k in (0..indices.len()).rev() {
+                            if carry {
+                                indices[k] += 1;
+                                if indices[k] < arrays[k].len() {
+                                    carry = false;
+                                } else {
+                                    indices[k] = 0;
+                                }
+                            }
+                        }
+                        if carry {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         _ => {
             // Unknown builtin — silently produce no output
         }
@@ -2065,5 +2289,72 @@ mod tests {
         } else {
             panic!("expected object");
         }
+    }
+
+    // --- Format string builtins ---
+
+    fn run_builtin(name: &str, input: &Value) -> Vec<Value> {
+        let env = Env::empty();
+        let mut results = Vec::new();
+        eval_builtin(name, &[], input, &env, &mut |v| results.push(v));
+        results
+    }
+
+    #[test]
+    fn format_html_escapes() {
+        let input = Value::String("<b>a & b</b>".into());
+        let out = run_builtin("@html", &input);
+        assert_eq!(
+            out,
+            vec![Value::String("&lt;b&gt;a &amp; b&lt;/b&gt;".into())]
+        );
+    }
+
+    #[test]
+    fn format_uri_encodes() {
+        let input = Value::String("hello world".into());
+        let out = run_builtin("@uri", &input);
+        assert_eq!(out, vec![Value::String("hello%20world".into())]);
+    }
+
+    #[test]
+    fn format_csv_array() {
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(1),
+            Value::String("two".into()),
+            Value::Int(3),
+        ]));
+        let out = run_builtin("@csv", &input);
+        assert_eq!(out, vec![Value::String("1,\"two\",3".into())]);
+    }
+
+    #[test]
+    fn format_sh_quotes() {
+        let input = Value::String("it's a test".into());
+        let out = run_builtin("@sh", &input);
+        assert_eq!(out, vec![Value::String("'it'\\''s a test'".into())]);
+    }
+
+    #[test]
+    fn format_base64_roundtrip() {
+        let input = Value::String("hello".into());
+        let encoded = run_builtin("@base64", &input);
+        assert_eq!(encoded, vec![Value::String("aGVsbG8=".into())]);
+        let decoded = run_builtin("@base64d", &encoded[0]);
+        assert_eq!(decoded, vec![Value::String("hello".into())]);
+    }
+
+    #[test]
+    fn format_json() {
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        let out = run_builtin("@json", &input);
+        assert_eq!(out, vec![Value::String("[1,2]".into())]);
+    }
+
+    #[test]
+    fn format_text_string_passthrough() {
+        let input = Value::String("abc".into());
+        let out = run_builtin("@text", &input);
+        assert_eq!(out, vec![Value::String("abc".into())]);
     }
 }

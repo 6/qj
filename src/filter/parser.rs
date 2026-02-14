@@ -14,8 +14,8 @@
 ///            | "-" primary | "not"
 use anyhow::{Result, bail};
 
-use super::lexer::Token;
-use super::{ArithOp, AssignOp, BoolOp, CmpOp, Filter, ObjKey};
+use super::lexer::{StringSegment, Token};
+use super::{ArithOp, AssignOp, BoolOp, CmpOp, Filter, ObjKey, StringPart};
 use crate::value::Value;
 use std::rc::Rc;
 
@@ -451,9 +451,32 @@ impl<'a> Parser<'a> {
                     Token::Str(s) => s.clone(),
                     _ => unreachable!(),
                 };
-                // Check for string interpolation: if s contains \( patterns,
-                // we would need to handle it. For now, just literal.
                 Ok(Filter::Literal(Value::String(s)))
+            }
+            Some(Token::InterpStr(_)) => {
+                let segments = match self.advance().unwrap() {
+                    Token::InterpStr(s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                let mut parts = Vec::new();
+                for seg in segments {
+                    match seg {
+                        StringSegment::Lit(s) => parts.push(StringPart::Lit(s)),
+                        StringSegment::Expr(expr_text) => {
+                            let tokens = super::lexer::lex(&expr_text)?;
+                            let filter = parse(&tokens)?;
+                            parts.push(StringPart::Expr(filter));
+                        }
+                    }
+                }
+                Ok(Filter::StringInterp(parts))
+            }
+            Some(Token::Format(_)) => {
+                let name = match self.advance().unwrap() {
+                    Token::Format(s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                Ok(Filter::Builtin(name, vec![]))
             }
             // Named identifier — builtin, function call, or variable
             Some(Token::Ident(_)) => {
@@ -1160,6 +1183,75 @@ mod tests {
                 other => panic!("expected nested Assign, got {other:?}"),
             },
             other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    // --- String interpolation ---
+
+    #[test]
+    fn parse_string_interp() {
+        let f = p(r#""\(.x)""#);
+        match f {
+            Filter::StringInterp(parts) => {
+                assert_eq!(parts.len(), 1);
+                match &parts[0] {
+                    StringPart::Expr(Filter::Field(name)) => assert_eq!(name, "x"),
+                    other => panic!("expected Expr(Field), got {other:?}"),
+                }
+            }
+            other => panic!("expected StringInterp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_string_interp_with_lit() {
+        let f = p(r#""hello \(.name)!""#);
+        match f {
+            Filter::StringInterp(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert_eq!(parts[0], StringPart::Lit("hello ".into()));
+                match &parts[1] {
+                    StringPart::Expr(Filter::Field(name)) => assert_eq!(name, "name"),
+                    other => panic!("expected Expr(Field), got {other:?}"),
+                }
+                assert_eq!(parts[2], StringPart::Lit("!".into()));
+            }
+            other => panic!("expected StringInterp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_string_interp_arithmetic() {
+        // "\(.x + 1)" should parse the expression inside
+        let f = p(r#""\(.x + 1)""#);
+        match f {
+            Filter::StringInterp(parts) => {
+                assert_eq!(parts.len(), 1);
+                match &parts[0] {
+                    StringPart::Expr(Filter::Arith(_, ArithOp::Add, _)) => {}
+                    other => panic!("expected Expr(Arith(Add)), got {other:?}"),
+                }
+            }
+            other => panic!("expected StringInterp, got {other:?}"),
+        }
+    }
+
+    // --- Format strings ---
+
+    #[test]
+    fn parse_format_string() {
+        assert_eq!(p("@base64"), Filter::Builtin("@base64".into(), vec![]));
+    }
+
+    #[test]
+    fn parse_format_in_pipe() {
+        let f = p(". | @csv");
+        match f {
+            Filter::Pipe(lhs, rhs) => {
+                assert_eq!(*lhs, Filter::Identity);
+                assert_eq!(*rhs, Filter::Builtin("@csv".into(), vec![]));
+            }
+            other => panic!("expected Pipe, got {other:?}"),
         }
     }
 }

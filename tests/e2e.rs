@@ -2593,3 +2593,153 @@ fn regex_splits() {
     assert_eq!(out.trim(), r#"["a","b","c"]"#);
     assert_jq_compat(r#"[splits("[,;]")]"#, r#""a,b;c""#);
 }
+
+// --- String interpolation ---
+
+#[test]
+fn string_interp_basic() {
+    let out = jx_compact(
+        r#""name: \(.name), age: \(.age)""#,
+        r#"{"name":"alice","age":30}"#,
+    );
+    assert_eq!(out.trim(), r#""name: alice, age: 30""#);
+    assert_jq_compat(
+        r#""name: \(.name), age: \(.age)""#,
+        r#"{"name":"alice","age":30}"#,
+    );
+}
+
+#[test]
+fn string_interp_expr() {
+    let out = jx_compact(r#""sum: \(.a + .b)""#, r#"{"a":1,"b":2}"#);
+    assert_eq!(out.trim(), r#""sum: 3""#);
+    assert_jq_compat(r#""sum: \(.a + .b)""#, r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn string_interp_nested() {
+    assert_eq!(
+        jx_compact(r#""inter\("pol" + "ation")""#, "null").trim(),
+        r#""interpolation""#
+    );
+    assert_jq_compat(r#""inter\("pol" + "ation")""#, "null");
+}
+
+// --- Format strings ---
+
+#[test]
+fn format_base64() {
+    assert_eq!(jx_compact("@base64", r#""hello""#).trim(), r#""aGVsbG8=""#);
+    assert_jq_compat("@base64", r#""hello""#);
+}
+
+#[test]
+fn format_base64d() {
+    assert_eq!(jx_compact("@base64d", r#""aGVsbG8=""#).trim(), r#""hello""#);
+    assert_jq_compat("@base64d", r#""aGVsbG8=""#);
+}
+
+#[test]
+fn format_uri() {
+    assert_eq!(
+        jx_compact("@uri", r#""hello world""#).trim(),
+        r#""hello%20world""#
+    );
+    assert_jq_compat("@uri", r#""hello world""#);
+}
+
+#[test]
+fn format_csv() {
+    assert_eq!(
+        jx_compact("@csv", r#"["a","b","c"]"#).trim(),
+        r#""\"a\",\"b\",\"c\"""#
+    );
+    assert_jq_compat("@csv", r#"["a","b","c"]"#);
+}
+
+#[test]
+fn format_csv_numbers() {
+    assert_eq!(jx_compact("@csv", "[1,2,3]").trim(), r#""1,2,3""#);
+    assert_jq_compat("@csv", "[1,2,3]");
+}
+
+#[test]
+fn format_tsv() {
+    assert_eq!(
+        jx_compact("@tsv", r#"["a","b","c"]"#).trim(),
+        r#""a\tb\tc""#
+    );
+    assert_jq_compat("@tsv", r#"["a","b","c"]"#);
+}
+
+#[test]
+fn format_html() {
+    assert_eq!(
+        jx_compact("@html", r#""<b>bold</b>""#).trim(),
+        r#""&lt;b&gt;bold&lt;/b&gt;""#
+    );
+    assert_jq_compat("@html", r#""<b>bold</b>""#);
+}
+
+#[test]
+fn format_sh() {
+    assert_eq!(
+        jx_compact("@sh", r#""hello world""#).trim(),
+        r#""'hello world'""#
+    );
+    assert_jq_compat("@sh", r#""hello world""#);
+}
+
+#[test]
+fn format_json() {
+    assert_eq!(jx_compact("@json", "[1,2,3]").trim(), r#""[1,2,3]""#);
+    assert_jq_compat("@json", "[1,2,3]");
+}
+
+#[test]
+fn format_text() {
+    assert_eq!(jx_compact("@text", "42").trim(), r#""42""#);
+    assert_jq_compat("@text", "42");
+}
+
+// --- Builtin: in ---
+
+#[test]
+fn builtin_in_object() {
+    assert_eq!(
+        jx_compact(r#""foo" | in({"foo":42})"#, "null").trim(),
+        "true"
+    );
+    assert_eq!(
+        jx_compact(r#""bar" | in({"foo":42})"#, "null").trim(),
+        "false"
+    );
+    assert_jq_compat(r#""foo" | in({"foo":42})"#, "null");
+}
+
+#[test]
+fn builtin_in_array() {
+    assert_eq!(jx_compact("2 | in([0,1,2])", "null").trim(), "true");
+    assert_eq!(jx_compact("5 | in([0,1,2])", "null").trim(), "false");
+    assert_jq_compat("2 | in([0,1,2])", "null");
+}
+
+// --- Builtin: combinations ---
+
+#[test]
+fn builtin_combinations() {
+    assert_eq!(
+        jx_compact("[combinations]", "[[1,2],[3,4]]").trim(),
+        "[[1,3],[1,4],[2,3],[2,4]]"
+    );
+    assert_jq_compat("[combinations]", "[[1,2],[3,4]]");
+}
+
+#[test]
+fn builtin_combinations_n() {
+    assert_eq!(
+        jx_compact("[combinations(2)]", "[0,1]").trim(),
+        "[[0,0],[0,1],[1,0],[1,1]]"
+    );
+    assert_jq_compat("[combinations(2)]", "[0,1]");
+}

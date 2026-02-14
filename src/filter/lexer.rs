@@ -31,6 +31,8 @@ pub enum Token {
     // Literals and identifiers
     Ident(String),
     Str(String),
+    InterpStr(Vec<StringSegment>), // "text \(expr) text"
+    Format(String),                // @base64, @csv, etc.
     Int(i64),
     Float(f64),
     // Keywords
@@ -63,6 +65,12 @@ pub enum Token {
     SlashAssign,   // /=
     PercentAssign, // %=
     AltAssign,     // //=
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringSegment {
+    Lit(String),
+    Expr(String),
 }
 
 pub fn lex(input: &str) -> Result<Vec<Token>> {
@@ -279,9 +287,16 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
 
         // String literal
         if bytes[i] == b'"' {
-            let (s, consumed) = lex_string(bytes, i)?;
-            tokens.push(Token::Str(s));
-            i += consumed;
+            match lex_string(bytes, i)? {
+                LexStringResult::Plain(s, consumed) => {
+                    tokens.push(Token::Str(s));
+                    i += consumed;
+                }
+                LexStringResult::Interp(segments, consumed) => {
+                    tokens.push(Token::InterpStr(segments));
+                    i += consumed;
+                }
+            }
             continue;
         }
 
@@ -327,6 +342,18 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
             continue;
         }
 
+        // Format string: @name
+        if bytes[i] == b'@' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let name = &input[start..i];
+            tokens.push(Token::Format(name.to_string()));
+            continue;
+        }
+
         bail!(
             "unexpected character '{}' at position {i}",
             bytes[i] as char
@@ -348,6 +375,7 @@ fn is_value_token(tok: Option<&Token>) -> bool {
                 | Token::Int(_)
                 | Token::Float(_)
                 | Token::Str(_)
+                | Token::InterpStr(_)
                 | Token::True
                 | Token::False
                 | Token::Null
@@ -356,28 +384,108 @@ fn is_value_token(tok: Option<&Token>) -> bool {
     )
 }
 
-fn lex_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
+enum LexStringResult {
+    Plain(String, usize),
+    Interp(Vec<StringSegment>, usize),
+}
+
+fn lex_string(bytes: &[u8], start: usize) -> Result<LexStringResult> {
     debug_assert_eq!(bytes[start], b'"');
     let mut i = start + 1;
     let mut s = String::new();
+    let mut segments: Vec<StringSegment> = Vec::new();
+    let mut has_interp = false;
 
     while i < bytes.len() {
         match bytes[i] {
-            b'"' => return Ok((s, i + 1 - start)),
+            b'"' => {
+                let consumed = i + 1 - start;
+                if has_interp {
+                    if !s.is_empty() {
+                        segments.push(StringSegment::Lit(s));
+                    }
+                    return Ok(LexStringResult::Interp(segments, consumed));
+                }
+                return Ok(LexStringResult::Plain(s, consumed));
+            }
             b'\\' => {
                 i += 1;
                 if i >= bytes.len() {
                     bail!("unterminated string escape");
                 }
                 match bytes[i] {
-                    b'"' => s.push('"'),
-                    b'\\' => s.push('\\'),
-                    b'/' => s.push('/'),
-                    b'n' => s.push('\n'),
-                    b'r' => s.push('\r'),
-                    b't' => s.push('\t'),
-                    b'b' => s.push('\x08'),
-                    b'f' => s.push('\x0c'),
+                    b'(' => {
+                        // String interpolation: \(expr)
+                        has_interp = true;
+                        if !s.is_empty() {
+                            segments.push(StringSegment::Lit(std::mem::take(&mut s)));
+                        }
+                        i += 1;
+                        // Scan forward to find matching ), tracking nesting
+                        let expr_start = i;
+                        let mut depth = 1u32;
+                        let mut in_str = false;
+                        while i < bytes.len() && depth > 0 {
+                            if in_str {
+                                if bytes[i] == b'\\' {
+                                    i += 1; // skip next char in string
+                                } else if bytes[i] == b'"' {
+                                    in_str = false;
+                                }
+                            } else {
+                                match bytes[i] {
+                                    b'(' => depth += 1,
+                                    b')' => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                    }
+                                    b'"' => in_str = true,
+                                    _ => {}
+                                }
+                            }
+                            i += 1;
+                        }
+                        if depth != 0 {
+                            bail!("unterminated string interpolation");
+                        }
+                        let expr_text = std::str::from_utf8(&bytes[expr_start..i])?;
+                        segments.push(StringSegment::Expr(expr_text.to_string()));
+                        i += 1; // skip closing )
+                    }
+                    b'"' => {
+                        s.push('"');
+                        i += 1;
+                    }
+                    b'\\' => {
+                        s.push('\\');
+                        i += 1;
+                    }
+                    b'/' => {
+                        s.push('/');
+                        i += 1;
+                    }
+                    b'n' => {
+                        s.push('\n');
+                        i += 1;
+                    }
+                    b'r' => {
+                        s.push('\r');
+                        i += 1;
+                    }
+                    b't' => {
+                        s.push('\t');
+                        i += 1;
+                    }
+                    b'b' => {
+                        s.push('\x08');
+                        i += 1;
+                    }
+                    b'f' => {
+                        s.push('\x0c');
+                        i += 1;
+                    }
                     b'u' => {
                         // \uXXXX
                         if i + 4 >= bytes.len() {
@@ -388,11 +496,10 @@ fn lex_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
                         if let Some(c) = char::from_u32(cp as u32) {
                             s.push(c);
                         }
-                        i += 4;
+                        i += 5;
                     }
                     c => bail!("unknown escape '\\{}'", c as char),
                 }
-                i += 1;
             }
             _ => {
                 // Fast path: scan for next special char
@@ -799,6 +906,84 @@ mod tests {
                 Token::Eq,
                 Token::Int(1),
             ]
+        );
+    }
+
+    // --- String interpolation ---
+
+    #[test]
+    fn lex_string_interp_basic() {
+        let tokens = lex(r#""\(.x)""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![Token::InterpStr(vec![StringSegment::Expr(".x".into()),])]
+        );
+    }
+
+    #[test]
+    fn lex_string_interp_with_text() {
+        let tokens = lex(r#""hello \(.name)!""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![Token::InterpStr(vec![
+                StringSegment::Lit("hello ".into()),
+                StringSegment::Expr(".name".into()),
+                StringSegment::Lit("!".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn lex_string_interp_multiple() {
+        let tokens = lex(r#""\(.a) and \(.b)""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![Token::InterpStr(vec![
+                StringSegment::Expr(".a".into()),
+                StringSegment::Lit(" and ".into()),
+                StringSegment::Expr(".b".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn lex_string_interp_nested_parens() {
+        // Expression with nested parens: \((.x + 1))
+        let tokens = lex(r#""\((.x + 1))""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![Token::InterpStr(vec![StringSegment::Expr(
+                "(.x + 1)".into()
+            ),])]
+        );
+    }
+
+    #[test]
+    fn lex_plain_string_unchanged() {
+        // No interpolation — should still be a plain Str token
+        assert_eq!(lex(r#""hello""#).unwrap(), vec![Token::Str("hello".into())]);
+    }
+
+    // --- Format tokens ---
+
+    #[test]
+    fn lex_format_base64() {
+        assert_eq!(
+            lex("@base64").unwrap(),
+            vec![Token::Format("@base64".into())]
+        );
+    }
+
+    #[test]
+    fn lex_format_csv() {
+        assert_eq!(lex("@csv").unwrap(), vec![Token::Format("@csv".into())]);
+    }
+
+    #[test]
+    fn lex_format_in_pipe() {
+        assert_eq!(
+            lex(". | @html").unwrap(),
+            vec![Token::Dot, Token::Pipe, Token::Format("@html".into())]
         );
     }
 }

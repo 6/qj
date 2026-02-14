@@ -131,6 +131,16 @@ static JSON_FILTERS: &[BenchFilter] = &[
         flags: &["-c"],
         expr: r#"[.statuses[]|.user.screen_name|gsub("_"; "-")]"#,
     },
+    BenchFilter {
+        name: "string interpolation",
+        flags: &["-c"],
+        expr: r#"[.statuses[]|"@\(.user.screen_name): \(.text[0:30])"]"#,
+    },
+    BenchFilter {
+        name: "format (@base64)",
+        flags: &["-c"],
+        expr: r#"[.statuses[]|.user.screen_name|@base64]"#,
+    },
 ];
 
 static NDJSON_FILTERS: &[BenchFilter] = &[
