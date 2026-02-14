@@ -56,7 +56,7 @@ pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) ->
 // Compact output
 // ---------------------------------------------------------------------------
 
-fn write_compact<W: Write>(w: &mut W, value: &Value) -> io::Result<()> {
+pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value) -> io::Result<()> {
     match value {
         Value::Null => w.write_all(b"null"),
         Value::Bool(true) => w.write_all(b"true"),
