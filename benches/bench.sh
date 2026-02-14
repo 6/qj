@@ -59,11 +59,21 @@ FILTER_NAMES=(
     "pipe + builtin"
     "iterate + field"
     "select + construct"
+    "math (floor)"
+    "string ops (split+join)"
+    "unique + sort"
+    "paths(scalars)"
+    "map_values + tojson"
 )
 # Extra flags for each filter (e.g. -c for compact output)
 FILTER_FLAGS=(
     "-c"
     "-c"
+    ""
+    ""
+    ""
+    ""
+    ""
     ""
     ""
     ""
@@ -75,6 +85,11 @@ FILTER_EXPRS=(
     ".statuses|length"
     ".statuses[]|.user.name"
     '.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'
+    '[.statuses[]|.retweet_count|floor]'
+    '[.statuses[]|.user.screen_name|split("_")|join("-")]'
+    '[.statuses[]|.user.screen_name]|unique|length'
+    '[paths(scalars)]|length'
+    '.statuses[0]|map_values(tojson)'
 )
 
 # Files to benchmark (small first, then large if available)
