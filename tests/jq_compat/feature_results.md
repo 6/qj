@@ -92,7 +92,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | walk | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | combinations | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 2/2 Y |
 | bsearch | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
-| pick | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
+| pick | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
 
 ### Object functions
 
@@ -220,7 +220,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 |---------|------:|-----:|-----:|-----:|-----:|
 | IN | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 2/2 Y |
 | IN (stream form) | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
-| INDEX | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
+| INDEX | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
 | GROUP_BY | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 
 ### CLI flags
@@ -246,7 +246,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **jx** | **157** | **1** | **8** | **94.9%** |
+| **jx** | **159** | **1** | **6** | **96.1%** |
 | jq | 165 | 0 | 1 | 99.4% |
 | jaq | 150 | 3 | 13 | 91.3% |
 | gojq | 163 | 0 | 3 | 98.2% |

@@ -55,7 +55,8 @@ pub enum Token {
     Select,
     Def,
     // Logical
-    DoubleSlash, // // (alternative operator)
+    DoubleSlash,         // // (alternative operator)
+    QuestionDoubleSlash, // ?// (alternative match operator)
     // Assignment operators
     Assign,        // =
     UpdateAssign,  // |=
@@ -143,8 +144,14 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 continue;
             }
             b'?' => {
-                tokens.push(Token::Question);
-                i += 1;
+                // Check for ?// (alternative match operator)
+                if i + 2 < bytes.len() && bytes[i + 1] == b'/' && bytes[i + 2] == b'/' {
+                    tokens.push(Token::QuestionDoubleSlash);
+                    i += 3;
+                } else {
+                    tokens.push(Token::Question);
+                    i += 1;
+                }
                 continue;
             }
             b'+' => {
@@ -317,26 +324,31 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 i += 1;
             }
             let word = &input[start..i];
-            let tok = match word {
-                "true" => Token::True,
-                "false" => Token::False,
-                "null" => Token::Null,
-                "if" => Token::If,
-                "then" => Token::Then,
-                "elif" => Token::Elif,
-                "else" => Token::Else,
-                "end" => Token::End,
-                "and" => Token::And,
-                "or" => Token::Or,
-                "not" => Token::Not,
-                "as" => Token::As,
-                "try" => Token::Try,
-                "catch" => Token::Catch,
-                "reduce" => Token::Reduce,
-                "foreach" => Token::Foreach,
-                "select" => Token::Select,
-                "def" => Token::Def,
-                _ => Token::Ident(word.to_string()),
+            // $keyword variables: always produce Ident so they can be used as variable names
+            let tok = if word.starts_with('$') {
+                Token::Ident(word.to_string())
+            } else {
+                match word {
+                    "true" => Token::True,
+                    "false" => Token::False,
+                    "null" => Token::Null,
+                    "if" => Token::If,
+                    "then" => Token::Then,
+                    "elif" => Token::Elif,
+                    "else" => Token::Else,
+                    "end" => Token::End,
+                    "and" => Token::And,
+                    "or" => Token::Or,
+                    "not" => Token::Not,
+                    "as" => Token::As,
+                    "try" => Token::Try,
+                    "catch" => Token::Catch,
+                    "reduce" => Token::Reduce,
+                    "foreach" => Token::Foreach,
+                    "select" => Token::Select,
+                    "def" => Token::Def,
+                    _ => Token::Ident(word.to_string()),
+                }
             };
             tokens.push(tok);
             continue;

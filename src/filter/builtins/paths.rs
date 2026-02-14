@@ -1,7 +1,7 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
 
-use super::super::eval::eval;
+use super::super::eval::{LAST_ERROR, eval};
 use super::super::value_ops::{
     del_path, enum_leaf_paths, enum_paths, path_of, set_path, values_order,
 };
@@ -77,6 +77,12 @@ pub(super) fn eval_paths(
                         current = del_path(&current, path);
                     }
                     output(current);
+                } else {
+                    LAST_ERROR.with(|e| {
+                        *e.borrow_mut() = Some(Value::String(
+                            "Paths must be specified as an array".to_string(),
+                        ));
+                    });
                 }
             }
         }

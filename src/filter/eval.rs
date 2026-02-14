@@ -2,12 +2,111 @@
 ///
 /// Uses generator semantics: each filter operation calls `output` for
 /// each result, avoiding intermediate Vec allocations.
-use crate::filter::{ArithOp, AssignOp, BoolOp, Env, Filter, ObjKey};
+use crate::filter::{ArithOp, AssignOp, BoolOp, Env, Filter, ObjKey, Pattern, PatternKey};
 use crate::value::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::value_ops::{arith_values, compare_values, recurse};
+
+/// Match a destructuring pattern against a value (lenient mode for `as`).
+/// Always succeeds — missing fields/indices produce null.
+fn match_pattern(pattern: &Pattern, value: &Value, env: &Env) -> Option<Env> {
+    match_pattern_inner(pattern, value, env, false)
+}
+
+/// Match a destructuring pattern against a value (strict mode for `?//`).
+/// Returns None if the value's structure doesn't match the pattern.
+fn try_match_pattern(pattern: &Pattern, value: &Value, env: &Env) -> Option<Env> {
+    match_pattern_inner(pattern, value, env, true)
+}
+
+fn match_pattern_inner(pattern: &Pattern, value: &Value, env: &Env, strict: bool) -> Option<Env> {
+    match pattern {
+        Pattern::Var(name) => Some(env.bind_var(name.clone(), value.clone())),
+        Pattern::Array(patterns) => {
+            if strict && !matches!(value, Value::Array(_)) {
+                return None;
+            }
+            let mut new_env = env.clone();
+            for (i, pat) in patterns.iter().enumerate() {
+                let elem = match value {
+                    Value::Array(arr) => arr.get(i).cloned().unwrap_or(Value::Null),
+                    _ => Value::Null,
+                };
+                new_env = match_pattern_inner(pat, &elem, &new_env, strict)?;
+            }
+            Some(new_env)
+        }
+        Pattern::Object(pairs) => {
+            if strict && !matches!(value, Value::Object(_)) {
+                return None;
+            }
+            let mut new_env = env.clone();
+            for (key, pat) in pairs {
+                let (key_str, bind_var) = match key {
+                    PatternKey::Name(s) => (s.clone(), None),
+                    PatternKey::Var(s) => {
+                        // $x shorthand: key is the variable name without $
+                        let k = s.strip_prefix('$').unwrap_or(s).to_string();
+                        // If the sub-pattern is not the same variable, also bind $x
+                        let bind = if *pat != Pattern::Var(s.clone()) {
+                            Some(s.clone())
+                        } else {
+                            None
+                        };
+                        (k, bind)
+                    }
+                    PatternKey::Expr(expr) => {
+                        // Computed key: evaluate expression to get key string
+                        let mut result = String::new();
+                        eval(expr, value, &new_env, &mut |v| {
+                            if let Value::String(s) = v {
+                                result = s;
+                            }
+                        });
+                        (result, None)
+                    }
+                };
+                let field_val = match value {
+                    Value::Object(obj) => obj
+                        .iter()
+                        .find(|(k, _)| k == &key_str)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::Null),
+                    _ => Value::Null,
+                };
+                // Bind the variable to the full field value before destructuring
+                if let Some(var_name) = bind_var {
+                    new_env = new_env.bind_var(var_name, field_val.clone());
+                }
+                new_env = match_pattern_inner(pat, &field_val, &new_env, strict)?;
+            }
+            Some(new_env)
+        }
+    }
+}
+
+/// Collect all variable names from a pattern.
+fn collect_pattern_vars(pattern: &Pattern, vars: &mut Vec<String>) {
+    match pattern {
+        Pattern::Var(name) => {
+            if !vars.contains(name) {
+                vars.push(name.clone());
+            }
+        }
+        Pattern::Array(patterns) => {
+            for pat in patterns {
+                collect_pattern_vars(pat, vars);
+            }
+        }
+        Pattern::Object(pairs) => {
+            for (_, pat) in pairs {
+                collect_pattern_vars(pat, vars);
+            }
+        }
+    }
+}
 
 thread_local! {
     /// Last error value set by `error` / `error(msg)` builtins.
@@ -58,38 +157,45 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
 
         Filter::Index(idx_filter) => {
             // Evaluate the index expression — iterate all outputs for generator semantics
-            eval(idx_filter, input, env, &mut |idx| match (input, &idx) {
-                (Value::Array(arr), Value::Int(i)) => {
-                    let index = if *i < 0 { arr.len() as i64 + i } else { *i };
-                    if index >= 0 && (index as usize) < arr.len() {
-                        output(arr[index as usize].clone());
-                    } else {
-                        output(Value::Null);
-                    }
-                }
-                (Value::Object(obj), Value::String(key)) => {
-                    for (k, v) in obj.iter() {
-                        if k == key {
-                            output(v.clone());
-                            return;
+            eval(idx_filter, input, env, &mut |idx| {
+                // Truncate float indices to integer (jq behavior)
+                let idx = match &idx {
+                    Value::Double(f, _) if f.is_finite() => Value::Int(*f as i64),
+                    _ => idx,
+                };
+                match (input, &idx) {
+                    (Value::Array(arr), Value::Int(i)) => {
+                        let index = if *i < 0 { arr.len() as i64 + i } else { *i };
+                        if index >= 0 && (index as usize) < arr.len() {
+                            output(arr[index as usize].clone());
+                        } else {
+                            output(Value::Null);
                         }
                     }
-                    output(Value::Null);
-                }
-                (Value::Null, _) => output(Value::Null),
-                _ => {
-                    LAST_ERROR.with(|e| {
-                        let idx_desc = match &idx {
-                            Value::String(s) => format!("string \"{}\"", s),
-                            Value::Int(n) => format!("number {}", n),
-                            _ => idx.type_name().to_string(),
-                        };
-                        *e.borrow_mut() = Some(Value::String(format!(
-                            "Cannot index {} with {}",
-                            input.type_name(),
-                            idx_desc
-                        )));
-                    });
+                    (Value::Object(obj), Value::String(key)) => {
+                        for (k, v) in obj.iter() {
+                            if k == key {
+                                output(v.clone());
+                                return;
+                            }
+                        }
+                        output(Value::Null);
+                    }
+                    (Value::Null, _) => output(Value::Null),
+                    _ => {
+                        LAST_ERROR.with(|e| {
+                            let idx_desc = match &idx {
+                                Value::String(s) => format!("string \"{}\"", s),
+                                Value::Int(n) => format!("number {}", n),
+                                _ => idx.type_name().to_string(),
+                            };
+                            *e.borrow_mut() = Some(Value::String(format!(
+                                "Cannot index {} with {}",
+                                input.type_name(),
+                                idx_desc
+                            )));
+                        });
+                    }
                 }
             });
         }
@@ -426,7 +532,14 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         }
 
         Filter::Var(name) => {
-            if let Some(val) = env.get_var(name) {
+            if name == "$__loc__" {
+                // $__loc__ returns {"file":"<stdin>","line":1}
+                let loc = Value::Object(Rc::new(vec![
+                    ("file".to_string(), Value::String("<stdin>".to_string())),
+                    ("line".to_string(), Value::Int(1)),
+                ]));
+                output(loc);
+            } else if let Some(val) = env.get_var(name) {
                 output(val.clone());
             } else {
                 // Fall through to builtins for special variables like $ENV
@@ -434,38 +547,41 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             }
         }
 
-        Filter::Bind(expr, name, body) => {
+        Filter::Bind(expr, pattern, body) => {
             eval(expr, input, env, &mut |val| {
-                let new_env = env.bind_var(name.clone(), val);
-                eval(body, input, &new_env, output);
+                if let Some(new_env) = match_pattern(pattern, &val, env) {
+                    eval(body, input, &new_env, output);
+                }
             });
         }
 
-        Filter::Reduce(source, var, init, update) => {
+        Filter::Reduce(source, pattern, init, update) => {
             let mut acc = Value::Null;
             eval(init, input, env, &mut |v| acc = v);
 
             eval(source, input, env, &mut |val| {
-                let new_env = env.bind_var(var.clone(), val);
-                let cur = acc.clone();
-                eval(update, &cur, &new_env, &mut |v| acc = v);
+                if let Some(new_env) = match_pattern(pattern, &val, env) {
+                    let cur = acc.clone();
+                    eval(update, &cur, &new_env, &mut |v| acc = v);
+                }
             });
 
             output(acc);
         }
 
-        Filter::Foreach(source, var, init, update, extract) => {
+        Filter::Foreach(source, pattern, init, update, extract) => {
             let mut acc = Value::Null;
             eval(init, input, env, &mut |v| acc = v);
 
             eval(source, input, env, &mut |val| {
-                let new_env = env.bind_var(var.clone(), val);
-                let cur = acc.clone();
-                eval(update, &cur, &new_env, &mut |v| acc = v);
-                if let Some(ext) = extract {
-                    eval(ext, &acc, &new_env, output);
-                } else {
-                    output(acc.clone());
+                if let Some(new_env) = match_pattern(pattern, &val, env) {
+                    let cur = acc.clone();
+                    eval(update, &cur, &new_env, &mut |v| acc = v);
+                    if let Some(ext) = extract {
+                        eval(ext, &acc, &new_env, output);
+                    } else {
+                        output(acc.clone());
+                    }
                 }
             });
         }
@@ -491,6 +607,34 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             };
             let new_env = env.bind_func(name.clone(), params.len(), func);
             eval(rest, input, &new_env, output);
+        }
+
+        Filter::AltBind(expr, patterns, body) => {
+            // Collect all variable names from all patterns so unmatched vars get null
+            let mut all_vars = Vec::new();
+            for pat in patterns {
+                collect_pattern_vars(pat, &mut all_vars);
+            }
+            // Try each pattern left-to-right, use first that matches
+            eval(expr, input, env, &mut |val| {
+                // Pre-initialize all vars to null
+                let mut base_env = env.clone();
+                for var in &all_vars {
+                    base_env = base_env.bind_var(var.clone(), Value::Null);
+                }
+                for pat in patterns {
+                    if let Some(new_env) = try_match_pattern(pat, &val, &base_env) {
+                        eval(body, input, &new_env, output);
+                        return;
+                    }
+                }
+                // No pattern matched — error
+                LAST_ERROR.with(|e| {
+                    *e.borrow_mut() = Some(Value::String(
+                        "No pattern matched in ?// expression".to_string(),
+                    ));
+                });
+            });
         }
     }
 }

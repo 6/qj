@@ -203,11 +203,12 @@ pub(super) fn eval_strings(
         }
         "index" => {
             if let Some(arg) = args.first() {
-                let mut needle = Value::Null;
-                eval(arg, input, env, &mut |v| needle = v);
-                match (input, &needle) {
+                // Generator: produce one result per arg value
+                eval(arg, input, env, &mut |needle| match (input, &needle) {
                     (Value::String(s), Value::String(n)) => {
-                        if let Some(byte_pos) = s.find(n.as_str()) {
+                        if n.is_empty() {
+                            output(Value::Null);
+                        } else if let Some(byte_pos) = s.find(n.as_str()) {
                             output(Value::Int(s[..byte_pos].chars().count() as i64));
                         } else {
                             output(Value::Null);
@@ -221,16 +222,16 @@ pub(super) fn eval_strings(
                         }
                     }
                     _ => output(Value::Null),
-                }
+                });
             }
         }
         "rindex" => {
             if let Some(arg) = args.first() {
-                let mut needle = Value::Null;
-                eval(arg, input, env, &mut |v| needle = v);
-                match (input, &needle) {
+                eval(arg, input, env, &mut |needle| match (input, &needle) {
                     (Value::String(s), Value::String(n)) => {
-                        if let Some(byte_pos) = s.rfind(n.as_str()) {
+                        if n.is_empty() {
+                            output(Value::Null);
+                        } else if let Some(byte_pos) = s.rfind(n.as_str()) {
                             output(Value::Int(s[..byte_pos].chars().count() as i64));
                         } else {
                             output(Value::Null);
@@ -244,14 +245,12 @@ pub(super) fn eval_strings(
                         }
                     }
                     _ => output(Value::Null),
-                }
+                });
             }
         }
         "indices" | "_indices" => {
             if let Some(arg) = args.first() {
-                let mut needle = Value::Null;
-                eval(arg, input, env, &mut |v| needle = v);
-                match (input, &needle) {
+                eval(arg, input, env, &mut |needle| match (input, &needle) {
                     (Value::String(s), Value::String(n)) => {
                         let mut positions = Vec::new();
                         if !n.is_empty() {
@@ -274,7 +273,7 @@ pub(super) fn eval_strings(
                         output(Value::Array(Rc::new(positions)));
                     }
                     _ => output(Value::Array(Rc::new(Vec::new()))),
-                }
+                });
             }
         }
         "explode" => {
@@ -308,10 +307,40 @@ pub(super) fn eval_strings(
         }
         "fromjson" => {
             if let Value::String(s) = input {
-                let padded = crate::simdjson::pad_buffer(s.as_bytes());
-                if let Ok(val) = crate::simdjson::dom_parse_to_value(&padded, s.len()) {
-                    output(val);
+                let trimmed = s.trim();
+                // Handle special numeric values that JSON doesn't normally support
+                match trimmed {
+                    "NaN" | "nan" => {
+                        output(Value::Double(f64::NAN, None));
+                        return;
+                    }
+                    "Infinity" | "infinity" | "inf" => {
+                        output(Value::Double(f64::INFINITY, None));
+                        return;
+                    }
+                    "-Infinity" | "-infinity" | "-inf" => {
+                        output(Value::Double(f64::NEG_INFINITY, None));
+                        return;
+                    }
+                    _ => {}
                 }
+                let padded = crate::simdjson::pad_buffer(s.as_bytes());
+                match crate::simdjson::dom_parse_to_value(&padded, s.len()) {
+                    Ok(val) => output(val),
+                    Err(_) => {
+                        set_error(format!(
+                            "Invalid numeric literal at EOF at line 1, column {} (while parsing '{}')",
+                            s.len(),
+                            if s.len() > 40 { &s[..40] } else { s }
+                        ));
+                    }
+                }
+            } else {
+                set_error(format!(
+                    "{} ({}) is not a string and cannot be parsed as JSON",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "utf8bytelength" => {
@@ -319,7 +348,7 @@ pub(super) fn eval_strings(
                 output(Value::Int(s.len() as i64));
             } else {
                 set_error(format!(
-                    "{} ({}) has no utf8bytelength",
+                    "{} ({}) only strings have UTF-8 byte length",
                     input.type_name(),
                     input.short_desc()
                 ));
@@ -332,6 +361,27 @@ pub(super) fn eval_strings(
                 output(Value::Int(c as i64));
             }
         }
+        "toboolean" => match input {
+            Value::Bool(_) => output(input.clone()),
+            Value::String(s) => match s.as_str() {
+                "true" => output(Value::Bool(true)),
+                "false" => output(Value::Bool(false)),
+                _ => {
+                    set_error(format!(
+                        "{} ({}) cannot be parsed as a boolean",
+                        input.type_name(),
+                        input.short_desc()
+                    ));
+                }
+            },
+            _ => {
+                set_error(format!(
+                    "{} ({}) cannot be parsed as a boolean",
+                    input.type_name(),
+                    input.short_desc()
+                ));
+            }
+        },
         _ => {}
     }
 }

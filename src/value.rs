@@ -72,8 +72,16 @@ impl Value {
                     format!("\"{s}\"")
                 }
             }
-            Value::Array(_) => "array".to_string(),
-            Value::Object(_) => "object".to_string(),
+            Value::Array(_) | Value::Object(_) => {
+                let mut buf = Vec::new();
+                crate::output::write_compact(&mut buf, self, false).unwrap();
+                let s = String::from_utf8(buf).unwrap_or_default();
+                if s.len() > 15 {
+                    format!("{}...", &s[..15])
+                } else {
+                    s
+                }
+            }
         }
     }
 }

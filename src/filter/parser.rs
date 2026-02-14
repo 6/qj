@@ -15,7 +15,7 @@
 use anyhow::{Result, bail};
 
 use super::lexer::{StringSegment, Token};
-use super::{ArithOp, AssignOp, BoolOp, CmpOp, Filter, ObjKey, StringPart};
+use super::{ArithOp, AssignOp, BoolOp, CmpOp, Filter, ObjKey, Pattern, PatternKey, StringPart};
 use crate::value::Value;
 use std::rc::Rc;
 
@@ -194,17 +194,122 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse `as $var | body` — the `as` token is consumed here.
+    /// Parse `as pattern | body` or `as pat1 ?// pat2 ?// ... | body`
     fn parse_as_binding(&mut self, expr: Filter) -> Result<Filter> {
         self.advance(); // consume `as`
-        let name = match self.advance() {
-            Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
-            Some(tok) => bail!("expected $variable after 'as', got {tok:?}"),
-            None => bail!("expected $variable after 'as', got end of input"),
-        };
-        self.expect(&Token::Pipe)?;
-        let body = self.parse_pipe()?; // right-recursive
-        Ok(Filter::Bind(Box::new(expr), name, Box::new(body)))
+        let first_pattern = self.parse_pattern()?;
+
+        // Check for ?// chain
+        if self.peek() == Some(&Token::QuestionDoubleSlash) {
+            let mut patterns = vec![first_pattern];
+            while self.peek() == Some(&Token::QuestionDoubleSlash) {
+                self.advance(); // consume ?//
+                patterns.push(self.parse_pattern()?);
+            }
+            self.expect(&Token::Pipe)?;
+            let body = self.parse_pipe()?;
+            Ok(Filter::AltBind(Box::new(expr), patterns, Box::new(body)))
+        } else {
+            self.expect(&Token::Pipe)?;
+            let body = self.parse_pipe()?;
+            Ok(Filter::Bind(Box::new(expr), first_pattern, Box::new(body)))
+        }
+    }
+
+    /// Parse a destructuring pattern: $var, [$a, $b], {key: $var, $shorthand}
+    fn parse_pattern(&mut self) -> Result<Pattern> {
+        match self.peek() {
+            Some(Token::Ident(s)) if s.starts_with('$') => {
+                let name = s.clone();
+                self.advance();
+                Ok(Pattern::Var(name))
+            }
+            Some(Token::LBrack) => {
+                self.advance();
+                let mut patterns = Vec::new();
+                if self.peek() != Some(&Token::RBrack) {
+                    patterns.push(self.parse_pattern()?);
+                    while self.peek() == Some(&Token::Comma) {
+                        self.advance();
+                        patterns.push(self.parse_pattern()?);
+                    }
+                }
+                self.expect(&Token::RBrack)?;
+                Ok(Pattern::Array(patterns))
+            }
+            Some(Token::LBrace) => {
+                self.advance();
+                let mut pairs = Vec::new();
+                if self.peek() != Some(&Token::RBrace) {
+                    pairs.push(self.parse_pattern_obj_pair()?);
+                    while self.peek() == Some(&Token::Comma) {
+                        self.advance();
+                        pairs.push(self.parse_pattern_obj_pair()?);
+                    }
+                }
+                self.expect(&Token::RBrace)?;
+                Ok(Pattern::Object(pairs))
+            }
+            Some(tok) => bail!("expected pattern ($var, [...], or {{...}}), got {tok:?}"),
+            None => bail!("expected pattern, got end of input"),
+        }
+    }
+
+    /// Parse a single key: pattern pair in an object destructuring pattern.
+    fn parse_pattern_obj_pair(&mut self) -> Result<(PatternKey, Pattern)> {
+        match self.peek() {
+            // $shorthand: `{$x}` means key="x", bind $x
+            Some(Token::Ident(s)) if s.starts_with('$') => {
+                let name = s.clone();
+                self.advance();
+                // Check for `: pattern` (explicit value binding)
+                if self.peek() == Some(&Token::Colon) {
+                    self.advance();
+                    let pat = self.parse_pattern()?;
+                    Ok((PatternKey::Var(name), pat))
+                } else {
+                    // Shorthand: {$x} means key from variable name
+                    Ok((PatternKey::Var(name.clone()), Pattern::Var(name)))
+                }
+            }
+            // key: pattern
+            Some(Token::Ident(_)) => {
+                let key = match self.advance().unwrap() {
+                    Token::Ident(s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                self.expect(&Token::Colon)?;
+                let pat = self.parse_pattern()?;
+                Ok((PatternKey::Name(key), pat))
+            }
+            Some(Token::Str(_)) => {
+                let key = match self.advance().unwrap() {
+                    Token::Str(s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                self.expect(&Token::Colon)?;
+                let pat = self.parse_pattern()?;
+                Ok((PatternKey::Name(key), pat))
+            }
+            // Expression key: `("expr"): $var`
+            Some(Token::LParen) => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.expect(&Token::RParen)?;
+                self.expect(&Token::Colon)?;
+                let pat = self.parse_pattern()?;
+                Ok((PatternKey::Expr(Box::new(expr)), pat))
+            }
+            _ if self.peek_keyword_as_obj_key().is_some() => {
+                let key = self.peek_keyword_as_obj_key().unwrap().to_string();
+                self.advance();
+                self.expect(&Token::Colon)?;
+                let pat = self.parse_pattern()?;
+                Ok((PatternKey::Name(key), pat))
+            }
+            Some(tok) => bail!("expected pattern key, got {tok:?}"),
+            None => bail!("expected pattern key, got end of input"),
+        }
     }
 
     // comma = alternative ("," alternative)*
@@ -325,6 +430,11 @@ impl<'a> Parser<'a> {
                             };
                             node = Filter::Pipe(Box::new(node), Box::new(Filter::Field(name)));
                         }
+                        _ if self.peek_keyword_as_field().is_some() => {
+                            let name = self.peek_keyword_as_field().unwrap().to_string();
+                            self.advance();
+                            node = Filter::Pipe(Box::new(node), Box::new(Filter::Field(name)));
+                        }
                         _ => {
                             bail!("expected field name after '.'");
                         }
@@ -387,6 +497,11 @@ impl<'a> Parser<'a> {
                         self.advance();
                         Ok(Filter::Recurse)
                     }
+                    _ if self.peek_keyword_as_field().is_some() => {
+                        let name = self.peek_keyword_as_field().unwrap().to_string();
+                        self.advance();
+                        Ok(Filter::Field(name))
+                    }
                     _ => Ok(Filter::Identity),
                 }
             }
@@ -420,15 +535,11 @@ impl<'a> Parser<'a> {
                 self.parse_if_chain()
             }
             Some(Token::Reduce) => {
-                // reduce source as $var (init; update)
+                // reduce source as pattern (init; update)
                 self.advance();
                 let source = self.parse_postfix()?;
                 self.expect(&Token::As)?;
-                let var_name = match self.advance() {
-                    Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
-                    Some(tok) => bail!("expected $variable in reduce, got {tok:?}"),
-                    None => bail!("expected $variable in reduce, got end of input"),
-                };
+                let pattern = self.parse_pattern()?;
                 self.expect(&Token::LParen)?;
                 let init = self.parse_expr()?;
                 self.expect(&Token::Semicolon)?;
@@ -436,22 +547,18 @@ impl<'a> Parser<'a> {
                 self.expect(&Token::RParen)?;
                 Ok(Filter::Reduce(
                     Box::new(source),
-                    var_name,
+                    pattern,
                     Box::new(init),
                     Box::new(update),
                 ))
             }
             Some(Token::Foreach) => {
-                // foreach source as $var (init; update) or
-                // foreach source as $var (init; update; extract)
+                // foreach source as pattern (init; update) or
+                // foreach source as pattern (init; update; extract)
                 self.advance();
                 let source = self.parse_postfix()?;
                 self.expect(&Token::As)?;
-                let var_name = match self.advance() {
-                    Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
-                    Some(tok) => bail!("expected $variable in foreach, got {tok:?}"),
-                    None => bail!("expected $variable in foreach, got end of input"),
-                };
+                let pattern = self.parse_pattern()?;
                 self.expect(&Token::LParen)?;
                 let init = self.parse_expr()?;
                 self.expect(&Token::Semicolon)?;
@@ -465,7 +572,7 @@ impl<'a> Parser<'a> {
                 self.expect(&Token::RParen)?;
                 Ok(Filter::Foreach(
                     Box::new(source),
-                    var_name,
+                    pattern,
                     Box::new(init),
                     Box::new(update),
                     extract,
@@ -639,9 +746,52 @@ impl<'a> Parser<'a> {
         Ok(Filter::ObjectConstruct(pairs))
     }
 
+    /// Check if the current token is a keyword that can be used as an identifier
+    /// in object key context (e.g., `{if: 1, then: 2}`).
+    fn peek_keyword_as_obj_key(&self) -> Option<&str> {
+        match self.peek()? {
+            Token::If => Some("if"),
+            Token::Then => Some("then"),
+            Token::Else => Some("else"),
+            Token::Elif => Some("elif"),
+            Token::End => Some("end"),
+            Token::And => Some("and"),
+            Token::Or => Some("or"),
+            Token::Not => Some("not"),
+            Token::As => Some("as"),
+            Token::Try => Some("try"),
+            Token::Catch => Some("catch"),
+            Token::Reduce => Some("reduce"),
+            Token::Foreach => Some("foreach"),
+            Token::Select => Some("select"),
+            Token::Def => Some("def"),
+            Token::True => Some("true"),
+            Token::False => Some("false"),
+            Token::Null => Some("null"),
+            _ => None,
+        }
+    }
+
+    /// Check if the current token is a keyword that can be used as a field name
+    /// after `.` (e.g., `.not`, `.and`). Only includes keywords that cannot appear
+    /// after `.` in any other syntactic context.
+    fn peek_keyword_as_field(&self) -> Option<&str> {
+        match self.peek()? {
+            Token::Not => Some("not"),
+            _ => None,
+        }
+    }
+
     fn parse_obj_pair(&mut self) -> Result<(ObjKey, Filter)> {
-        // Key can be: ident, string, or (expr)
+        // Key can be: ident, keyword-as-ident, string, interp-string, or (expr)
         let key = match self.peek() {
+            Some(Token::Ident(s)) if s.starts_with('$') => {
+                // $var reference: {$x} means {($x): .$x} — value is the var value
+                let name = s.clone();
+                self.advance();
+                let var_ref = Filter::Var(name);
+                ObjKey::Expr(Box::new(var_ref))
+            }
             Some(Token::Ident(_)) => {
                 let name = match self.advance().unwrap() {
                     Token::Ident(s) => s.clone(),
@@ -656,21 +806,51 @@ impl<'a> Parser<'a> {
                 };
                 ObjKey::Name(s)
             }
+            Some(Token::InterpStr(_)) => {
+                // String interpolation key: {"key\(expr)": value}
+                let segments = match self.advance().unwrap() {
+                    Token::InterpStr(s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                let mut parts = Vec::new();
+                for seg in segments {
+                    match seg {
+                        super::lexer::StringSegment::Lit(s) => parts.push(StringPart::Lit(s)),
+                        super::lexer::StringSegment::Expr(expr_text) => {
+                            let tokens = super::lexer::lex(&expr_text)?;
+                            let filter = parse(&tokens)?;
+                            parts.push(StringPart::Expr(filter));
+                        }
+                    }
+                }
+                ObjKey::Expr(Box::new(Filter::StringInterp(parts)))
+            }
             Some(Token::LParen) => {
                 self.advance();
                 let expr = self.parse_expr()?;
                 self.expect(&Token::RParen)?;
                 ObjKey::Expr(Box::new(expr))
             }
+            _ if self.peek_keyword_as_obj_key().is_some() => {
+                let name = self.peek_keyword_as_obj_key().unwrap().to_string();
+                self.advance();
+                ObjKey::Name(name)
+            }
             _ => bail!("expected object key"),
         };
 
         // If no colon follows, it's a shorthand: {name} means {name: .name}
         if self.peek() != Some(&Token::Colon) {
-            if let ObjKey::Name(ref name) = key {
-                return Ok((key.clone(), Filter::Field(name.clone())));
+            match key {
+                ObjKey::Name(name) => {
+                    let val = Filter::Field(name.clone());
+                    return Ok((ObjKey::Name(name), val));
+                }
+                ObjKey::Expr(expr) => {
+                    let val = Filter::Index(Box::new((*expr).clone()));
+                    return Ok((ObjKey::Expr(expr), val));
+                }
             }
-            bail!("computed key must have a value expression");
         }
 
         self.expect(&Token::Colon)?;
@@ -983,12 +1163,12 @@ mod tests {
 
     #[test]
     fn parse_as_binding() {
-        // `. as $x | $x` → Bind(Identity, "$x", Var("$x"))
+        // `. as $x | $x` → Bind(Identity, Var("$x"), Var("$x"))
         assert_eq!(
             p(". as $x | $x"),
             Filter::Bind(
                 Box::new(Filter::Identity),
-                "$x".into(),
+                Pattern::Var("$x".into()),
                 Box::new(Filter::Var("$x".into())),
             )
         );
@@ -996,15 +1176,15 @@ mod tests {
 
     #[test]
     fn parse_as_binding_in_pipe() {
-        // `.[] | . as $x | $x` → Pipe(Iterate, Bind(Identity, "$x", Var("$x")))
+        // `.[] | . as $x | $x` → Pipe(Iterate, Bind(Identity, Var("$x"), Var("$x")))
         let f = p(".[] | . as $x | $x");
         match f {
             Filter::Pipe(left, right) => {
                 assert_eq!(*left, Filter::Iterate);
                 match *right {
-                    Filter::Bind(expr, ref name, _) => {
+                    Filter::Bind(expr, ref pat, _) => {
                         assert_eq!(*expr, Filter::Identity);
-                        assert_eq!(name, "$x");
+                        assert_eq!(*pat, Pattern::Var("$x".into()));
                     }
                     other => panic!("expected Bind, got {other:?}"),
                 }
@@ -1018,10 +1198,12 @@ mod tests {
         // `1 as $x | 2 as $y | $x + $y`
         let f = p("1 as $x | 2 as $y | $x + $y");
         match f {
-            Filter::Bind(_, ref name, ref body) => {
-                assert_eq!(name, "$x");
+            Filter::Bind(_, ref pat, ref body) => {
+                assert_eq!(*pat, Pattern::Var("$x".into()));
                 match body.as_ref() {
-                    Filter::Bind(_, name2, _) => assert_eq!(name2, "$y"),
+                    Filter::Bind(_, pat2, _) => {
+                        assert_eq!(*pat2, Pattern::Var("$y".into()))
+                    }
                     other => panic!("expected nested Bind, got {other:?}"),
                 }
             }
@@ -1108,9 +1290,9 @@ mod tests {
     fn parse_reduce() {
         let f = p("reduce .[] as $x (0; . + $x)");
         match f {
-            Filter::Reduce(source, name, init, _update) => {
+            Filter::Reduce(source, pat, init, _update) => {
                 assert_eq!(*source, Filter::Iterate);
-                assert_eq!(name, "$x");
+                assert_eq!(pat, Pattern::Var("$x".into()));
                 assert_eq!(*init, Filter::Literal(Value::Int(0)));
             }
             other => panic!("expected Reduce, got {other:?}"),
@@ -1123,8 +1305,8 @@ mod tests {
     fn parse_foreach_two_arg() {
         let f = p("foreach .[] as $x (0; . + $x)");
         match f {
-            Filter::Foreach(_, name, _, _, extract) => {
-                assert_eq!(name, "$x");
+            Filter::Foreach(_, pat, _, _, extract) => {
+                assert_eq!(pat, Pattern::Var("$x".into()));
                 assert!(extract.is_none());
             }
             other => panic!("expected Foreach, got {other:?}"),
@@ -1135,8 +1317,8 @@ mod tests {
     fn parse_foreach_three_arg() {
         let f = p("foreach .[] as $x (0; . + $x; . * 2)");
         match f {
-            Filter::Foreach(_, name, _, _, extract) => {
-                assert_eq!(name, "$x");
+            Filter::Foreach(_, pat, _, _, extract) => {
+                assert_eq!(pat, Pattern::Var("$x".into()));
                 assert!(extract.is_some());
             }
             other => panic!("expected Foreach with extract, got {other:?}"),

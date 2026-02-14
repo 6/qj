@@ -8,6 +8,28 @@ use crate::value::Value;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// A destructuring pattern for variable binding.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    /// Simple variable: `$x`
+    Var(String),
+    /// Array destructuring: `[$a, $b, $c]`
+    Array(Vec<Pattern>),
+    /// Object destructuring: `{a: $x, $y}` (shorthand $y means key="y", bind $y)
+    Object(Vec<(PatternKey, Pattern)>),
+}
+
+/// Key in an object destructuring pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PatternKey {
+    /// Literal string key: `{a: $x}` or `{"foo bar": $x}`
+    Name(String),
+    /// Variable shorthand: `{$x}` means key="x", bind to $x
+    Var(String),
+    /// Computed expression key: `{("expr"): $x}`
+    Expr(Box<Filter>),
+}
+
 /// A jq filter AST node.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
@@ -59,14 +81,14 @@ pub enum Filter {
     Slice(Option<Box<Filter>>, Option<Box<Filter>>),
     /// Variable reference: `$name`
     Var(String),
-    /// Variable binding: `expr as $name | body`
-    Bind(Box<Filter>, String, Box<Filter>),
-    /// Reduce: `reduce source as $var (init; update)`
-    Reduce(Box<Filter>, String, Box<Filter>, Box<Filter>),
-    /// Foreach: `foreach source as $var (init; update; extract?)`
+    /// Variable binding: `expr as pattern | body`
+    Bind(Box<Filter>, Pattern, Box<Filter>),
+    /// Reduce: `reduce source as pattern (init; update)`
+    Reduce(Box<Filter>, Pattern, Box<Filter>, Box<Filter>),
+    /// Foreach: `foreach source as pattern (init; update; extract?)`
     Foreach(
         Box<Filter>,
-        String,
+        Pattern,
         Box<Filter>,
         Box<Filter>,
         Option<Box<Filter>>,
@@ -80,6 +102,9 @@ pub enum Filter {
         body: Box<Filter>,
         rest: Box<Filter>,
     },
+    /// Alternative match: `expr as pat1 ?// pat2 ?// ... | body`
+    /// Tries each pattern left-to-right, uses first that matches.
+    AltBind(Box<Filter>, Vec<Pattern>, Box<Filter>),
 }
 
 /// Object construction key — can be a literal string or computed.
@@ -310,8 +335,8 @@ impl Filter {
             | Filter::Arith(a, _, b)
             | Filter::BoolOp(a, _, b)
             | Filter::Alternative(a, b)
-            | Filter::Bind(a, _, b)
             | Filter::TryCatch(a, b) => a.is_parallel_safe() && b.is_parallel_safe(),
+            Filter::Bind(a, _, b) => a.is_parallel_safe() && b.is_parallel_safe(),
             Filter::Comma(filters) | Filter::Builtin(_, filters) => {
                 filters.iter().all(|f| f.is_parallel_safe())
             }
@@ -341,6 +366,7 @@ impl Filter {
             }
             Filter::Assign(path, _, rhs) => path.is_parallel_safe() && rhs.is_parallel_safe(),
             Filter::Def { body, rest, .. } => body.is_parallel_safe() && rest.is_parallel_safe(),
+            Filter::AltBind(expr, _, body) => expr.is_parallel_safe() && body.is_parallel_safe(),
             Filter::StringInterp(parts) => parts.iter().all(|p| match p {
                 StringPart::Lit(_) => true,
                 StringPart::Expr(f) => f.is_parallel_safe(),

@@ -22,7 +22,7 @@ Compat suites are `#[ignore]` — run them with `--release` after adding feature
 cargo test                                                              # fast: unit + e2e (~5s)
 cargo test --release -- --ignored --nocapture                           # all tests including compat (~50s)
 cargo test --release jq_conformance -- --ignored --nocapture            # jq.test pass rate
-cargo test --release conformance_gaps -- --ignored                      # 199 gap tests by category
+cargo test --release conformance_gaps -- --ignored                      # 124 gap tests by category
 cargo test --release gap_label_break -- --ignored                       # run one category
 cargo test --release jq_compat -- --ignored --nocapture                 # cross-tool comparison
 cargo test --release feature_compat -- --ignored --nocapture            # feature matrix
@@ -38,7 +38,7 @@ cargo test --release feature_compat -- --ignored --nocapture            # featur
 - **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
 - **jq conformance suite** (`#[ignore]`): `tests/jq_conformance.rs` — runs jq's official test
   suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against jx and reports pass rate.
-- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 199 individual tests for
+- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 124 individual tests for
   every currently-failing jq.test case, categorized by feature (label/break, foreach, destructuring,
   time functions, modules, etc.) with fix suggestions in comments. Run by category to track progress.
 - **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test

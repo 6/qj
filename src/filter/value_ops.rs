@@ -172,15 +172,13 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
                 return Value::Object(Rc::new(result));
             }
             (Value::Array(arr), Value::Int(i)) => {
-                let idx = if *i < 0 {
-                    (arr.len() as i64 + i).max(0) as usize
-                } else {
-                    *i as usize
-                };
-                let mut result = arr.as_ref().clone();
-                if idx < result.len() {
-                    result.remove(idx);
+                let resolved = if *i < 0 { arr.len() as i64 + i } else { *i };
+                if resolved < 0 || resolved as usize >= arr.len() {
+                    return value.clone(); // out of bounds: no-op
                 }
+                let idx = resolved as usize;
+                let mut result = arr.as_ref().clone();
+                result.remove(idx);
                 return Value::Array(Rc::new(result));
             }
             _ => return value.clone(),
@@ -409,6 +407,27 @@ pub(super) fn path_of(
             }
             recurse_paths(input, current, output);
         }
+        Filter::Builtin(name, args) if args.is_empty() => {
+            match name.as_str() {
+                "first" => {
+                    // first = .[0]
+                    current.push(Value::Int(0));
+                    output(Value::Array(Rc::new(current.clone())));
+                    current.pop();
+                }
+                "last" => {
+                    // last = .[-1] — needs array length
+                    if let Value::Array(arr) = input
+                        && !arr.is_empty()
+                    {
+                        current.push(Value::Int(arr.len() as i64 - 1));
+                        output(Value::Array(Rc::new(current.clone())));
+                        current.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
         _ => {}
     }
 }
@@ -596,7 +615,35 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                 if *n <= 0 {
                     Ok(Value::Null)
                 } else {
-                    Ok(Value::String(s.repeat(*n as usize)))
+                    // Guard against excessive memory allocation
+                    let total = (*n as u64).saturating_mul(s.len() as u64);
+                    if total > 100_000_000 {
+                        Err(format!(
+                            "string ({:?}) and number ({}) cannot be multiplied because the result would be too large",
+                            if s.len() > 20 { &s[..20] } else { s.as_str() },
+                            n
+                        ))
+                    } else {
+                        Ok(Value::String(s.repeat(*n as usize)))
+                    }
+                }
+            }
+            (Value::String(s), Value::Double(f, _)) | (Value::Double(f, _), Value::String(s)) => {
+                // Float repetition: truncate to int
+                let n = *f as i64;
+                if n <= 0 {
+                    Ok(Value::Null)
+                } else {
+                    let total = (n as u64).saturating_mul(s.len() as u64);
+                    if total > 100_000_000 {
+                        Err(format!(
+                            "string ({:?}) and number ({}) cannot be multiplied because the result would be too large",
+                            if s.len() > 20 { &s[..20] } else { s.as_str() },
+                            f
+                        ))
+                    } else {
+                        Ok(Value::String(s.repeat(n as usize)))
+                    }
                 }
             }
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),

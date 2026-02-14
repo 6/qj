@@ -28,19 +28,20 @@ pub(super) fn eval_builtin(
         }
 
         // String operations
-        "tostring" | "tonumber" | "ascii_downcase" | "ascii_upcase" | "ltrimstr" | "rtrimstr"
-        | "startswith" | "endswith" | "split" | "join" | "trim" | "ltrim" | "rtrim" | "index"
-        | "rindex" | "indices" | "_indices" | "explode" | "implode" | "tojson" | "fromjson"
-        | "utf8bytelength" | "ascii" => strings::eval_strings(name, args, input, env, output),
+        "tostring" | "tonumber" | "toboolean" | "ascii_downcase" | "ascii_upcase" | "ltrimstr"
+        | "rtrimstr" | "startswith" | "endswith" | "split" | "join" | "trim" | "ltrim"
+        | "rtrim" | "index" | "rindex" | "indices" | "_indices" | "explode" | "implode"
+        | "tojson" | "fromjson" | "utf8bytelength" | "ascii" => {
+            strings::eval_strings(name, args, input, env, output)
+        }
 
         // Array/collection operations
         "keys" | "keys_unsorted" | "values" | "map" | "select" | "add" | "any" | "all" | "sort"
         | "sort_by" | "group_by" | "unique" | "unique_by" | "flatten" | "first" | "last"
         | "reverse" | "min" | "max" | "min_by" | "max_by" | "del" | "transpose" | "map_values"
         | "limit" | "skip" | "until" | "while" | "repeat" | "isempty" | "nth" | "recurse"
-        | "walk" | "bsearch" | "IN" | "with_entries" | "combinations" => {
-            arrays::eval_arrays(name, args, input, env, output)
-        }
+        | "walk" | "bsearch" | "IN" | "INDEX" | "JOIN" | "pick" | "with_entries"
+        | "combinations" => arrays::eval_arrays(name, args, input, env, output),
 
         // Math operations
         "range" | "floor" | "ceil" | "round" | "trunc" | "truncate" | "fabs" | "sqrt" | "cbrt"

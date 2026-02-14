@@ -5,6 +5,10 @@ use std::rc::Rc;
 use super::super::eval::{LAST_ERROR, eval};
 use super::super::value_ops::{arith_values, recurse, to_f64, values_equal, values_order};
 
+fn set_error(msg: String) {
+    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+}
+
 pub(super) fn eval_arrays(
     name: &str,
     args: &[Filter],
@@ -69,25 +73,59 @@ pub(super) fn eval_arrays(
                 }
             }
         }
-        "add" => match input {
-            Value::Array(arr) if !arr.is_empty() => {
-                let mut acc = arr[0].clone();
-                for item in &arr[1..] {
-                    if let Ok(result) = arith_values(&acc, &ArithOp::Add, item) {
-                        acc = result;
-                    }
+        "add" => {
+            if !args.is_empty() {
+                // add(f) — reduce f as $x (null; . + $x)
+                let mut acc = Value::Null;
+                let mut has_val = false;
+                for arg in args {
+                    eval(arg, input, env, &mut |v| {
+                        if !has_val {
+                            acc = v;
+                            has_val = true;
+                        } else if let Ok(result) = arith_values(&acc, &ArithOp::Add, &v) {
+                            acc = result;
+                        }
+                    });
                 }
                 output(acc);
+            } else {
+                match input {
+                    Value::Array(arr) if !arr.is_empty() => {
+                        let mut acc = arr[0].clone();
+                        for item in &arr[1..] {
+                            if let Ok(result) = arith_values(&acc, &ArithOp::Add, item) {
+                                acc = result;
+                            }
+                        }
+                        output(acc);
+                    }
+                    Value::Array(_) => output(Value::Null),
+                    _ => {}
+                }
             }
-            Value::Array(_) => output(Value::Null),
-            _ => {}
-        },
-        "any" => {
-            if let Value::Array(arr) = input {
-                if let Some(f) = args.first() {
+        }
+        "any" => match args.len() {
+            // any(generator; filter) — 2-arg form
+            2 => {
+                let mut found = false;
+                eval(&args[0], input, env, &mut |item| {
+                    if !found {
+                        eval(&args[1], &item, env, &mut |v| {
+                            if v.is_truthy() {
+                                found = true;
+                            }
+                        });
+                    }
+                });
+                output(Value::Bool(found));
+            }
+            // any(filter) — 1-arg form on array input
+            1 => {
+                if let Value::Array(arr) = input {
                     let mut found = false;
                     for item in arr.iter() {
-                        eval(f, item, env, &mut |v| {
+                        eval(&args[0], item, env, &mut |v| {
                             if v.is_truthy() {
                                 found = true;
                             }
@@ -97,19 +135,42 @@ pub(super) fn eval_arrays(
                         }
                     }
                     output(Value::Bool(found));
-                } else {
+                }
+            }
+            // any — 0-arg form on array input
+            _ => {
+                if let Value::Array(arr) = input {
                     let found = arr.iter().any(|v| v.is_truthy());
                     output(Value::Bool(found));
                 }
             }
-        }
-        "all" => {
-            if let Value::Array(arr) = input {
-                if let Some(f) = args.first() {
+        },
+        "all" => match args.len() {
+            // all(generator; filter) — 2-arg form
+            2 => {
+                let mut all_true = true;
+                eval(&args[0], input, env, &mut |item| {
+                    if all_true {
+                        let mut item_true = false;
+                        eval(&args[1], &item, env, &mut |v| {
+                            if v.is_truthy() {
+                                item_true = true;
+                            }
+                        });
+                        if !item_true {
+                            all_true = false;
+                        }
+                    }
+                });
+                output(Value::Bool(all_true));
+            }
+            // all(filter) — 1-arg form on array input
+            1 => {
+                if let Value::Array(arr) = input {
                     let mut all_true = true;
                     for item in arr.iter() {
                         let mut item_true = false;
-                        eval(f, item, env, &mut |v| {
+                        eval(&args[0], item, env, &mut |v| {
                             if v.is_truthy() {
                                 item_true = true;
                             }
@@ -120,12 +181,16 @@ pub(super) fn eval_arrays(
                         }
                     }
                     output(Value::Bool(all_true));
-                } else {
+                }
+            }
+            // all — 0-arg form on array input
+            _ => {
+                if let Value::Array(arr) = input {
                     let all_true = arr.iter().all(|v| v.is_truthy());
                     output(Value::Bool(all_true));
                 }
             }
-        }
+        },
         "sort" => {
             if let Value::Array(arr) = input {
                 let mut sorted: Vec<Value> = arr.as_ref().clone();
@@ -560,27 +625,38 @@ pub(super) fn eval_arrays(
             }
         }
         "bsearch" => {
-            if let (Value::Array(arr), Some(arg)) = (input, args.first()) {
-                let mut target = Value::Null;
-                eval(arg, input, env, &mut |v| target = v);
-                let mut lo: i64 = 0;
-                let mut hi: i64 = arr.len() as i64 - 1;
-                let mut result: i64 = -(arr.len() as i64) - 1;
-                while lo <= hi {
-                    let mid = lo + (hi - lo) / 2;
-                    match values_order(&arr[mid as usize], &target) {
-                        Some(std::cmp::Ordering::Equal) => {
-                            result = mid;
-                            break;
-                        }
-                        Some(std::cmp::Ordering::Less) => lo = mid + 1,
-                        _ => hi = mid - 1,
+            if let Some(arg) = args.first() {
+                match input {
+                    Value::Array(arr) => {
+                        eval(arg, input, env, &mut |target| {
+                            let mut lo: i64 = 0;
+                            let mut hi: i64 = arr.len() as i64 - 1;
+                            let mut result: i64 = -(arr.len() as i64) - 1;
+                            while lo <= hi {
+                                let mid = lo + (hi - lo) / 2;
+                                match values_order(&arr[mid as usize], &target) {
+                                    Some(std::cmp::Ordering::Equal) => {
+                                        result = mid;
+                                        break;
+                                    }
+                                    Some(std::cmp::Ordering::Less) => lo = mid + 1,
+                                    _ => hi = mid - 1,
+                                }
+                            }
+                            if result < 0 {
+                                result = -lo - 1;
+                            }
+                            output(Value::Int(result));
+                        });
+                    }
+                    _ => {
+                        set_error(format!(
+                            "{} ({}) is not an array and cannot be searched",
+                            input.type_name(),
+                            input.short_desc()
+                        ));
                     }
                 }
-                if result < 0 {
-                    result = -lo - 1;
-                }
-                output(Value::Int(result));
             }
         }
         "IN" => match args.len() {
@@ -715,6 +791,98 @@ pub(super) fn eval_arrays(
                         if carry {
                             break;
                         }
+                    }
+                }
+            }
+        }
+        "pick" => {
+            // pick(pathexpr) — constructs an object/array containing only the specified paths
+            if let Some(path_f) = args.first() {
+                // Use path() to get paths, then copy values via setpath
+                let mut acc = Value::Null;
+                super::super::value_ops::path_of(path_f, input, &mut Vec::new(), &mut |path_val| {
+                    if let Value::Array(path_arr) = &path_val {
+                        let val = super::super::value_ops::get_path(input, path_arr);
+                        acc = super::super::value_ops::set_path(&acc, path_arr, &val);
+                    }
+                });
+                output(acc);
+            }
+        }
+        "INDEX" => match args.len() {
+            // INDEX(stream; idx_expr) — build lookup dict from stream
+            2 => {
+                let mut result: Vec<(String, Value)> = Vec::new();
+                eval(&args[0], input, env, &mut |item| {
+                    eval(&args[1], &item, env, &mut |key| {
+                        let key_str = match &key {
+                            Value::String(s) => s.clone(),
+                            _ => {
+                                let mut buf = Vec::new();
+                                crate::output::write_compact(&mut buf, &key, false).unwrap();
+                                String::from_utf8(buf).unwrap_or_default()
+                            }
+                        };
+                        // Remove any existing entry with same key, then add new
+                        result.retain(|(k, _)| k != &key_str);
+                        result.push((key_str, item.clone()));
+                    });
+                });
+                output(Value::Object(Rc::new(result)));
+            }
+            // INDEX(idx_expr) — .[] as input
+            1 => {
+                let mut result: Vec<(String, Value)> = Vec::new();
+                if let Value::Array(arr) = input {
+                    for item in arr.iter() {
+                        eval(&args[0], item, env, &mut |key| {
+                            let key_str = match &key {
+                                Value::String(s) => s.clone(),
+                                _ => {
+                                    let mut buf = Vec::new();
+                                    crate::output::write_compact(&mut buf, &key, false).unwrap();
+                                    String::from_utf8(buf).unwrap_or_default()
+                                }
+                            };
+                            result.retain(|(k, _)| k != &key_str);
+                            result.push((key_str, item.clone()));
+                        });
+                    }
+                }
+                output(Value::Object(Rc::new(result)));
+            }
+            _ => {}
+        },
+        "JOIN" => {
+            // JOIN(idx; key_expr) — join with lookup table
+            // idx is a filter that produces an object (the index)
+            // For each input element, looks up key_expr in the index
+            if args.len() == 2 {
+                // First evaluate the index
+                let mut index = Value::Null;
+                eval(&args[0], input, env, &mut |v| index = v);
+                // Then iterate over input and join
+                if let Value::Array(arr) = input {
+                    for item in arr.iter() {
+                        eval(&args[1], item, env, &mut |key| {
+                            let key_str = match &key {
+                                Value::String(s) => s.clone(),
+                                _ => {
+                                    let mut buf = Vec::new();
+                                    crate::output::write_compact(&mut buf, &key, false).unwrap();
+                                    String::from_utf8(buf).unwrap_or_default()
+                                }
+                            };
+                            let lookup = if let Value::Object(obj) = &index {
+                                obj.iter()
+                                    .find(|(k, _)| k == &key_str)
+                                    .map(|(_, v)| v.clone())
+                                    .unwrap_or(Value::Null)
+                            } else {
+                                Value::Null
+                            };
+                            output(Value::Array(Rc::new(vec![item.clone(), lookup])));
+                        });
                     }
                 }
             }
