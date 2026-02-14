@@ -1355,6 +1355,13 @@ pub(super) fn eval_builtin(
                 "todate",
                 "fromdate",
                 "now",
+                "test",
+                "match",
+                "capture",
+                "scan",
+                "sub",
+                "gsub",
+                "splits",
             ];
             let arr: Vec<Value> = names.iter().map(|n| Value::String(n.to_string())).collect();
             output(Value::Array(Rc::new(arr)));
@@ -1604,6 +1611,143 @@ pub(super) fn eval_builtin(
                 }
             }
         }
+        // --- Regex builtins ---
+        "test" => {
+            if let Value::String(s) = input {
+                let (pattern, flags) = eval_pattern_flags(args, input, env);
+                if let Some(re) = build_regex(&pattern, &flags) {
+                    output(Value::Bool(re.is_match(s)));
+                }
+            }
+        }
+        "match" => {
+            if let Value::String(s) = input {
+                let (pattern, flags) = eval_pattern_flags(args, input, env);
+                let global = flags.contains('g');
+                if let Some(re) = build_regex(&pattern, &flags) {
+                    if global {
+                        for caps in re.captures_iter(s) {
+                            output(regex_match_object(&re, &caps, s));
+                        }
+                    } else if let Some(caps) = re.captures(s) {
+                        output(regex_match_object(&re, &caps, s));
+                    }
+                }
+            }
+        }
+        "capture" => {
+            if let Value::String(s) = input {
+                let (pattern, flags) = eval_pattern_flags(args, input, env);
+                if let Some(re) = build_regex(&pattern, &flags)
+                    && let Some(caps) = re.captures(s)
+                {
+                    let mut obj = Vec::new();
+                    for (i, name) in re.capture_names().enumerate() {
+                        if let Some(name) = name {
+                            let val = caps
+                                .get(i)
+                                .map(|m| Value::String(m.as_str().to_string()))
+                                .unwrap_or(Value::Null);
+                            obj.push((name.to_string(), val));
+                        }
+                    }
+                    output(Value::Object(Rc::new(obj)));
+                }
+            }
+        }
+        "scan" => {
+            if let Value::String(s) = input {
+                let (pattern, flags) = eval_pattern_flags(args, input, env);
+                if let Some(re) = build_regex(&pattern, &flags) {
+                    for caps in re.captures_iter(s) {
+                        // If there are capture groups, emit array of captured strings
+                        // If no capture groups, emit the overall match string
+                        if re.captures_len() > 1 {
+                            let arr: Vec<Value> = (1..caps.len())
+                                .map(|i| {
+                                    caps.get(i)
+                                        .map(|m| Value::String(m.as_str().to_string()))
+                                        .unwrap_or(Value::Null)
+                                })
+                                .collect();
+                            output(Value::Array(Rc::new(arr)));
+                        } else {
+                            output(Value::String(caps[0].to_string()));
+                        }
+                    }
+                }
+            }
+        }
+        "sub" => {
+            if let Value::String(s) = input {
+                let (pattern, flags) = eval_sub_pattern_flags(args, 2, input, env);
+                if let Some(re) = build_regex(&pattern, &flags) {
+                    let mut repl_str = String::new();
+                    if let Some(repl_f) = args.get(1) {
+                        // Evaluate replacement: in jq, it's a filter applied to match object
+                        // For simple string literals, this just gives the string
+                        if let Some(caps) = re.captures(s) {
+                            let match_obj = regex_match_object(&re, &caps, s);
+                            eval(repl_f, &match_obj, env, &mut |v| {
+                                if let Value::String(rs) = v {
+                                    repl_str = rs;
+                                }
+                            });
+                        }
+                    }
+                    if let Some(caps) = re.captures(s) {
+                        let m = caps.get(0).unwrap();
+                        let mut result = String::with_capacity(s.len());
+                        result.push_str(&s[..m.start()]);
+                        result.push_str(&repl_str);
+                        result.push_str(&s[m.end()..]);
+                        output(Value::String(result));
+                    } else {
+                        output(Value::String(s.clone()));
+                    }
+                }
+            }
+        }
+        "gsub" => {
+            if let Value::String(s) = input {
+                let (pattern, flags) = eval_sub_pattern_flags(args, 2, input, env);
+                if let Some(re) = build_regex(&pattern, &flags) {
+                    let mut result = String::with_capacity(s.len());
+                    let mut last_end = 0;
+                    for caps in re.captures_iter(s) {
+                        let m = caps.get(0).unwrap();
+                        result.push_str(&s[last_end..m.start()]);
+                        // Evaluate replacement filter against match object
+                        let mut repl_str = String::new();
+                        if let Some(repl_f) = args.get(1) {
+                            let match_obj = regex_match_object(&re, &caps, s);
+                            eval(repl_f, &match_obj, env, &mut |v| {
+                                if let Value::String(rs) = v {
+                                    repl_str = rs;
+                                }
+                            });
+                        }
+                        result.push_str(&repl_str);
+                        last_end = m.end();
+                    }
+                    result.push_str(&s[last_end..]);
+                    output(Value::String(result));
+                }
+            }
+        }
+        "splits" => {
+            if let Value::String(s) = input {
+                let (pattern, flags) = eval_pattern_flags(args, input, env);
+                if let Some(re) = build_regex(&pattern, &flags) {
+                    let mut last_end = 0;
+                    for m in re.find_iter(s) {
+                        output(Value::String(s[last_end..m.start()].to_string()));
+                        last_end = m.end();
+                    }
+                    output(Value::String(s[last_end..].to_string()));
+                }
+            }
+        }
         _ => {
             // Unknown builtin — silently produce no output
         }
@@ -1682,4 +1826,142 @@ fn recurse_with_cond(
             recurse_with_cond(f, cond, &v, env, output, limit - 1);
         }
     });
+}
+
+// --- Regex helpers ---
+
+/// Compile a regex from a pattern string and jq-style flags string.
+fn build_regex(pattern: &str, flags: &str) -> Option<regex::Regex> {
+    let mut p = String::new();
+    let case_insensitive = flags.contains('i');
+    let multiline = flags.contains('m');
+    let single_line = flags.contains('s');
+    if case_insensitive || multiline || single_line {
+        p.push_str("(?");
+        if case_insensitive {
+            p.push('i');
+        }
+        if multiline {
+            p.push('m');
+        }
+        if single_line {
+            p.push('s');
+        }
+        p.push(')');
+    }
+    if flags.contains('x') {
+        // Extended mode: strip unescaped whitespace and #-comments
+        let mut chars = pattern.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                p.push(c);
+                if let Some(next) = chars.next() {
+                    p.push(next);
+                }
+            } else if c == '#' {
+                // Skip to end of line
+                for nc in chars.by_ref() {
+                    if nc == '\n' {
+                        break;
+                    }
+                }
+            } else if c.is_ascii_whitespace() {
+                // Skip unescaped whitespace
+            } else {
+                p.push(c);
+            }
+        }
+    } else {
+        p.push_str(pattern);
+    }
+    regex::Regex::new(&p).ok()
+}
+
+/// Evaluate pattern and flags from the first two args.
+fn eval_pattern_flags(args: &[Filter], input: &Value, env: &Env) -> (String, String) {
+    let mut pattern = String::new();
+    let mut flags = String::new();
+    if let Some(pat_f) = args.first() {
+        eval(pat_f, input, env, &mut |v| {
+            if let Value::String(s) = v {
+                pattern = s;
+            }
+        });
+    }
+    if let Some(flags_f) = args.get(1) {
+        eval(flags_f, input, env, &mut |v| {
+            if let Value::String(s) = v {
+                flags = s;
+            }
+        });
+    }
+    (pattern, flags)
+}
+
+/// Evaluate pattern and flags for sub/gsub where flags is at `flags_idx`
+/// (args[0] = pattern, args[1] = replacement, args[2] = flags).
+fn eval_sub_pattern_flags(
+    args: &[Filter],
+    flags_idx: usize,
+    input: &Value,
+    env: &Env,
+) -> (String, String) {
+    let mut pattern = String::new();
+    let mut flags = String::new();
+    if let Some(pat_f) = args.first() {
+        eval(pat_f, input, env, &mut |v| {
+            if let Value::String(s) = v {
+                pattern = s;
+            }
+        });
+    }
+    if let Some(flags_f) = args.get(flags_idx) {
+        eval(flags_f, input, env, &mut |v| {
+            if let Value::String(s) = v {
+                flags = s;
+            }
+        });
+    }
+    (pattern, flags)
+}
+
+/// Build a jq-compatible match result object from a regex::Captures.
+fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -> Value {
+    let m = caps.get(0).unwrap();
+    let mut captures = Vec::new();
+    for (i, name) in re.capture_names().enumerate() {
+        if i == 0 {
+            continue; // skip overall match
+        }
+        let cap_val = if let Some(cm) = caps.get(i) {
+            Value::Object(Rc::new(vec![
+                ("offset".to_string(), Value::Int(cm.start() as i64)),
+                ("length".to_string(), Value::Int(cm.len() as i64)),
+                ("string".to_string(), Value::String(cm.as_str().to_string())),
+                (
+                    "name".to_string(),
+                    name.map(|n| Value::String(n.to_string()))
+                        .unwrap_or(Value::Null),
+                ),
+            ]))
+        } else {
+            Value::Object(Rc::new(vec![
+                ("offset".to_string(), Value::Int(-1)),
+                ("length".to_string(), Value::Int(0)),
+                ("string".to_string(), Value::Null),
+                (
+                    "name".to_string(),
+                    name.map(|n| Value::String(n.to_string()))
+                        .unwrap_or(Value::Null),
+                ),
+            ]))
+        };
+        captures.push(cap_val);
+    }
+    Value::Object(Rc::new(vec![
+        ("offset".to_string(), Value::Int(m.start() as i64)),
+        ("length".to_string(), Value::Int(m.len() as i64)),
+        ("string".to_string(), Value::String(m.as_str().to_string())),
+        ("captures".to_string(), Value::Array(Rc::new(captures))),
+    ]))
 }

@@ -130,12 +130,12 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | tojson/fromjson | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | utf8bytelength | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | String interpolation | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
-| test | 3 | **0/3 N** | 3/3 Y | 3/3 Y | 3/3 Y |
-| match | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
-| capture | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
-| sub/gsub | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
-| scan | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
-| splits | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
+| test | 3 | **3/3 Y** | 3/3 Y | 3/3 Y | 3/3 Y |
+| match | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
+| capture | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| sub/gsub | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| scan | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
+| splits | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 
 ### Math functions
 
@@ -246,7 +246,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **jx** | **138** | **1** | **27** | **83.4%** |
+| **jx** | **144** | **1** | **21** | **87.0%** |
 | jq | 165 | 0 | 1 | 99.4% |
 | jaq | 150 | 3 | 13 | 91.3% |
 | gojq | 163 | 0 | 3 | 98.2% |

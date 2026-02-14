@@ -2517,3 +2517,79 @@ fn assign_set_new_field() {
         r#"{"a":1,"b":2,"c":3}"#
     );
 }
+
+// --- Regex builtins ---
+
+#[test]
+fn regex_test_basic() {
+    assert_eq!(jx_compact(r#"test("^foo")"#, r#""foobar""#).trim(), "true");
+    assert_eq!(jx_compact(r#"test("^foo")"#, r#""barfoo""#).trim(), "false");
+    assert_jq_compat(r#"test("^foo")"#, r#""foobar""#);
+    assert_jq_compat(r#"test("^foo")"#, r#""barfoo""#);
+}
+
+#[test]
+fn regex_test_case_insensitive() {
+    assert_eq!(
+        jx_compact(r#"test("FOO"; "i")"#, r#""foobar""#).trim(),
+        "true"
+    );
+    assert_jq_compat(r#"test("FOO"; "i")"#, r#""foobar""#);
+}
+
+#[test]
+fn regex_match_basic() {
+    let out = jx_compact(r#"match("(o+)")"#, r#""foobar""#);
+    assert_eq!(
+        out.trim(),
+        r#"{"offset":1,"length":2,"string":"oo","captures":[{"offset":1,"length":2,"string":"oo","name":null}]}"#
+    );
+    assert_jq_compat(r#"match("(o+)")"#, r#""foobar""#);
+}
+
+#[test]
+fn regex_match_global() {
+    let out = jx_compact(r#"[match("o"; "g")]"#, r#""foobar""#);
+    // Should produce two match objects
+    assert!(out.contains(r#""offset":1"#));
+    assert!(out.contains(r#""offset":2"#));
+}
+
+#[test]
+fn regex_capture_named() {
+    let out = jx_compact(r#"capture("(?<y>\\d{4})-(?<m>\\d{2})")"#, r#""2024-01-15""#);
+    assert_eq!(out.trim(), r#"{"y":"2024","m":"01"}"#);
+    assert_jq_compat(r#"capture("(?<y>\\d{4})-(?<m>\\d{2})")"#, r#""2024-01-15""#);
+}
+
+#[test]
+fn regex_sub() {
+    assert_eq!(
+        jx_compact(r#"sub("o"; "0")"#, r#""foobar""#).trim(),
+        r#""f0obar""#
+    );
+    assert_jq_compat(r#"sub("o"; "0")"#, r#""foobar""#);
+}
+
+#[test]
+fn regex_gsub() {
+    assert_eq!(
+        jx_compact(r#"gsub("o"; "0")"#, r#""foobar""#).trim(),
+        r#""f00bar""#
+    );
+    assert_jq_compat(r#"gsub("o"; "0")"#, r#""foobar""#);
+}
+
+#[test]
+fn regex_scan() {
+    let out = jx_compact(r#"[scan("[0-9]+")]"#, r#""test 123 test 456""#);
+    assert_eq!(out.trim(), r#"["123","456"]"#);
+    assert_jq_compat(r#"[scan("[0-9]+")]"#, r#""test 123 test 456""#);
+}
+
+#[test]
+fn regex_splits() {
+    let out = jx_compact(r#"[splits("[,;]")]"#, r#""a,b;c""#);
+    assert_eq!(out.trim(), r#"["a","b","c"]"#);
+    assert_jq_compat(r#"[splits("[,;]")]"#, r#""a,b;c""#);
+}
