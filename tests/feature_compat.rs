@@ -28,6 +28,8 @@ struct TestFile {
 struct Feature {
     category: String,
     name: String,
+    #[serde(default)]
+    jx_only: bool,
     tests: Vec<TestCase>,
 }
 
@@ -120,6 +122,8 @@ fn run_all(verbose: bool) {
     let mut results: Vec<Vec<Vec<bool>>> = Vec::new();
 
     println!("Running tests...");
+    let is_jx = |tool: &common::Tool| tool.name == "jx";
+
     for tool in &tools {
         let mut tool_results: Vec<Vec<bool>> = Vec::new();
         let mut total_pass = 0usize;
@@ -127,8 +131,11 @@ fn run_all(verbose: bool) {
 
         for feature in &test_file.features {
             let mut feature_results = Vec::new();
+            let skip_scoring = feature.jx_only && !is_jx(tool);
             for test in &feature.tests {
-                total_tests += 1;
+                if !skip_scoring {
+                    total_tests += 1;
+                }
                 let output = run_tool_with_flags(
                     tool,
                     &test.filter,
@@ -137,11 +144,11 @@ fn run_all(verbose: bool) {
                     &mut cache,
                 );
                 let passed = test_passes(output.as_deref(), &test.expected);
-                if passed {
+                if passed && !skip_scoring {
                     total_pass += 1;
                 }
 
-                if verbose && !passed {
+                if verbose && !passed && !skip_scoring {
                     eprintln!(
                         "  FAIL [{}] {}: {} | input: {}",
                         tool.name, feature.name, test.filter, test.input
@@ -216,6 +223,10 @@ fn run_all(verbose: bool) {
         let mut row = format!("| {} | {} |", feature.name, test_count);
 
         for (ti, tool) in tools.iter().enumerate() {
+            if feature.jx_only && !is_jx(tool) {
+                row.push_str(" — |");
+                continue;
+            }
             let pass_count = results[ti][fi].iter().filter(|&&p| p).count();
             let total = results[ti][fi].len();
             let status = if pass_count == total && total > 0 {
@@ -226,7 +237,7 @@ fn run_all(verbose: bool) {
                 "N"
             };
             let cell = format!("{pass_count}/{total} {status}");
-            if tool.name == "jx" {
+            if is_jx(tool) {
                 row.push_str(&format!(" **{cell}** |"));
             } else {
                 row.push_str(&format!(" {cell} |"));
@@ -243,14 +254,17 @@ fn run_all(verbose: bool) {
     md.push_str("| Tool | Y | ~ | N | Score |\n");
     md.push_str("|------|--:|--:|--:|------:|\n");
 
-    let feature_count = test_file.features.len();
-
     for (ti, tool) in tools.iter().enumerate() {
         let mut y_count = 0usize;
         let mut partial_count = 0usize;
         let mut n_count = 0usize;
+        let mut scored_features = 0usize;
 
         for (fi, feature) in test_file.features.iter().enumerate() {
+            if feature.jx_only && !is_jx(tool) {
+                continue;
+            }
+            scored_features += 1;
             let pass_count = results[ti][fi].iter().filter(|&&p| p).count();
             let total = feature.tests.len();
             if pass_count == total && total > 0 {
@@ -262,9 +276,13 @@ fn run_all(verbose: bool) {
             }
         }
 
-        let score = (y_count as f64 + 0.5 * partial_count as f64) / feature_count as f64 * 100.0;
+        let score = if scored_features > 0 {
+            (y_count as f64 + 0.5 * partial_count as f64) / scored_features as f64 * 100.0
+        } else {
+            0.0
+        };
 
-        if tool.name == "jx" {
+        if is_jx(tool) {
             md.push_str(&format!(
                 "| **jx** | **{y_count}** | **{partial_count}** | **{n_count}** | **{score:.1}%** |\n"
             ));

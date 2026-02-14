@@ -5,6 +5,7 @@
 #   - Double-quoted strings when value contains ' or needs \n (multi-line expected)
 #   - flags is optional; when present, runner uses flags instead of default "-c --"
 #   - expected = '' represents empty output
+#   - jx_only = true excludes a feature from other tools' scoring (still tested)
 
 # =============================================================================
 # Types and basic filters
@@ -1328,6 +1329,7 @@ tests = [
 [[features]]
 category = "CLI flags"
 name = "--jsonl"
+jx_only = true
 tests = [
   { filter = '.x', input = '{"x":1}', flags = '--jsonl -c --', expected = '1' },
 ]
