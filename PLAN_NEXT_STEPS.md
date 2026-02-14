@@ -7,9 +7,9 @@ full design and history.
 
 ## Current state (2026-02)
 
-716 tests passing (387 unit + 291 e2e + 21 ndjson + 15 ffi + 2 conformance).
-95 builtins implemented. jq conformance at **52.1%** (259/497 on jq's
-official test suite). Feature compatibility at **76.5%** (126/166 features
+736 tests passing (390 unit + 308 e2e + 21 ndjson + 15 ffi + 2 conformance).
+95 builtins implemented. jq conformance at **51.9%** (258/497 on jq's
+official test suite). Feature compatibility at **80.7%** (133/166 features
 fully passing). Passthrough paths handle "simple query on big file" at
 12-63x jq, 3-14x jaq. Parallel NDJSON processing at ~10x jq, ~5.6x jaq.
 
@@ -88,23 +88,13 @@ apply filter, set result back." This needs:
 
 ---
 
-## Priority 3: CLI flags
+## ~~Priority 3: CLI flags~~ COMPLETE
 
-**Why:** 0/7 feature tests passing for these flags. Blocks scripting
-use — anyone piping jx in shell scripts hits this immediately.
-
-| Flag | Impact |
-|------|--------|
-| `--slurp` / `-s` | Very common. Read all inputs, wrap in array |
-| `--arg name val` | Any script using `$TOKEN` etc. Seed `Env` with string binding |
-| `--argjson name val` | Same but parse val as JSON |
-| `--raw-input` / `-R` | Read lines as strings, not JSON |
-| `-S` / `--sort-keys` | Sort object keys in output |
-| `--join-output` / `-j` | No newline after each output |
-| `-M` / `--monochrome-output` | Disable color (for piping) |
-
-**Files:** `src/main.rs` — add CLI args to `Cli` struct, modify input
-processing logic. `--arg`/`--argjson` need to seed `Env` before eval.
+All 7 flags implemented: `--slurp`/`-s`, `--arg`, `--argjson`,
+`--raw-input`/`-R`, `--sort-keys`/`-S`, `--join-output`/`-j`,
+`--monochrome-output`/`-M`. Feature compat CLI flags: 0/7 → 7/7.
+Env threading via `eval_filter_with_env`, sort_keys through write
+functions, sequential fallback for NDJSON when env is non-empty.
 
 ---
 
@@ -167,12 +157,11 @@ compatibility.
 
 | After | Est. Tests | Est. % | Key unlock |
 |-------|-----------|--------|------------|
-| Current | 259/497 | 52% | — |
-| + assignment | ~277/497 | ~56% | update operators |
-| + CLI flags | ~282/497 | ~57% | scripting use |
-| + regex | ~295/497 | ~59% | string operations |
-| + format strings | ~305/497 | ~61% | @base64, @csv, @tsv |
-| + smaller gaps | ~320/497 | ~64% | cross-cutting fixes |
+| Current | 258/497 | 52% | — |
+| + assignment | ~276/497 | ~56% | update operators |
+| + regex | ~290/497 | ~58% | string operations |
+| + format strings | ~300/497 | ~60% | @base64, @csv, @tsv |
+| + smaller gaps | ~315/497 | ~63% | cross-cutting fixes |
 
 ---
 
