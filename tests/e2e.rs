@@ -2219,3 +2219,182 @@ fn while_terminates_on_unchanged() {
     let out = jx_compact("0 | [limit(1; while(true; .))]", "null");
     assert_eq!(out.trim(), "[0]");
 }
+
+// --- CLI flags helper ---
+
+fn jx_with_args(args: &[&str], input: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+    assert!(
+        output.status.success(),
+        "jx {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("not utf-8")
+}
+
+// --- --slurp / -s ---
+
+#[test]
+fn slurp_single_doc() {
+    assert_eq!(
+        jx_with_args(&["-cs", ".", "--"], "[1,2,3]").trim(),
+        "[[1,2,3]]"
+    );
+}
+
+#[test]
+fn slurp_ndjson() {
+    assert_eq!(
+        jx_with_args(&["-cs", ".", "--"], "1\n2\n3").trim(),
+        "[1,2,3]"
+    );
+}
+
+#[test]
+fn slurp_add() {
+    assert_eq!(jx_with_args(&["-cs", "add", "--"], "1\n2\n3").trim(), "6");
+}
+
+#[test]
+fn slurp_length() {
+    assert_eq!(
+        jx_with_args(&["-cs", "length", "--"], "1\n2\n3").trim(),
+        "3"
+    );
+}
+
+// --- --arg / --argjson ---
+
+#[test]
+fn arg_string() {
+    assert_eq!(
+        jx_with_args(&["-nc", "--arg", "name", "alice", "{name: $name}"], "").trim(),
+        r#"{"name":"alice"}"#
+    );
+}
+
+#[test]
+fn argjson_number() {
+    assert_eq!(
+        jx_with_args(&["-nc", "--argjson", "x", "42", "$x + 1"], "").trim(),
+        "43"
+    );
+}
+
+#[test]
+fn arg_multiple() {
+    assert_eq!(
+        jx_with_args(
+            &[
+                "-nc", "--arg", "a", "hello", "--arg", "b", "world", "[$a, $b]"
+            ],
+            ""
+        )
+        .trim(),
+        r#"["hello","world"]"#
+    );
+}
+
+#[test]
+fn argjson_object() {
+    assert_eq!(
+        jx_with_args(&["-nc", "--argjson", "obj", r#"{"x":1}"#, "$obj.x"], "").trim(),
+        "1"
+    );
+}
+
+// --- --raw-input / -R ---
+
+#[test]
+fn raw_input_line() {
+    assert_eq!(
+        jx_with_args(&["-Rc", ".", "--"], "hello").trim(),
+        r#""hello""#
+    );
+}
+
+#[test]
+fn raw_input_multi() {
+    assert_eq!(
+        jx_with_args(&["-Rc", ".", "--"], "hello\nworld").trim(),
+        "\"hello\"\n\"world\""
+    );
+}
+
+#[test]
+fn raw_input_slurp() {
+    assert_eq!(
+        jx_with_args(&["-Rsc", ".", "--"], "hello\nworld").trim(),
+        r#"["hello","world"]"#
+    );
+}
+
+#[test]
+fn raw_input_slurp_join() {
+    assert_eq!(
+        jx_with_args(&["-Rsr", r#"join(",")"#, "--"], "hello\nworld").trim(),
+        "hello,world"
+    );
+}
+
+// --- --sort-keys / -S ---
+
+#[test]
+fn sort_keys_e2e() {
+    assert_eq!(
+        jx_with_args(&["-Sc", ".", "--"], r#"{"b":2,"a":1}"#).trim(),
+        r#"{"a":1,"b":2}"#
+    );
+}
+
+#[test]
+fn sort_keys_nested_e2e() {
+    assert_eq!(
+        jx_with_args(&["-Sc", ".", "--"], r#"{"z":{"b":2,"a":1},"a":0}"#).trim(),
+        r#"{"a":0,"z":{"a":1,"b":2}}"#
+    );
+}
+
+// --- --join-output / -j ---
+
+#[test]
+fn join_output_e2e() {
+    // -j suppresses trailing newlines
+    assert_eq!(
+        jx_with_args(&["-rj", ".name", "--"], r#"{"name":"hello"}"#),
+        "hello"
+    );
+}
+
+#[test]
+fn join_output_compact() {
+    // -j works with compact mode too
+    assert_eq!(
+        jx_with_args(&["-cj", ".", "--"], r#"{"a":1}"#),
+        r#"{"a":1}"#
+    );
+}
+
+// --- -M (monochrome — no-op, but should not error) ---
+
+#[test]
+fn monochrome_no_error() {
+    jx_with_args(&["-Mc", ".", "--"], "{}");
+}

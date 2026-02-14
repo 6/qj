@@ -124,6 +124,11 @@ impl Env {
         }
     }
 
+    /// Returns true if the environment has no variable bindings.
+    pub fn is_empty(&self) -> bool {
+        self.vars.is_empty()
+    }
+
     /// Look up a variable binding (e.g., "$x").
     pub fn get_var(&self, name: &str) -> Option<&Value> {
         self.vars.get(name)

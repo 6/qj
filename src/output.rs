@@ -23,6 +23,10 @@ pub struct OutputConfig {
     pub mode: OutputMode,
     /// Indentation string (default "  ", or "\t" with --tab).
     pub indent: String,
+    /// Sort object keys alphabetically (`-S`).
+    pub sort_keys: bool,
+    /// Suppress trailing newline after each value (`-j`).
+    pub join_output: bool,
 }
 
 impl Default for OutputConfig {
@@ -30,33 +34,30 @@ impl Default for OutputConfig {
         Self {
             mode: OutputMode::Pretty,
             indent: "  ".to_string(),
+            sort_keys: false,
+            join_output: false,
         }
     }
 }
 
-/// Write a value to the output sink, followed by a newline.
+/// Write a value to the output sink, followed by a newline (unless join_output).
 pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) -> io::Result<()> {
     match config.mode {
-        OutputMode::Pretty => {
-            write_pretty(w, value, 0, &config.indent)?;
-            w.write_all(b"\n")
-        }
-        OutputMode::Compact => {
-            write_compact(w, value)?;
-            w.write_all(b"\n")
-        }
-        OutputMode::Raw => {
-            write_raw(w, value)?;
-            w.write_all(b"\n")
-        }
+        OutputMode::Pretty => write_pretty(w, value, 0, &config.indent, config.sort_keys)?,
+        OutputMode::Compact => write_compact(w, value, config.sort_keys)?,
+        OutputMode::Raw => write_raw(w, value, config.sort_keys)?,
     }
+    if !config.join_output {
+        w.write_all(b"\n")?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Compact output
 // ---------------------------------------------------------------------------
 
-pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value) -> io::Result<()> {
+pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<()> {
     match value {
         Value::Null => w.write_all(b"null"),
         Value::Bool(true) => w.write_all(b"true"),
@@ -73,19 +74,30 @@ pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value) -> io::Result<()
                 if i > 0 {
                     w.write_all(b",")?;
                 }
-                write_compact(w, v)?;
+                write_compact(w, v, sort_keys)?;
             }
             w.write_all(b"]")
         }
         Value::Object(obj) => {
             w.write_all(b"{")?;
-            for (i, (k, v)) in obj.iter().enumerate() {
+            let sorted;
+            let pairs: &[(String, Value)] = if sort_keys {
+                sorted = {
+                    let mut v = obj.as_ref().clone();
+                    v.sort_by(|a, b| a.0.cmp(&b.0));
+                    v
+                };
+                &sorted
+            } else {
+                obj.as_ref()
+            };
+            for (i, (k, v)) in pairs.iter().enumerate() {
                 if i > 0 {
                     w.write_all(b",")?;
                 }
                 write_json_string(w, k)?;
                 w.write_all(b":")?;
-                write_compact(w, v)?;
+                write_compact(w, v, sort_keys)?;
             }
             w.write_all(b"}")
         }
@@ -96,7 +108,13 @@ pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value) -> io::Result<()
 // Pretty output
 // ---------------------------------------------------------------------------
 
-fn write_pretty<W: Write>(w: &mut W, value: &Value, depth: usize, indent: &str) -> io::Result<()> {
+fn write_pretty<W: Write>(
+    w: &mut W,
+    value: &Value,
+    depth: usize,
+    indent: &str,
+    sort_keys: bool,
+) -> io::Result<()> {
     match value {
         Value::Null => w.write_all(b"null"),
         Value::Bool(true) => w.write_all(b"true"),
@@ -115,7 +133,7 @@ fn write_pretty<W: Write>(w: &mut W, value: &Value, depth: usize, indent: &str) 
                     w.write_all(b",\n")?;
                 }
                 write_indent(w, depth + 1, indent)?;
-                write_pretty(w, v, depth + 1, indent)?;
+                write_pretty(w, v, depth + 1, indent, sort_keys)?;
             }
             w.write_all(b"\n")?;
             write_indent(w, depth, indent)?;
@@ -124,14 +142,25 @@ fn write_pretty<W: Write>(w: &mut W, value: &Value, depth: usize, indent: &str) 
         Value::Object(obj) if obj.is_empty() => w.write_all(b"{}"),
         Value::Object(obj) => {
             w.write_all(b"{\n")?;
-            for (i, (k, v)) in obj.iter().enumerate() {
+            let sorted;
+            let pairs: &[(String, Value)] = if sort_keys {
+                sorted = {
+                    let mut v = obj.as_ref().clone();
+                    v.sort_by(|a, b| a.0.cmp(&b.0));
+                    v
+                };
+                &sorted
+            } else {
+                obj.as_ref()
+            };
+            for (i, (k, v)) in pairs.iter().enumerate() {
                 if i > 0 {
                     w.write_all(b",\n")?;
                 }
                 write_indent(w, depth + 1, indent)?;
                 write_json_string(w, k)?;
                 w.write_all(b": ")?;
-                write_pretty(w, v, depth + 1, indent)?;
+                write_pretty(w, v, depth + 1, indent, sort_keys)?;
             }
             w.write_all(b"\n")?;
             write_indent(w, depth, indent)?;
@@ -151,12 +180,12 @@ fn write_indent<W: Write>(w: &mut W, depth: usize, indent: &str) -> io::Result<(
 // Raw output (-r)
 // ---------------------------------------------------------------------------
 
-fn write_raw<W: Write>(w: &mut W, value: &Value) -> io::Result<()> {
+fn write_raw<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<()> {
     match value {
         // Raw mode: strings are output without quotes
         Value::String(s) => w.write_all(s.as_bytes()),
         // Everything else is the same as compact
-        _ => write_compact(w, value),
+        _ => write_compact(w, value, sort_keys),
     }
 }
 
@@ -414,5 +443,59 @@ mod tests {
         // i64::MIN = -2^63 is exactly representable in f64 and fits in i64
         let val = Value::Double(i64::MIN as f64, None);
         assert_eq!(compact(&val), "-9223372036854775808");
+    }
+
+    #[test]
+    fn sort_keys_object() {
+        let v = Value::Object(Rc::new(vec![
+            ("b".into(), Value::Int(2)),
+            ("a".into(), Value::Int(1)),
+        ]));
+        let config = OutputConfig {
+            mode: OutputMode::Compact,
+            sort_keys: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap().trim(), r#"{"a":1,"b":2}"#);
+    }
+
+    #[test]
+    fn sort_keys_nested() {
+        let v = Value::Object(Rc::new(vec![
+            (
+                "z".into(),
+                Value::Object(Rc::new(vec![
+                    ("b".into(), Value::Int(2)),
+                    ("a".into(), Value::Int(1)),
+                ])),
+            ),
+            ("a".into(), Value::Int(0)),
+        ]));
+        let config = OutputConfig {
+            mode: OutputMode::Compact,
+            sort_keys: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap().trim(),
+            r#"{"a":0,"z":{"a":1,"b":2}}"#
+        );
+    }
+
+    #[test]
+    fn join_output_no_newline() {
+        let v = Value::String("hello".into());
+        let config = OutputConfig {
+            mode: OutputMode::Raw,
+            join_output: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        assert_eq!(buf, b"hello"); // no trailing newline
     }
 }

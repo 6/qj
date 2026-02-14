@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use memchr::memchr_iter;
 use rayon::prelude::*;
 
-use crate::filter::{Filter, ObjKey, StringPart};
+use crate::filter::{Env, Filter, ObjKey, StringPart};
 use crate::output::{self, OutputConfig};
 use crate::simdjson;
 use crate::value::Value;
@@ -97,20 +97,22 @@ pub fn split_chunks(buf: &[u8], target_size: usize) -> Vec<&[u8]> {
 /// Process an NDJSON buffer, returning `(output_bytes, had_output)`.
 ///
 /// Automatically parallelizes across cores for data larger than one chunk.
-/// Falls back to sequential processing for small data or filters containing
-/// non-thread-safe literals.
+/// Falls back to sequential processing for small data, filters containing
+/// non-thread-safe literals, or when a non-empty env is provided (Env uses
+/// Rc which is not Send).
 pub fn process_ndjson(
     data: &[u8],
     filter: &Filter,
     config: &OutputConfig,
+    env: &Env,
 ) -> Result<(Vec<u8>, bool)> {
-    if !filter_is_parallel_safe(filter) {
-        return process_chunk(data, filter, config);
+    if !env.is_empty() || !filter_is_parallel_safe(filter) {
+        return process_chunk(data, filter, config, env);
     }
 
     let chunks = split_chunks(data, CHUNK_TARGET_SIZE);
     if chunks.len() <= 1 {
-        return process_chunk(data, filter, config);
+        return process_chunk(data, filter, config, env);
     }
 
     // SAFETY: filter_is_parallel_safe() verified no Rc-containing literals,
@@ -120,7 +122,10 @@ pub fn process_ndjson(
 
     let results: Result<Vec<(Vec<u8>, bool)>> = chunks
         .par_iter()
-        .map(|&chunk| process_chunk(chunk, shared.get(), config))
+        .map(|&chunk| {
+            let empty_env = Env::empty();
+            process_chunk(chunk, shared.get(), config, &empty_env)
+        })
         .collect();
 
     let results = results?;
@@ -238,7 +243,12 @@ fn filter_is_parallel_safe(filter: &Filter) -> bool {
 }
 
 /// Process a single chunk of NDJSON lines sequentially.
-fn process_chunk(chunk: &[u8], filter: &Filter, config: &OutputConfig) -> Result<(Vec<u8>, bool)> {
+fn process_chunk(
+    chunk: &[u8],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+) -> Result<(Vec<u8>, bool)> {
     let mut output_buf = Vec::new();
     let mut had_output = false;
 
@@ -246,7 +256,7 @@ fn process_chunk(chunk: &[u8], filter: &Filter, config: &OutputConfig) -> Result
     for nl_pos in memchr_iter(b'\n', chunk) {
         let line = &chunk[start..nl_pos];
         start = nl_pos + 1;
-        process_line(line, filter, config, &mut output_buf, &mut had_output)?;
+        process_line(line, filter, config, env, &mut output_buf, &mut had_output)?;
     }
 
     // Handle last line without trailing newline
@@ -255,6 +265,7 @@ fn process_chunk(chunk: &[u8], filter: &Filter, config: &OutputConfig) -> Result
             &chunk[start..],
             filter,
             config,
+            env,
             &mut output_buf,
             &mut had_output,
         )?;
@@ -268,6 +279,7 @@ fn process_line(
     line: &[u8],
     filter: &Filter,
     config: &OutputConfig,
+    env: &Env,
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
 ) -> Result<()> {
@@ -286,7 +298,7 @@ fn process_line(
     let value = simdjson::dom_parse_to_value(&padded, trimmed.len())
         .context("failed to parse NDJSON line")?;
 
-    crate::filter::eval::eval_filter(filter, &value, &mut |v| {
+    crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
         *had_output = true;
         output::write_value(output_buf, &v, config).ok();
     });
@@ -387,9 +399,10 @@ mod tests {
         let filter = crate::filter::parse(".name").unwrap();
         let config = OutputConfig {
             mode: crate::output::OutputMode::Compact,
-            indent: String::new(),
+            ..Default::default()
         };
-        let (output, had_output) = process_ndjson(data, &filter, &config).unwrap();
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(String::from_utf8(output).unwrap(), "\"alice\"\n\"bob\"\n");
     }
@@ -400,9 +413,10 @@ mod tests {
         let filter = crate::filter::parse(".").unwrap();
         let config = OutputConfig {
             mode: crate::output::OutputMode::Compact,
-            indent: String::new(),
+            ..Default::default()
         };
-        let (output, _) = process_ndjson(data, &filter, &config).unwrap();
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"a\":1}\n{\"b\":2}\n");
     }
 
@@ -412,9 +426,10 @@ mod tests {
         let filter = crate::filter::parse(".").unwrap();
         let config = OutputConfig {
             mode: crate::output::OutputMode::Compact,
-            indent: String::new(),
+            ..Default::default()
         };
-        let (output, _) = process_ndjson(data, &filter, &config).unwrap();
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"a\":1}\n{\"b\":2}\n");
     }
 }

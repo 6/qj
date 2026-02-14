@@ -260,7 +260,7 @@ pub(super) fn eval_builtin(
             Value::Null => output(Value::String("null".into())),
             Value::Array(_) | Value::Object(_) => {
                 let mut buf = Vec::new();
-                crate::output::write_compact(&mut buf, input).unwrap();
+                crate::output::write_compact(&mut buf, input, false).unwrap();
                 output(Value::String(String::from_utf8(buf).unwrap_or_default()));
             }
         },
@@ -1015,7 +1015,7 @@ pub(super) fn eval_builtin(
         }
         "tojson" => {
             let mut buf = Vec::new();
-            crate::output::write_compact(&mut buf, input).unwrap();
+            crate::output::write_compact(&mut buf, input, false).unwrap();
             output(Value::String(String::from_utf8(buf).unwrap_or_default()));
         }
         "fromjson" => {
@@ -1372,7 +1372,7 @@ pub(super) fn eval_builtin(
                     }
                 });
                 let mut buf = Vec::new();
-                crate::output::write_compact(&mut buf, input).unwrap();
+                crate::output::write_compact(&mut buf, input, false).unwrap();
                 let json = String::from_utf8(buf).unwrap_or_default();
                 if label.is_empty() {
                     eprintln!("[\"DEBUG:\",{json}]");
@@ -1381,7 +1381,7 @@ pub(super) fn eval_builtin(
                 }
             } else {
                 let mut buf = Vec::new();
-                crate::output::write_compact(&mut buf, input).unwrap();
+                crate::output::write_compact(&mut buf, input, false).unwrap();
                 let json = String::from_utf8(buf).unwrap_or_default();
                 eprintln!("[\"DEBUG:\",{json}]");
             }

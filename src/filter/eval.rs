@@ -17,6 +17,16 @@ pub fn eval_filter(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)
     eval(filter, input, &Env::empty(), output);
 }
 
+/// Public entry point with a pre-populated environment (for --arg / --argjson).
+pub fn eval_filter_with_env(
+    filter: &Filter,
+    input: &Value,
+    env: &Env,
+    output: &mut dyn FnMut(Value),
+) {
+    eval(filter, input, env, output);
+}
+
 /// Evaluate a filter against an input value, calling `output` for each result.
 pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Value)) {
     match filter {
@@ -272,7 +282,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                             Value::Null => result.push_str("null"),
                             Value::Array(_) | Value::Object(_) => {
                                 let mut buf = Vec::new();
-                                crate::output::write_compact(&mut buf, &v).unwrap();
+                                crate::output::write_compact(&mut buf, &v, false).unwrap();
                                 result.push_str(&String::from_utf8(buf).unwrap_or_default());
                             }
                         });
