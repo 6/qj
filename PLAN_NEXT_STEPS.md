@@ -7,9 +7,9 @@ full design and history.
 
 ## Current state (2026-02)
 
-773 tests passing (410 unit + 325 e2e + 21 ndjson + 15 ffi + 2 conformance).
-~105 builtins implemented. jq conformance at **56.3%** (280/497 on jq's
-official test suite). Feature compatibility at **83.4%** (138/166 features
+789 tests passing (417 unit + 334 e2e + 21 ndjson + 15 ffi + 2 conformance).
+~112 builtins implemented. jq conformance at **56.3%** (280/497 on jq's
+official test suite). Feature compatibility at **87.0%** (144/166 features
 fully passing). Passthrough paths handle "simple query on big file" at
 12-63x jq, 3-14x jaq. Parallel NDJSON processing at ~10x jq, ~5.6x jaq.
 
@@ -87,21 +87,15 @@ functions, sequential fallback for NDJSON when env is non-empty.
 
 ---
 
-## Priority 3: Regex
+## ~~Priority 3: Regex~~ COMPLETE
 
-**Why:** 0/9 feature tests. Regex is heavily used in real jq scripts
-for log parsing, field extraction, data cleaning. Contributes to
-28/88 string operations conformance tests failing.
-
-**Functions:** `test(re)`, `test(re; flags)`, `match(re)`,
-`match(re; flags)`, `capture(re)`, `scan(re)`, `sub(re; repl)`,
-`gsub(re; repl)`, `splits(re)`
-
-**Effort:** Add `regex` crate. Each function is independent. The `match`
-output format must exactly match jq's `{offset, length, string, captures}`
-structure.
-
-**Files:** `Cargo.toml`, `src/filter/builtins.rs`
+All 7 regex builtins implemented using the `regex` crate: `test(re; flags)`,
+`match(re; flags)`, `capture(re; flags)`, `scan(re; flags)`,
+`sub(re; repl; flags)`, `gsub(re; repl; flags)`, `splits(re; flags)`.
+Supports jq flags: `i` (case-insensitive), `m` (multiline), `s` (single-line),
+`g` (global), `x` (extended/verbose). sub/gsub evaluate replacement as a
+filter against the match object, matching jq semantics. Feature compat
+regex: 0/9 → 9/9. Overall feature compat: 83.4% → 87.0%.
 
 ---
 
@@ -143,10 +137,9 @@ compatibility.
 
 | After | Est. Tests | Est. % | Key unlock |
 |-------|-----------|--------|------------|
-| Current | 280/497 | 56% | — |
-| + regex | ~294/497 | ~59% | string operations |
-| + format strings | ~304/497 | ~61% | @base64, @csv, @tsv |
-| + smaller gaps | ~319/497 | ~64% | cross-cutting fixes |
+| Current (with regex) | 280/497 | 56% | — |
+| + format strings | ~294/497 | ~59% | @base64, @csv, @tsv |
+| + smaller gaps | ~309/497 | ~62% | cross-cutting fixes |
 
 ---
 
