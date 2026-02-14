@@ -8,7 +8,7 @@ Median of 2 runs via [hyperfine](https://github.com/sharkdp/hyperfine).
 
 | Filter | File | **jx** | jq | jaq | gojq |
 |--------|------|------|------|------|------|
-| `-c '.'` | twitter.json | **0.0ms** | 12.9ms | 2.4ms | 5.2ms |
+| `-c '.'` | twitter.json | **<0.1ms** | 12.9ms | 2.4ms | 5.2ms |
 | `-c '.statuses'` | twitter.json | **6.0ms** | 17.7ms | 8.2ms | 10.2ms |
 | `'.statuses|length'` | twitter.json | **2.8ms** | 10.6ms | 7.7ms | 6.2ms |
 | `'.statuses[]|.user.name'` | twitter.json | **4.6ms** | 13.0ms | 6.1ms | 8.4ms |

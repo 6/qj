@@ -251,6 +251,8 @@ fn format_time(seconds: f64) -> String {
     let ms = seconds * 1000.0;
     if ms >= 1000.0 {
         format!("{seconds:.2}s")
+    } else if ms < 0.1 {
+        "<0.1ms".to_string()
     } else {
         format!("{ms:.1}ms")
     }
@@ -320,7 +322,11 @@ fn run_benchmarks(
 
         for (i, filter) in filters.iter().enumerate() {
             let filter_key = format!("{key_prefix}_{i}");
-            let json_file = results_dir.join(format!("{key_prefix}-run-{i}-{file}.json"));
+            let file_stem = file
+                .strip_suffix(".json")
+                .or_else(|| file.strip_suffix(".ndjson"))
+                .unwrap_or(file);
+            let json_file = results_dir.join(format!("{key_prefix}-run-{i}-{file_stem}.json"));
 
             let mut cmds = Vec::new();
             let mut cmd_tools: Vec<&str> = Vec::new();
