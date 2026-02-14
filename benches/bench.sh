@@ -390,20 +390,55 @@ filter_display() {
     fi
 
     # --- Throughput ---
-    # Compute throughput for identity compact on the largest JSON file.
+    # Compute throughput for identity compact on the largest JSON file for all tools.
     largest_file="${FILES[${#FILES[@]}-1]}"
     largest_bytes=$(wc -c < "$DATA/$largest_file" | tr -d ' ')
-    jx_identity="${RESULTS["0,$largest_file,jx"]:-}"
-    if [ -n "$jx_identity" ] && [ "$jx_identity" != "null" ]; then
-        throughput=$(echo "$largest_bytes $jx_identity" | awk '{
+    largest_size=$(echo "$largest_bytes" | awk '{printf "%.0fMB", $1/(1024*1024)}')
+
+    format_throughput() {
+        local bytes="$1" seconds="$2"
+        if [ -z "$seconds" ] || [ "$seconds" = "null" ]; then
+            echo "-"
+            return
+        fi
+        echo "$bytes $seconds" | awk '{
             mbps = ($1 / $2) / (1024*1024)
             if (mbps >= 1024) printf "%.1f GB/s", mbps/1024
             else printf "%.0f MB/s", mbps
-        }')
+        }'
+    }
+
+    has_throughput=false
+    for tool in "${TOOLS[@]}"; do
+        val="${RESULTS["0,$largest_file,$tool"]:-}"
+        if [ -n "$val" ] && [ "$val" != "null" ]; then has_throughput=true; break; fi
+    done
+
+    if [ "$has_throughput" = "true" ]; then
         echo ""
         echo "### Throughput"
         echo ""
-        echo "Peak throughput (\`-c '.'\` on ${largest_file}, $(echo "$largest_bytes" | awk '{printf "%.0fMB", $1/(1024*1024)}')): **$throughput**"
+        echo "Peak parse throughput (\`-c '.'\` on ${largest_file}, ${largest_size}):"
+        echo ""
+
+        tp_header="|"
+        tp_sep="|"
+        tp_row="|"
+        for tool in "${TOOLS[@]}"; do
+            val="${RESULTS["0,$largest_file,$tool"]:-}"
+            tp=$(format_throughput "$largest_bytes" "$val")
+            if [ "$tool" = "jx" ]; then
+                tp_header="$tp_header **$tool** |"
+                tp_row="$tp_row **$tp** |"
+            else
+                tp_header="$tp_header $tool |"
+                tp_row="$tp_row $tp |"
+            fi
+            tp_sep="$tp_sep------|"
+        done
+        echo "$tp_header"
+        echo "$tp_sep"
+        echo "$tp_row"
     fi
 
     # --- Summary: geometric-mean speedup vs jq ---
