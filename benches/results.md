@@ -45,5 +45,5 @@ jx processes NDJSON in parallel across all cores using rayon.
 ### Understanding the numbers
 
 - jx is fastest on **parse-dominated workloads** (identity, field extraction) thanks to SIMD parsing
-- On **complex filters** (select + construct), jaq's evaluator may be faster
+- On **eval-heavy filters** (math, string ops, paths), jx remains 2-5x faster than jq and competitive with or faster than jaq
 - On **NDJSON**, jx parallelizes across all cores for significant speedups over single-threaded tools
