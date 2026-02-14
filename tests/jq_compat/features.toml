@@ -1,0 +1,1329 @@
+# Feature compatibility test suite for jq-compatible tools
+# Format: TOML with [[features]] entries, each containing tests array
+# Rules:
+#   - Single-quoted strings for filter/input/expected (no escaping needed for jq's ")
+#   - Double-quoted strings when value contains ' or needs \n (multi-line expected)
+#   - flags is optional; when present, runner uses flags instead of default "-c --"
+#   - expected = '' represents empty output
+
+# =============================================================================
+# Types and basic filters
+# =============================================================================
+
+[[features]]
+category = "Types and basic filters"
+name = "Identity"
+tests = [
+  { filter = '.', input = '42', expected = '42' },
+  { filter = '.', input = '{"a":1,"b":2}', expected = '{"a":1,"b":2}' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "Field access"
+tests = [
+  { filter = '.foo', input = '{"foo":"bar","baz":1}', expected = '"bar"' },
+  { filter = '.["foo"]', input = '{"foo":"bar"}', expected = '"bar"' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "Optional field"
+tests = [
+  { filter = '.foo?', input = '{"bar":1}', expected = 'null' },
+  { filter = '{a: .a, b: .b?}', input = '{"a":1}', expected = '{"a":1,"b":null}' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "Array index"
+tests = [
+  { filter = '.[0]', input = '[10,20,30]', expected = '10' },
+  { filter = '.[-1]', input = '[10,20,30]', expected = '30' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "Array/string slice"
+tests = [
+  { filter = '.[2:5]', input = '[0,1,2,3,4,5,6]', expected = '[2,3,4]' },
+  { filter = '.[3:]', input = '[0,1,2,3,4,5]', expected = '[3,4,5]' },
+  { filter = '.[:2]', input = '"hello"', expected = '"he"' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "Iterator"
+tests = [
+  { filter = '[.[]?]', input = '[1,2,3]', expected = '[1,2,3]' },
+  { filter = '[.[]?]', input = '{"a":1,"b":2}', expected = '[1,2]' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "Recursive descent"
+tests = [
+  { filter = '[.. | numbers]', input = '{"a":{"b":1},"c":2}', expected = '[1,2]' },
+  { filter = '[.. | strings]', input = '{"a":"x","b":{"c":"y"}}', expected = '["x","y"]' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "Type literals"
+tests = [
+  { filter = 'null', input = 'null', expected = 'null' },
+  { filter = '[true, false, 42, "str"]', input = 'null', expected = '[true,false,42,"str"]' },
+]
+
+[[features]]
+category = "Types and basic filters"
+name = "type"
+tests = [
+  { filter = 'type', input = '42', expected = '"number"' },
+  { filter = 'type', input = '"hello"', expected = '"string"' },
+  { filter = 'type', input = '[1,2]', expected = '"array"' },
+]
+
+# =============================================================================
+# Operators
+# =============================================================================
+
+[[features]]
+category = "Operators"
+name = "Addition"
+tests = [
+  { filter = '. + 1', input = '2', expected = '3' },
+  { filter = '. + " world"', input = '"hello"', expected = '"hello world"' },
+  { filter = '. + [3,4]', input = '[1,2]', expected = '[1,2,3,4]' },
+]
+
+[[features]]
+category = "Operators"
+name = "Subtraction"
+tests = [
+  { filter = '. - 3', input = '10', expected = '7' },
+  { filter = '. - [2,4]', input = '[1,2,3,4,5]', expected = '[1,3,5]' },
+]
+
+[[features]]
+category = "Operators"
+name = "Multiplication"
+tests = [
+  { filter = '. * 3', input = '7', expected = '21' },
+  { filter = '{a:{b:1}} * {a:{c:2}}', input = 'null', expected = '{"a":{"b":1,"c":2}}' },
+]
+
+[[features]]
+category = "Operators"
+name = "Division"
+tests = [
+  { filter = '. / 3', input = '10', expected = '3.3333333333333335' },
+  { filter = '"a,b,c" / ","', input = 'null', expected = '["a","b","c"]' },
+]
+
+[[features]]
+category = "Operators"
+name = "Modulo"
+tests = [
+  { filter = '17 % 5', input = 'null', expected = '2' },
+]
+
+[[features]]
+category = "Operators"
+name = "Equality"
+tests = [
+  { filter = '.x == 1', input = '{"x":1}', expected = 'true' },
+  { filter = '.x != 2', input = '{"x":1}', expected = 'true' },
+]
+
+[[features]]
+category = "Operators"
+name = "Comparison"
+tests = [
+  { filter = '.x > 5', input = '{"x":10}', expected = 'true' },
+  { filter = '.x <= 5', input = '{"x":3}', expected = 'true' },
+]
+
+[[features]]
+category = "Operators"
+name = "and/or"
+tests = [
+  { filter = '.a and .b', input = '{"a":true,"b":false}', expected = 'false' },
+  { filter = '.a or .b', input = '{"a":false,"b":true}', expected = 'true' },
+]
+
+[[features]]
+category = "Operators"
+name = "not"
+tests = [
+  { filter = 'true | not', input = 'null', expected = 'false' },
+  { filter = 'false | not', input = 'null', expected = 'true' },
+]
+
+[[features]]
+category = "Operators"
+name = "Alternative operator"
+tests = [
+  { filter = '.x // "default"', input = '{"x":null}', expected = '"default"' },
+  { filter = '.x // "default"', input = '{"x":42}', expected = '42' },
+]
+
+[[features]]
+category = "Operators"
+name = "Pipe"
+tests = [
+  { filter = '.a | .b', input = '{"a":{"b":"nested"}}', expected = '"nested"' },
+]
+
+[[features]]
+category = "Operators"
+name = "Comma"
+tests = [
+  { filter = '.a, .b', input = '{"a":1,"b":2}', expected = "1\n2" },
+]
+
+[[features]]
+category = "Operators"
+name = "Unary negation"
+tests = [
+  { filter = '-(. + 1)', input = '5', expected = '-6' },
+]
+
+# =============================================================================
+# Control flow
+# =============================================================================
+
+[[features]]
+category = "Control flow"
+name = "if-then-else-end"
+tests = [
+  { filter = 'if .x > 0 then "pos" else "neg" end', input = '{"x":5}', expected = '"pos"' },
+  { filter = 'if .x > 0 then "pos" else "neg" end', input = '{"x":-1}', expected = '"neg"' },
+]
+
+[[features]]
+category = "Control flow"
+name = "elif"
+tests = [
+  { filter = 'if . == 1 then "a" elif . == 2 then "b" else "c" end', input = '2', expected = '"b"' },
+  { filter = 'if . == 1 then "a" elif . == 2 then "b" elif . == 3 then "c" else "d" end', input = '3', expected = '"c"' },
+]
+
+[[features]]
+category = "Control flow"
+name = "try"
+tests = [
+  { filter = '(try error("x")), 1', input = 'null', expected = '1' },
+  { filter = 'try .foo', input = '{"foo":1}', expected = '1' },
+]
+
+[[features]]
+category = "Control flow"
+name = "try-catch"
+tests = [
+  { filter = 'try error("fail") catch .', input = 'null', expected = '"fail"' },
+  { filter = 'try (1/0) catch "division error"', input = 'null', expected = '"division error"' },
+]
+
+[[features]]
+category = "Control flow"
+name = "Variable binding"
+tests = [
+  { filter = '.name as $n | {name: $n}', input = '{"name":"alice"}', expected = '{"name":"alice"}' },
+  { filter = '1 as $x | 2 as $y | $x + $y', input = 'null', expected = '3' },
+]
+
+[[features]]
+category = "Control flow"
+name = "reduce"
+tests = [
+  { filter = 'reduce .[] as $x (0; . + $x)', input = '[1,2,3,4,5]', expected = '15' },
+  { filter = 'reduce .[] as $x (""; . + $x)', input = '["a","b","c"]', expected = '"abc"' },
+]
+
+[[features]]
+category = "Control flow"
+name = "foreach"
+tests = [
+  { filter = '[foreach .[] as $x (0; . + $x)]', input = '[1,2,3]', expected = '[1,3,6]' },
+  { filter = '[foreach .[] as $x (0; . + 1)]', input = '["a","b","c"]', expected = '[1,2,3]' },
+]
+
+[[features]]
+category = "Control flow"
+name = "def"
+tests = [
+  { filter = 'def double: . * 2; 5 | double', input = 'null', expected = '10' },
+  { filter = 'def addtwo: . + 2; [1,2,3] | map(addtwo)', input = 'null', expected = '[3,4,5]' },
+]
+
+[[features]]
+category = "Control flow"
+name = "def with args"
+tests = [
+  { filter = 'def f(x): x | x; 1 | [f(. + 1)]', input = 'null', expected = '[3]' },
+  { filter = 'def addthem(x;y): x + y; addthem(2;3)', input = 'null', expected = '5' },
+]
+
+[[features]]
+category = "Control flow"
+name = "label-break"
+tests = [
+  { filter = 'label $out | foreach range(5) as $x (0; . + $x; if . > 3 then ., break $out else . end)', input = 'null', expected = "0\n1\n3\n6" },
+]
+
+[[features]]
+category = "Control flow"
+name = "empty"
+tests = [
+  { filter = '[1, empty, 2]', input = 'null', expected = '[1,2]' },
+]
+
+[[features]]
+category = "Control flow"
+name = "error"
+tests = [
+  { filter = 'try error("fail") catch .', input = 'null', expected = '"fail"' },
+  { filter = 'try error catch .', input = 'null', expected = 'null' },
+]
+
+# =============================================================================
+# Array functions
+# =============================================================================
+
+[[features]]
+category = "Array functions"
+name = "length"
+tests = [
+  { filter = 'length', input = '[1,2,3]', expected = '3' },
+  { filter = 'length', input = '"hello"', expected = '5' },
+  { filter = 'length', input = '{"a":1,"b":2}', expected = '2' },
+]
+
+[[features]]
+category = "Array functions"
+name = "reverse"
+tests = [
+  { filter = 'reverse', input = '[1,2,3]', expected = '[3,2,1]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "sort"
+tests = [
+  { filter = 'sort', input = '[3,1,4,1,5]', expected = '[1,1,3,4,5]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "sort_by"
+tests = [
+  { filter = 'sort_by(.a)', input = '[{"a":3},{"a":1},{"a":2}]', expected = '[{"a":1},{"a":2},{"a":3}]' },
+  { filter = 'sort_by(.name)', input = '[{"name":"bob"},{"name":"alice"}]', expected = '[{"name":"alice"},{"name":"bob"}]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "group_by"
+tests = [
+  { filter = 'group_by(.a)', input = '[{"a":1,"b":"x"},{"a":2,"b":"y"},{"a":1,"b":"z"}]', expected = '[[{"a":1,"b":"x"},{"a":1,"b":"z"}],[{"a":2,"b":"y"}]]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "unique"
+tests = [
+  { filter = 'unique', input = '[1,2,1,3,2]', expected = '[1,2,3]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "unique_by"
+tests = [
+  { filter = 'unique_by(.a)', input = '[{"a":1,"b":2},{"a":1,"b":3},{"a":2,"b":4}]', expected = '[{"a":1,"b":2},{"a":2,"b":4}]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "min/max"
+tests = [
+  { filter = 'min', input = '[3,1,4,1,5]', expected = '1' },
+  { filter = 'max', input = '[3,1,4,1,5]', expected = '5' },
+]
+
+[[features]]
+category = "Array functions"
+name = "min_by/max_by"
+tests = [
+  { filter = 'min_by(.a)', input = '[{"a":3},{"a":1},{"a":2}]', expected = '{"a":1}' },
+  { filter = 'max_by(.a)', input = '[{"a":3},{"a":1},{"a":2}]', expected = '{"a":3}' },
+]
+
+[[features]]
+category = "Array functions"
+name = "add"
+tests = [
+  { filter = 'add', input = '[1,2,3,4]', expected = '10' },
+  { filter = 'add', input = '["a","b","c"]', expected = '"abc"' },
+  { filter = 'add', input = '[[1,2],[3,4]]', expected = '[1,2,3,4]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "flatten"
+tests = [
+  { filter = 'flatten', input = '[[1,[2]],3,[4,[5,[6]]]]', expected = '[1,2,3,4,5,6]' },
+  { filter = 'flatten(1)', input = '[[1,[2]],[3,[4]]]', expected = '[1,[2],3,[4]]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "transpose"
+tests = [
+  { filter = 'transpose', input = '[[1,2],[3,4]]', expected = '[[1,3],[2,4]]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "contains"
+tests = [
+  { filter = 'contains([2,3])', input = '[1,2,3,4]', expected = 'true' },
+  { filter = 'contains({"a":1})', input = '{"a":1,"b":2}', expected = 'true' },
+]
+
+[[features]]
+category = "Array functions"
+name = "inside"
+tests = [
+  { filter = 'inside([1,2,3])', input = '[2,3]', expected = 'true' },
+]
+
+[[features]]
+category = "Array functions"
+name = "index/rindex"
+tests = [
+  { filter = 'index("bc")', input = '"abcabc"', expected = '1' },
+  { filter = 'rindex("bc")', input = '"abcabc"', expected = '4' },
+]
+
+[[features]]
+category = "Array functions"
+name = "indices"
+tests = [
+  { filter = 'indices("bc")', input = '"abcabc"', expected = '[1,4]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "first/last"
+tests = [
+  { filter = 'first', input = '[10,20,30]', expected = '10' },
+  { filter = 'last', input = '[10,20,30]', expected = '30' },
+]
+
+[[features]]
+category = "Array functions"
+name = "first(f)/last(f)"
+tests = [
+  { filter = 'first(range(10))', input = 'null', expected = '0' },
+  { filter = 'last(range(5))', input = 'null', expected = '4' },
+]
+
+[[features]]
+category = "Array functions"
+name = "nth"
+tests = [
+  { filter = 'nth(2; range(10))', input = 'null', expected = '2' },
+]
+
+[[features]]
+category = "Array functions"
+name = "range"
+tests = [
+  { filter = '[range(4)]', input = 'null', expected = '[0,1,2,3]' },
+  { filter = '[range(2;5)]', input = 'null', expected = '[2,3,4]' },
+  { filter = '[range(0;10;3)]', input = 'null', expected = '[0,3,6,9]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "any/all"
+tests = [
+  { filter = 'any(. > 2)', input = '[1,2,3]', expected = 'true' },
+  { filter = 'all(. > 0)', input = '[1,2,3]', expected = 'true' },
+  { filter = 'any(. > 10)', input = '[1,2,3]', expected = 'false' },
+]
+
+[[features]]
+category = "Array functions"
+name = "map"
+tests = [
+  { filter = 'map(. + 10)', input = '[1,2,3]', expected = '[11,12,13]' },
+  { filter = 'map(. * 2)', input = '[5,10,15]', expected = '[10,20,30]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "map_values"
+tests = [
+  { filter = 'map_values(. + 10)', input = '{"a":1,"b":2}', expected = '{"a":11,"b":12}' },
+]
+
+[[features]]
+category = "Array functions"
+name = "select"
+tests = [
+  { filter = '[.[] | select(. > 2)]', input = '[1,2,3,4,5]', expected = '[3,4,5]' },
+  { filter = '[.[] | select(.active)]', input = '[{"name":"a","active":true},{"name":"b","active":false}]', expected = '[{"name":"a","active":true}]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "limit"
+tests = [
+  { filter = '[limit(3; range(100))]', input = 'null', expected = '[0,1,2]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "until"
+tests = [
+  { filter = '0 | until(. >= 5; . + 1)', input = 'null', expected = '5' },
+]
+
+[[features]]
+category = "Array functions"
+name = "while"
+tests = [
+  { filter = '[1 | while(. < 8; . * 2)]', input = 'null', expected = '[1,2,4]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "repeat"
+tests = [
+  { filter = '1 | [limit(4; repeat(. * 2))]', input = 'null', expected = '[2,2,2,2]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "recurse"
+tests = [
+  { filter = '2 | [recurse(. * .; . < 100)]', input = 'null', expected = '[2,4,16]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "isempty"
+tests = [
+  { filter = 'isempty(empty)', input = 'null', expected = 'true' },
+  { filter = 'isempty(range(3))', input = 'null', expected = 'false' },
+]
+
+[[features]]
+category = "Array functions"
+name = "walk"
+tests = [
+  { filter = '[1,[2,[3]]] | walk(if type == "array" then sort else . end)', input = 'null', expected = '[1,[2,[3]]]' },
+  { filter = '{"a":1,"b":{"c":2}} | walk(if type == "number" then . + 1 else . end)', input = 'null', expected = '{"a":2,"b":{"c":3}}' },
+]
+
+[[features]]
+category = "Array functions"
+name = "combinations"
+tests = [
+  { filter = '[[1,2],[3,4]] | [combinations]', input = 'null', expected = '[[1,3],[1,4],[2,3],[2,4]]' },
+  { filter = '[combinations(2)]', input = '[0,1]', expected = '[[0,0],[0,1],[1,0],[1,1]]' },
+]
+
+[[features]]
+category = "Array functions"
+name = "bsearch"
+tests = [
+  { filter = 'bsearch(2)', input = '[1,2,3,4,5]', expected = '1' },
+  { filter = 'bsearch(0)', input = '[1,2,3]', expected = '-1' },
+]
+
+[[features]]
+category = "Array functions"
+name = "pick"
+tests = [
+  { filter = 'pick(.a, .b.c)', input = '{"a":1,"b":{"c":2,"d":3},"e":4}', expected = '{"a":1,"b":{"c":2}}' },
+]
+
+# =============================================================================
+# Object functions
+# =============================================================================
+
+[[features]]
+category = "Object functions"
+name = "keys"
+tests = [
+  { filter = 'keys', input = '{"b":2,"a":1,"c":3}', expected = '["a","b","c"]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "keys_unsorted"
+tests = [
+  { filter = 'keys_unsorted', input = '{"b":2,"a":1,"c":3}', expected = '["b","a","c"]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "values (iterate)"
+tests = [
+  { filter = '[.[]]', input = '{"a":1,"b":2,"c":3}', expected = '[1,2,3]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "values (type selector)"
+tests = [
+  { filter = '[.[] | values]', input = '[1,null,2,null,3]', expected = '[1,2,3]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "has"
+tests = [
+  { filter = 'has("a")', input = '{"a":1,"b":2}', expected = 'true' },
+  { filter = 'has("c")', input = '{"a":1,"b":2}', expected = 'false' },
+  { filter = 'has(1)', input = '[10,20,30]', expected = 'true' },
+]
+
+[[features]]
+category = "Object functions"
+name = "in"
+tests = [
+  { filter = '"a" | in({"a":1,"b":2})', input = 'null', expected = 'true' },
+  { filter = '"c" | in({"a":1,"b":2})', input = 'null', expected = 'false' },
+]
+
+[[features]]
+category = "Object functions"
+name = "to_entries"
+tests = [
+  { filter = 'to_entries', input = '{"a":1,"b":2}', expected = '[{"key":"a","value":1},{"key":"b","value":2}]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "from_entries"
+tests = [
+  { filter = 'from_entries', input = '[{"key":"a","value":1},{"key":"b","value":2}]', expected = '{"a":1,"b":2}' },
+  { filter = 'from_entries', input = '[{"name":"a","value":1}]', expected = '{"a":1}' },
+]
+
+[[features]]
+category = "Object functions"
+name = "with_entries"
+tests = [
+  { filter = 'with_entries(select(.value > 1))', input = '{"a":1,"b":2,"c":3}', expected = '{"b":2,"c":3}' },
+  { filter = 'with_entries(.value += 10)', input = '{"a":1,"b":2}', expected = '{"a":11,"b":12}' },
+]
+
+[[features]]
+category = "Object functions"
+name = "del"
+tests = [
+  { filter = 'del(.a)', input = '{"a":1,"b":2,"c":3}', expected = '{"b":2,"c":3}' },
+  { filter = 'del(.a.b)', input = '{"a":{"b":1,"c":2},"d":3}', expected = '{"a":{"c":2},"d":3}' },
+  { filter = 'del(.[1])', input = '[1,2,3]', expected = '[1,3]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "paths"
+tests = [
+  { filter = '[paths]', input = '{"a":{"b":1},"c":2}', expected = '[["a"],["a","b"],["c"]]' },
+  { filter = '[paths(type == "number")]', input = '{"a":{"b":1},"c":"x"}', expected = '[["a","b"]]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "path"
+tests = [
+  { filter = 'path(.a.b)', input = '{"a":{"b":1}}', expected = '["a","b"]' },
+  { filter = 'path(.a[0])', input = '{"a":[10,20]}', expected = '["a",0]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "leaf_paths"
+tests = [
+  { filter = '[paths(scalars)]', input = '{"a":{"b":1},"c":2}', expected = '[["a","b"],["c"]]' },
+]
+
+[[features]]
+category = "Object functions"
+name = "getpath"
+tests = [
+  { filter = 'getpath(["a","b"])', input = '{"a":{"b":42}}', expected = '42' },
+  { filter = 'getpath(["x"])', input = '{"a":1}', expected = 'null' },
+]
+
+[[features]]
+category = "Object functions"
+name = "setpath"
+tests = [
+  { filter = 'setpath(["a","b"]; 42)', input = '{}', expected = '{"a":{"b":42}}' },
+  { filter = 'setpath(["a"]; 1)', input = '{"a":0,"b":2}', expected = '{"a":1,"b":2}' },
+]
+
+[[features]]
+category = "Object functions"
+name = "delpaths"
+tests = [
+  { filter = 'delpaths([["a"],["c"]])', input = '{"a":1,"b":2,"c":3}', expected = '{"b":2}' },
+]
+
+# =============================================================================
+# String functions
+# =============================================================================
+
+[[features]]
+category = "String functions"
+name = "tostring"
+tests = [
+  { filter = 'tostring', input = '42', expected = '"42"' },
+  { filter = 'tostring', input = 'true', expected = '"true"' },
+]
+
+[[features]]
+category = "String functions"
+name = "tonumber"
+tests = [
+  { filter = 'tonumber', input = '"42"', expected = '42' },
+  { filter = 'tonumber', input = '"3.14"', expected = '3.14' },
+]
+
+[[features]]
+category = "String functions"
+name = "split"
+tests = [
+  { filter = 'split(",")', input = '"a,b,c"', expected = '["a","b","c"]' },
+  { filter = 'split("")', input = '"abc"', expected = '["a","b","c"]' },
+]
+
+[[features]]
+category = "String functions"
+name = "join"
+tests = [
+  { filter = 'join(",")', input = '["a","b","c"]', expected = '"a,b,c"' },
+  { filter = 'join("")', input = '["x","y","z"]', expected = '"xyz"' },
+]
+
+[[features]]
+category = "String functions"
+name = "ltrimstr/rtrimstr"
+tests = [
+  { filter = 'ltrimstr("hello")', input = '"hello world"', expected = '" world"' },
+  { filter = 'rtrimstr(".txt")', input = '"readme.txt"', expected = '"readme"' },
+]
+
+[[features]]
+category = "String functions"
+name = "startswith/endswith"
+tests = [
+  { filter = 'startswith("he")', input = '"hello"', expected = 'true' },
+  { filter = 'endswith(".json")', input = '"data.json"', expected = 'true' },
+]
+
+[[features]]
+category = "String functions"
+name = "ascii_upcase/ascii_downcase"
+tests = [
+  { filter = 'ascii_upcase', input = '"Hello World"', expected = '"HELLO WORLD"' },
+  { filter = 'ascii_downcase', input = '"Hello World"', expected = '"hello world"' },
+]
+
+[[features]]
+category = "String functions"
+name = "explode/implode"
+tests = [
+  { filter = 'explode', input = '"abc"', expected = '[97,98,99]' },
+  { filter = 'implode', input = '[72,101,108,108,111]', expected = '"Hello"' },
+]
+
+[[features]]
+category = "String functions"
+name = "tojson/fromjson"
+tests = [
+  { filter = 'tojson', input = '[1,2,3]', expected = '"[1,2,3]"' },
+  { filter = 'fromjson', input = '"[1,2,3]"', expected = '[1,2,3]' },
+]
+
+[[features]]
+category = "String functions"
+name = "utf8bytelength"
+tests = [
+  { filter = 'utf8bytelength', input = '"abc"', expected = '3' },
+]
+
+[[features]]
+category = "String functions"
+name = "String interpolation"
+tests = [
+  { filter = '"name: \(.name), age: \(.age)"', input = '{"name":"alice","age":30}', expected = '"name: alice, age: 30"' },
+  { filter = '"sum: \(.a + .b)"', input = '{"a":1,"b":2}', expected = '"sum: 3"' },
+]
+
+[[features]]
+category = "String functions"
+name = "test"
+tests = [
+  { filter = 'test("^foo")', input = '"foobar"', expected = 'true' },
+  { filter = 'test("^foo")', input = '"barfoo"', expected = 'false' },
+  { filter = 'test("FOO"; "i")', input = '"foobar"', expected = 'true' },
+]
+
+[[features]]
+category = "String functions"
+name = "match"
+tests = [
+  { filter = 'match("(o+)")', input = '"foobar"', expected = '{"offset":1,"length":2,"string":"oo","captures":[{"offset":1,"length":2,"string":"oo","name":null}]}' },
+]
+
+[[features]]
+category = "String functions"
+name = "capture"
+tests = [
+  { filter = 'capture("(?<y>\\d{4})-(?<m>\\d{2})")', input = '"2024-01-15"', expected = '{"y":"2024","m":"01"}' },
+]
+
+[[features]]
+category = "String functions"
+name = "sub/gsub"
+tests = [
+  { filter = 'gsub("o"; "0")', input = '"foobar"', expected = '"f00bar"' },
+  { filter = 'sub("o"; "0")', input = '"foobar"', expected = '"f0obar"' },
+]
+
+[[features]]
+category = "String functions"
+name = "scan"
+tests = [
+  { filter = '[scan("[0-9]+")]', input = '"test 123 test 456"', expected = '["123","456"]' },
+]
+
+[[features]]
+category = "String functions"
+name = "splits"
+tests = [
+  { filter = '[splits("[,;]")]', input = '"a,b;c"', expected = '["a","b","c"]' },
+]
+
+# =============================================================================
+# Math functions
+# =============================================================================
+
+[[features]]
+category = "Math functions"
+name = "floor/ceil/round"
+tests = [
+  { filter = 'floor', input = '3.7', expected = '3' },
+  { filter = 'ceil', input = '3.2', expected = '4' },
+  { filter = 'round', input = '3.5', expected = '4' },
+]
+
+[[features]]
+category = "Math functions"
+name = "sqrt"
+tests = [
+  { filter = 'sqrt', input = '9', expected = '3' },
+]
+
+[[features]]
+category = "Math functions"
+name = "fabs"
+tests = [
+  { filter = 'fabs', input = '-5', expected = '5' },
+  { filter = 'fabs', input = '5', expected = '5' },
+]
+
+[[features]]
+category = "Math functions"
+name = "exp/exp2"
+tests = [
+  { filter = '1 | exp', input = 'null', expected = '2.718281828459045' },
+  { filter = '3 | exp2', input = 'null', expected = '8' },
+]
+
+[[features]]
+category = "Math functions"
+name = "log/log2/log10"
+tests = [
+  { filter = '100 | log10', input = 'null', expected = '2' },
+  { filter = '8 | log2', input = 'null', expected = '3' },
+]
+
+[[features]]
+category = "Math functions"
+name = "pow"
+tests = [
+  { filter = 'pow(2;10)', input = 'null', expected = '1024' },
+  { filter = 'pow(3;3)', input = 'null', expected = '27' },
+]
+
+[[features]]
+category = "Math functions"
+name = "sin/cos/tan"
+tests = [
+  { filter = '0 | cos', input = 'null', expected = '1' },
+  { filter = '0 | sin', input = 'null', expected = '0' },
+]
+
+[[features]]
+category = "Math functions"
+name = "asin/acos/atan"
+tests = [
+  { filter = '1 | acos', input = 'null', expected = '0' },
+  { filter = '0 | asin', input = 'null', expected = '0' },
+]
+
+[[features]]
+category = "Math functions"
+name = "atan2"
+tests = [
+  { filter = 'atan2(0;-1)', input = 'null', expected = '3.141592653589793' },
+]
+
+[[features]]
+category = "Math functions"
+name = "sinh/cosh/tanh"
+tests = [
+  { filter = '0 | sinh', input = 'null', expected = '0' },
+  { filter = '0 | cosh', input = 'null', expected = '1' },
+]
+
+[[features]]
+category = "Math functions"
+name = "nan/infinite"
+tests = [
+  { filter = 'nan | isnan', input = 'null', expected = 'true' },
+  { filter = 'infinite | isinfinite', input = 'null', expected = 'true' },
+]
+
+[[features]]
+category = "Math functions"
+name = "isnan/isinfinite/isfinite/isnormal"
+tests = [
+  { filter = '1 | isfinite', input = 'null', expected = 'true' },
+  { filter = '1 | isnormal', input = 'null', expected = 'true' },
+  { filter = '0 | isnan', input = 'null', expected = 'false' },
+]
+
+[[features]]
+category = "Math functions"
+name = "logb"
+tests = [
+  { filter = '8 | logb', input = 'null', expected = '3' },
+]
+
+[[features]]
+category = "Math functions"
+name = "significand"
+tests = [
+  { filter = '8 | significand', input = 'null', expected = '1' },
+  { filter = '16 | significand', input = 'null', expected = '1' },
+]
+
+[[features]]
+category = "Math functions"
+name = "nearbyint/rint"
+tests = [
+  { filter = '3.7 | nearbyint', input = 'null', expected = '4' },
+  { filter = '3.2 | rint', input = 'null', expected = '3' },
+]
+
+[[features]]
+category = "Math functions"
+name = "remainder/hypot"
+tests = [
+  { filter = 'hypot(3;4)', input = 'null', expected = '5' },
+  { filter = 'remainder(10;3)', input = 'null', expected = '1' },
+]
+
+# =============================================================================
+# Type selectors
+# =============================================================================
+
+[[features]]
+category = "Type selectors"
+name = "arrays"
+tests = [
+  { filter = '[.[] | arrays]', input = '[1,[2],{"a":3},"s",[4,5]]', expected = '[[2],[4,5]]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "objects"
+tests = [
+  { filter = '[.[] | objects]', input = '[1,[2],{"a":3},"s",{"b":4}]', expected = '[{"a":3},{"b":4}]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "numbers"
+tests = [
+  { filter = '[.[] | numbers]', input = '[1,"a",2,null,3]', expected = '[1,2,3]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "strings"
+tests = [
+  { filter = '[.[] | strings]', input = '[1,"a",2,"b",null]', expected = '["a","b"]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "booleans"
+tests = [
+  { filter = '[.[] | booleans]', input = '[1,true,"a",false,null]', expected = '[true,false]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "nulls"
+tests = [
+  { filter = '[.[] | nulls]', input = '[1,null,2,null,3]', expected = '[null,null]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "values (selector)"
+tests = [
+  { filter = '[.[] | values]', input = '[1,null,2,null,3]', expected = '[1,2,3]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "scalars"
+tests = [
+  { filter = '[.[] | scalars]', input = '[1,"a",[2],{"b":3},null,true]', expected = '[1,"a",null,true]' },
+]
+
+[[features]]
+category = "Type selectors"
+name = "iterables"
+tests = [
+  { filter = '[.[] | iterables]', input = '[1,"a",[2],{"b":3},null]', expected = '[[2],{"b":3}]' },
+]
+
+# =============================================================================
+# Format strings
+# =============================================================================
+
+[[features]]
+category = "Format strings"
+name = "@base64"
+tests = [
+  { filter = '@base64', input = '"hello"', expected = '"aGVsbG8="' },
+  { filter = '@base64d', input = '"aGVsbG8="', expected = '"hello"' },
+]
+
+[[features]]
+category = "Format strings"
+name = "@uri"
+tests = [
+  { filter = '@uri', input = '"hello world"', expected = '"hello%20world"' },
+]
+
+[[features]]
+category = "Format strings"
+name = "@csv"
+tests = [
+  { filter = '@csv', input = '["a","b","c"]', expected = '"\"a\",\"b\",\"c\""' },
+  { filter = '@csv', input = '[1,2,3]', expected = '"1,2,3"' },
+]
+
+[[features]]
+category = "Format strings"
+name = "@tsv"
+tests = [
+  { filter = '@tsv', input = '["a","b","c"]', expected = '"a\tb\tc"' },
+]
+
+[[features]]
+category = "Format strings"
+name = "@html"
+tests = [
+  { filter = '@html', input = '"<b>bold</b>"', expected = '"&lt;b&gt;bold&lt;/b&gt;"' },
+]
+
+[[features]]
+category = "Format strings"
+name = "@sh"
+tests = [
+  { filter = '@sh', input = '"hello world"', expected = "\"'hello world'\"" },
+]
+
+[[features]]
+category = "Format strings"
+name = "@json"
+tests = [
+  { filter = '@json', input = '[1,2,3]', expected = '"[1,2,3]"' },
+]
+
+[[features]]
+category = "Format strings"
+name = "@text"
+tests = [
+  { filter = '@text', input = '42', expected = '"42"' },
+]
+
+# =============================================================================
+# Date/time
+# =============================================================================
+
+[[features]]
+category = "Date/time"
+name = "todate"
+tests = [
+  { filter = '0 | todate', input = 'null', expected = '"1970-01-01T00:00:00Z"' },
+  { filter = '86400 | todate', input = 'null', expected = '"1970-01-02T00:00:00Z"' },
+]
+
+[[features]]
+category = "Date/time"
+name = "fromdate"
+tests = [
+  { filter = '"1970-01-01T00:00:00Z" | fromdate', input = 'null', expected = '0' },
+]
+
+[[features]]
+category = "Date/time"
+name = "strftime"
+tests = [
+  { filter = '0 | strftime("%Y-%m-%d")', input = 'null', expected = '"1970-01-01"' },
+  { filter = '0 | strftime("%H:%M:%S")', input = 'null', expected = '"00:00:00"' },
+]
+
+[[features]]
+category = "Date/time"
+name = "strptime"
+tests = [
+  { filter = '"2024-01-15" | strptime("%Y-%m-%d")', input = 'null', expected = '[2024,0,15,0,0,0,1,14]' },
+]
+
+[[features]]
+category = "Date/time"
+name = "gmtime/mktime"
+tests = [
+  { filter = '0 | gmtime', input = 'null', expected = '[1970,0,1,0,0,0,4,0]' },
+  { filter = '0 | gmtime | mktime', input = 'null', expected = '0' },
+]
+
+[[features]]
+category = "Date/time"
+name = "now"
+tests = [
+  { filter = 'now | . > 0', input = 'null', expected = 'true' },
+]
+
+# =============================================================================
+# Assignment operators
+# =============================================================================
+
+[[features]]
+category = "Assignment operators"
+name = "Update assignment"
+tests = [
+  { filter = '.a |= . + 1', input = '{"a":1,"b":2}', expected = '{"a":2,"b":2}' },
+  { filter = '.[] |= . * 2', input = '[1,2,3]', expected = '[2,4,6]' },
+]
+
+[[features]]
+category = "Assignment operators"
+name = "Arithmetic assignment"
+tests = [
+  { filter = '.a += 10', input = '{"a":1,"b":2}', expected = '{"a":11,"b":2}' },
+  { filter = '.a -= 1', input = '{"a":5}', expected = '{"a":4}' },
+]
+
+[[features]]
+category = "Assignment operators"
+name = "Alternative assignment"
+tests = [
+  { filter = '.a //= "default"', input = '{"a":null,"b":2}', expected = '{"a":"default","b":2}' },
+  { filter = '.a //= "default"', input = '{"a":1,"b":2}', expected = '{"a":1,"b":2}' },
+]
+
+[[features]]
+category = "Assignment operators"
+name = "Plain assignment"
+tests = [
+  { filter = '.a = 42', input = '{"a":1,"b":2}', expected = '{"a":42,"b":2}' },
+  { filter = '.c = "new"', input = '{"a":1}', expected = '{"a":1,"c":"new"}' },
+]
+
+# =============================================================================
+# I/O and environment
+# =============================================================================
+
+[[features]]
+category = "I/O and environment"
+name = "env"
+tests = [
+  { filter = 'env.HOME | length > 0', input = 'null', expected = 'true' },
+  { filter = '$ENV.HOME | length > 0', input = 'null', expected = 'true' },
+]
+
+[[features]]
+category = "I/O and environment"
+name = "debug"
+tests = [
+  { filter = '42 | debug | . + 1', input = 'null', expected = '43' },
+]
+
+[[features]]
+category = "I/O and environment"
+name = "builtins"
+tests = [
+  { filter = 'builtins | length > 0', input = 'null', expected = 'true' },
+  { filter = '[builtins[] | select(startswith("length"))] | length > 0', input = 'null', expected = 'true' },
+]
+
+[[features]]
+category = "I/O and environment"
+name = "input/inputs"
+tests = [
+  { filter = '[inputs]', input = "1\n2\n3", flags = '-cn --', expected = '[1,2,3]' },
+]
+
+# =============================================================================
+# SQL-style operators
+# =============================================================================
+
+[[features]]
+category = "SQL-style operators"
+name = "IN"
+tests = [
+  { filter = '3 | IN(1, 2, 3)', input = 'null', expected = 'true' },
+  { filter = '5 | IN(1, 2, 3)', input = 'null', expected = 'false' },
+]
+
+[[features]]
+category = "SQL-style operators"
+name = "IN (stream form)"
+tests = [
+  { filter = '[.[] | select(IN(1, 3, 5))]', input = '[1,2,3,4,5]', expected = '[1,3,5]' },
+]
+
+[[features]]
+category = "SQL-style operators"
+name = "INDEX"
+tests = [
+  { filter = 'INDEX(.[]; .name)', input = '[{"name":"a","v":1},{"name":"b","v":2}]', expected = '{"a":{"name":"a","v":1},"b":{"name":"b","v":2}}' },
+]
+
+[[features]]
+category = "SQL-style operators"
+name = "GROUP_BY"
+tests = [
+  { filter = '[group_by(.a)[] | {key: .[0].a, count: length}]', input = '[{"a":1,"b":"x"},{"a":2,"b":"y"},{"a":1,"b":"z"}]', expected = '[{"key":1,"count":2},{"key":2,"count":1}]' },
+]
+
+# =============================================================================
+# CLI flags
+# =============================================================================
+
+[[features]]
+category = "CLI flags"
+name = "Compact output"
+tests = [
+  { filter = '.', input = '{"a":1,"b":2}', flags = '-c', expected = '{"a":1,"b":2}' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Raw output"
+tests = [
+  { filter = '.name', input = '{"name":"hello"}', flags = '-r', expected = 'hello' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Null input"
+tests = [
+  { filter = '{a:1, b:2}', input = 'null', flags = '-cn --', expected = '{"a":1,"b":2}' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Exit status"
+tests = [
+  { filter = 'select(. > 0)', input = '3', flags = '-e -c --', expected = '3' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Tab indentation"
+tests = [
+  { filter = '. + 1', input = '1', flags = '--tab --', expected = '2' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Indent"
+tests = [
+  { filter = '. + 1', input = '1', flags = '--indent 4 --', expected = '2' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Slurp"
+tests = [
+  { filter = '.', input = "[1]\n[2]\n[3]", flags = '-cs --', expected = '[[1],[2],[3]]' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Sort keys"
+tests = [
+  { filter = '.', input = '{"b":2,"a":1}', flags = '-Sc --', expected = '{"a":1,"b":2}' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Raw input"
+tests = [
+  { filter = '.', input = 'hello', flags = '-Rc --', expected = '"hello"' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Join output"
+tests = [
+  { filter = '.name', input = '{"name":"hello"}', flags = '-rj --', expected = 'hello' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "--arg"
+tests = [
+  { filter = '{name: $name}', input = 'null', flags = '-c --arg name alice', expected = '{"name":"alice"}' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "--argjson"
+tests = [
+  { filter = '{val: $n}', input = 'null', flags = '-c --argjson n 42', expected = '{"val":42}' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "Monochrome output"
+tests = [
+  { filter = '.', input = '{"a":1}', flags = '-Mc --', expected = '{"a":1}' },
+]
+
+[[features]]
+category = "CLI flags"
+name = "--jsonl"
+tests = [
+  { filter = '.x', input = '{"x":1}', flags = '--jsonl -c --', expected = '1' },
+]

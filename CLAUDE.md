@@ -44,11 +44,11 @@ Run `cargo test` after any code change — it's fast.
   bash tests/jq_compat/update_test_suite.sh          # uses version from mise.toml
   bash tests/jq_compat/update_test_suite.sh 1.9.0    # upgrade to new version
   ```
-- **Feature compatibility suite:** `tests/jq_compat/features.test` — 2-3 tests per jq feature,
-  covering all categories. Runner produces per-feature Y/~/N matrix across jx, jq, jaq, gojq.
+- **Feature compatibility suite:** `tests/jq_compat/features.toml` — TOML-defined tests
+  (2-3 per feature), runner produces per-feature Y/~/N matrix across jx, jq, jaq, gojq.
   ```
-  bash tests/jq_compat/run_features.sh           # summary + feature table
-  bash tests/jq_compat/run_features.sh -v         # show failures
+  cargo test feature_compat -- --nocapture              # summary + feature table
+  cargo test feature_compat_verbose -- --nocapture --ignored  # show failures
   ```
 - **When adding new jq builtins or language features**, always:
   1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
