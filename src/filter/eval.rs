@@ -565,8 +565,13 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<
         },
         ArithOp::Div => match (left, right) {
             (Value::Int(a), Value::Int(b)) if *b != 0 => {
-                if a % b == 0 {
-                    Some(Value::Int(a / b))
+                // i64::MIN / -1 overflows (panics in debug, wraps in release)
+                if let Some(q) = a.checked_div(*b) {
+                    if a % b == 0 {
+                        Some(Value::Int(q))
+                    } else {
+                        Some(Value::Double(*a as f64 / *b as f64, None))
+                    }
                 } else {
                     Some(Value::Double(*a as f64 / *b as f64, None))
                 }
@@ -584,7 +589,10 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<
             _ => None,
         },
         ArithOp::Mod => match (left, right) {
-            (Value::Int(a), Value::Int(b)) if *b != 0 => Some(Value::Int(a % b)),
+            // i64::MIN % -1 can panic in debug mode; mathematically it's 0
+            (Value::Int(a), Value::Int(b)) if *b != 0 => {
+                Some(Value::Int(a.checked_rem(*b).unwrap_or(0)))
+            }
             (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a % b, None)),
             (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 % b, None)),
             (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a % *b as f64, None)),
@@ -2092,5 +2100,66 @@ mod tests {
 
         let f = parse("-.");
         assert_eq!(eval_one(&f, &Value::Int(-42)), Value::Int(42));
+    }
+
+    #[test]
+    fn overflow_div_i64_min_by_neg1() {
+        // i64::MIN / -1 = i64::MAX + 1, overflows → promote to f64
+        let f = parse(". / -1");
+        let result = eval_one(&f, &Value::Int(i64::MIN));
+        match result {
+            Value::Double(v, _) => assert!(v > 0.0, "should be positive: {v}"),
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overflow_mod_i64_min_by_neg1() {
+        // i64::MIN % -1 is mathematically 0, must not panic
+        let f = parse(". % -1");
+        assert_eq!(eval_one(&f, &Value::Int(i64::MIN)), Value::Int(0));
+    }
+
+    #[test]
+    fn abs_i64_min_promotes_to_double() {
+        // |i64::MIN| > i64::MAX, so abs must promote to f64
+        let f = parse("abs");
+        let result = eval_one(&f, &Value::Int(i64::MIN));
+        match result {
+            Value::Double(v, _) => assert!(v > 0.0),
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn length_i64_min_promotes_to_double() {
+        // length on negative int = abs, same overflow
+        let f = parse("length");
+        let result = eval_one(&f, &Value::Int(i64::MIN));
+        match result {
+            Value::Double(v, _) => assert!(v > 0.0),
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn floor_large_double_stays_double() {
+        // 2^63 as f64 should stay Double, not saturate to i64::MAX
+        let f = parse("floor");
+        let result = eval_one(&f, &Value::Double(9223372036854775808.0, None));
+        match result {
+            Value::Double(v, _) => assert_eq!(v, 9223372036854775808.0),
+            other => panic!("expected Double for 2^63, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn div_normal_stays_int() {
+        assert_eq!(eval_one(&parse(". / 2"), &Value::Int(10)), Value::Int(5));
+    }
+
+    #[test]
+    fn mod_normal() {
+        assert_eq!(eval_one(&parse(". % 3"), &Value::Int(10)), Value::Int(1));
     }
 }

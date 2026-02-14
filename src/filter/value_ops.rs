@@ -26,7 +26,9 @@ pub(super) fn input_as_f64(v: &Value) -> Option<f64> {
 }
 
 pub(super) fn f64_to_value(f: f64) -> Value {
-    if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+    // Use strict < for upper bound: i64::MAX as f64 rounds up to 2^63 which
+    // doesn't fit in i64, so `f as i64` would saturate to i64::MAX.
+    if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 {
         Value::Int(f as i64)
     } else {
         Value::Double(f, None)
@@ -470,5 +472,27 @@ mod tests {
             result,
             Value::Array(Rc::new(vec![Value::Int(10), Value::Int(30)]))
         );
+    }
+
+    #[test]
+    fn f64_to_value_at_i64_max_boundary() {
+        // 2^63 = 9223372036854775808.0 is above i64::MAX → must stay Double
+        let v = f64_to_value(9223372036854775808.0);
+        assert!(
+            matches!(v, Value::Double(..)),
+            "2^63 should be Double, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn f64_to_value_normal_int() {
+        assert_eq!(f64_to_value(42.0), Value::Int(42));
+        assert_eq!(f64_to_value(-1.0), Value::Int(-1));
+    }
+
+    #[test]
+    fn f64_to_value_i64_min() {
+        // -2^63 is exactly representable and fits in i64
+        assert_eq!(f64_to_value(i64::MIN as f64), Value::Int(i64::MIN));
     }
 }

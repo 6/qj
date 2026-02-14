@@ -23,7 +23,10 @@ pub(super) fn eval_builtin(
             Value::Array(a) => output(Value::Int(a.len() as i64)),
             Value::Object(o) => output(Value::Int(o.len() as i64)),
             Value::Null => output(Value::Int(0)),
-            Value::Int(n) => output(Value::Int(n.abs())),
+            Value::Int(n) => output(
+                n.checked_abs()
+                    .map_or_else(|| Value::Double((*n as f64).abs(), None), Value::Int),
+            ),
             Value::Double(f, _) => output(Value::Double(f.abs(), None)),
             Value::Bool(_) => output(Value::Null),
         },
@@ -893,7 +896,10 @@ pub(super) fn eval_builtin(
             }
         }
         "abs" => match input {
-            Value::Int(n) => output(Value::Int(n.abs())),
+            Value::Int(n) => output(
+                n.checked_abs()
+                    .map_or_else(|| Value::Double((*n as f64).abs(), None), Value::Int),
+            ),
             Value::Double(f, _) => output(Value::Double(f.abs(), None)),
             _ => output(input.clone()),
         },
