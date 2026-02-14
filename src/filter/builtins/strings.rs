@@ -2,8 +2,12 @@ use crate::filter::{Env, Filter};
 use crate::value::Value;
 use std::rc::Rc;
 
-use super::super::eval::eval;
+use super::super::eval::{LAST_ERROR, eval};
 use super::super::value_ops::values_equal;
+
+fn set_error(msg: String) {
+    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+}
 
 pub(super) fn eval_strings(
     name: &str,
@@ -41,12 +45,24 @@ pub(super) fn eval_strings(
                 output(Value::String(
                     s.chars().map(|c| c.to_ascii_lowercase()).collect(),
                 ));
+            } else if !matches!(input, Value::Null) {
+                set_error(format!(
+                    "{} ({}) cannot be ascii_downcased",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "ascii_upcase" => {
             if let Value::String(s) = input {
                 output(Value::String(
                     s.chars().map(|c| c.to_ascii_uppercase()).collect(),
+                ));
+            } else if !matches!(input, Value::Null) {
+                set_error(format!(
+                    "{} ({}) cannot be ascii_upcased",
+                    input.type_name(),
+                    input.short_desc()
                 ));
             }
         }
@@ -61,6 +77,12 @@ pub(super) fn eval_strings(
                 } else {
                     output(input.clone());
                 }
+            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
+                set_error(format!(
+                    "{} ({}) and string cannot have their strings trimmed",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "rtrimstr" => {
@@ -74,6 +96,12 @@ pub(super) fn eval_strings(
                 } else {
                     output(input.clone());
                 }
+            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
+                set_error(format!(
+                    "{} ({}) and string cannot have their strings trimmed",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "startswith" => {
@@ -83,6 +111,8 @@ pub(super) fn eval_strings(
                 if let Value::String(p) = prefix {
                     output(Value::Bool(s.starts_with(p.as_str())));
                 }
+            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
+                set_error("startswith() requires string inputs".to_string());
             }
         }
         "endswith" => {
@@ -92,6 +122,8 @@ pub(super) fn eval_strings(
                 if let Value::String(p) = suffix {
                     output(Value::Bool(s.ends_with(p.as_str())));
                 }
+            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
+                set_error("endswith() requires string inputs".to_string());
             }
         }
         "split" => {
@@ -108,41 +140,65 @@ pub(super) fn eval_strings(
                     };
                     output(Value::Array(Rc::new(parts)));
                 }
+            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
+                set_error(format!(
+                    "{} ({}) cannot be split",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "join" => {
             if let (Value::Array(arr), Some(arg)) = (input, args.first()) {
-                let mut sep = Value::Null;
-                eval(arg, input, env, &mut |v| sep = v);
-                if let Value::String(p) = sep {
-                    let strs: Vec<String> = arr
-                        .iter()
-                        .filter_map(|v| match v {
-                            Value::String(s) => Some(s.clone()),
-                            Value::Int(n) => Some(itoa::Buffer::new().format(*n).into()),
-                            Value::Double(f, _) => Some(ryu::Buffer::new().format(*f).into()),
-                            Value::Null => Some(String::new()),
-                            Value::Bool(b) => Some(if *b { "true" } else { "false" }.into()),
-                            _ => None,
-                        })
-                        .collect();
-                    output(Value::String(strs.join(&p)));
-                }
+                eval(arg, input, env, &mut |sep| {
+                    if let Value::String(p) = sep {
+                        let strs: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| match v {
+                                Value::String(s) => Some(s.clone()),
+                                Value::Int(n) => Some(itoa::Buffer::new().format(*n).into()),
+                                Value::Double(f, _) => Some(ryu::Buffer::new().format(*f).into()),
+                                Value::Null => Some(String::new()),
+                                Value::Bool(b) => Some(if *b { "true" } else { "false" }.into()),
+                                _ => None,
+                            })
+                            .collect();
+                        output(Value::String(strs.join(&p)));
+                    }
+                });
             }
         }
         "trim" => {
             if let Value::String(s) = input {
                 output(Value::String(s.trim().to_string()));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be trimmed",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "ltrim" => {
             if let Value::String(s) = input {
                 output(Value::String(s.trim_start().to_string()));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be trimmed",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "rtrim" => {
             if let Value::String(s) = input {
                 output(Value::String(s.trim_end().to_string()));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be trimmed",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "index" => {
@@ -225,6 +281,12 @@ pub(super) fn eval_strings(
             if let Value::String(s) = input {
                 let codepoints: Vec<Value> = s.chars().map(|c| Value::Int(c as i64)).collect();
                 output(Value::Array(Rc::new(codepoints)));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be exploded",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "implode" => {
@@ -255,6 +317,12 @@ pub(super) fn eval_strings(
         "utf8bytelength" => {
             if let Value::String(s) = input {
                 output(Value::Int(s.len() as i64));
+            } else {
+                set_error(format!(
+                    "{} ({}) has no utf8bytelength",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "ascii" => {

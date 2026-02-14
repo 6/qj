@@ -197,6 +197,7 @@ fn main() -> Result<()> {
             io::stdin()
                 .read_to_end(&mut buf)
                 .context("failed to read stdin")?;
+            jx::strip_bom(&mut buf);
             collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
         } else {
             for path in &cli.files {
@@ -213,6 +214,7 @@ fn main() -> Result<()> {
         io::stdin()
             .read_to_end(&mut buf)
             .context("failed to read stdin")?;
+        jx::strip_bom(&mut buf);
         if cli.jsonl || jx::parallel::ndjson::is_ndjson(&buf) {
             let (output, ho) = jx::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
                 .context("failed to process NDJSON from stdin")?;

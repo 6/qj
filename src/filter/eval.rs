@@ -44,7 +44,16 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                 }
                 output(Value::Null);
             }
-            _ => output(Value::Null),
+            Value::Null => output(Value::Null),
+            _ => {
+                LAST_ERROR.with(|e| {
+                    *e.borrow_mut() = Some(Value::String(format!(
+                        "Cannot index {} with string \"{}\"",
+                        input.type_name(),
+                        name
+                    )));
+                });
+            }
         },
 
         Filter::Index(idx_filter) => {
@@ -68,7 +77,20 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     output(Value::Null);
                 }
                 (Value::Null, _) => output(Value::Null),
-                _ => {}
+                _ => {
+                    LAST_ERROR.with(|e| {
+                        let idx_desc = match &idx {
+                            Value::String(s) => format!("string \"{}\"", s),
+                            Value::Int(n) => format!("number {}", n),
+                            _ => idx.type_name().to_string(),
+                        };
+                        *e.borrow_mut() = Some(Value::String(format!(
+                            "Cannot index {} with {}",
+                            input.type_name(),
+                            idx_desc
+                        )));
+                    });
+                }
             });
         }
 
@@ -89,8 +111,20 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     output(v.clone());
                 }
             }
-            Value::Null => {}
-            _ => {}
+            Value::Null => {
+                LAST_ERROR.with(|e| {
+                    *e.borrow_mut() = Some(Value::String("null is not iterable".to_string()));
+                });
+            }
+            _ => {
+                LAST_ERROR.with(|e| {
+                    *e.borrow_mut() = Some(Value::String(format!(
+                        "{} ({}) is not iterable",
+                        input.type_name(),
+                        input.short_desc()
+                    )));
+                });
+            }
         },
 
         Filter::Select(cond) => {
@@ -152,7 +186,12 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             eval(expr, input, env, &mut |v| {
                 arr.push(v);
             });
-            output(Value::Array(Rc::new(arr)));
+            // If an error occurred during collection, don't produce the array
+            // (let the error propagate to try/catch)
+            let has_error = LAST_ERROR.with(|e| e.borrow().is_some());
+            if !has_error {
+                output(Value::Array(Rc::new(arr)));
+            }
         }
 
         Filter::Literal(val) => output(val.clone()),
@@ -168,11 +207,19 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
 
         Filter::Arith(left, op, right) => {
             eval(left, input, env, &mut |lval| {
-                eval(right, input, env, &mut |rval| {
-                    if let Some(result) = arith_values(&lval, op, &rval) {
-                        output(result);
-                    }
-                });
+                eval(
+                    right,
+                    input,
+                    env,
+                    &mut |rval| match arith_values(&lval, op, &rval) {
+                        Ok(result) => output(result),
+                        Err(msg) => {
+                            LAST_ERROR.with(|e| {
+                                *e.borrow_mut() = Some(Value::String(msg));
+                            });
+                        }
+                    },
+                );
             });
         }
 
@@ -255,23 +302,44 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         }
 
         Filter::Try(inner) => {
-            // Try: suppress errors, just produce no output on failure.
+            // Try: suppress body errors but preserve downstream errors.
+            // Downstream errors occur inside the output callback (after body
+            // successfully produces a value), so we capture them separately.
             LAST_ERROR.with(|e| e.borrow_mut().take());
-            eval(inner, input, env, output);
+            let mut downstream_error: Option<Value> = None;
+            eval(inner, input, env, &mut |v| {
+                // Body produced a value — clear any partial body error
+                LAST_ERROR.with(|e| e.borrow_mut().take());
+                output(v);
+                // Capture error set by downstream processing
+                if let Some(err) = LAST_ERROR.with(|e| e.borrow_mut().take()) {
+                    downstream_error = Some(err);
+                }
+            });
+            // Suppress remaining body error
             LAST_ERROR.with(|e| e.borrow_mut().take());
+            // Restore downstream error
+            if let Some(err) = downstream_error {
+                LAST_ERROR.with(|e| *e.borrow_mut() = Some(err));
+            }
         }
 
         Filter::TryCatch(body, handler) => {
             LAST_ERROR.with(|e| e.borrow_mut().take());
-            let mut had_output = false;
+            let mut downstream_error: Option<Value> = None;
             eval(body, input, env, &mut |v| {
-                had_output = true;
+                LAST_ERROR.with(|e| e.borrow_mut().take());
                 output(v);
+                if let Some(err) = LAST_ERROR.with(|e| e.borrow_mut().take()) {
+                    downstream_error = Some(err);
+                }
             });
-            if !had_output {
-                let err_val = LAST_ERROR.with(|e| e.borrow_mut().take());
-                let catch_input = err_val.unwrap_or_else(|| input.clone());
-                eval(handler, &catch_input, env, output);
+            if let Some(err_val) = LAST_ERROR.with(|e| e.borrow_mut().take()) {
+                eval(handler, &err_val, env, output);
+            }
+            // Restore downstream error
+            if let Some(err) = downstream_error {
+                LAST_ERROR.with(|e| *e.borrow_mut() = Some(err));
             }
         }
 
@@ -306,7 +374,15 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         .map_or_else(|| Value::Double(-(n as f64), None), Value::Int),
                 ),
                 Value::Double(f, _) => output(Value::Double(-f, None)),
-                _ => {}
+                _ => {
+                    LAST_ERROR.with(|e| {
+                        *e.borrow_mut() = Some(Value::String(format!(
+                            "{} ({}) cannot be negated",
+                            v.type_name(),
+                            v.short_desc()
+                        )));
+                    });
+                }
             });
         }
 
@@ -539,7 +615,14 @@ fn eval_assign(
                 let mut result = None;
                 eval(rhs, current, env, &mut |rhs_val| {
                     if result.is_none() {
-                        result = arith_values(current, &arith_op, &rhs_val);
+                        match arith_values(current, &arith_op, &rhs_val) {
+                            Ok(v) => result = Some(v),
+                            Err(msg) => {
+                                LAST_ERROR.with(|e| {
+                                    *e.borrow_mut() = Some(Value::String(msg));
+                                });
+                            }
+                        }
                     }
                 });
                 result
@@ -1548,7 +1631,7 @@ mod tests {
         let b = Value::Array(Rc::new(vec![Value::Int(2)]));
         assert_eq!(
             arith_values(&a, &ArithOp::Sub, &b),
-            Some(Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])))
+            Ok(Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])))
         );
     }
 
@@ -1575,7 +1658,7 @@ mod tests {
     fn eval_float_modulo() {
         let result = arith_values(&Value::Double(10.5, None), &ArithOp::Mod, &Value::Int(3));
         match result {
-            Some(Value::Double(f, _)) => assert!((f - 1.5).abs() < 1e-10),
+            Ok(Value::Double(f, _)) => assert!((f - 1.5).abs() < 1e-10),
             other => panic!("expected Double(1.5), got {other:?}"),
         }
     }
@@ -1585,7 +1668,7 @@ mod tests {
         // 1 / 3 should produce a float, not truncate to 0
         let result = arith_values(&Value::Int(1), &ArithOp::Div, &Value::Int(3));
         match result {
-            Some(Value::Double(f, _)) => assert!((f - 1.0 / 3.0).abs() < 1e-10),
+            Ok(Value::Double(f, _)) => assert!((f - 1.0 / 3.0).abs() < 1e-10),
             other => panic!("expected Double(0.333...), got {other:?}"),
         }
     }
@@ -1595,7 +1678,7 @@ mod tests {
         // 6 / 3 should produce Int(2), not Double
         assert_eq!(
             arith_values(&Value::Int(6), &ArithOp::Div, &Value::Int(3)),
-            Some(Value::Int(2))
+            Ok(Value::Int(2))
         );
     }
 
@@ -2322,32 +2405,46 @@ mod tests {
     // --- Division / modulo by zero ---
 
     #[test]
-    fn int_div_by_zero_no_output() {
+    fn int_div_by_zero_error() {
+        // Division by zero produces an error (no output, sets LAST_ERROR)
         assert!(eval_all(&parse("1 / 0"), &Value::Null).is_empty());
     }
 
     #[test]
-    fn int_mod_by_zero_no_output() {
+    fn int_mod_by_zero_error() {
         assert!(eval_all(&parse("1 % 0"), &Value::Null).is_empty());
     }
 
     #[test]
-    fn float_div_by_zero_infinity() {
-        // 1.0 / 0.0 = infinity, which outputs as null
-        let result = eval_one(&parse("1.0 / 0.0"), &Value::Null);
-        match result {
-            Value::Double(v, _) => assert!(v.is_infinite()),
-            other => panic!("expected infinite Double, got {other:?}"),
+    fn float_div_by_zero_error() {
+        // 1.0 / 0.0 now produces a catchable error, not Infinity
+        assert!(eval_all(&parse("1.0 / 0.0"), &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn float_zero_div_zero_error() {
+        // 0.0 / 0.0 now produces a catchable error, not NaN
+        assert!(eval_all(&parse("0.0 / 0.0"), &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn div_by_zero_catchable() {
+        // Division by zero error is catchable with try-catch
+        let result = eval_all(&parse("try (1/0) catch ."), &Value::Null);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Value::String(s) => assert!(s.contains("cannot be divided"), "got: {s}"),
+            other => panic!("expected error string, got {other:?}"),
         }
     }
 
     #[test]
-    fn float_zero_div_zero_nan() {
-        // 0.0 / 0.0 = NaN
-        let result = eval_one(&parse("0.0 / 0.0"), &Value::Null);
-        match result {
-            Value::Double(v, _) => assert!(v.is_nan()),
-            other => panic!("expected NaN Double, got {other:?}"),
+    fn mod_by_zero_catchable() {
+        let result = eval_all(&parse("try (1%0) catch ."), &Value::Null);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Value::String(s) => assert!(s.contains("remainder"), "got: {s}"),
+            other => panic!("expected error string, got {other:?}"),
         }
     }
 
@@ -2889,7 +2986,10 @@ mod tests {
 
     #[test]
     fn field_on_wrong_type() {
-        assert_eq!(eval_one(&parse(".x"), &Value::Int(5)), Value::Null);
+        // .x on a number produces an error (no output), matching jq
+        let mut results = Vec::new();
+        eval_filter(&parse(".x"), &Value::Int(5), &mut |v| results.push(v));
+        assert!(results.is_empty(), "expected no output, got {:?}", results);
     }
 
     // --- Explode/implode roundtrip ---

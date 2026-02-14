@@ -150,10 +150,10 @@ fn jq_conformance() {
     println!("  errored: {errored}");
 
     // Regression gate: conformance must not drop below this threshold.
-    // Current baseline: 298/497 (60%). Set 3 below for small tolerance.
+    // Current baseline: 323/497 (65%). Set 3 below for small tolerance.
     assert!(
-        passed >= 295,
-        "jq conformance regression: {passed}/497 (was >= 295)"
+        passed >= 320,
+        "jq conformance regression: {passed}/497 (was >= 320)"
     );
 }
 

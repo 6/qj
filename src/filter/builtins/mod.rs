@@ -37,8 +37,8 @@ pub(super) fn eval_builtin(
         "keys" | "keys_unsorted" | "values" | "map" | "select" | "add" | "any" | "all" | "sort"
         | "sort_by" | "group_by" | "unique" | "unique_by" | "flatten" | "first" | "last"
         | "reverse" | "min" | "max" | "min_by" | "max_by" | "del" | "transpose" | "map_values"
-        | "limit" | "until" | "while" | "repeat" | "isempty" | "nth" | "recurse" | "walk"
-        | "bsearch" | "IN" | "with_entries" | "combinations" => {
+        | "limit" | "skip" | "until" | "while" | "repeat" | "isempty" | "nth" | "recurse"
+        | "walk" | "bsearch" | "IN" | "with_entries" | "combinations" => {
             arrays::eval_arrays(name, args, input, env, output)
         }
 

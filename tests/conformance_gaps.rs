@@ -1,4 +1,4 @@
-/// Conformance gap tests — 199 jq.test cases that jx currently fails.
+/// Conformance gap tests — 174 jq.test cases that jx currently fails.
 ///
 /// Auto-generated from jq.test failure analysis. Each test documents
 /// a specific gap with category and fix suggestion. Run individual tests
@@ -39,20 +39,6 @@ fn assert_gap(filter: &str, input: &str, expected: &[&str]) {
         expected,
         actual
     );
-}
-
-// ======================================================================
-// Category: BOM (byte order mark) handling
-// 1 test(s)
-//
-// Fix: Strip UTF-8 BOM (0xEF 0xBB 0xBF) from input before parsing in src/main.rs and simdjson bridge.
-// ======================================================================
-
-/// jq.test line 48: `.`
-#[test]
-#[ignore]
-fn gap_bom_handling_line48_() {
-    assert_gap(".", "\u{feff}\"byte order mark\"", &["\"byte order mark\""]);
 }
 
 // ======================================================================
@@ -129,7 +115,7 @@ fn gap_object_shorthand_line122_a_b_a_1_1() {
 
 // ======================================================================
 // Category: Try-catch edge cases
-// 7 test(s)
+// 2 test(s)
 //
 // Fix: Fix try-catch to properly catch errors from sub-expressions. Ensure error messages match jq format. Handle `try (expr) catch handler` where expr produces multiple outputs or errors mid-stream.
 // ======================================================================
@@ -155,61 +141,6 @@ fn gap_try_catch_line205_try_ok_error_catch_ko() {
         "try [\"OK\", (.[] | error)] catch [\"KO\", .]",
         "{\"a\":[\"b\"],\"c\":[\"d\"]}",
         &["[\"KO\",[\"b\"]]"],
-    );
-}
-
-/// jq.test line 1431: `[.[]|try if . == 0 then error("foo") elif . == 1 then .a elif . == 2 then empty ...`
-#[test]
-#[ignore]
-fn gap_try_catch_line1431_try_if_0_then_error_foo_eli() {
-    assert_gap(
-        "[.[]|try if . == 0 then error(\"foo\") elif . == 1 then .a elif . == 2 then empty else . end catch .]",
-        "[0,1,2,3]",
-        &["[\"foo\",\"Cannot index number with string \\\"a\\\"\",3]"],
-    );
-}
-
-/// jq.test line 1464: `try -.? catch .`
-#[test]
-#[ignore]
-fn gap_try_catch_line1464_try_catch() {
-    assert_gap(
-        "try -.? catch .",
-        "\"foo\"",
-        &["\"string (\\\"foo\\\") cannot be negated\""],
-    );
-}
-
-/// jq.test line 1959: `try -. catch .`
-#[test]
-#[ignore]
-fn gap_try_catch_line1959_try_catch() {
-    assert_gap(
-        "try -. catch .",
-        "\"very-long-string\"",
-        &["\"string (\\\"very-long-...) cannot be negated\""],
-    );
-}
-
-/// jq.test line 1963: `try (.-.) catch .`
-#[test]
-#[ignore]
-fn gap_try_catch_line1963_try_catch() {
-    assert_gap(
-        "try (.-.) catch .",
-        "\"very-long-string\"",
-        &["\"string (\\\"very-long-...) and string (\\\"very-long-...) cannot be subtracted\""],
-    );
-}
-
-/// jq.test line 2312: `try (["hi","ho"]|.[]|(try . catch (if .=="ho" then "BROKEN"|error else empty end...`
-#[test]
-#[ignore]
-fn gap_try_catch_line2312_try_hi_ho_try_catch_if() {
-    assert_gap(
-        "try ([\"hi\",\"ho\"]|.[]|(try . catch (if .==\"ho\" then \"BROKEN\"|error else empty end)) | if .==\"ho\" then error else \"\\(.) there!\" end) catch \"caught outside \\(.)\"",
-        "null",
-        &["\"hi there!\"", "\"caught outside ho\""],
     );
 }
 
@@ -317,46 +248,10 @@ fn gap_foreach_line2496_foreach_as_x_0_1_x() {
 
 // ======================================================================
 // Category: Advanced generator builtins: limit, skip, nth with multiple args
-// 7 test(s)
+// 1 test(s)
 //
 // Fix: Implement multi-arg variants of limit/skip/nth. `limit(n; expr)` already works; add `limit(n,m; expr)` producing limit-n then limit-m. Same for skip and nth.
 // ======================================================================
-
-/// jq.test line 373: `try limit(-1; error) catch .`
-#[test]
-#[ignore]
-fn gap_advanced_generators_line373_try_limit_1_error_catch() {
-    assert_gap(
-        "try limit(-1; error) catch .",
-        "null",
-        &["\"limit doesn't support negative count\""],
-    );
-}
-
-/// jq.test line 377: `[skip(3; .[])]`
-#[test]
-#[ignore]
-fn gap_advanced_generators_line377_skip_3() {
-    assert_gap("[skip(3; .[])]", "[1,2,3,4,5,6,7,8,9]", &["[4,5,6,7,8,9]"]);
-}
-
-/// jq.test line 381: `[skip(0,2,3,4; .[])]`
-#[test]
-#[ignore]
-fn gap_advanced_generators_line381_skip_0_2_3_4() {
-    assert_gap("[skip(0,2,3,4; .[])]", "[1,2,3]", &["[1,2,3,3]"]);
-}
-
-/// jq.test line 389: `try skip(-1; error) catch .`
-#[test]
-#[ignore]
-fn gap_advanced_generators_line389_try_skip_1_error_catch() {
-    assert_gap(
-        "try skip(-1; error) catch .",
-        "null",
-        &["\"skip doesn't support negative count\""],
-    );
-}
 
 /// jq.test line 405: `[nth(0,5,9,10,15; range(.)), try nth(-1; range(.)) catch .]`
 #[test]
@@ -367,24 +262,6 @@ fn gap_advanced_generators_line405_nth_0_5_9_10_15_range_try_nth() {
         "10",
         &["[0,5,9,\"nth doesn't support negative indices\"]"],
     );
-}
-
-/// jq.test line 420: `[limit(5,7; range(9))]`
-#[test]
-#[ignore]
-fn gap_advanced_generators_line420_limit_5_7_range_9() {
-    assert_gap(
-        "[limit(5,7; range(9))]",
-        "null",
-        &["[0,1,2,3,4,0,1,2,3,4,5,6]"],
-    );
-}
-
-/// jq.test line 425: `[nth(5,7; range(9;0;-1))]`
-#[test]
-#[ignore]
-fn gap_advanced_generators_line425_nth_5_7_range_9_0_1() {
-    assert_gap("[nth(5,7; range(9;0;-1))]", "null", &["[4,2]"]);
 }
 
 // ======================================================================
@@ -1026,21 +903,10 @@ fn gap_def_advanced_line1285_try_def_x_reverse_x_10_catch() {
 
 // ======================================================================
 // Category: String operation edge cases: join, trimstr, trim, implode/explode, string*number
-// 11 test(s)
+// 10 test(s)
 //
 // Fix: Fix join to produce errors on non-string elements. Fix trimstr to only trim prefixes/suffixes (not substrings). Fix implode/explode for edge cases. String multiplication: handle negative/float multipliers and error on too-large values.
 // ======================================================================
-
-/// jq.test line 445: `join(",","/")`
-#[test]
-#[ignore]
-fn gap_string_ops_line445_join() {
-    assert_gap(
-        "join(\",\",\"/\")",
-        "[\"a\",\"b\",\"c\",\"d\"]",
-        &["\"a,b,c,d\"", "\"a/b/c/d\""],
-    );
-}
 
 /// jq.test line 1511: `[.[]|trimstr("foo")]`
 #[test]
@@ -1210,7 +1076,7 @@ fn gap_string_index_line2110_index() {
 
 // ======================================================================
 // Category: Float index and slice edge cases
-// 5 test(s)
+// 4 test(s)
 //
 // Fix: Handle float indices by truncating to integer (jq behavior): .[1.5] -> .[1]. Float slices: .[1.2:3.5] -> .[1:3]. Error on NaN index.
 // ======================================================================
@@ -1241,17 +1107,6 @@ fn gap_float_index_line2401_range_10_1_7_3_5() {
 #[ignore]
 fn gap_float_index_line2413_range_10_1_1_1_5_1_7() {
     assert_gap("[[range(10)] | .[1.1,1.5,1.7]]", "null", &["[1,1,1]"]);
-}
-
-/// jq.test line 2445: `try ("foobar" | .[1.5]) catch .`
-#[test]
-#[ignore]
-fn gap_float_index_line2445_try_foobar_1_5_catch() {
-    assert_gap(
-        "try (\"foobar\" | .[1.5]) catch .",
-        "null",
-        &["\"Cannot index string with number\""],
-    );
 }
 
 // ======================================================================
@@ -1291,21 +1146,10 @@ fn gap_sort_group_edge_cases_line1655_min_max_min_by_1_max_by_1_m() {
 
 // ======================================================================
 // Category: Flatten with multiple depth args / negative depth
-// 2 test(s)
+// 1 test(s)
 //
 // Fix: Support `flatten(3,2,1)` as generator producing multiple results. Error on negative depth with appropriate message.
 // ======================================================================
-
-/// jq.test line 455: `flatten(3,2,1)`
-#[test]
-#[ignore]
-fn gap_flatten_edge_cases_line455_flatten_3_2_1() {
-    assert_gap(
-        "flatten(3,2,1)",
-        "[0, [1], [[2]], [[[3]]]]",
-        &["[0,1,2,3]", "[0,1,2,[3]]", "[0,1,[2],[[3]]]"],
-    );
-}
 
 /// jq.test line 1773: `try flatten(-1) catch .`
 #[test]
@@ -1691,72 +1535,6 @@ fn gap_nan_handling_line2433_try_range_3_nan_9_catch() {
         "try ([range(3)] | .[nan] = 9) catch .",
         "null",
         &["\"Cannot set array element at NaN index\""],
-    );
-}
-
-// ======================================================================
-// Category: Division/modulo by zero error handling
-// 5 test(s)
-//
-// Fix: Division and modulo by zero should produce a catchable error, not Infinity/NaN. Match jq error messages (e.g., "number cannot be nan").
-// ======================================================================
-
-/// jq.test line 2004: `try (1/.) catch .`
-#[test]
-#[ignore]
-fn gap_division_by_zero_line2004_try_1_catch() {
-    assert_gap(
-        "try (1/.) catch .",
-        "0",
-        &["\"number (1) and number (0) cannot be divided because the divisor is zero\""],
-    );
-}
-
-/// jq.test line 2008: `try (1/0) catch .`
-#[test]
-#[ignore]
-fn gap_division_by_zero_line2008_try_1_0_catch() {
-    assert_gap(
-        "try (1/0) catch .",
-        "0",
-        &["\"number (1) and number (0) cannot be divided because the divisor is zero\""],
-    );
-}
-
-/// jq.test line 2012: `try (0/0) catch .`
-#[test]
-#[ignore]
-fn gap_division_by_zero_line2012_try_0_0_catch() {
-    assert_gap(
-        "try (0/0) catch .",
-        "0",
-        &["\"number (0) and number (0) cannot be divided because the divisor is zero\""],
-    );
-}
-
-/// jq.test line 2016: `try (1%.) catch .`
-#[test]
-#[ignore]
-fn gap_division_by_zero_line2016_try_1_catch() {
-    assert_gap(
-        "try (1%.) catch .",
-        "0",
-        &[
-            "\"number (1) and number (0) cannot be divided (remainder) because the divisor is zero\"",
-        ],
-    );
-}
-
-/// jq.test line 2020: `try (1%0) catch .`
-#[test]
-#[ignore]
-fn gap_division_by_zero_line2020_try_1_0_catch() {
-    assert_gap(
-        "try (1%0) catch .",
-        "0",
-        &[
-            "\"number (1) and number (0) cannot be divided (remainder) because the divisor is zero\"",
-        ],
     );
 }
 
@@ -2260,39 +2038,10 @@ fn gap_input_builtin_line2295_try_input_catch() {
 
 // ======================================================================
 // Category: Miscellaneous conformance gaps
-// 17 test(s)
+// 12 test(s)
 //
 // Fix: Various edge cases that do not fit neatly into other categories.
 // ======================================================================
-
-/// jq.test line 168: `."foo"."bar"`
-#[test]
-#[ignore]
-fn gap_misc_line168_foo_bar() {
-    assert_gap(".\"foo\".\"bar\"", "{\"foo\": {\"bar\": 20}}", &["20"]);
-}
-
-/// jq.test line 179: `[.[]|.foo?]`
-#[test]
-#[ignore]
-fn gap_misc_line179_foo() {
-    assert_gap(
-        "[.[]|.foo?]",
-        "[1,[2],{\"foo\":3,\"bar\":4},{},{\"foo\":5}]",
-        &["[3,null,5]"],
-    );
-}
-
-/// jq.test line 183: `[.[]|.foo?.bar?]`
-#[test]
-#[ignore]
-fn gap_misc_line183_foo_bar() {
-    assert_gap(
-        "[.[]|.foo?.bar?]",
-        "[1,[2],[],{\"foo\":3},{\"foo\":{\"bar\":4}},{}]",
-        &["[4,null]"],
-    );
-}
 
 /// jq.test line 195: `[.[]|.[1:3]?]`
 #[test]
@@ -2342,24 +2091,6 @@ fn gap_misc_line1053_any_true_error() {
 #[ignore]
 fn gap_misc_line1057_all_false_error() {
     assert_gap("all(false, error; .)", "\"badness\"", &["false"]);
-}
-
-/// jq.test line 1435: `[.[]|(.a, .a)?]`
-#[test]
-#[ignore]
-fn gap_misc_line1435_a_a() {
-    assert_gap(
-        "[.[]|(.a, .a)?]",
-        "[null,true,{\"a\":1}]",
-        &["[null,null,1,1]"],
-    );
-}
-
-/// jq.test line 1439: `[[.[]|[.a,.a]]?]`
-#[test]
-#[ignore]
-fn gap_misc_line1439_a_a() {
-    assert_gap("[[.[]|[.a,.a]]?]", "[null,true,{\"a\":1}]", &["[]"]);
 }
 
 /// jq.test line 1663: `.foo[.baz]`

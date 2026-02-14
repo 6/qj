@@ -2,7 +2,7 @@ use crate::filter::{ArithOp, Env, Filter};
 use crate::value::Value;
 use std::rc::Rc;
 
-use super::super::eval::eval;
+use super::super::eval::{LAST_ERROR, eval};
 use super::super::value_ops::{arith_values, recurse, to_f64, values_equal, values_order};
 
 pub(super) fn eval_arrays(
@@ -73,7 +73,7 @@ pub(super) fn eval_arrays(
             Value::Array(arr) if !arr.is_empty() => {
                 let mut acc = arr[0].clone();
                 for item in &arr[1..] {
-                    if let Some(result) = arith_values(&acc, &ArithOp::Add, item) {
+                    if let Ok(result) = arith_values(&acc, &ArithOp::Add, item) {
                         acc = result;
                     }
                 }
@@ -209,17 +209,21 @@ pub(super) fn eval_arrays(
         }
         "flatten" => {
             if let Value::Array(arr) = input {
-                let depth = args.first().map_or(i64::MAX, |f| {
-                    let mut d = Value::Null;
-                    eval(f, input, env, &mut |v| d = v);
-                    match d {
-                        Value::Int(n) => n,
-                        _ => i64::MAX,
-                    }
-                });
-                let mut result = Vec::new();
-                flatten_array(arr, depth, &mut result);
-                output(Value::Array(Rc::new(result)));
+                if let Some(f) = args.first() {
+                    eval(f, input, env, &mut |d| {
+                        let depth = match d {
+                            Value::Int(n) => n,
+                            _ => i64::MAX,
+                        };
+                        let mut result = Vec::new();
+                        flatten_array(arr, depth, &mut result);
+                        output(Value::Array(Rc::new(result)));
+                    });
+                } else {
+                    let mut result = Vec::new();
+                    flatten_array(arr, i64::MAX, &mut result);
+                    output(Value::Array(Rc::new(result)));
+                }
             }
         }
         "first" => {
@@ -387,14 +391,47 @@ pub(super) fn eval_arrays(
         }
         "limit" => {
             if args.len() == 2 {
-                let mut n = 0i64;
-                eval(&args[0], input, env, &mut |v| n = to_f64(&v) as i64);
-                let mut count = 0i64;
-                eval(&args[1], input, env, &mut |v| {
-                    if count < n {
-                        output(v);
-                        count += 1;
+                eval(&args[0], input, env, &mut |n_val| {
+                    let n = to_f64(&n_val) as i64;
+                    if n < 0 {
+                        LAST_ERROR.with(|e| {
+                            *e.borrow_mut() =
+                                Some(Value::String("limit doesn't support negative count".into()));
+                        });
+                        return;
                     }
+                    let mut count = 0i64;
+                    eval(&args[1], input, env, &mut |v| {
+                        if count < n {
+                            output(v);
+                            count += 1;
+                        }
+                    });
+                    // Clear errors from generator values past the limit
+                    if count >= n {
+                        LAST_ERROR.with(|e| e.borrow_mut().take());
+                    }
+                });
+            }
+        }
+        "skip" => {
+            if args.len() == 2 {
+                eval(&args[0], input, env, &mut |n_val| {
+                    let n = to_f64(&n_val) as i64;
+                    if n < 0 {
+                        LAST_ERROR.with(|e| {
+                            *e.borrow_mut() =
+                                Some(Value::String("skip doesn't support negative count".into()));
+                        });
+                        return;
+                    }
+                    let mut count = 0i64;
+                    eval(&args[1], input, env, &mut |v| {
+                        if count >= n {
+                            output(v);
+                        }
+                        count += 1;
+                    });
                 });
             }
         }
@@ -452,14 +489,23 @@ pub(super) fn eval_arrays(
         }
         "nth" => {
             if args.len() == 2 {
-                let mut n = 0i64;
-                eval(&args[0], input, env, &mut |v| n = to_f64(&v) as i64);
-                let mut count = 0i64;
-                eval(&args[1], input, env, &mut |v| {
-                    if count == n {
-                        output(v);
+                // nth(indices; generator) — for each index, output the nth value from generator
+                eval(&args[0], input, env, &mut |idx_val| {
+                    let n = to_f64(&idx_val) as i64;
+                    if n < 0 {
+                        LAST_ERROR.with(|e| {
+                            *e.borrow_mut() =
+                                Some(Value::String("nth doesn't support negative count".into()));
+                        });
+                        return;
                     }
-                    count += 1;
+                    let mut count = 0i64;
+                    eval(&args[1], input, env, &mut |v| {
+                        if count == n {
+                            output(v);
+                        }
+                        count += 1;
+                    });
                 });
             } else if args.len() == 1 {
                 let mut n = 0i64;

@@ -406,10 +406,9 @@ fn passthrough_field_compact_nested_missing() {
 
 #[test]
 fn passthrough_field_compact_non_object() {
-    // .field on a non-object returns null in jx (jq errors instead).
-    // Intentional difference — jx is permissive on field access.
+    // .field on a non-object produces an error (no output), matching jq behavior.
     let out = jx_compact(".x", "[1,2,3]");
-    assert_eq!(out.trim(), "null");
+    assert!(out.trim().is_empty(), "expected no output, got: {out}");
 }
 
 #[test]
@@ -1113,9 +1112,9 @@ fn not_in_select() {
 
 #[test]
 fn try_operator_suppresses_error() {
-    // .foo? on a non-object should produce no output instead of error
+    // .foo? on a non-object should produce no output (try suppresses the error)
     let out = jx_compact(".foo?", "[1,2,3]");
-    assert_eq!(out.trim(), "null");
+    assert!(out.trim().is_empty(), "expected no output, got: {out}");
 }
 
 #[test]
@@ -1214,8 +1213,10 @@ fn null_iteration_no_output() {
 // --- Edge cases: Field on array ---
 
 #[test]
-fn field_on_array_returns_null() {
-    assert_eq!(jx_compact(".x", "[1,2]").trim(), "null");
+fn field_on_array_produces_error() {
+    // .field on an array produces an error (no output), matching jq behavior
+    let out = jx_compact(".x", "[1,2]");
+    assert!(out.trim().is_empty(), "expected no output, got: {out}");
 }
 
 // --- Edge cases: Index out of bounds ---

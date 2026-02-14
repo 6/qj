@@ -57,6 +57,25 @@ impl Value {
     pub fn is_truthy(&self) -> bool {
         !matches!(self, Value::Null | Value::Bool(false))
     }
+
+    /// Short description of this value for error messages (matches jq truncation).
+    pub fn short_desc(&self) -> String {
+        match self {
+            Value::Null => "null".to_string(),
+            Value::Bool(b) => format!("{b}"),
+            Value::Int(n) => format!("{n}"),
+            Value::Double(f, _) => format!("{f}"),
+            Value::String(s) => {
+                if s.len() > 10 {
+                    format!("\"{}...", s.chars().take(10).collect::<String>())
+                } else {
+                    format!("\"{s}\"")
+                }
+            }
+            Value::Array(_) => "array".to_string(),
+            Value::Object(_) => "object".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]

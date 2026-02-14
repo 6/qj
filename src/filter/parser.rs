@@ -318,6 +318,13 @@ impl<'a> Parser<'a> {
                             };
                             node = Filter::Pipe(Box::new(node), Box::new(Filter::Field(name)));
                         }
+                        Some(Token::Str(_)) => {
+                            let name = match self.advance().unwrap() {
+                                Token::Str(s) => s.clone(),
+                                _ => unreachable!(),
+                            };
+                            node = Filter::Pipe(Box::new(node), Box::new(Filter::Field(name)));
+                        }
                         _ => {
                             bail!("expected field name after '.'");
                         }
@@ -355,6 +362,13 @@ impl<'a> Parser<'a> {
                     Some(Token::Ident(_)) => {
                         let name = match self.advance().unwrap() {
                             Token::Ident(s) => s.clone(),
+                            _ => unreachable!(),
+                        };
+                        Ok(Filter::Field(name))
+                    }
+                    Some(Token::Str(_)) => {
+                        let name = match self.advance().unwrap() {
+                            Token::Str(s) => s.clone(),
                             _ => unreachable!(),
                         };
                         Ok(Filter::Field(name))
@@ -474,7 +488,7 @@ impl<'a> Parser<'a> {
             }
             Some(Token::Minus) => {
                 self.advance();
-                let inner = self.parse_primary()?;
+                let inner = self.parse_postfix()?;
                 Ok(Filter::Neg(Box::new(inner)))
             }
             // Literals

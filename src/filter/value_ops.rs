@@ -521,22 +521,26 @@ pub(super) fn values_order(left: &Value, right: &Value) -> Option<std::cmp::Orde
     }
 }
 
-pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<Value> {
+/// Format a Value for use in error messages (compact representation).
+fn value_desc(v: &Value) -> String {
+    v.short_desc()
+}
+
+pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, String> {
     match op {
         ArithOp::Add => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(
-                a.checked_add(*b)
-                    .map_or_else(|| Value::Double(*a as f64 + *b as f64, None), Value::Int),
-            ),
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a + b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 + b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a + *b as f64, None)),
-            (Value::String(a), Value::String(b)) => Some(Value::String(format!("{a}{b}"))),
+            (Value::Int(a), Value::Int(b)) => Ok(a
+                .checked_add(*b)
+                .map_or_else(|| Value::Double(*a as f64 + *b as f64, None), Value::Int)),
+            (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a + b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 + b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a + *b as f64, None)),
+            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
             (Value::Array(a), Value::Array(b)) => {
                 let mut result = Vec::with_capacity(a.len() + b.len());
                 result.extend_from_slice(a);
                 result.extend_from_slice(b);
-                Some(Value::Array(Rc::new(result)))
+                Ok(Value::Array(Rc::new(result)))
             }
             (Value::Object(a), Value::Object(b)) => {
                 // Shallow merge: b's keys override a's
@@ -548,82 +552,136 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<
                         result.push((k.clone(), v.clone()));
                     }
                 }
-                Some(Value::Object(Rc::new(result)))
+                Ok(Value::Object(Rc::new(result)))
             }
-            (Value::Null, other) | (other, Value::Null) => Some(other.clone()),
-            _ => None,
+            (Value::Null, other) | (other, Value::Null) => Ok(other.clone()),
+            _ => Err(format!(
+                "{} and {} cannot be added",
+                left.type_name(),
+                right.type_name()
+            )),
         },
         ArithOp::Sub => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(
-                a.checked_sub(*b)
-                    .map_or_else(|| Value::Double(*a as f64 - *b as f64, None), Value::Int),
-            ),
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a - b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 - b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a - *b as f64, None)),
+            (Value::Int(a), Value::Int(b)) => Ok(a
+                .checked_sub(*b)
+                .map_or_else(|| Value::Double(*a as f64 - *b as f64, None), Value::Int)),
+            (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a - b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 - b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a - *b as f64, None)),
             (Value::Array(a), Value::Array(b)) => {
                 let result: Vec<Value> = a
                     .iter()
                     .filter(|v| !b.iter().any(|bv| values_equal(v, bv)))
                     .cloned()
                     .collect();
-                Some(Value::Array(Rc::new(result)))
+                Ok(Value::Array(Rc::new(result)))
             }
-            _ => None,
+            _ => Err(format!(
+                "{} ({}) and {} ({}) cannot be subtracted",
+                left.type_name(),
+                value_desc(left),
+                right.type_name(),
+                value_desc(right)
+            )),
         },
         ArithOp::Mul => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(
-                a.checked_mul(*b)
-                    .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int),
-            ),
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a * b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 * b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a * *b as f64, None)),
-            (Value::Object(a), Value::Object(b)) => Some(object_recursive_merge(a, b)),
+            (Value::Int(a), Value::Int(b)) => Ok(a
+                .checked_mul(*b)
+                .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int)),
+            (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a * b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 * b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a * *b as f64, None)),
+            (Value::Object(a), Value::Object(b)) => Ok(object_recursive_merge(a, b)),
             (Value::String(s), Value::Int(n)) | (Value::Int(n), Value::String(s)) => {
                 if *n <= 0 {
-                    Some(Value::Null)
+                    Ok(Value::Null)
                 } else {
-                    Some(Value::String(s.repeat(*n as usize)))
+                    Ok(Value::String(s.repeat(*n as usize)))
                 }
             }
-            (Value::Null, _) | (_, Value::Null) => Some(Value::Null),
-            _ => None,
+            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+            _ => Err(format!(
+                "{} and {} cannot be multiplied",
+                left.type_name(),
+                right.type_name()
+            )),
         },
         ArithOp::Div => match (left, right) {
-            (Value::Int(a), Value::Int(b)) if *b != 0 => {
+            // Integer division by zero
+            (Value::Int(_), Value::Int(b)) if *b == 0 => Err(format!(
+                "number ({}) and number (0) cannot be divided because the divisor is zero",
+                value_desc(left)
+            )),
+            (Value::Int(a), Value::Int(b)) => {
                 // i64::MIN / -1 overflows (panics in debug, wraps in release)
                 if let Some(q) = a.checked_div(*b) {
                     if a % b == 0 {
-                        Some(Value::Int(q))
+                        Ok(Value::Int(q))
                     } else {
-                        Some(Value::Double(*a as f64 / *b as f64, None))
+                        Ok(Value::Double(*a as f64 / *b as f64, None))
                     }
                 } else {
-                    Some(Value::Double(*a as f64 / *b as f64, None))
+                    Ok(Value::Double(*a as f64 / *b as f64, None))
                 }
             }
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a / b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 / b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a / *b as f64, None)),
+            // Float division by zero
+            (Value::Double(_, _), Value::Double(b, _)) if *b == 0.0 => Err(format!(
+                "number ({}) and number (0) cannot be divided because the divisor is zero",
+                value_desc(left)
+            )),
+            (Value::Int(_), Value::Double(b, _)) if *b == 0.0 => Err(format!(
+                "number ({}) and number (0) cannot be divided because the divisor is zero",
+                value_desc(left)
+            )),
+            (Value::Double(_, _), Value::Int(b)) if *b == 0 => Err(format!(
+                "number ({}) and number (0) cannot be divided because the divisor is zero",
+                value_desc(left)
+            )),
+            (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a / b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 / b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a / *b as f64, None)),
             (Value::String(s), Value::String(sep)) => {
                 let parts: Vec<Value> = s
                     .split(sep.as_str())
                     .map(|part| Value::String(part.into()))
                     .collect();
-                Some(Value::Array(Rc::new(parts)))
+                Ok(Value::Array(Rc::new(parts)))
             }
-            _ => None,
+            _ => Err(format!(
+                "{} and {} cannot be divided",
+                left.type_name(),
+                right.type_name()
+            )),
         },
         ArithOp::Mod => match (left, right) {
+            // Integer modulo by zero
+            (Value::Int(_), Value::Int(b)) if *b == 0 => Err(format!(
+                "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
+                value_desc(left)
+            )),
             // i64::MIN % -1 can panic in debug mode; mathematically it's 0
-            (Value::Int(a), Value::Int(b)) if *b != 0 => {
-                Some(Value::Int(a.checked_rem(*b).unwrap_or(0)))
-            }
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a % b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 % b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a % *b as f64, None)),
-            _ => None,
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_rem(*b).unwrap_or(0))),
+            // Float modulo by zero
+            (Value::Double(_, _), Value::Double(b, _)) if *b == 0.0 => Err(format!(
+                "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
+                value_desc(left)
+            )),
+            (Value::Int(_), Value::Double(b, _)) if *b == 0.0 => Err(format!(
+                "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
+                value_desc(left)
+            )),
+            (Value::Double(_, _), Value::Int(b)) if *b == 0 => Err(format!(
+                "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
+                value_desc(left)
+            )),
+            (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a % b, None)),
+            (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 % b, None)),
+            (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a % *b as f64, None)),
+            _ => Err(format!(
+                "{} and {} cannot be divided (remainder)",
+                left.type_name(),
+                right.type_name()
+            )),
         },
     }
 }
