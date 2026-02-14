@@ -16,7 +16,7 @@ cargo build --release
 
 |  | jq 1.8.1 | gojq 0.12.18 | jaq 2.3 | **jx** |
 |--|--------|-----------|---------|--------|
-| Throughput (49MB, `-c '.'`) | 40 MB/s | 106 MB/s | 176 MB/s | **1.9 GB/s** |
+| Throughput (49MB, `-c '.'`) | 40 MB/s | 106 MB/s | 176 MB/s | **2.1 GB/s** |
 | Parallel NDJSON | — | — | — | **yes** |
 | SIMD | — | — | — | **yes (NEON/AVX2)** |
 | jq compat ([jq.test](tests/jq_compat/)) | 100% | 85% | 69% | **42%** |
