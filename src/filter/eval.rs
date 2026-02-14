@@ -2,10 +2,12 @@
 ///
 /// Uses generator semantics: each filter operation calls `output` for
 /// each result, avoiding intermediate Vec allocations.
-use crate::filter::{ArithOp, AssignOp, BoolOp, CmpOp, Env, Filter, ObjKey};
+use crate::filter::{ArithOp, AssignOp, BoolOp, Env, Filter, ObjKey};
 use crate::value::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+use super::value_ops::{arith_values, compare_values, recurse};
 
 thread_local! {
     /// Last error value set by `error` / `error(msg)` builtins.
@@ -727,254 +729,10 @@ fn resolve_slice_index(val: Option<&Value>, default: i64, len: i64) -> i64 {
     resolved.clamp(0, len)
 }
 
-fn compare_values(left: &Value, op: &CmpOp, right: &Value) -> bool {
-    match op {
-        CmpOp::Eq => values_equal(left, right),
-        CmpOp::Ne => !values_equal(left, right),
-        CmpOp::Lt => values_order(left, right) == Some(std::cmp::Ordering::Less),
-        CmpOp::Le => matches!(
-            values_order(left, right),
-            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-        ),
-        CmpOp::Gt => values_order(left, right) == Some(std::cmp::Ordering::Greater),
-        CmpOp::Ge => matches!(
-            values_order(left, right),
-            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-        ),
-    }
-}
-
-pub(super) fn values_equal(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Null, Value::Null) => true,
-        (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::Int(a), Value::Int(b)) => a == b,
-        (Value::Double(a, _), Value::Double(b, _)) => a == b,
-        (Value::Int(a), Value::Double(b, _)) => (*a as f64) == *b,
-        (Value::Double(a, _), Value::Int(b)) => *a == (*b as f64),
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::Array(a), Value::Array(b)) => {
-            Rc::ptr_eq(a, b)
-                || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y)))
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            Rc::ptr_eq(a, b)
-                || (a.len() == b.len()
-                    && a.iter()
-                        .zip(b.iter())
-                        .all(|((k1, v1), (k2, v2))| k1 == k2 && values_equal(v1, v2)))
-        }
-        _ => false,
-    }
-}
-
-/// jq total ordering: null < false < true < numbers < strings < arrays < objects
-fn type_order(v: &Value) -> u8 {
-    match v {
-        Value::Null => 0,
-        Value::Bool(false) => 1,
-        Value::Bool(true) => 2,
-        Value::Int(_) | Value::Double(..) => 3,
-        Value::String(_) => 4,
-        Value::Array(_) => 5,
-        Value::Object(_) => 6,
-    }
-}
-
-pub(super) fn values_order(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
-    let lt = type_order(left);
-    let rt = type_order(right);
-    if lt != rt {
-        return Some(lt.cmp(&rt));
-    }
-    match (left, right) {
-        (Value::Null, Value::Null) => Some(std::cmp::Ordering::Equal),
-        (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
-        (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
-        (Value::Double(a, _), Value::Double(b, _)) => a.partial_cmp(b),
-        (Value::Int(a), Value::Double(b, _)) => (*a as f64).partial_cmp(b),
-        (Value::Double(a, _), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
-        (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
-        (Value::Array(a), Value::Array(b)) => {
-            for (av, bv) in a.iter().zip(b.iter()) {
-                match values_order(av, bv) {
-                    Some(std::cmp::Ordering::Equal) => continue,
-                    other => return other,
-                }
-            }
-            Some(a.len().cmp(&b.len()))
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            // Compare by length first, then sorted keys+values
-            match a.len().cmp(&b.len()) {
-                std::cmp::Ordering::Equal => {
-                    let mut ak: Vec<_> = a.iter().collect();
-                    let mut bk: Vec<_> = b.iter().collect();
-                    ak.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
-                    bk.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
-                    for ((ka, va), (kb, vb)) in ak.iter().zip(bk.iter()) {
-                        match ka.cmp(kb) {
-                            std::cmp::Ordering::Equal => {}
-                            other => return Some(other),
-                        }
-                        match values_order(va, vb) {
-                            Some(std::cmp::Ordering::Equal) => continue,
-                            other => return other,
-                        }
-                    }
-                    Some(std::cmp::Ordering::Equal)
-                }
-                other => Some(other),
-            }
-        }
-        _ => Some(std::cmp::Ordering::Equal),
-    }
-}
-
-pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Option<Value> {
-    match op {
-        ArithOp::Add => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(
-                a.checked_add(*b)
-                    .map_or_else(|| Value::Double(*a as f64 + *b as f64, None), Value::Int),
-            ),
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a + b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 + b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a + *b as f64, None)),
-            (Value::String(a), Value::String(b)) => Some(Value::String(format!("{a}{b}"))),
-            (Value::Array(a), Value::Array(b)) => {
-                let mut result = Vec::with_capacity(a.len() + b.len());
-                result.extend_from_slice(a);
-                result.extend_from_slice(b);
-                Some(Value::Array(Rc::new(result)))
-            }
-            (Value::Object(a), Value::Object(b)) => {
-                // Shallow merge: b's keys override a's
-                let mut result: Vec<(String, Value)> = a.as_ref().clone();
-                for (k, v) in b.iter() {
-                    if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
-                        existing.1 = v.clone();
-                    } else {
-                        result.push((k.clone(), v.clone()));
-                    }
-                }
-                Some(Value::Object(Rc::new(result)))
-            }
-            (Value::Null, other) | (other, Value::Null) => Some(other.clone()),
-            _ => None,
-        },
-        ArithOp::Sub => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(
-                a.checked_sub(*b)
-                    .map_or_else(|| Value::Double(*a as f64 - *b as f64, None), Value::Int),
-            ),
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a - b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 - b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a - *b as f64, None)),
-            (Value::Array(a), Value::Array(b)) => {
-                let result: Vec<Value> = a
-                    .iter()
-                    .filter(|v| !b.iter().any(|bv| values_equal(v, bv)))
-                    .cloned()
-                    .collect();
-                Some(Value::Array(Rc::new(result)))
-            }
-            _ => None,
-        },
-        ArithOp::Mul => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Some(
-                a.checked_mul(*b)
-                    .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int),
-            ),
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a * b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 * b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a * *b as f64, None)),
-            (Value::Object(a), Value::Object(b)) => Some(object_recursive_merge(a, b)),
-            (Value::String(s), Value::Int(n)) | (Value::Int(n), Value::String(s)) => {
-                if *n <= 0 {
-                    Some(Value::Null)
-                } else {
-                    Some(Value::String(s.repeat(*n as usize)))
-                }
-            }
-            (Value::Null, _) | (_, Value::Null) => Some(Value::Null),
-            _ => None,
-        },
-        ArithOp::Div => match (left, right) {
-            (Value::Int(a), Value::Int(b)) if *b != 0 => {
-                // i64::MIN / -1 overflows (panics in debug, wraps in release)
-                if let Some(q) = a.checked_div(*b) {
-                    if a % b == 0 {
-                        Some(Value::Int(q))
-                    } else {
-                        Some(Value::Double(*a as f64 / *b as f64, None))
-                    }
-                } else {
-                    Some(Value::Double(*a as f64 / *b as f64, None))
-                }
-            }
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a / b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 / b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a / *b as f64, None)),
-            (Value::String(s), Value::String(sep)) => {
-                let parts: Vec<Value> = s
-                    .split(sep.as_str())
-                    .map(|part| Value::String(part.into()))
-                    .collect();
-                Some(Value::Array(Rc::new(parts)))
-            }
-            _ => None,
-        },
-        ArithOp::Mod => match (left, right) {
-            // i64::MIN % -1 can panic in debug mode; mathematically it's 0
-            (Value::Int(a), Value::Int(b)) if *b != 0 => {
-                Some(Value::Int(a.checked_rem(*b).unwrap_or(0)))
-            }
-            (Value::Double(a, _), Value::Double(b, _)) => Some(Value::Double(a % b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Some(Value::Double(*a as f64 % b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Some(Value::Double(a % *b as f64, None)),
-            _ => None,
-        },
-    }
-}
-
-fn object_recursive_merge(a: &Rc<Vec<(String, Value)>>, b: &Rc<Vec<(String, Value)>>) -> Value {
-    let mut result: Vec<(String, Value)> = a.as_ref().clone();
-    for (k, bv) in b.iter() {
-        if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
-            // Recursive merge if both are objects
-            if let (Value::Object(ea), Value::Object(eb)) = (&existing.1, bv) {
-                existing.1 = object_recursive_merge(ea, eb);
-            } else {
-                existing.1 = bv.clone();
-            }
-        } else {
-            result.push((k.clone(), bv.clone()));
-        }
-    }
-    Value::Object(Rc::new(result))
-}
-
-pub(super) fn recurse(value: &Value, output: &mut dyn FnMut(Value)) {
-    output(value.clone());
-    match value {
-        Value::Array(arr) => {
-            for v in arr.iter() {
-                recurse(v, output);
-            }
-        }
-        Value::Object(obj) => {
-            for (_, v) in obj.iter() {
-                recurse(v, output);
-            }
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::value_ops::values_order;
 
     fn eval_one(filter: &Filter, input: &Value) -> Value {
         let mut results = Vec::new();
@@ -2046,29 +1804,6 @@ mod tests {
         match result {
             Value::Int(n) => assert!(n > 0, "env should have entries"),
             _ => panic!("expected int from env | keys | length"),
-        }
-    }
-
-    #[test]
-    fn test_object_recursive_merge_fn() {
-        let a = Rc::new(vec![(
-            "x".to_string(),
-            Value::Object(Rc::new(vec![("y".to_string(), Value::Int(1))])),
-        )]);
-        let b = Rc::new(vec![(
-            "x".to_string(),
-            Value::Object(Rc::new(vec![("z".to_string(), Value::Int(2))])),
-        )]);
-        let result = object_recursive_merge(&a, &b);
-        if let Value::Object(obj) = result {
-            let x = &obj.iter().find(|(k, _)| k == "x").unwrap().1;
-            if let Value::Object(inner) = x {
-                assert_eq!(inner.len(), 2);
-            } else {
-                panic!("expected nested object");
-            }
-        } else {
-            panic!("expected object");
         }
     }
 

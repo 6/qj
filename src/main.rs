@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::io::{self, BufWriter, Read, Write};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "jx", about = "A faster jq", version)]
@@ -143,10 +144,7 @@ fn main() -> Result<()> {
 
     if cli.null_input {
         let input = jx::value::Value::Null;
-        jx::filter::eval::eval_filter_with_env(&filter, &input, &env, &mut |v| {
-            had_output = true;
-            write_value_line(&mut out, &v, &config).ok();
-        });
+        eval_and_output(&filter, &input, &env, &mut out, &config, &mut had_output);
     } else if cli.raw_input {
         // --raw-input: read lines as strings instead of parsing JSON
         if cli.files.is_empty() {
@@ -175,10 +173,7 @@ fn main() -> Result<()> {
                 }
             }
             let input = jx::value::Value::Array(Rc::new(all_lines));
-            jx::filter::eval::eval_filter_with_env(&filter, &input, &env, &mut |v| {
-                had_output = true;
-                write_value_line(&mut out, &v, &config).ok();
-            });
+            eval_and_output(&filter, &input, &env, &mut out, &config, &mut had_output);
         } else {
             for path in &cli.files {
                 let content = std::fs::read_to_string(path)
@@ -211,11 +206,9 @@ fn main() -> Result<()> {
             }
         }
         let input = jx::value::Value::Array(Rc::new(values));
-        jx::filter::eval::eval_filter_with_env(&filter, &input, &env, &mut |v| {
-            had_output = true;
-            write_value_line(&mut out, &v, &config).ok();
-        });
+        eval_and_output(&filter, &input, &env, &mut out, &config, &mut had_output);
     } else if cli.files.is_empty() {
+        // stdin
         let mut buf = Vec::new();
         io::stdin()
             .read_to_end(&mut buf)
@@ -226,175 +219,37 @@ fn main() -> Result<()> {
             out.write_all(&output)?;
             had_output |= ho;
         } else {
-            match &passthrough {
-                Some(jx::filter::PassthroughPath::Identity) => {
-                    let json_len = buf.len();
-                    let padded = jx::simdjson::pad_buffer(&buf);
-                    let minified =
-                        jx::simdjson::minify(&padded, json_len).context("failed to minify JSON")?;
-                    out.write_all(&minified)?;
-                    out.write_all(b"\n")?;
-                    had_output = true;
-                }
-                Some(jx::filter::PassthroughPath::FieldLength(fields)) => {
-                    let json_len = buf.len();
-                    let padded = jx::simdjson::pad_buffer(&buf);
-                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                    match jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
-                        .context("failed to compute length")?
-                    {
-                        Some(result) => {
-                            out.write_all(&result)?;
-                            out.write_all(b"\n")?;
-                            had_output = true;
-                        }
-                        None => {
-                            // Unsupported type — fall back to normal pipeline
-                            let text =
-                                std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
-                            process_input(text, &filter, &env, &mut out, &config, &mut had_output)?;
-                        }
-                    }
-                }
-                Some(jx::filter::PassthroughPath::FieldKeys(fields)) => {
-                    let json_len = buf.len();
-                    let padded = jx::simdjson::pad_buffer(&buf);
-                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                    match jx::simdjson::dom_field_keys(&padded, json_len, &field_refs)
-                        .context("failed to compute keys")?
-                    {
-                        Some(result) => {
-                            out.write_all(&result)?;
-                            out.write_all(b"\n")?;
-                            had_output = true;
-                        }
-                        None => {
-                            let text =
-                                std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
-                            process_input(text, &filter, &env, &mut out, &config, &mut had_output)?;
-                        }
-                    }
-                }
-                None => {
-                    let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
-                    process_input(text, &filter, &env, &mut out, &config, &mut had_output)?;
-                }
+            let json_len = buf.len();
+            let padded = jx::simdjson::pad_buffer(&buf);
+            let mut handled = false;
+            if let Some(pt) = &passthrough {
+                handled = try_passthrough(&padded, json_len, pt, &mut out, &mut had_output)
+                    .context("passthrough failed")?;
+            }
+            if !handled {
+                process_padded(
+                    &padded,
+                    json_len,
+                    &filter,
+                    &env,
+                    &mut out,
+                    &config,
+                    &mut had_output,
+                )?;
             }
         }
     } else {
+        // files
+        let ctx = ProcessCtx {
+            passthrough: &passthrough,
+            force_jsonl: cli.jsonl,
+            filter: &filter,
+            env: &env,
+            config: &config,
+            debug_timing: cli.debug_timing,
+        };
         for path in &cli.files {
-            if !cli.debug_timing {
-                let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
-                    .with_context(|| format!("failed to read file: {path}"))?;
-                if cli.jsonl || jx::parallel::ndjson::is_ndjson(&padded[..json_len]) {
-                    let (output, ho) = jx::parallel::ndjson::process_ndjson(
-                        &padded[..json_len],
-                        &filter,
-                        &config,
-                        &env,
-                    )
-                    .with_context(|| format!("failed to process NDJSON: {path}"))?;
-                    out.write_all(&output)?;
-                    had_output |= ho;
-                    continue;
-                }
-            }
-            match &passthrough {
-                Some(jx::filter::PassthroughPath::Identity) => {
-                    if cli.debug_timing {
-                        minify_timed(path, &mut out, &mut had_output)?;
-                    } else {
-                        let (padded, json_len) =
-                            jx::simdjson::read_padded_file(std::path::Path::new(path))
-                                .with_context(|| format!("failed to read file: {path}"))?;
-                        let minified = jx::simdjson::minify(&padded, json_len)
-                            .with_context(|| format!("failed to minify: {path}"))?;
-                        out.write_all(&minified)?;
-                        out.write_all(b"\n")?;
-                        had_output = true;
-                    }
-                }
-                Some(jx::filter::PassthroughPath::FieldLength(fields)) => {
-                    if cli.debug_timing {
-                        field_length_timed(path, fields, &mut out, &mut had_output)?;
-                    } else {
-                        let (padded, json_len) =
-                            jx::simdjson::read_padded_file(std::path::Path::new(path))
-                                .with_context(|| format!("failed to read file: {path}"))?;
-                        let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                        match jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
-                            .with_context(|| format!("failed to compute length: {path}"))?
-                        {
-                            Some(result) => {
-                                out.write_all(&result)?;
-                                out.write_all(b"\n")?;
-                                had_output = true;
-                            }
-                            None => {
-                                std::str::from_utf8(&padded[..json_len])
-                                    .with_context(|| format!("file is not valid UTF-8: {path}"))?;
-                                process_padded(
-                                    &padded,
-                                    json_len,
-                                    &filter,
-                                    &env,
-                                    &mut out,
-                                    &config,
-                                    &mut had_output,
-                                )?;
-                            }
-                        }
-                    }
-                }
-                Some(jx::filter::PassthroughPath::FieldKeys(fields)) => {
-                    let (padded, json_len) =
-                        jx::simdjson::read_padded_file(std::path::Path::new(path))
-                            .with_context(|| format!("failed to read file: {path}"))?;
-                    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                    match jx::simdjson::dom_field_keys(&padded, json_len, &field_refs)
-                        .with_context(|| format!("failed to compute keys: {path}"))?
-                    {
-                        Some(result) => {
-                            out.write_all(&result)?;
-                            out.write_all(b"\n")?;
-                            had_output = true;
-                        }
-                        None => {
-                            std::str::from_utf8(&padded[..json_len])
-                                .with_context(|| format!("file is not valid UTF-8: {path}"))?;
-                            process_padded(
-                                &padded,
-                                json_len,
-                                &filter,
-                                &env,
-                                &mut out,
-                                &config,
-                                &mut had_output,
-                            )?;
-                        }
-                    }
-                }
-                None => {
-                    if cli.debug_timing {
-                        process_padded_timed(path, &filter, &mut out, &config, &mut had_output)?;
-                    } else {
-                        let (padded, json_len) =
-                            jx::simdjson::read_padded_file(std::path::Path::new(path))
-                                .with_context(|| format!("failed to read file: {path}"))?;
-                        std::str::from_utf8(&padded[..json_len])
-                            .with_context(|| format!("file is not valid UTF-8: {path}"))?;
-                        process_padded(
-                            &padded,
-                            json_len,
-                            &filter,
-                            &env,
-                            &mut out,
-                            &config,
-                            &mut had_output,
-                        )?;
-                    }
-                }
-            }
+            process_file(path, &ctx, &mut out, &mut had_output)?;
         }
     }
 
@@ -406,6 +261,179 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Core processing helpers
+// ---------------------------------------------------------------------------
+
+/// Evaluate a filter against an input value and write all outputs.
+fn eval_and_output(
+    filter: &jx::filter::Filter,
+    input: &jx::value::Value,
+    env: &jx::filter::Env,
+    out: &mut impl Write,
+    config: &jx::output::OutputConfig,
+    had_output: &mut bool,
+) {
+    jx::filter::eval::eval_filter_with_env(filter, input, env, &mut |v| {
+        *had_output = true;
+        jx::output::write_value(out, &v, config).ok();
+    });
+}
+
+/// Try the passthrough fast path on a padded buffer.
+/// Returns `Ok(true)` if handled, `Ok(false)` if the caller should fall back.
+fn try_passthrough(
+    padded: &[u8],
+    json_len: usize,
+    passthrough: &jx::filter::PassthroughPath,
+    out: &mut impl Write,
+    had_output: &mut bool,
+) -> Result<bool> {
+    match passthrough {
+        jx::filter::PassthroughPath::Identity => {
+            let minified = jx::simdjson::minify(padded, json_len)?;
+            out.write_all(&minified)?;
+            out.write_all(b"\n")?;
+            *had_output = true;
+            Ok(true)
+        }
+        jx::filter::PassthroughPath::FieldLength(fields) => {
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            match jx::simdjson::dom_field_length(padded, json_len, &field_refs)? {
+                Some(result) => {
+                    out.write_all(&result)?;
+                    out.write_all(b"\n")?;
+                    *had_output = true;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+        jx::filter::PassthroughPath::FieldKeys(fields) => {
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            match jx::simdjson::dom_field_keys(padded, json_len, &field_refs)? {
+                Some(result) => {
+                    out.write_all(&result)?;
+                    out.write_all(b"\n")?;
+                    *had_output = true;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+    }
+}
+
+/// Bundled processing context to avoid too-many-arguments in process_file.
+struct ProcessCtx<'a> {
+    passthrough: &'a Option<jx::filter::PassthroughPath>,
+    force_jsonl: bool,
+    filter: &'a jx::filter::Filter,
+    env: &'a jx::filter::Env,
+    config: &'a jx::output::OutputConfig,
+    debug_timing: bool,
+}
+
+/// Process a single file: read, detect NDJSON, try passthrough, or run the
+/// normal DOM parse → eval → output pipeline. Optionally prints timing.
+fn process_file(
+    path: &str,
+    ctx: &ProcessCtx,
+    out: &mut impl Write,
+    had_output: &mut bool,
+) -> Result<()> {
+    let t0 = Instant::now();
+    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+        .with_context(|| format!("failed to read file: {path}"))?;
+    let t_read = t0.elapsed();
+
+    // NDJSON fast path (skip when debug-timing so we get the full pipeline breakdown)
+    if !ctx.debug_timing
+        && (ctx.force_jsonl || jx::parallel::ndjson::is_ndjson(&padded[..json_len]))
+    {
+        let (output, ho) = jx::parallel::ndjson::process_ndjson(
+            &padded[..json_len],
+            ctx.filter,
+            ctx.config,
+            ctx.env,
+        )
+        .with_context(|| format!("failed to process NDJSON: {path}"))?;
+        out.write_all(&output)?;
+        *had_output |= ho;
+        return Ok(());
+    }
+
+    // Passthrough fast path
+    if let Some(pt) = ctx.passthrough {
+        let t1 = Instant::now();
+        let handled = try_passthrough(&padded, json_len, pt, out, had_output)
+            .with_context(|| format!("passthrough failed: {path}"))?;
+        if handled {
+            if ctx.debug_timing {
+                let t_op = t1.elapsed();
+                let total = t_read + t_op;
+                let mb = json_len as f64 / (1024.0 * 1024.0);
+                let label = match pt {
+                    jx::filter::PassthroughPath::Identity => "minify",
+                    jx::filter::PassthroughPath::FieldLength(_) => "length",
+                    jx::filter::PassthroughPath::FieldKeys(_) => "keys",
+                };
+                eprintln!("--- debug-timing ({label} passthrough): {path} ({mb:.1} MB) ---");
+                print_timing_line("read", t_read, total);
+                print_timing_line(label, t_op, total);
+                print_timing_total(total, mb);
+            }
+            return Ok(());
+        }
+        // Passthrough returned None (unsupported type) — fall through to normal pipeline
+    }
+
+    // Normal pipeline: DOM parse → eval → output
+    std::str::from_utf8(&padded[..json_len])
+        .with_context(|| format!("file is not valid UTF-8: {path}"))?;
+
+    if ctx.debug_timing {
+        let t1 = Instant::now();
+        let input =
+            jx::simdjson::dom_parse_to_value(&padded, json_len).context("failed to parse JSON")?;
+        let t_parse = t1.elapsed();
+
+        let t2 = Instant::now();
+        let mut values = Vec::new();
+        jx::filter::eval::eval_filter(ctx.filter, &input, &mut |v| {
+            values.push(v);
+        });
+        let t_eval = t2.elapsed();
+
+        let t3 = Instant::now();
+        for v in &values {
+            *had_output = true;
+            jx::output::write_value(out, v, ctx.config).ok();
+        }
+        out.flush()?;
+        let t_output = t3.elapsed();
+
+        let total = t_read + t_parse + t_eval + t_output;
+        let mb = json_len as f64 / (1024.0 * 1024.0);
+        eprintln!("--- debug-timing: {path} ({mb:.1} MB) ---");
+        print_timing_line("read", t_read, total);
+        print_timing_line("parse", t_parse, total);
+        print_timing_line("eval", t_eval, total);
+        print_timing_line("output", t_output, total);
+        print_timing_total(total, mb);
+    } else {
+        process_padded(
+            &padded, json_len, ctx.filter, ctx.env, out, ctx.config, had_output,
+        )?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Input parsing helpers
+// ---------------------------------------------------------------------------
 
 /// Process --raw-input text: each line becomes a Value::String.
 /// If slurp is true, collect all lines into an array.
@@ -424,17 +452,11 @@ fn process_raw_input(
             .map(|l| jx::value::Value::String(l.to_string()))
             .collect();
         let input = jx::value::Value::Array(Rc::new(arr));
-        jx::filter::eval::eval_filter_with_env(filter, &input, env, &mut |v| {
-            *had_output = true;
-            write_value_line(out, &v, config).ok();
-        });
+        eval_and_output(filter, &input, env, out, config, had_output);
     } else {
         for line in text.lines() {
             let input = jx::value::Value::String(line.to_string());
-            jx::filter::eval::eval_filter_with_env(filter, &input, env, &mut |v| {
-                *had_output = true;
-                write_value_line(out, &v, config).ok();
-            });
+            eval_and_output(filter, &input, env, out, config, had_output);
         }
     }
     Ok(())
@@ -483,19 +505,6 @@ fn parse_lines(buf: &[u8], values: &mut Vec<jx::value::Value>) -> Result<()> {
     Ok(())
 }
 
-fn process_input(
-    text: &str,
-    filter: &jx::filter::Filter,
-    env: &jx::filter::Env,
-    out: &mut impl Write,
-    config: &jx::output::OutputConfig,
-    had_output: &mut bool,
-) -> Result<()> {
-    let padded = jx::simdjson::pad_buffer(text.as_bytes());
-    let json_len = text.len();
-    process_padded(&padded, json_len, filter, env, out, config, had_output)
-}
-
 fn process_padded(
     padded: &[u8],
     json_len: usize,
@@ -507,196 +516,30 @@ fn process_padded(
 ) -> Result<()> {
     let input =
         jx::simdjson::dom_parse_to_value(padded, json_len).context("failed to parse JSON")?;
-
-    jx::filter::eval::eval_filter_with_env(filter, &input, env, &mut |v| {
-        *had_output = true;
-        write_value_line(out, &v, config).ok();
-    });
-
+    eval_and_output(filter, &input, env, out, config, had_output);
     Ok(())
 }
 
-fn minify_timed(path: &str, out: &mut impl Write, had_output: &mut bool) -> Result<()> {
-    use std::time::Instant;
+// ---------------------------------------------------------------------------
+// Debug timing helpers
+// ---------------------------------------------------------------------------
 
-    let t0 = Instant::now();
-    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
-        .with_context(|| format!("failed to read file: {path}"))?;
-    let t_read = t0.elapsed();
-
-    let t1 = Instant::now();
-    let minified = jx::simdjson::minify(&padded, json_len)
-        .with_context(|| format!("failed to minify: {path}"))?;
-    let t_minify = t1.elapsed();
-
-    let t2 = Instant::now();
-    out.write_all(&minified)?;
-    out.write_all(b"\n")?;
-    out.flush()?;
-    *had_output = true;
-    let t_write = t2.elapsed();
-
-    let total = t_read + t_minify + t_write;
-    let mb = json_len as f64 / (1024.0 * 1024.0);
-    eprintln!("--- debug-timing (minify passthrough): {path} ({mb:.1} MB) ---");
-    eprintln!(
-        "  read:   {:>8.2}ms  ({:.0}%)",
-        t_read.as_secs_f64() * 1000.0,
-        t_read.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  minify: {:>8.2}ms  ({:.0}%)  [simdjson::minify]",
-        t_minify.as_secs_f64() * 1000.0,
-        t_minify.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  write:  {:>8.2}ms  ({:.0}%)",
-        t_write.as_secs_f64() * 1000.0,
-        t_write.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  total:  {:>8.2}ms  ({:.0} MB/s)",
-        total.as_secs_f64() * 1000.0,
-        mb / total.as_secs_f64()
-    );
-
-    Ok(())
-}
-
-fn field_length_timed(
-    path: &str,
-    fields: &[String],
-    out: &mut impl Write,
-    had_output: &mut bool,
-) -> Result<()> {
-    use std::time::Instant;
-
-    let t0 = Instant::now();
-    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
-        .with_context(|| format!("failed to read file: {path}"))?;
-    let t_read = t0.elapsed();
-
-    let t1 = Instant::now();
-    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-    let result = jx::simdjson::dom_field_length(&padded, json_len, &field_refs)
-        .with_context(|| format!("failed to compute length: {path}"))?;
-    let t_length = t1.elapsed();
-
-    let t2 = Instant::now();
-    if let Some(data) = result {
-        out.write_all(&data)?;
-        out.write_all(b"\n")?;
-        *had_output = true;
-    }
-    out.flush()?;
-    let t_write = t2.elapsed();
-
-    let total = t_read + t_length + t_write;
-    let mb = json_len as f64 / (1024.0 * 1024.0);
-    let field_path = if fields.is_empty() {
-        ".".to_string()
+fn print_timing_line(label: &str, dur: Duration, total: Duration) {
+    let pct = if total.as_nanos() > 0 {
+        dur.as_secs_f64() / total.as_secs_f64() * 100.0
     } else {
-        format!(".{}", fields.join("."))
+        0.0
     };
     eprintln!(
-        "--- debug-timing (field length passthrough {field_path} | length): {path} ({mb:.1} MB) ---"
+        "  {label:<7} {:>8.2}ms  ({pct:.0}%)",
+        dur.as_secs_f64() * 1000.0,
     );
-    eprintln!(
-        "  read:   {:>8.2}ms  ({:.0}%)",
-        t_read.as_secs_f64() * 1000.0,
-        t_read.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  length: {:>8.2}ms  ({:.0}%)  [DOM parse + navigate + length]",
-        t_length.as_secs_f64() * 1000.0,
-        t_length.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  write:  {:>8.2}ms  ({:.0}%)",
-        t_write.as_secs_f64() * 1000.0,
-        t_write.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
+}
+
+fn print_timing_total(total: Duration, mb: f64) {
     eprintln!(
         "  total:  {:>8.2}ms  ({:.0} MB/s)",
         total.as_secs_f64() * 1000.0,
         mb / total.as_secs_f64()
     );
-
-    Ok(())
-}
-
-fn process_padded_timed(
-    path: &str,
-    filter: &jx::filter::Filter,
-    out: &mut impl Write,
-    config: &jx::output::OutputConfig,
-    had_output: &mut bool,
-) -> Result<()> {
-    use std::time::Instant;
-
-    let t0 = Instant::now();
-    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
-        .with_context(|| format!("failed to read file: {path}"))?;
-    std::str::from_utf8(&padded[..json_len])
-        .with_context(|| format!("file is not valid UTF-8: {path}"))?;
-    let t_read = t0.elapsed();
-
-    let t1 = Instant::now();
-    let input =
-        jx::simdjson::dom_parse_to_value(&padded, json_len).context("failed to parse JSON")?;
-    let t_parse = t1.elapsed();
-
-    let t2 = Instant::now();
-    let mut values = Vec::new();
-    jx::filter::eval::eval_filter(filter, &input, &mut |v| {
-        values.push(v);
-    });
-    let t_eval = t2.elapsed();
-
-    let t3 = Instant::now();
-    for v in &values {
-        *had_output = true;
-        write_value_line(out, v, config).ok();
-    }
-    out.flush()?;
-    let t_output = t3.elapsed();
-
-    let total = t_read + t_parse + t_eval + t_output;
-    let mb = json_len as f64 / (1024.0 * 1024.0);
-    eprintln!("--- debug-timing: {path} ({mb:.1} MB) ---");
-    eprintln!(
-        "  read:   {:>8.2}ms  ({:.0}%)",
-        t_read.as_secs_f64() * 1000.0,
-        t_read.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  parse:  {:>8.2}ms  ({:.0}%)  [DOM→flat + flat→Value]",
-        t_parse.as_secs_f64() * 1000.0,
-        t_parse.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  eval:   {:>8.2}ms  ({:.0}%)",
-        t_eval.as_secs_f64() * 1000.0,
-        t_eval.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  output: {:>8.2}ms  ({:.0}%)",
-        t_output.as_secs_f64() * 1000.0,
-        t_output.as_secs_f64() / total.as_secs_f64() * 100.0
-    );
-    eprintln!(
-        "  total:  {:>8.2}ms  ({:.0} MB/s)",
-        total.as_secs_f64() * 1000.0,
-        mb / total.as_secs_f64()
-    );
-
-    Ok(())
-}
-
-fn write_value_line(
-    out: &mut impl Write,
-    value: &jx::value::Value,
-    config: &jx::output::OutputConfig,
-) -> io::Result<()> {
-    jx::output::write_value(out, value, config)
 }

@@ -43,7 +43,12 @@ impl Default for OutputConfig {
 /// Write a value to the output sink, followed by a newline (unless join_output).
 pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) -> io::Result<()> {
     match config.mode {
-        OutputMode::Pretty => write_pretty(w, value, 0, &config.indent, config.sort_keys)?,
+        OutputMode::Pretty => {
+            let fmt = PrettyFmt {
+                indent: &config.indent,
+            };
+            write_value_inner(w, value, &fmt, 0, config.sort_keys)?;
+        }
         OutputMode::Compact => write_compact(w, value, config.sort_keys)?,
         OutputMode::Raw => write_raw(w, value, config.sort_keys)?,
     }
@@ -54,65 +59,114 @@ pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) ->
 }
 
 // ---------------------------------------------------------------------------
-// Compact output
+// Generic formatter infrastructure
 // ---------------------------------------------------------------------------
 
-pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<()> {
-    match value {
-        Value::Null => w.write_all(b"null"),
-        Value::Bool(true) => w.write_all(b"true"),
-        Value::Bool(false) => w.write_all(b"false"),
-        Value::Int(n) => {
-            let mut buf = itoa::Buffer::new();
-            w.write_all(buf.format(*n).as_bytes())
-        }
-        Value::Double(f, raw) => write_double(w, *f, raw.as_deref()),
-        Value::String(s) => write_json_string(w, s),
-        Value::Array(arr) => {
-            w.write_all(b"[")?;
-            for (i, v) in arr.iter().enumerate() {
-                if i > 0 {
-                    w.write_all(b",")?;
-                }
-                write_compact(w, v, sort_keys)?;
-            }
-            w.write_all(b"]")
-        }
-        Value::Object(obj) => {
-            w.write_all(b"{")?;
-            let sorted;
-            let pairs: &[(String, Value)] = if sort_keys {
-                sorted = {
-                    let mut v = obj.as_ref().clone();
-                    v.sort_by(|a, b| a.0.cmp(&b.0));
-                    v
-                };
-                &sorted
-            } else {
-                obj.as_ref()
-            };
-            for (i, (k, v)) in pairs.iter().enumerate() {
-                if i > 0 {
-                    w.write_all(b",")?;
-                }
-                write_json_string(w, k)?;
-                w.write_all(b":")?;
-                write_compact(w, v, sort_keys)?;
-            }
-            w.write_all(b"}")
-        }
+/// Trait abstracting the whitespace/indentation differences between compact and
+/// pretty-printed JSON output. A single generic `write_value_inner<F>` handles
+/// the recursive walk; the two implementations control only formatting.
+///
+/// Using a generic type parameter (not `dyn`) ensures monomorphization for
+/// zero runtime cost.
+trait JsonFormatter {
+    fn array_open<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    fn array_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    fn array_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    fn array_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    fn object_open<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    fn object_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    fn kv_sep<W: Write>(&self, w: &mut W) -> io::Result<()>;
+    fn object_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    fn object_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+}
+
+struct CompactFmt;
+
+impl JsonFormatter for CompactFmt {
+    #[inline]
+    fn array_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b"[")
+    }
+    #[inline]
+    fn array_first<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
+        Ok(())
+    }
+    #[inline]
+    fn array_sep<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b",")
+    }
+    #[inline]
+    fn array_close<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b"]")
+    }
+    #[inline]
+    fn object_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b"{")
+    }
+    #[inline]
+    fn object_first<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
+        Ok(())
+    }
+    #[inline]
+    fn kv_sep<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(b":")
+    }
+    #[inline]
+    fn object_sep<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b",")
+    }
+    #[inline]
+    fn object_close<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b"}")
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pretty output
-// ---------------------------------------------------------------------------
+struct PrettyFmt<'a> {
+    indent: &'a str,
+}
 
-fn write_pretty<W: Write>(
+impl<'a> JsonFormatter for PrettyFmt<'a> {
+    fn array_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b"[\n")
+    }
+    fn array_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+        write_indent(w, depth + 1, self.indent)
+    }
+    fn array_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+        w.write_all(b",\n")?;
+        write_indent(w, depth + 1, self.indent)
+    }
+    fn array_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+        w.write_all(b"\n")?;
+        write_indent(w, depth, self.indent)?;
+        w.write_all(b"]")
+    }
+    fn object_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b"{\n")
+    }
+    fn object_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+        write_indent(w, depth + 1, self.indent)
+    }
+    fn kv_sep<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(b": ")
+    }
+    fn object_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+        w.write_all(b",\n")?;
+        write_indent(w, depth + 1, self.indent)
+    }
+    fn object_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+        w.write_all(b"\n")?;
+        write_indent(w, depth, self.indent)?;
+        w.write_all(b"}")
+    }
+}
+
+/// Unified recursive value writer, parameterized by formatter.
+fn write_value_inner<W: Write, F: JsonFormatter>(
     w: &mut W,
     value: &Value,
+    fmt: &F,
     depth: usize,
-    indent: &str,
     sort_keys: bool,
 ) -> io::Result<()> {
     match value {
@@ -127,21 +181,20 @@ fn write_pretty<W: Write>(
         Value::String(s) => write_json_string(w, s),
         Value::Array(arr) if arr.is_empty() => w.write_all(b"[]"),
         Value::Array(arr) => {
-            w.write_all(b"[\n")?;
+            fmt.array_open(w, depth)?;
             for (i, v) in arr.iter().enumerate() {
                 if i > 0 {
-                    w.write_all(b",\n")?;
+                    fmt.array_sep(w, depth)?;
+                } else {
+                    fmt.array_first(w, depth)?;
                 }
-                write_indent(w, depth + 1, indent)?;
-                write_pretty(w, v, depth + 1, indent, sort_keys)?;
+                write_value_inner(w, v, fmt, depth + 1, sort_keys)?;
             }
-            w.write_all(b"\n")?;
-            write_indent(w, depth, indent)?;
-            w.write_all(b"]")
+            fmt.array_close(w, depth)
         }
         Value::Object(obj) if obj.is_empty() => w.write_all(b"{}"),
         Value::Object(obj) => {
-            w.write_all(b"{\n")?;
+            fmt.object_open(w, depth)?;
             let sorted;
             let pairs: &[(String, Value)] = if sort_keys {
                 sorted = {
@@ -155,25 +208,25 @@ fn write_pretty<W: Write>(
             };
             for (i, (k, v)) in pairs.iter().enumerate() {
                 if i > 0 {
-                    w.write_all(b",\n")?;
+                    fmt.object_sep(w, depth)?;
+                } else {
+                    fmt.object_first(w, depth)?;
                 }
-                write_indent(w, depth + 1, indent)?;
                 write_json_string(w, k)?;
-                w.write_all(b": ")?;
-                write_pretty(w, v, depth + 1, indent, sort_keys)?;
+                fmt.kv_sep(w)?;
+                write_value_inner(w, v, fmt, depth + 1, sort_keys)?;
             }
-            w.write_all(b"\n")?;
-            write_indent(w, depth, indent)?;
-            w.write_all(b"}")
+            fmt.object_close(w, depth)
         }
     }
 }
 
-fn write_indent<W: Write>(w: &mut W, depth: usize, indent: &str) -> io::Result<()> {
-    for _ in 0..depth {
-        w.write_all(indent.as_bytes())?;
-    }
-    Ok(())
+// ---------------------------------------------------------------------------
+// Public thin wrappers (preserve existing API)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<()> {
+    write_value_inner(w, value, &CompactFmt, 0, sort_keys)
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +245,13 @@ fn write_raw<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+fn write_indent<W: Write>(w: &mut W, depth: usize, indent: &str) -> io::Result<()> {
+    for _ in 0..depth {
+        w.write_all(indent.as_bytes())?;
+    }
+    Ok(())
+}
 
 /// Write a JSON-escaped string (with surrounding quotes).
 fn write_json_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {

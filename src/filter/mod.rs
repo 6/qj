@@ -246,3 +246,94 @@ pub fn parse(input: &str) -> anyhow::Result<Filter> {
     let tokens = lexer::lex(input)?;
     parser::parse(&tokens)
 }
+
+impl Filter {
+    /// Check if this filter can be safely shared across threads.
+    ///
+    /// Returns `false` if the filter tree contains any `Value::Array` or
+    /// `Value::Object` literals (which use `Rc` and are not safe to clone
+    /// from multiple threads simultaneously).
+    pub fn is_parallel_safe(&self) -> bool {
+        match self {
+            Filter::Literal(Value::Array(_) | Value::Object(_)) => false,
+            Filter::Literal(_)
+            | Filter::Identity
+            | Filter::Iterate
+            | Filter::Recurse
+            | Filter::Field(_)
+            | Filter::Var(_) => true,
+            Filter::Index(f)
+            | Filter::Select(f)
+            | Filter::ArrayConstruct(f)
+            | Filter::Not(f)
+            | Filter::Try(f)
+            | Filter::Neg(f) => f.is_parallel_safe(),
+            Filter::Pipe(a, b)
+            | Filter::Compare(a, _, b)
+            | Filter::Arith(a, _, b)
+            | Filter::BoolOp(a, _, b)
+            | Filter::Alternative(a, b)
+            | Filter::Bind(a, _, b)
+            | Filter::TryCatch(a, b) => a.is_parallel_safe() && b.is_parallel_safe(),
+            Filter::Comma(filters) | Filter::Builtin(_, filters) => {
+                filters.iter().all(|f| f.is_parallel_safe())
+            }
+            Filter::ObjectConstruct(pairs) => pairs.iter().all(|(k, v)| {
+                (match k {
+                    ObjKey::Name(_) => true,
+                    ObjKey::Expr(f) => f.is_parallel_safe(),
+                }) && v.is_parallel_safe()
+            }),
+            Filter::Slice(s, e) => {
+                s.as_ref().is_none_or(|f| f.is_parallel_safe())
+                    && e.as_ref().is_none_or(|f| f.is_parallel_safe())
+            }
+            Filter::IfThenElse(c, t, e) => {
+                c.is_parallel_safe()
+                    && t.is_parallel_safe()
+                    && e.as_ref().is_none_or(|f| f.is_parallel_safe())
+            }
+            Filter::Reduce(src, _, init, update) => {
+                src.is_parallel_safe() && init.is_parallel_safe() && update.is_parallel_safe()
+            }
+            Filter::Foreach(src, _, init, update, extract) => {
+                src.is_parallel_safe()
+                    && init.is_parallel_safe()
+                    && update.is_parallel_safe()
+                    && extract.as_ref().is_none_or(|f| f.is_parallel_safe())
+            }
+            Filter::Assign(path, _, rhs) => path.is_parallel_safe() && rhs.is_parallel_safe(),
+            Filter::StringInterp(parts) => parts.iter().all(|p| match p {
+                StringPart::Lit(_) => true,
+                StringPart::Expr(f) => f.is_parallel_safe(),
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_safety_check() {
+        // Simple filters are parallel-safe
+        assert!(Filter::Identity.is_parallel_safe());
+        assert!(Filter::Field("name".into()).is_parallel_safe());
+        assert!(Filter::Literal(Value::Int(42)).is_parallel_safe());
+        assert!(Filter::Literal(Value::String("hello".into())).is_parallel_safe());
+
+        // Literal arrays/objects are NOT parallel-safe
+        assert!(!Filter::Literal(Value::Array(std::rc::Rc::new(vec![]))).is_parallel_safe());
+        assert!(!Filter::Literal(Value::Object(std::rc::Rc::new(vec![]))).is_parallel_safe());
+
+        // Nested unsafe literal
+        assert!(
+            !Filter::Pipe(
+                Box::new(Filter::Identity),
+                Box::new(Filter::Literal(Value::Array(std::rc::Rc::new(vec![])))),
+            )
+            .is_parallel_safe()
+        );
+    }
+}
