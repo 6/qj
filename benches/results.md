@@ -8,42 +8,42 @@ Median of 3 runs via [hyperfine](https://github.com/sharkdp/hyperfine).
 
 | Filter | File | **jx** | jq | jaq | gojq |
 |--------|------|------|------|------|------|
-| `-c '.'` | twitter.json | **2.8ms** | 16.2ms | 6.7ms | 9.0ms |
-| `-c '.statuses'` | twitter.json | **4.5ms** | 18.0ms | 6.9ms | 8.8ms |
-| `'.statuses|length'` | twitter.json | **2.6ms** | 10.9ms | 7.4ms | 7.3ms |
-| `'.statuses[]|.user.name'` | twitter.json | **4.0ms** | 10.1ms | 6.9ms | 7.3ms |
-| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | twitter.json | **4.0ms** | 9.9ms | 7.1ms | 7.3ms |
-| `'[.statuses[]|.retweet_count|floor]'` | twitter.json | **3.6ms** | 8.7ms | 5.4ms | 6.4ms |
-| `'[.statuses[]|.user.screen_name|split("_")|join("-")]'` | twitter.json | **3.7ms** | 10.9ms | 7.3ms | 7.2ms |
-| `'[.statuses[]|.user.screen_name]|unique|length'` | twitter.json | **3.5ms** | 9.2ms | 5.3ms | 6.4ms |
-| `'[paths(scalars)]|length'` | twitter.json | **5.7ms** | 19.8ms | 18.5ms | 19.1ms |
-| `'.statuses[0]|map_values(tojson)'` | twitter.json | **4.2ms** | 9.8ms | 7.4ms | 7.4ms |
-| `'reduce .statuses[] as $s (0; . + $s.retweet_count)'` | twitter.json | **4.1ms** | 9.6ms | 6.0ms | 6.8ms |
-| `'.statuses[] | . as $s | {name: $s.user.screen_name, rts: $s.retweet_count}'` | twitter.json | **3.9ms** | 9.8ms | 7.0ms | 7.3ms |
-| `'[.statuses[].user.screen_name][:5]'` | twitter.json | **3.7ms** | 10.6ms | 7.1ms | 7.1ms |
-| `'[.statuses[] | try (1 / .retweet_count)]'` | twitter.json | **4.2ms** | 10.5ms | 7.2ms | 7.3ms |
-| `'[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'` | twitter.json | **3.4ms** | 9.8ms | 6.8ms | 7.0ms |
-| `-c 'walk(if type == "boolean" then not else . end)'` | twitter.json | **6.1ms** | 38.6ms | 25.8ms | 19.0ms |
-| `-c '.statuses[0].retweet_count |= . + 1'` | twitter.json | **4.5ms** | 19.6ms | 7.3ms | 9.1ms |
-| `-c '.statuses[] |= (.retweet_count += 1)'` | twitter.json | **4.5ms** | 21.0ms | 7.0ms | 9.8ms |
-| `-c '.'` | large_twitter.json | **20.1ms** | 1.14s | 248.2ms | 432.8ms |
-| `-c '.statuses'` | large_twitter.json | **189.7ms** | 1.16s | 247.2ms | 434.3ms |
-| `'.statuses|length'` | large_twitter.json | **35.1ms** | 381.6ms | 159.9ms | 280.0ms |
-| `'.statuses[]|.user.name'` | large_twitter.json | **152.1ms** | 391.0ms | 166.4ms | 295.8ms |
-| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | large_twitter.json | **151.2ms** | 399.8ms | 174.9ms | 298.2ms |
-| `'[.statuses[]|.retweet_count|floor]'` | large_twitter.json | **154.4ms** | 395.8ms | 166.7ms | 293.0ms |
-| `'[.statuses[]|.user.screen_name|split("_")|join("-")]'` | large_twitter.json | **158.3ms** | 412.6ms | 205.7ms | 295.4ms |
-| `'[.statuses[]|.user.screen_name]|unique|length'` | large_twitter.json | **150.5ms** | 393.4ms | 171.1ms | 291.5ms |
-| `'[paths(scalars)]|length'` | large_twitter.json | **301.8ms** | 1.45s | 1.51s | 1.48s |
-| `'.statuses[0]|map_values(tojson)'` | large_twitter.json | **148.0ms** | 385.2ms | 162.5ms | 281.0ms |
-| `'reduce .statuses[] as $s (0; . + $s.retweet_count)'` | large_twitter.json | **151.0ms** | 390.0ms | 163.9ms | 288.1ms |
-| `'.statuses[] | . as $s | {name: $s.user.screen_name, rts: $s.retweet_count}'` | large_twitter.json | **154.7ms** | 400.1ms | 175.5ms | 300.2ms |
-| `'[.statuses[].user.screen_name][:5]'` | large_twitter.json | **149.0ms** | 390.6ms | 162.7ms | 282.8ms |
-| `'[.statuses[] | try (1 / .retweet_count)]'` | large_twitter.json | **148.9ms** | 390.4ms | 165.9ms | 286.4ms |
-| `'[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'` | large_twitter.json | **152.1ms** | 392.6ms | 164.2ms | 285.9ms |
-| `-c 'walk(if type == "boolean" then not else . end)'` | large_twitter.json | **324.4ms** | 3.48s | 2.37s | 1.56s |
-| `-c '.statuses[0].retweet_count |= . + 1'` | large_twitter.json | **192.8ms** | 1.16s | 250.9ms | 441.1ms |
-| `-c '.statuses[] |= (.retweet_count += 1)'` | large_twitter.json | **548.0ms** | 1.19s | 254.4ms | 457.8ms |
+| `-c '.'` | twitter.json | **2.4ms** | 17.0ms | 6.6ms | 8.9ms |
+| `-c '.statuses'` | twitter.json | **4.3ms** | 18.7ms | 7.0ms | 8.1ms |
+| `'.statuses|length'` | twitter.json | **2.2ms** | 8.8ms | 5.2ms | 6.7ms |
+| `'.statuses[]|.user.name'` | twitter.json | **3.1ms** | 8.5ms | 5.1ms | 6.2ms |
+| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | twitter.json | **3.1ms** | 9.5ms | 5.0ms | 6.9ms |
+| `'[.statuses[]|.retweet_count|floor]'` | twitter.json | **3.1ms** | 9.1ms | 8.3ms | 7.0ms |
+| `'[.statuses[]|.user.screen_name|split("_")|join("-")]'` | twitter.json | **3.9ms** | 9.9ms | 5.8ms | 6.8ms |
+| `'[.statuses[]|.user.screen_name]|unique|length'` | twitter.json | **3.2ms** | 8.7ms | 5.1ms | 6.6ms |
+| `'[paths(scalars)]|length'` | twitter.json | **5.6ms** | 20.5ms | 17.7ms | 18.5ms |
+| `'.statuses[0]|map_values(tojson)'` | twitter.json | **3.7ms** | 10.9ms | 7.2ms | 6.9ms |
+| `'reduce .statuses[] as $s (0; . + $s.retweet_count)'` | twitter.json | **2.6ms** | 8.3ms | 4.3ms | 5.8ms |
+| `'.statuses[] | . as $s | {name: $s.user.screen_name, rts: $s.retweet_count}'` | twitter.json | **3.1ms** | 8.4ms | 4.9ms | 6.0ms |
+| `'[.statuses[].user.screen_name][:5]'` | twitter.json | **3.1ms** | 8.8ms | 5.4ms | 6.4ms |
+| `'[.statuses[] | try (1 / .retweet_count)]'` | twitter.json | **3.4ms** | 8.6ms | 5.9ms | 6.9ms |
+| `'[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'` | twitter.json | **3.1ms** | 9.4ms | 7.5ms | 7.1ms |
+| `-c 'walk(if type == "boolean" then not else . end)'` | twitter.json | **6.1ms** | 40.1ms | 27.0ms | 20.7ms |
+| `-c '.statuses[0].retweet_count |= . + 1'` | twitter.json | **4.0ms** | 18.5ms | 6.3ms | 7.6ms |
+| `-c '.statuses[] |= (.retweet_count += 1)'` | twitter.json | **4.6ms** | 16.8ms | 7.1ms | 8.6ms |
+| `-c '.'` | large_twitter.json | **20.2ms** | 1.17s | 258.0ms | 445.8ms |
+| `-c '.statuses'` | large_twitter.json | **194.2ms** | 1.17s | 268.5ms | 449.8ms |
+| `'.statuses|length'` | large_twitter.json | **32.8ms** | 385.5ms | 161.2ms | 290.7ms |
+| `'.statuses[]|.user.name'` | large_twitter.json | **150.9ms** | 397.6ms | 171.2ms | 297.6ms |
+| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | large_twitter.json | **152.7ms** | 405.3ms | 177.4ms | 299.0ms |
+| `'[.statuses[]|.retweet_count|floor]'` | large_twitter.json | **153.6ms** | 391.2ms | 169.9ms | 307.9ms |
+| `'[.statuses[]|.user.screen_name|split("_")|join("-")]'` | large_twitter.json | **151.7ms** | 411.6ms | 208.8ms | 294.3ms |
+| `'[.statuses[]|.user.screen_name]|unique|length'` | large_twitter.json | **156.2ms** | 403.0ms | 173.2ms | 296.2ms |
+| `'[paths(scalars)]|length'` | large_twitter.json | **312.3ms** | 1.45s | 1.50s | 1.48s |
+| `'.statuses[0]|map_values(tojson)'` | large_twitter.json | **147.2ms** | 385.3ms | 162.4ms | 279.5ms |
+| `'reduce .statuses[] as $s (0; . + $s.retweet_count)'` | large_twitter.json | **150.1ms** | 392.9ms | 163.9ms | 286.6ms |
+| `'.statuses[] | . as $s | {name: $s.user.screen_name, rts: $s.retweet_count}'` | large_twitter.json | **153.1ms** | 401.9ms | 182.3ms | 303.7ms |
+| `'[.statuses[].user.screen_name][:5]'` | large_twitter.json | **153.6ms** | 393.0ms | 169.4ms | 286.6ms |
+| `'[.statuses[] | try (1 / .retweet_count)]'` | large_twitter.json | **149.3ms** | 395.4ms | 165.1ms | 293.6ms |
+| `'[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'` | large_twitter.json | **149.9ms** | 398.5ms | 168.7ms | 290.8ms |
+| `-c 'walk(if type == "boolean" then not else . end)'` | large_twitter.json | **327.6ms** | 3.53s | 2.35s | 1.54s |
+| `-c '.statuses[0].retweet_count |= . + 1'` | large_twitter.json | **193.7ms** | 1.17s | 260.2ms | 443.1ms |
+| `-c '.statuses[] |= (.retweet_count += 1)'` | large_twitter.json | **204.0ms** | 1.21s | 261.3ms | 456.9ms |
 
 ### NDJSON (parallel processing)
 
@@ -51,12 +51,12 @@ jx processes NDJSON in parallel across all cores using rayon.
 
 | Filter | File | **jx** | jq | jaq | gojq |
 |--------|------|------|------|------|------|
-| `'.name'` | 100k.ndjson | **22.6ms** | 134.2ms | 73.0ms | 155.1ms |
-| `-c '.'` | 100k.ndjson | **26.5ms** | 255.0ms | 80.6ms | 192.0ms |
-| `-c 'select(.score>50)|{name,score}'` | 100k.ndjson | **26.9ms** | 172.2ms | 131.3ms | 162.0ms |
-| `'.name'` | 1m.ndjson | **114.3ms** | 1.22s | 687.7ms | 1.53s |
-| `-c '.'` | 1m.ndjson | **124.4ms** | 2.46s | 762.4ms | 1.89s |
-| `-c 'select(.score>50)|{name,score}'` | 1m.ndjson | **130.2ms** | 1.65s | 1.28s | 1.59s |
+| `'.name'` | 100k.ndjson | **24.4ms** | 127.9ms | 73.7ms | 156.9ms |
+| `-c '.'` | 100k.ndjson | **25.9ms** | 257.6ms | 81.7ms | 193.5ms |
+| `-c 'select(.score>50)|{name,score}'` | 100k.ndjson | **26.7ms** | 175.8ms | 131.6ms | 162.9ms |
+| `'.name'` | 1m.ndjson | **114.8ms** | 1.22s | 687.5ms | 1.53s |
+| `-c '.'` | 1m.ndjson | **124.4ms** | 2.47s | 751.0ms | 1.88s |
+| `-c 'select(.score>50)|{name,score}'` | 1m.ndjson | **123.3ms** | 1.64s | 1.28s | 1.60s |
 
 ### Throughput
 
@@ -64,13 +64,13 @@ Peak parse throughput (`-c '.'` on large_twitter.json, 49MB):
 
 | **jx** | jq | jaq | gojq |
 |------|------|------|------|
-| **2.4 GB/s** | 43 MB/s | 197 MB/s | 113 MB/s |
+| **2.4 GB/s** | 42 MB/s | 190 MB/s | 110 MB/s |
 
 ### Summary (times faster than jq)
 
 | Category | **jx** | jaq | gojq |
 |----------|------|------|------|
-| JSON (large_twitter.json) | **4.1x** | 2.5x | 1.6x |
-| NDJSON (1m.ndjson) | **13.9x** | 1.9x | 1.0x |
+| JSON (large_twitter.json) | **4.3x** | 2.5x | 1.6x |
+| NDJSON (1m.ndjson) | **14.1x** | 2.0x | 1.0x |
 
 Geometric mean of per-filter speedups (median time). Higher is better.
