@@ -15,7 +15,7 @@
 use anyhow::{Result, bail};
 
 use super::lexer::Token;
-use super::{ArithOp, BoolOp, CmpOp, Filter, ObjKey};
+use super::{ArithOp, AssignOp, BoolOp, CmpOp, Filter, ObjKey};
 use crate::value::Value;
 use std::rc::Rc;
 
@@ -54,9 +54,16 @@ impl<'a> Parser<'a> {
         self.parse_pipe()
     }
 
-    // pipe = comma ("as" "$var" "|" pipe | "|" comma)*
+    // pipe = comma (assign_op pipe | "as" "$var" "|" pipe | "|" comma)*
     fn parse_pipe(&mut self) -> Result<Filter> {
         let mut left = self.parse_comma()?;
+
+        // Check for assignment operators before pipe (right-recursive)
+        if let Some(op) = self.peek_assign_op() {
+            self.advance();
+            let right = self.parse_pipe()?;
+            return Ok(Filter::Assign(Box::new(left), op, Box::new(right)));
+        }
 
         // Check for `expr as $var | body`
         if self.peek() == Some(&Token::As) {
@@ -67,6 +74,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let right = self.parse_comma()?;
 
+            // Check for assignment after pipe
+            if let Some(op) = self.peek_assign_op() {
+                self.advance();
+                let rhs = self.parse_pipe()?;
+                let assign = Filter::Assign(Box::new(right), op, Box::new(rhs));
+                return Ok(Filter::Pipe(Box::new(left), Box::new(assign)));
+            }
+
             // Check for `as $var |` after the right-side comma-expr
             if self.peek() == Some(&Token::As) {
                 let binding = self.parse_as_binding(right)?;
@@ -76,6 +91,20 @@ impl<'a> Parser<'a> {
             left = Filter::Pipe(Box::new(left), Box::new(right));
         }
         Ok(left)
+    }
+
+    fn peek_assign_op(&self) -> Option<AssignOp> {
+        match self.peek()? {
+            Token::UpdateAssign => Some(AssignOp::Update),
+            Token::Assign => Some(AssignOp::Set),
+            Token::PlusAssign => Some(AssignOp::Add),
+            Token::MinusAssign => Some(AssignOp::Sub),
+            Token::StarAssign => Some(AssignOp::Mul),
+            Token::SlashAssign => Some(AssignOp::Div),
+            Token::PercentAssign => Some(AssignOp::Mod),
+            Token::AltAssign => Some(AssignOp::Alt),
+            _ => None,
+        }
     }
 
     /// Parse an if-elif-else-end chain. Called after `if` or `elif` is consumed.
@@ -1016,6 +1045,121 @@ mod tests {
                 assert!(extract.is_some());
             }
             other => panic!("expected Foreach with extract, got {other:?}"),
+        }
+    }
+
+    // --- Assignment operators ---
+
+    #[test]
+    fn parse_update_assign() {
+        // `.foo |= . + 1`
+        let f = p(".foo |= . + 1");
+        match f {
+            Filter::Assign(lhs, op, _rhs) => {
+                assert_eq!(*lhs, Filter::Field("foo".into()));
+                assert_eq!(op, AssignOp::Update);
+            }
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_plain_assign() {
+        let f = p(".a = 42");
+        match f {
+            Filter::Assign(lhs, op, rhs) => {
+                assert_eq!(*lhs, Filter::Field("a".into()));
+                assert_eq!(op, AssignOp::Set);
+                assert_eq!(*rhs, Filter::Literal(Value::Int(42)));
+            }
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_plus_assign() {
+        let f = p(".[] += 2");
+        match f {
+            Filter::Assign(lhs, op, rhs) => {
+                assert_eq!(*lhs, Filter::Iterate);
+                assert_eq!(op, AssignOp::Add);
+                assert_eq!(*rhs, Filter::Literal(Value::Int(2)));
+            }
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_minus_assign() {
+        let f = p(".x -= 1");
+        match f {
+            Filter::Assign(_, op, _) => assert_eq!(op, AssignOp::Sub),
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_star_assign() {
+        let f = p(".x *= 2");
+        match f {
+            Filter::Assign(_, op, _) => assert_eq!(op, AssignOp::Mul),
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_assign() {
+        let f = p(".x /= 2");
+        match f {
+            Filter::Assign(_, op, _) => assert_eq!(op, AssignOp::Div),
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_percent_assign() {
+        let f = p(".x %= 3");
+        match f {
+            Filter::Assign(_, op, _) => assert_eq!(op, AssignOp::Mod),
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_alt_assign() {
+        let f = p(r#".a //= "default""#);
+        match f {
+            Filter::Assign(_, op, _) => assert_eq!(op, AssignOp::Alt),
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_assign_in_pipe() {
+        // `.[] | .foo |= . + 1` → Pipe(Iterate, Assign(Field("foo"), Update, ...))
+        let f = p(".[] | .foo |= . + 1");
+        match f {
+            Filter::Pipe(lhs, rhs) => {
+                assert_eq!(*lhs, Filter::Iterate);
+                match *rhs {
+                    Filter::Assign(_, op, _) => assert_eq!(op, AssignOp::Update),
+                    other => panic!("expected Assign in pipe, got {other:?}"),
+                }
+            }
+            other => panic!("expected Pipe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_assign_right_recursive() {
+        // `.a = .b = 1` should be right-recursive: `.a = (.b = 1)`
+        let f = p(".a = .b = 1");
+        match f {
+            Filter::Assign(_, AssignOp::Set, rhs) => match *rhs {
+                Filter::Assign(_, AssignOp::Set, _) => {}
+                other => panic!("expected nested Assign, got {other:?}"),
+            },
+            other => panic!("expected Assign, got {other:?}"),
         }
     }
 }

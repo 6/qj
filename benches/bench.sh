@@ -86,6 +86,9 @@ FILTER_NAMES=(
     "try (error suppression)"
     "elif"
     "walk"
+    # Assignment operators
+    "update assign (|=)"
+    "arithmetic assign (+=)"
 )
 # Extra flags for each filter (e.g. -c for compact output)
 FILTER_FLAGS=(
@@ -105,6 +108,9 @@ FILTER_FLAGS=(
     ""
     ""
     ""
+    "-c"
+    # Assignment operators
+    "-c"
     "-c"
 )
 # The jq filter expression itself
@@ -126,6 +132,9 @@ FILTER_EXPRS=(
     '[.statuses[] | try (1 / .retweet_count)]'
     '[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'
     'walk(if type == "boolean" then not else . end)'
+    # Assignment operators
+    '.statuses[0].retweet_count |= . + 1'
+    '.statuses[] |= (.retweet_count += 1)'
 )
 
 # Files to benchmark (small first, then large if available)

@@ -2398,3 +2398,122 @@ fn join_output_compact() {
 fn monochrome_no_error() {
     jx_with_args(&["-Mc", ".", "--"], "{}");
 }
+
+// --- Assignment operators ---
+
+#[test]
+fn assign_update_field() {
+    assert_eq!(
+        jx_compact(".foo |= . + 1", r#"{"foo":42}"#).trim(),
+        r#"{"foo":43}"#
+    );
+}
+
+#[test]
+fn assign_update_iterate() {
+    assert_eq!(jx_compact(".[] |= . * 2", "[1,2,3]").trim(), "[2,4,6]");
+}
+
+#[test]
+fn assign_set_field() {
+    assert_eq!(
+        jx_compact(".a = 42", r#"{"a":1,"b":2}"#).trim(),
+        r#"{"a":42,"b":2}"#
+    );
+}
+
+#[test]
+fn assign_set_cross_reference() {
+    // = evaluates RHS against the original input
+    assert_eq!(
+        jx_compact(".foo = .bar", r#"{"bar":42}"#).trim(),
+        r#"{"bar":42,"foo":42}"#
+    );
+}
+
+#[test]
+fn assign_plus_iterate() {
+    assert_eq!(jx_compact(".[] += 2", "[1,3,5]").trim(), "[3,5,7]");
+}
+
+#[test]
+fn assign_mul_iterate() {
+    assert_eq!(jx_compact(".[] *= 2", "[1,3,5]").trim(), "[2,6,10]");
+}
+
+#[test]
+fn assign_sub_iterate() {
+    assert_eq!(jx_compact(".[] -= 2", "[1,3,5]").trim(), "[-1,1,3]");
+}
+
+#[test]
+fn assign_div() {
+    assert_eq!(jx_compact(".x /= 2", r#"{"x":10}"#).trim(), r#"{"x":5}"#);
+}
+
+#[test]
+fn assign_mod() {
+    assert_eq!(jx_compact(".x %= 3", r#"{"x":10}"#).trim(), r#"{"x":1}"#);
+}
+
+#[test]
+fn assign_alt_null() {
+    assert_eq!(
+        jx_compact(r#".a //= "default""#, r#"{"a":null}"#).trim(),
+        r#"{"a":"default"}"#
+    );
+}
+
+#[test]
+fn assign_alt_existing() {
+    assert_eq!(
+        jx_compact(r#".a //= "default""#, r#"{"a":1}"#).trim(),
+        r#"{"a":1}"#
+    );
+}
+
+#[test]
+fn assign_update_empty_deletion() {
+    // |= empty → delete matching elements
+    assert_eq!(
+        jx_compact("(.[] | select(. >= 2)) |= empty", "[1,5,3,0,7]").trim(),
+        "[1,0]"
+    );
+}
+
+#[test]
+fn assign_nested_path() {
+    assert_eq!(
+        jx_compact(".a.b |= . + 1", r#"{"a":{"b":10}}"#).trim(),
+        r#"{"a":{"b":11}}"#
+    );
+}
+
+#[test]
+fn assign_auto_create_structure() {
+    assert_eq!(
+        jx_compact(".[2][3] = 1", "[4]").trim(),
+        "[4,null,[null,null,null,1]]"
+    );
+}
+
+#[test]
+fn assign_update_object_construction() {
+    assert_eq!(
+        jx_compact(r#".[0].a |= {"old":., "new":(.+1)}"#, r#"[{"a":1,"b":2}]"#).trim(),
+        r#"[{"a":{"old":1,"new":2},"b":2}]"#
+    );
+}
+
+#[test]
+fn assign_update_with_index() {
+    assert_eq!(jx_compact(".[0] |= . + 10", "[1,2,3]").trim(), "[11,2,3]");
+}
+
+#[test]
+fn assign_set_new_field() {
+    assert_eq!(
+        jx_compact(".c = 3", r#"{"a":1,"b":2}"#).trim(),
+        r#"{"a":1,"b":2,"c":3}"#
+    );
+}

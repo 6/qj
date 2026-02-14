@@ -71,6 +71,8 @@ pub enum Filter {
         Box<Filter>,
         Option<Box<Filter>>,
     ),
+    /// Assignment: `path |= expr`, `path = expr`, `path += expr`, etc.
+    Assign(Box<Filter>, AssignOp, Box<Filter>),
 }
 
 /// Object construction key — can be a literal string or computed.
@@ -97,6 +99,18 @@ pub enum ArithOp {
     Mul,
     Div,
     Mod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Update, // |=
+    Set,    // =
+    Add,    // +=
+    Sub,    // -=
+    Mul,    // *=
+    Div,    // /=
+    Mod,    // %=
+    Alt,    // //=
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

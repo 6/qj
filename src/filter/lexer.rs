@@ -54,6 +54,15 @@ pub enum Token {
     Def,
     // Logical
     DoubleSlash, // // (alternative operator)
+    // Assignment operators
+    Assign,        // =
+    UpdateAssign,  // |=
+    PlusAssign,    // +=
+    MinusAssign,   // -=
+    StarAssign,    // *=
+    SlashAssign,   // /=
+    PercentAssign, // %=
+    AltAssign,     // //=
 }
 
 pub fn lex(input: &str) -> Result<Vec<Token>> {
@@ -101,8 +110,13 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 continue;
             }
             b'|' => {
-                tokens.push(Token::Pipe);
-                i += 1;
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    tokens.push(Token::UpdateAssign);
+                    i += 2;
+                } else {
+                    tokens.push(Token::Pipe);
+                    i += 1;
+                }
                 continue;
             }
             b',' => {
@@ -126,8 +140,13 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 continue;
             }
             b'+' => {
-                tokens.push(Token::Plus);
-                i += 1;
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    tokens.push(Token::PlusAssign);
+                    i += 2;
+                } else {
+                    tokens.push(Token::Plus);
+                    i += 1;
+                }
                 continue;
             }
             b'-' => {
@@ -143,21 +162,43 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                     i += consumed;
                     continue;
                 }
-                tokens.push(Token::Minus);
-                i += 1;
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    tokens.push(Token::MinusAssign);
+                    i += 2;
+                } else {
+                    tokens.push(Token::Minus);
+                    i += 1;
+                }
                 continue;
             }
             b'*' => {
-                tokens.push(Token::Star);
-                i += 1;
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    tokens.push(Token::StarAssign);
+                    i += 2;
+                } else {
+                    tokens.push(Token::Star);
+                    i += 1;
+                }
                 continue;
             }
             b'%' => {
-                tokens.push(Token::Percent);
-                i += 1;
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    tokens.push(Token::PercentAssign);
+                    i += 2;
+                } else {
+                    tokens.push(Token::Percent);
+                    i += 1;
+                }
                 continue;
             }
             _ => {}
+        }
+
+        // Three-char operators (must check before two-char)
+        if i + 2 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' && bytes[i + 2] == b'=' {
+            tokens.push(Token::AltAssign);
+            i += 3;
+            continue;
         }
 
         // Two-char operators
@@ -192,7 +233,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
             }
         }
 
-        // Single < > / (must come after two-char checks)
+        // Single < > / = (must come after two-char checks)
         match bytes[i] {
             b'<' => {
                 tokens.push(Token::Lt);
@@ -205,7 +246,17 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 continue;
             }
             b'/' => {
-                tokens.push(Token::Slash);
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    tokens.push(Token::SlashAssign);
+                    i += 2;
+                } else {
+                    tokens.push(Token::Slash);
+                    i += 1;
+                }
+                continue;
+            }
+            b'=' => {
+                tokens.push(Token::Assign);
                 i += 1;
                 continue;
             }
@@ -610,6 +661,144 @@ mod tests {
         assert_eq!(
             lex("1 - 2").unwrap(),
             vec![Token::Int(1), Token::Minus, Token::Int(2)]
+        );
+    }
+
+    // --- Assignment operators ---
+
+    #[test]
+    fn lex_update_assign() {
+        assert_eq!(
+            lex(".foo |= . + 1").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("foo".into()),
+                Token::UpdateAssign,
+                Token::Dot,
+                Token::Plus,
+                Token::Int(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_plain_assign() {
+        assert_eq!(
+            lex(".a = 42").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("a".into()),
+                Token::Assign,
+                Token::Int(42),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_plus_assign() {
+        assert_eq!(
+            lex(".[] += 2").unwrap(),
+            vec![
+                Token::Dot,
+                Token::LBrack,
+                Token::RBrack,
+                Token::PlusAssign,
+                Token::Int(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_minus_assign() {
+        assert_eq!(
+            lex(".x -= 1").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("x".into()),
+                Token::MinusAssign,
+                Token::Int(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_star_assign() {
+        assert_eq!(
+            lex(".x *= 2").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("x".into()),
+                Token::StarAssign,
+                Token::Int(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_slash_assign() {
+        assert_eq!(
+            lex(".x /= 2").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("x".into()),
+                Token::SlashAssign,
+                Token::Int(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_percent_assign() {
+        assert_eq!(
+            lex(".x %= 3").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("x".into()),
+                Token::PercentAssign,
+                Token::Int(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_alt_assign() {
+        // //= is 3 chars — must not be confused with // followed by =
+        assert_eq!(
+            lex(r#".a //= "default""#).unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("a".into()),
+                Token::AltAssign,
+                Token::Str("default".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_double_slash_vs_alt_assign() {
+        // ".x // null" should produce DoubleSlash, not AltAssign
+        assert_eq!(
+            lex(".x // null").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("x".into()),
+                Token::DoubleSlash,
+                Token::Null,
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_eq_vs_assign() {
+        // == must still work
+        assert_eq!(
+            lex(".x == 1").unwrap(),
+            vec![
+                Token::Dot,
+                Token::Ident("x".into()),
+                Token::Eq,
+                Token::Int(1),
+            ]
         );
     }
 }

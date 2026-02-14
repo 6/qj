@@ -211,6 +211,29 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
     }
 }
 
+pub(super) fn get_path(value: &Value, path: &[Value]) -> Value {
+    let mut current = value.clone();
+    for seg in path {
+        current = match (&current, seg) {
+            (Value::Object(obj), Value::String(k)) => obj
+                .iter()
+                .find(|(ek, _)| ek == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Null),
+            (Value::Array(arr), Value::Int(i)) => {
+                let idx = if *i < 0 { arr.len() as i64 + i } else { *i };
+                if idx >= 0 && (idx as usize) < arr.len() {
+                    arr[idx as usize].clone()
+                } else {
+                    Value::Null
+                }
+            }
+            _ => Value::Null,
+        };
+    }
+    current
+}
+
 pub(super) fn enum_paths(
     value: &Value,
     current: &mut Vec<Value>,
@@ -323,35 +346,67 @@ pub(super) fn path_of(
             _ => {}
         },
         Filter::Pipe(a, b) => {
-            path_of(a, input, current, &mut |_path_val| {
-                // For pipe, we just extend the path
-            });
-            // Simplified: just output based on the full pipe
             let saved_len = current.len();
-            match a.as_ref() {
-                Filter::Field(name) => {
-                    current.push(Value::String(name.clone()));
-                    let next = match input {
-                        Value::Object(obj) => obj
-                            .iter()
-                            .find(|(k, _)| k == name)
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or(Value::Null),
-                        _ => Value::Null,
-                    };
-                    path_of(b, &next, current, output);
-                    current.truncate(saved_len);
+            // Collect all paths from LHS, navigate to each, then resolve RHS paths
+            let mut lhs_paths: Vec<Vec<Value>> = Vec::new();
+            path_of(a, input, current, &mut |p| {
+                if let Value::Array(arr) = p {
+                    lhs_paths.push(arr.as_ref().clone());
                 }
-                _ => {
-                    // Fallback: just evaluate both sides
-                    eval(filter, input, &env, &mut |_| {
-                        output(Value::Array(Rc::new(current.clone())));
-                    });
-                }
+            });
+            for lhs_path in &lhs_paths {
+                current.truncate(saved_len);
+                current.extend_from_slice(lhs_path);
+                let next = get_path(input, lhs_path);
+                path_of(b, &next, current, output);
             }
+            current.truncate(saved_len);
         }
         Filter::Identity => {
             output(Value::Array(Rc::new(current.clone())));
+        }
+        Filter::Select(cond) => {
+            let mut is_match = false;
+            eval(cond, input, &env, &mut |v| {
+                if v.is_truthy() {
+                    is_match = true;
+                }
+            });
+            if is_match {
+                output(Value::Array(Rc::new(current.clone())));
+            }
+        }
+        Filter::Comma(items) => {
+            for item in items {
+                path_of(item, input, current, output);
+            }
+        }
+        Filter::Recurse => {
+            fn recurse_paths(
+                value: &Value,
+                current: &mut Vec<Value>,
+                output: &mut dyn FnMut(Value),
+            ) {
+                output(Value::Array(Rc::new(current.clone())));
+                match value {
+                    Value::Array(arr) => {
+                        for (i, v) in arr.iter().enumerate() {
+                            current.push(Value::Int(i as i64));
+                            recurse_paths(v, current, output);
+                            current.pop();
+                        }
+                    }
+                    Value::Object(obj) => {
+                        for (k, v) in obj.iter() {
+                            current.push(Value::String(k.clone()));
+                            recurse_paths(v, current, output);
+                            current.pop();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            recurse_paths(input, current, output);
         }
         _ => {}
     }

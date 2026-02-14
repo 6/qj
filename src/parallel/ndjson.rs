@@ -235,6 +235,9 @@ fn filter_is_parallel_safe(filter: &Filter) -> bool {
                 && filter_is_parallel_safe(update)
                 && extract.as_ref().is_none_or(|f| filter_is_parallel_safe(f))
         }
+        Filter::Assign(path, _, rhs) => {
+            filter_is_parallel_safe(path) && filter_is_parallel_safe(rhs)
+        }
         Filter::StringInterp(parts) => parts.iter().all(|p| match p {
             StringPart::Lit(_) => true,
             StringPart::Expr(f) => filter_is_parallel_safe(f),

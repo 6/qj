@@ -2,7 +2,7 @@
 ///
 /// Uses generator semantics: each filter operation calls `output` for
 /// each result, avoiding intermediate Vec allocations.
-use crate::filter::{ArithOp, BoolOp, CmpOp, Env, Filter, ObjKey};
+use crate::filter::{ArithOp, AssignOp, BoolOp, CmpOp, Env, Filter, ObjKey};
 use crate::value::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -386,7 +386,109 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                 }
             });
         }
+
+        Filter::Assign(path_filter, op, rhs) => {
+            eval_assign(path_filter, *op, rhs, input, env, output);
+        }
     }
+}
+
+/// Evaluate an assignment expression: `path_filter op= rhs`.
+fn eval_assign(
+    path_filter: &Filter,
+    op: AssignOp,
+    rhs: &Filter,
+    input: &Value,
+    env: &Env,
+    output: &mut dyn FnMut(Value),
+) {
+    use super::value_ops;
+
+    // Collect all paths from the LHS
+    let mut paths: Vec<Vec<Value>> = Vec::new();
+    value_ops::path_of(path_filter, input, &mut Vec::new(), &mut |p| {
+        if let Value::Array(arr) = p {
+            paths.push(arr.as_ref().clone());
+        }
+    });
+
+    let mut result = input.clone();
+    match op {
+        AssignOp::Update => {
+            // For |= empty (deletion), process paths in reverse order to avoid
+            // index shifting when deleting from arrays.
+            let mut deletions: Vec<Vec<Value>> = Vec::new();
+            for path in &paths {
+                let current = value_ops::get_path(&result, path);
+                let mut produced = false;
+                let mut new_val = Value::Null;
+                eval(rhs, &current, env, &mut |v| {
+                    if !produced {
+                        new_val = v;
+                        produced = true;
+                    }
+                });
+                if produced {
+                    result = value_ops::set_path(&result, path, &new_val);
+                } else {
+                    // |= empty → delete the path
+                    deletions.push(path.clone());
+                }
+            }
+            // Process deletions in reverse index order to avoid shifting
+            deletions.sort_by(|a, b| {
+                // Compare the last segment (the one being deleted)
+                let a_last = a.last();
+                let b_last = b.last();
+                match (a_last, b_last) {
+                    (Some(Value::Int(ai)), Some(Value::Int(bi))) => bi.cmp(ai),
+                    _ => std::cmp::Ordering::Equal,
+                }
+            });
+            for path in &deletions {
+                result = value_ops::del_path(&result, path);
+            }
+        }
+        AssignOp::Set => {
+            // = evaluates RHS with the ORIGINAL input, not the value at path
+            for path in &paths {
+                eval(rhs, input, env, &mut |new_val| {
+                    result = value_ops::set_path(&result, path, &new_val);
+                });
+            }
+        }
+        AssignOp::Alt => {
+            // //= only updates if current value is null or false
+            for path in &paths {
+                let current = value_ops::get_path(&result, path);
+                if matches!(current, Value::Null | Value::Bool(false)) {
+                    eval(rhs, &current, env, &mut |new_val| {
+                        result = value_ops::set_path(&result, path, &new_val);
+                    });
+                }
+            }
+        }
+        _ => {
+            // +=, -=, *=, /=, %= → desugar to |= . OP rhs
+            let arith_op = match op {
+                AssignOp::Add => ArithOp::Add,
+                AssignOp::Sub => ArithOp::Sub,
+                AssignOp::Mul => ArithOp::Mul,
+                AssignOp::Div => ArithOp::Div,
+                AssignOp::Mod => ArithOp::Mod,
+                _ => unreachable!(),
+            };
+            for path in &paths {
+                let current = value_ops::get_path(&result, path);
+                eval(rhs, &current, env, &mut |rhs_val| {
+                    if let Some(new_val) = arith_values(&current, &arith_op, &rhs_val) {
+                        result = value_ops::set_path(&result, path, &new_val);
+                    }
+                });
+            }
+        }
+    }
+    output(result);
 }
 
 /// Resolve a slice index: handle negatives (wrap with len), clamp to [0, len].

@@ -106,7 +106,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | in | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
 | to_entries | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | from_entries | 2 | **2/2 Y** | 2/2 Y | 1/2 ~ | 2/2 Y |
-| with_entries | 2 | **1/2 ~** | 2/2 Y | 2/2 Y | 2/2 Y |
+| with_entries | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | del | 3 | **1/3 ~** | 3/3 Y | 3/3 Y | 3/3 Y |
 | paths | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | path | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 2/2 Y |
@@ -200,10 +200,10 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Feature | Tests | **jx** | jq | jaq | gojq |
 |---------|------:|-----:|-----:|-----:|-----:|
-| Update assignment | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
-| Arithmetic assignment | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
-| Alternative assignment | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
-| Plain assignment | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
+| Update assignment | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| Arithmetic assignment | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| Alternative assignment | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| Plain assignment | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 
 ### I/O and environment
 
@@ -246,7 +246,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **jx** | **133** | **2** | **31** | **80.7%** |
+| **jx** | **138** | **1** | **27** | **83.4%** |
 | jq | 165 | 0 | 1 | 99.4% |
 | jaq | 150 | 3 | 13 | 91.3% |
 | gojq | 163 | 0 | 3 | 98.2% |
