@@ -86,8 +86,8 @@ bash benches/build_cpp_bench.sh
 ### End-to-end tool comparison (jx vs jq vs jaq vs gojq)
 ```
 bash benches/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
-bash benches/bench.sh               # defaults: 5 runs, 5s cooldown, writes benches/results.md
-bash benches/bench.sh --runs 3 --cooldown 2   # faster run for quick checks
+cargo run --release --bin bench_tools                               # defaults: 5 runs, 5s cooldown
+cargo run --release --bin bench_tools -- --runs 3 --cooldown 2      # faster run for quick checks
 ```
 
 ### Profiling a single run
