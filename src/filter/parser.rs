@@ -54,15 +54,70 @@ impl<'a> Parser<'a> {
         self.parse_pipe()
     }
 
-    // pipe = comma ("|" comma)*
+    // pipe = comma ("as" "$var" "|" pipe | "|" comma)*
     fn parse_pipe(&mut self) -> Result<Filter> {
         let mut left = self.parse_comma()?;
+
+        // Check for `expr as $var | body`
+        if self.peek() == Some(&Token::As) {
+            return self.parse_as_binding(left);
+        }
+
         while self.peek() == Some(&Token::Pipe) {
             self.advance();
             let right = self.parse_comma()?;
+
+            // Check for `as $var |` after the right-side comma-expr
+            if self.peek() == Some(&Token::As) {
+                let binding = self.parse_as_binding(right)?;
+                return Ok(Filter::Pipe(Box::new(left), Box::new(binding)));
+            }
+
             left = Filter::Pipe(Box::new(left), Box::new(right));
         }
         Ok(left)
+    }
+
+    /// Parse an if-elif-else-end chain. Called after `if` or `elif` is consumed.
+    /// Desugars `elif` into nested IfThenElse.
+    fn parse_if_chain(&mut self) -> Result<Filter> {
+        let cond = self.parse_expr()?;
+        self.expect(&Token::Then)?;
+        let then_branch = self.parse_expr()?;
+        let else_branch = match self.peek() {
+            Some(Token::Elif) => {
+                self.advance();
+                Some(Box::new(self.parse_if_chain()?))
+            }
+            Some(Token::Else) => {
+                self.advance();
+                let e = self.parse_expr()?;
+                self.expect(&Token::End)?;
+                Some(Box::new(e))
+            }
+            _ => {
+                self.expect(&Token::End)?;
+                None
+            }
+        };
+        Ok(Filter::IfThenElse(
+            Box::new(cond),
+            Box::new(then_branch),
+            else_branch,
+        ))
+    }
+
+    /// Parse `as $var | body` — the `as` token is consumed here.
+    fn parse_as_binding(&mut self, expr: Filter) -> Result<Filter> {
+        self.advance(); // consume `as`
+        let name = match self.advance() {
+            Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
+            Some(tok) => bail!("expected $variable after 'as', got {tok:?}"),
+            None => bail!("expected $variable after 'as', got end of input"),
+        };
+        self.expect(&Token::Pipe)?;
+        let body = self.parse_pipe()?; // right-recursive
+        Ok(Filter::Bind(Box::new(expr), name, Box::new(body)))
     }
 
     // comma = alternative ("," alternative)*
@@ -188,10 +243,9 @@ impl<'a> Parser<'a> {
                         self.advance();
                         node = Filter::Pipe(Box::new(node), Box::new(Filter::Iterate));
                     } else {
-                        // .[expr] — index
-                        let idx = self.parse_expr()?;
-                        self.expect(&Token::RBrack)?;
-                        node = Filter::Pipe(Box::new(node), Box::new(Filter::Index(Box::new(idx))));
+                        // .[expr] or .[start:end]
+                        let inner = self.parse_bracket_index_or_slice()?;
+                        node = Filter::Pipe(Box::new(node), Box::new(inner));
                     }
                 }
                 Some(Token::Question) => {
@@ -224,9 +278,7 @@ impl<'a> Parser<'a> {
                             self.advance();
                             Ok(Filter::Iterate)
                         } else {
-                            let idx = self.parse_expr()?;
-                            self.expect(&Token::RBrack)?;
-                            Ok(Filter::Index(Box::new(idx)))
+                            self.parse_bracket_index_or_slice()
                         }
                     }
                     Some(Token::Dot) => {
@@ -264,21 +316,70 @@ impl<'a> Parser<'a> {
             }
             Some(Token::If) => {
                 self.advance();
-                let cond = self.parse_expr()?;
-                self.expect(&Token::Then)?;
-                let then_branch = self.parse_expr()?;
-                let else_branch = if self.peek() == Some(&Token::Else) {
+                self.parse_if_chain()
+            }
+            Some(Token::Reduce) => {
+                // reduce source as $var (init; update)
+                self.advance();
+                let source = self.parse_postfix()?;
+                self.expect(&Token::As)?;
+                let var_name = match self.advance() {
+                    Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
+                    Some(tok) => bail!("expected $variable in reduce, got {tok:?}"),
+                    None => bail!("expected $variable in reduce, got end of input"),
+                };
+                self.expect(&Token::LParen)?;
+                let init = self.parse_expr()?;
+                self.expect(&Token::Semicolon)?;
+                let update = self.parse_expr()?;
+                self.expect(&Token::RParen)?;
+                Ok(Filter::Reduce(
+                    Box::new(source),
+                    var_name,
+                    Box::new(init),
+                    Box::new(update),
+                ))
+            }
+            Some(Token::Foreach) => {
+                // foreach source as $var (init; update) or
+                // foreach source as $var (init; update; extract)
+                self.advance();
+                let source = self.parse_postfix()?;
+                self.expect(&Token::As)?;
+                let var_name = match self.advance() {
+                    Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
+                    Some(tok) => bail!("expected $variable in foreach, got {tok:?}"),
+                    None => bail!("expected $variable in foreach, got end of input"),
+                };
+                self.expect(&Token::LParen)?;
+                let init = self.parse_expr()?;
+                self.expect(&Token::Semicolon)?;
+                let update = self.parse_expr()?;
+                let extract = if self.peek() == Some(&Token::Semicolon) {
                     self.advance();
                     Some(Box::new(self.parse_expr()?))
                 } else {
                     None
                 };
-                self.expect(&Token::End)?;
-                Ok(Filter::IfThenElse(
-                    Box::new(cond),
-                    Box::new(then_branch),
-                    else_branch,
+                self.expect(&Token::RParen)?;
+                Ok(Filter::Foreach(
+                    Box::new(source),
+                    var_name,
+                    Box::new(init),
+                    Box::new(update),
+                    extract,
                 ))
+            }
+            Some(Token::Try) => {
+                self.advance();
+                let body = self.parse_postfix()?;
+                if self.peek() == Some(&Token::Catch) {
+                    self.advance();
+                    let handler = self.parse_postfix()?;
+                    Ok(Filter::TryCatch(Box::new(body), Box::new(handler)))
+                } else {
+                    Ok(Filter::Try(Box::new(body)))
+                }
             }
             Some(Token::Not) => {
                 self.advance();
@@ -325,12 +426,16 @@ impl<'a> Parser<'a> {
                 // we would need to handle it. For now, just literal.
                 Ok(Filter::Literal(Value::String(s)))
             }
-            // Named identifier — builtin or function call
+            // Named identifier — builtin, function call, or variable
             Some(Token::Ident(_)) => {
                 let name = match self.advance().unwrap() {
                     Token::Ident(s) => s.clone(),
                     _ => unreachable!(),
                 };
+                // Variable reference: $name
+                if name.starts_with('$') {
+                    return Ok(Filter::Var(name));
+                }
                 // Check for function call: name(args)
                 if self.peek() == Some(&Token::LParen) {
                     self.advance();
@@ -352,6 +457,40 @@ impl<'a> Parser<'a> {
             Some(tok) => bail!("unexpected token: {tok:?}"),
             None => bail!("unexpected end of filter expression"),
         }
+    }
+
+    /// Parse the contents of `[...]` after the `[` has been consumed.
+    /// Returns Index or Slice depending on whether `:` is present.
+    fn parse_bracket_index_or_slice(&mut self) -> Result<Filter> {
+        // [:end] — no start
+        if self.peek() == Some(&Token::Colon) {
+            self.advance();
+            let end = if self.peek() == Some(&Token::RBrack) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RBrack)?;
+            return Ok(Filter::Slice(None, end));
+        }
+
+        let first = self.parse_expr()?;
+
+        // [start:end] or [start:]
+        if self.peek() == Some(&Token::Colon) {
+            self.advance();
+            let end = if self.peek() == Some(&Token::RBrack) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RBrack)?;
+            return Ok(Filter::Slice(Some(Box::new(first)), end));
+        }
+
+        // Regular [index]
+        self.expect(&Token::RBrack)?;
+        Ok(Filter::Index(Box::new(first)))
     }
 
     fn parse_object_construct(&mut self) -> Result<Filter> {
@@ -420,9 +559,20 @@ impl<'a> Parser<'a> {
     // pipe without comma — used in object values and function args
     fn parse_pipe_no_comma(&mut self) -> Result<Filter> {
         let mut left = self.parse_alternative()?;
+
+        if self.peek() == Some(&Token::As) {
+            return self.parse_as_binding(left);
+        }
+
         while self.peek() == Some(&Token::Pipe) {
             self.advance();
             let right = self.parse_alternative()?;
+
+            if self.peek() == Some(&Token::As) {
+                let binding = self.parse_as_binding(right)?;
+                return Ok(Filter::Pipe(Box::new(left), Box::new(binding)));
+            }
+
             left = Filter::Pipe(Box::new(left), Box::new(right));
         }
         Ok(left)

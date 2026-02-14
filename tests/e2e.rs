@@ -1956,6 +1956,182 @@ fn jq_compat_significand() {
 }
 
 #[test]
+fn variable_binding_basic() {
+    assert_jq_compat(". as $x | $x", r#"{"a":1}"#);
+}
+
+#[test]
+fn variable_binding_arithmetic() {
+    assert_jq_compat(".a as $x | .b as $y | $x + $y", r#"{"a":3,"b":4}"#);
+}
+
+#[test]
+fn variable_binding_in_pipe() {
+    assert_jq_compat(".[] | . as $x | {val: $x}", r#"[1,2,3]"#);
+}
+
+#[test]
+fn variable_binding_scope() {
+    // Inner binding shadows outer
+    assert_jq_compat("1 as $x | 2 as $x | $x", "null");
+}
+
+#[test]
+fn variable_in_select() {
+    assert_jq_compat(
+        r#".threshold as $t | .values[] | select(. > $t)"#,
+        r#"{"threshold":5,"values":[3,7,2,9,1]}"#,
+    );
+}
+
+#[test]
+fn slice_array_basic() {
+    assert_jq_compat(".[2:4]", "[0,1,2,3,4,5]");
+}
+
+#[test]
+fn slice_array_from_start() {
+    assert_jq_compat(".[:3]", "[0,1,2,3,4,5]");
+}
+
+#[test]
+fn slice_array_to_end() {
+    assert_jq_compat(".[3:]", "[0,1,2,3,4,5]");
+}
+
+#[test]
+fn slice_array_negative() {
+    assert_jq_compat(".[-2:]", "[0,1,2,3,4,5]");
+}
+
+#[test]
+fn slice_string() {
+    assert_jq_compat(".[2:4]", r#""abcdef""#);
+}
+
+#[test]
+fn elif_chain() {
+    assert_jq_compat(
+        r#"if . == 1 then "one" elif . == 2 then "two" elif . == 3 then "three" else "other" end"#,
+        "2",
+    );
+}
+
+#[test]
+fn elif_no_else() {
+    assert_jq_compat(r#"if . == 1 then "one" elif . == 2 then "two" end"#, "3");
+}
+
+#[test]
+fn try_catch_basic() {
+    assert_jq_compat(r#"try error("boom") catch ."#, "null");
+}
+
+#[test]
+fn try_catch_no_error() {
+    assert_jq_compat("try 1 catch 2", "null");
+}
+
+#[test]
+fn try_catch_error_message() {
+    assert_jq_compat(r#"try error("msg") catch ."#, "null");
+}
+
+#[test]
+fn reduce_sum() {
+    assert_jq_compat("reduce .[] as $x (0; . + $x)", "[1,2,3,4,5]");
+}
+
+#[test]
+fn reduce_build_object() {
+    assert_jq_compat(
+        r#"reduce .[] as $x ({}; . + {($x): ($x | length)})"#,
+        r#"["foo","ab","x"]"#,
+    );
+}
+
+#[test]
+fn foreach_running_sum() {
+    assert_jq_compat("[foreach .[] as $x (0; . + $x)]", "[1,2,3,4,5]");
+}
+
+#[test]
+fn walk_add_one() {
+    assert_jq_compat(
+        "walk(if type == \"number\" then . + 1 else . end)",
+        r#"{"a":1,"b":[2,3]}"#,
+    );
+}
+
+#[test]
+fn walk_strings_upcase() {
+    assert_jq_compat(
+        r#"walk(if type == "string" then ascii_upcase else . end)"#,
+        r#"{"name":"alice","tags":["admin","user"]}"#,
+    );
+}
+
+#[test]
+fn jq_compat_walk() {
+    assert_jq_compat(
+        "walk(if type == \"number\" then . * 2 else . end)",
+        "[1,[2],[[3]]]",
+    );
+}
+
+#[test]
+fn jq_compat_reduce() {
+    assert_jq_compat("reduce .[] as $x (0; . + $x)", "[1,2,3,4,5]");
+    assert_jq_compat("reduce .[] as $x ([]; . + [$x * 2])", "[1,2,3]");
+}
+
+#[test]
+fn jq_compat_foreach() {
+    assert_jq_compat("[foreach .[] as $x (0; . + $x)]", "[1,2,3]");
+}
+
+#[test]
+fn jq_compat_try_catch() {
+    assert_jq_compat("try .a catch .", r#"{"a":1}"#);
+    assert_jq_compat(r#"try error("fail") catch ."#, "null");
+    assert_jq_compat("try null catch .", "null");
+}
+
+#[test]
+fn jq_compat_elif() {
+    assert_jq_compat(
+        r#"if . < 0 then "neg" elif . == 0 then "zero" else "pos" end"#,
+        "5",
+    );
+    assert_jq_compat(
+        r#"if . < 0 then "neg" elif . == 0 then "zero" else "pos" end"#,
+        "0",
+    );
+    assert_jq_compat(
+        r#"if . < 0 then "neg" elif . == 0 then "zero" else "pos" end"#,
+        "-3",
+    );
+}
+
+#[test]
+fn jq_compat_slicing() {
+    assert_jq_compat(".[2:4]", "[0,1,2,3,4,5]");
+    assert_jq_compat(".[:2]", "[0,1,2,3,4,5]");
+    assert_jq_compat(".[4:]", "[0,1,2,3,4,5]");
+    assert_jq_compat(".[-2:]", "[0,1,2,3,4,5]");
+    assert_jq_compat(".[2:4]", r#""abcdef""#);
+    assert_jq_compat(".[:3]", r#""abcdef""#);
+}
+
+#[test]
+fn jq_compat_variables() {
+    assert_jq_compat(". as $x | $x", "42");
+    assert_jq_compat(". as $x | $x + 1", "10");
+    assert_jq_compat("1 as $x | 2 as $y | $x + $y", "null");
+    assert_jq_compat(".[] | . as $x | $x * $x", "[1,2,3,4]");
+}
+
+#[test]
 fn until_terminates_on_unchanged() {
     // until(false; .) should terminate (structural check: input unchanged)
     let out = jx("0 | until(false; .)", "null");

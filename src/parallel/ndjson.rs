@@ -186,7 +186,8 @@ fn filter_is_parallel_safe(filter: &Filter) -> bool {
         | Filter::Identity
         | Filter::Iterate
         | Filter::Recurse
-        | Filter::Field(_) => true,
+        | Filter::Field(_)
+        | Filter::Var(_) => true,
         Filter::Index(f)
         | Filter::Select(f)
         | Filter::ArrayConstruct(f)
@@ -197,7 +198,9 @@ fn filter_is_parallel_safe(filter: &Filter) -> bool {
         | Filter::Compare(a, _, b)
         | Filter::Arith(a, _, b)
         | Filter::BoolOp(a, _, b)
-        | Filter::Alternative(a, b) => filter_is_parallel_safe(a) && filter_is_parallel_safe(b),
+        | Filter::Alternative(a, b)
+        | Filter::Bind(a, _, b)
+        | Filter::TryCatch(a, b) => filter_is_parallel_safe(a) && filter_is_parallel_safe(b),
         Filter::Comma(filters) | Filter::Builtin(_, filters) => {
             filters.iter().all(filter_is_parallel_safe)
         }
@@ -207,10 +210,25 @@ fn filter_is_parallel_safe(filter: &Filter) -> bool {
                 ObjKey::Expr(f) => filter_is_parallel_safe(f),
             }) && filter_is_parallel_safe(v)
         }),
+        Filter::Slice(s, e) => {
+            s.as_ref().is_none_or(|f| filter_is_parallel_safe(f))
+                && e.as_ref().is_none_or(|f| filter_is_parallel_safe(f))
+        }
         Filter::IfThenElse(c, t, e) => {
             filter_is_parallel_safe(c)
                 && filter_is_parallel_safe(t)
                 && e.as_ref().is_none_or(|f| filter_is_parallel_safe(f))
+        }
+        Filter::Reduce(src, _, init, update) => {
+            filter_is_parallel_safe(src)
+                && filter_is_parallel_safe(init)
+                && filter_is_parallel_safe(update)
+        }
+        Filter::Foreach(src, _, init, update, extract) => {
+            filter_is_parallel_safe(src)
+                && filter_is_parallel_safe(init)
+                && filter_is_parallel_safe(update)
+                && extract.as_ref().is_none_or(|f| filter_is_parallel_safe(f))
         }
         Filter::StringInterp(parts) => parts.iter().all(|p| match p {
             StringPart::Lit(_) => true,
@@ -268,7 +286,7 @@ fn process_line(
     let value = simdjson::dom_parse_to_value(&padded, trimmed.len())
         .context("failed to parse NDJSON line")?;
 
-    crate::filter::eval::eval(filter, &value, &mut |v| {
+    crate::filter::eval::eval_filter(filter, &value, &mut |v| {
         *had_output = true;
         output::write_value(output_buf, &v, config).ok();
     });

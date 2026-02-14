@@ -84,7 +84,7 @@ fn main() -> Result<()> {
 
     if cli.null_input {
         let input = jx::value::Value::Null;
-        jx::filter::eval::eval(&filter, &input, &mut |v| {
+        jx::filter::eval::eval_filter(&filter, &input, &mut |v| {
             had_output = true;
             write_value_line(&mut out, &v, &config).ok();
         });
@@ -296,7 +296,7 @@ fn process_padded(
     let input =
         jx::simdjson::dom_parse_to_value(padded, json_len).context("failed to parse JSON")?;
 
-    jx::filter::eval::eval(filter, &input, &mut |v| {
+    jx::filter::eval::eval_filter(filter, &input, &mut |v| {
         *had_output = true;
         write_value_line(out, &v, config).ok();
     });
@@ -436,7 +436,7 @@ fn process_padded_timed(
 
     let t2 = Instant::now();
     let mut values = Vec::new();
-    jx::filter::eval::eval(filter, &input, &mut |v| {
+    jx::filter::eval::eval_filter(filter, &input, &mut |v| {
         values.push(v);
     });
     let t_eval = t2.elapsed();

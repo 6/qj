@@ -1,5 +1,5 @@
 /// jq builtin functions — the `eval_builtin()` dispatch table.
-use crate::filter::{ArithOp, Filter};
+use crate::filter::{ArithOp, Env, Filter};
 use crate::value::Value;
 use std::rc::Rc;
 
@@ -14,6 +14,7 @@ pub(super) fn eval_builtin(
     name: &str,
     args: &[Filter],
     input: &Value,
+    env: &Env,
     output: &mut dyn FnMut(Value),
 ) {
     match name {
@@ -117,7 +118,7 @@ pub(super) fn eval_builtin(
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
                 let mut result = Vec::with_capacity(arr.len());
                 for item in arr.iter() {
-                    eval(f, item, &mut |v| result.push(v));
+                    eval(f, item, env, &mut |v| result.push(v));
                 }
                 output(Value::Array(Rc::new(result)));
             }
@@ -125,7 +126,7 @@ pub(super) fn eval_builtin(
         "select" => {
             if let Some(cond) = args.first() {
                 let mut is_truthy = false;
-                eval(cond, input, &mut |v| {
+                eval(cond, input, env, &mut |v| {
                     if v.is_truthy() {
                         is_truthy = true;
                     }
@@ -153,7 +154,7 @@ pub(super) fn eval_builtin(
                 if let Some(f) = args.first() {
                     let mut found = false;
                     for item in arr.iter() {
-                        eval(f, item, &mut |v| {
+                        eval(f, item, env, &mut |v| {
                             if v.is_truthy() {
                                 found = true;
                             }
@@ -175,7 +176,7 @@ pub(super) fn eval_builtin(
                     let mut all_true = true;
                     for item in arr.iter() {
                         let mut item_true = false;
-                        eval(f, item, &mut |v| {
+                        eval(f, item, env, &mut |v| {
                             if v.is_truthy() {
                                 item_true = true;
                             }
@@ -195,7 +196,7 @@ pub(super) fn eval_builtin(
         "has" => {
             if let Some(key_filter) = args.first() {
                 let mut key_val = Value::Null;
-                eval(key_filter, input, &mut |v| key_val = v);
+                eval(key_filter, input, env, &mut |v| key_val = v);
                 match (input, &key_val) {
                     (Value::Object(obj), Value::String(key)) => {
                         let found = obj.iter().any(|(k, _)| k == key);
@@ -298,7 +299,7 @@ pub(super) fn eval_builtin(
                     .iter()
                     .map(|item| {
                         let mut key = Value::Null;
-                        eval(f, item, &mut |v| key = v);
+                        eval(f, item, env, &mut |v| key = v);
                         (key, item.clone())
                     })
                     .collect();
@@ -316,7 +317,7 @@ pub(super) fn eval_builtin(
                     .iter()
                     .map(|item| {
                         let mut key = Value::Null;
-                        eval(f, item, &mut |v| key = v);
+                        eval(f, item, env, &mut |v| key = v);
                         (key, item.clone())
                     })
                     .collect();
@@ -357,7 +358,7 @@ pub(super) fn eval_builtin(
                 let mut result: Vec<Value> = Vec::new();
                 for item in arr.iter() {
                     let mut key = Value::Null;
-                    eval(f, item, &mut |v| key = v);
+                    eval(f, item, env, &mut |v| key = v);
                     if !seen_keys.iter().any(|k| values_equal(k, &key)) {
                         seen_keys.push(key);
                         result.push(item.clone());
@@ -370,7 +371,7 @@ pub(super) fn eval_builtin(
             if let Value::Array(arr) = input {
                 let depth = args.first().map_or(i64::MAX, |f| {
                     let mut d = Value::Null;
-                    eval(f, input, &mut |v| d = v);
+                    eval(f, input, env, &mut |v| d = v);
                     match d {
                         Value::Int(n) => n,
                         _ => i64::MAX,
@@ -384,7 +385,7 @@ pub(super) fn eval_builtin(
         "first" => {
             if let Some(f) = args.first() {
                 let mut found = false;
-                eval(f, input, &mut |v| {
+                eval(f, input, env, &mut |v| {
                     if !found {
                         output(v);
                         found = true;
@@ -399,7 +400,7 @@ pub(super) fn eval_builtin(
         "last" => {
             if let Some(f) = args.first() {
                 let mut last = None;
-                eval(f, input, &mut |v| last = Some(v));
+                eval(f, input, env, &mut |v| last = Some(v));
                 if let Some(v) = last {
                     output(v);
                 }
@@ -447,7 +448,7 @@ pub(super) fn eval_builtin(
                 let mut best: Option<(Value, Value)> = None;
                 for item in arr.iter() {
                     let mut key = Value::Null;
-                    eval(f, item, &mut |v| key = v);
+                    eval(f, item, env, &mut |v| key = v);
                     if best.as_ref().is_none_or(|(bk, _)| {
                         values_order(&key, bk) == Some(std::cmp::Ordering::Less)
                     }) {
@@ -466,7 +467,7 @@ pub(super) fn eval_builtin(
                 let mut best: Option<(Value, Value)> = None;
                 for item in arr.iter() {
                     let mut key = Value::Null;
-                    eval(f, item, &mut |v| key = v);
+                    eval(f, item, env, &mut |v| key = v);
                     if best.as_ref().is_none_or(|(bk, _)| {
                         values_order(&key, bk) == Some(std::cmp::Ordering::Greater)
                     }) {
@@ -495,14 +496,14 @@ pub(super) fn eval_builtin(
         "contains" => {
             if let (Some(arg), _) = (args.first(), input) {
                 let mut pattern = Value::Null;
-                eval(arg, input, &mut |v| pattern = v);
+                eval(arg, input, env, &mut |v| pattern = v);
                 output(Value::Bool(value_contains(input, &pattern)));
             }
         }
         "ltrimstr" => {
             if let (Value::String(s), Some(arg)) = (input, args.first()) {
                 let mut prefix = Value::Null;
-                eval(arg, input, &mut |v| prefix = v);
+                eval(arg, input, env, &mut |v| prefix = v);
                 if let Value::String(p) = prefix {
                     output(Value::String(
                         s.strip_prefix(p.as_str()).unwrap_or(s).to_string(),
@@ -515,7 +516,7 @@ pub(super) fn eval_builtin(
         "rtrimstr" => {
             if let (Value::String(s), Some(arg)) = (input, args.first()) {
                 let mut suffix = Value::Null;
-                eval(arg, input, &mut |v| suffix = v);
+                eval(arg, input, env, &mut |v| suffix = v);
                 if let Value::String(p) = suffix {
                     output(Value::String(
                         s.strip_suffix(p.as_str()).unwrap_or(s).to_string(),
@@ -528,7 +529,7 @@ pub(super) fn eval_builtin(
         "startswith" => {
             if let (Value::String(s), Some(arg)) = (input, args.first()) {
                 let mut prefix = Value::Null;
-                eval(arg, input, &mut |v| prefix = v);
+                eval(arg, input, env, &mut |v| prefix = v);
                 if let Value::String(p) = prefix {
                     output(Value::Bool(s.starts_with(p.as_str())));
                 }
@@ -537,7 +538,7 @@ pub(super) fn eval_builtin(
         "endswith" => {
             if let (Value::String(s), Some(arg)) = (input, args.first()) {
                 let mut suffix = Value::Null;
-                eval(arg, input, &mut |v| suffix = v);
+                eval(arg, input, env, &mut |v| suffix = v);
                 if let Value::String(p) = suffix {
                     output(Value::Bool(s.ends_with(p.as_str())));
                 }
@@ -546,7 +547,7 @@ pub(super) fn eval_builtin(
         "split" => {
             if let (Value::String(s), Some(arg)) = (input, args.first()) {
                 let mut sep = Value::Null;
-                eval(arg, input, &mut |v| sep = v);
+                eval(arg, input, env, &mut |v| sep = v);
                 if let Value::String(p) = sep {
                     let parts: Vec<Value> = if p.is_empty() {
                         s.chars().map(|c| Value::String(c.to_string())).collect()
@@ -562,7 +563,7 @@ pub(super) fn eval_builtin(
         "join" => {
             if let (Value::Array(arr), Some(arg)) = (input, args.first()) {
                 let mut sep = Value::Null;
-                eval(arg, input, &mut |v| sep = v);
+                eval(arg, input, env, &mut |v| sep = v);
                 if let Value::String(p) = sep {
                     let strs: Vec<String> = arr
                         .iter()
@@ -584,7 +585,7 @@ pub(super) fn eval_builtin(
             match args.len() {
                 1 => {
                     // range(n) → 0..n
-                    eval(&args[0], input, &mut |nv| {
+                    eval(&args[0], input, env, &mut |nv| {
                         let n = to_f64(&nv);
                         let mut i = 0.0;
                         while i < n {
@@ -595,8 +596,8 @@ pub(super) fn eval_builtin(
                 }
                 2 => {
                     // range(from; to)
-                    eval(&args[0], input, &mut |from_v| {
-                        eval(&args[1], input, &mut |to_v| {
+                    eval(&args[0], input, env, &mut |from_v| {
+                        eval(&args[1], input, env, &mut |to_v| {
                             let from = to_f64(&from_v);
                             let to = to_f64(&to_v);
                             let mut i = from;
@@ -609,9 +610,9 @@ pub(super) fn eval_builtin(
                 }
                 3 => {
                     // range(from; to; step)
-                    eval(&args[0], input, &mut |from_v| {
-                        eval(&args[1], input, &mut |to_v| {
-                            eval(&args[2], input, &mut |step_v| {
+                    eval(&args[0], input, env, &mut |from_v| {
+                        eval(&args[1], input, env, &mut |to_v| {
+                            eval(&args[2], input, env, &mut |step_v| {
                                 let from = to_f64(&from_v);
                                 let to = to_f64(&to_v);
                                 let step = to_f64(&step_v);
@@ -783,7 +784,7 @@ pub(super) fn eval_builtin(
             // scalb(x; e) = x * 2^e — two-arg builtin
             if let (Some(base), Some(arg)) = (input_as_f64(input), args.first()) {
                 let mut exp = 0i32;
-                eval(arg, input, &mut |v| exp = to_f64(&v) as i32);
+                eval(arg, input, env, &mut |v| exp = to_f64(&v) as i32);
                 output(f64_to_value(libc_ldexp(base, exp)));
             }
         }
@@ -839,15 +840,15 @@ pub(super) fn eval_builtin(
             if let (Some(base_f), Some(exp_f)) = (args.first(), args.get(1)) {
                 let mut base = 0.0_f64;
                 let mut exp = 0.0_f64;
-                eval(base_f, input, &mut |v| base = to_f64(&v));
-                eval(exp_f, input, &mut |v| exp = to_f64(&v));
+                eval(base_f, input, env, &mut |v| base = to_f64(&v));
+                eval(exp_f, input, env, &mut |v| exp = to_f64(&v));
                 output(Value::Double(base.powf(exp), None));
             } else if args.len() == 1 {
                 // pow(x; y) where input is piped
                 // Actually: in jq, pow(a;b) takes two semicolon-separated args
                 if let Some(f) = input_as_f64(input) {
                     let mut exp = 0.0_f64;
-                    eval(&args[0], input, &mut |v| exp = to_f64(&v));
+                    eval(&args[0], input, env, &mut |v| exp = to_f64(&v));
                     output(Value::Double(f.powf(exp), None));
                 }
             }
@@ -856,8 +857,8 @@ pub(super) fn eval_builtin(
             if let (Some(y_f), Some(x_f)) = (args.first(), args.get(1)) {
                 let mut y = 0.0_f64;
                 let mut x = 0.0_f64;
-                eval(y_f, input, &mut |v| y = to_f64(&v));
-                eval(x_f, input, &mut |v| x = to_f64(&v));
+                eval(y_f, input, env, &mut |v| y = to_f64(&v));
+                eval(x_f, input, env, &mut |v| x = to_f64(&v));
                 output(Value::Double(y.atan2(x), None));
             }
         }
@@ -865,8 +866,8 @@ pub(super) fn eval_builtin(
             if let (Some(x_f), Some(y_f)) = (args.first(), args.get(1)) {
                 let mut x = 0.0_f64;
                 let mut y = 0.0_f64;
-                eval(x_f, input, &mut |v| x = to_f64(&v));
-                eval(y_f, input, &mut |v| y = to_f64(&v));
+                eval(x_f, input, env, &mut |v| x = to_f64(&v));
+                eval(y_f, input, env, &mut |v| y = to_f64(&v));
                 // IEEE remainder
                 output(Value::Double(x - (x / y).round() * y, None));
             }
@@ -875,8 +876,8 @@ pub(super) fn eval_builtin(
             if let (Some(x_f), Some(y_f)) = (args.first(), args.get(1)) {
                 let mut x = 0.0_f64;
                 let mut y = 0.0_f64;
-                eval(x_f, input, &mut |v| x = to_f64(&v));
-                eval(y_f, input, &mut |v| y = to_f64(&v));
+                eval(x_f, input, env, &mut |v| x = to_f64(&v));
+                eval(y_f, input, env, &mut |v| y = to_f64(&v));
                 output(Value::Double(x.hypot(y), None));
             }
         }
@@ -885,9 +886,9 @@ pub(super) fn eval_builtin(
                 let mut x = 0.0_f64;
                 let mut y = 0.0_f64;
                 let mut z = 0.0_f64;
-                eval(x_f, input, &mut |v| x = to_f64(&v));
-                eval(y_f, input, &mut |v| y = to_f64(&v));
-                eval(z_f, input, &mut |v| z = to_f64(&v));
+                eval(x_f, input, env, &mut |v| x = to_f64(&v));
+                eval(y_f, input, env, &mut |v| y = to_f64(&v));
+                eval(z_f, input, env, &mut |v| z = to_f64(&v));
                 output(Value::Double(x.mul_add(y, z), None));
             }
         }
@@ -915,7 +916,7 @@ pub(super) fn eval_builtin(
         "index" => {
             if let Some(arg) = args.first() {
                 let mut needle = Value::Null;
-                eval(arg, input, &mut |v| needle = v);
+                eval(arg, input, env, &mut |v| needle = v);
                 match (input, &needle) {
                     (Value::String(s), Value::String(n)) => {
                         if let Some(byte_pos) = s.find(n.as_str()) {
@@ -938,7 +939,7 @@ pub(super) fn eval_builtin(
         "rindex" => {
             if let Some(arg) = args.first() {
                 let mut needle = Value::Null;
-                eval(arg, input, &mut |v| needle = v);
+                eval(arg, input, env, &mut |v| needle = v);
                 match (input, &needle) {
                     (Value::String(s), Value::String(n)) => {
                         if let Some(byte_pos) = s.rfind(n.as_str()) {
@@ -961,7 +962,7 @@ pub(super) fn eval_builtin(
         "indices" | "_indices" => {
             if let Some(arg) = args.first() {
                 let mut needle = Value::Null;
-                eval(arg, input, &mut |v| needle = v);
+                eval(arg, input, env, &mut |v| needle = v);
                 match (input, &needle) {
                     (Value::String(s), Value::String(n)) => {
                         let mut positions = Vec::new();
@@ -1027,7 +1028,7 @@ pub(super) fn eval_builtin(
         "inside" => {
             if let Some(arg) = args.first() {
                 let mut container = Value::Null;
-                eval(arg, input, &mut |v| container = v);
+                eval(arg, input, env, &mut |v| container = v);
                 output(Value::Bool(value_contains(&container, input)));
             }
         }
@@ -1069,7 +1070,7 @@ pub(super) fn eval_builtin(
                         let mut result = Vec::with_capacity(obj.len());
                         for (k, v) in obj.iter() {
                             let mut new_val = Value::Null;
-                            eval(f, v, &mut |nv| new_val = nv);
+                            eval(f, v, env, &mut |nv| new_val = nv);
                             result.push((k.clone(), new_val));
                         }
                         output(Value::Object(Rc::new(result)));
@@ -1077,7 +1078,7 @@ pub(super) fn eval_builtin(
                     Value::Array(arr) => {
                         let mut result = Vec::with_capacity(arr.len());
                         for v in arr.iter() {
-                            eval(f, v, &mut |nv| result.push(nv));
+                            eval(f, v, env, &mut |nv| result.push(nv));
                         }
                         output(Value::Array(Rc::new(result)));
                     }
@@ -1088,9 +1089,9 @@ pub(super) fn eval_builtin(
         "limit" => {
             if args.len() == 2 {
                 let mut n = 0i64;
-                eval(&args[0], input, &mut |v| n = to_f64(&v) as i64);
+                eval(&args[0], input, env, &mut |v| n = to_f64(&v) as i64);
                 let mut count = 0i64;
-                eval(&args[1], input, &mut |v| {
+                eval(&args[1], input, env, &mut |v| {
                     if count < n {
                         output(v);
                         count += 1;
@@ -1103,12 +1104,12 @@ pub(super) fn eval_builtin(
                 let mut current = input.clone();
                 for _ in 0..1_000_000 {
                     let mut done = false;
-                    eval(&args[0], &current, &mut |v| done = v.is_truthy());
+                    eval(&args[0], &current, env, &mut |v| done = v.is_truthy());
                     if done {
                         break;
                     }
                     let mut next = current.clone();
-                    eval(&args[1], &current, &mut |v| next = v);
+                    eval(&args[1], &current, env, &mut |v| next = v);
                     if values_equal(&next, &current) {
                         break;
                     }
@@ -1122,13 +1123,13 @@ pub(super) fn eval_builtin(
                 let mut current = input.clone();
                 for _ in 0..1_000_000 {
                     let mut cont = false;
-                    eval(&args[0], &current, &mut |v| cont = v.is_truthy());
+                    eval(&args[0], &current, env, &mut |v| cont = v.is_truthy());
                     if !cont {
                         break;
                     }
                     output(current.clone());
                     let mut next = current.clone();
-                    eval(&args[1], &current, &mut |v| next = v);
+                    eval(&args[1], &current, env, &mut |v| next = v);
                     if values_equal(&next, &current) {
                         break;
                     }
@@ -1141,21 +1142,21 @@ pub(super) fn eval_builtin(
             // Applies f to the same input each time, producing infinite stream
             if let Some(f) = args.first() {
                 for _ in 0..1_000_000 {
-                    eval(f, input, output);
+                    eval(f, input, env, output);
                 }
             }
         }
         "isempty" => {
             if let Some(f) = args.first() {
                 let mut found = false;
-                eval(f, input, &mut |_| found = true);
+                eval(f, input, env, &mut |_| found = true);
                 output(Value::Bool(!found));
             }
         }
         "getpath" => {
             if let Some(arg) = args.first() {
                 let mut path = Value::Null;
-                eval(arg, input, &mut |v| path = v);
+                eval(arg, input, env, &mut |v| path = v);
                 if let Value::Array(path_arr) = path {
                     let mut current = input.clone();
                     for seg in path_arr.iter() {
@@ -1184,8 +1185,8 @@ pub(super) fn eval_builtin(
             if args.len() == 2 {
                 let mut path = Value::Null;
                 let mut val = Value::Null;
-                eval(&args[0], input, &mut |v| path = v);
-                eval(&args[1], input, &mut |v| val = v);
+                eval(&args[0], input, env, &mut |v| path = v);
+                eval(&args[1], input, env, &mut |v| val = v);
                 if let Value::Array(path_arr) = path {
                     output(set_path(input, &path_arr, &val));
                 }
@@ -1194,7 +1195,7 @@ pub(super) fn eval_builtin(
         "delpaths" => {
             if let Some(arg) = args.first() {
                 let mut paths = Value::Null;
-                eval(arg, input, &mut |v| paths = v);
+                eval(arg, input, env, &mut |v| paths = v);
                 if let Value::Array(path_list) = paths {
                     let mut current = input.clone();
                     // Sort paths in reverse to delete deepest first
@@ -1342,6 +1343,7 @@ pub(super) fn eval_builtin(
                 "nth",
                 "repeat",
                 "recurse",
+                "walk",
                 "bsearch",
                 "path",
                 "todate",
@@ -1358,7 +1360,7 @@ pub(super) fn eval_builtin(
         "debug" => {
             if let Some(arg) = args.first() {
                 let mut label = String::new();
-                eval(arg, input, &mut |v| {
+                eval(arg, input, env, &mut |v| {
                     if let Value::String(s) = v {
                         label = s;
                     }
@@ -1380,10 +1382,14 @@ pub(super) fn eval_builtin(
             output(input.clone());
         }
         "error" => {
-            if let Some(arg) = args.first() {
-                let mut _msg = Value::Null;
-                eval(arg, input, &mut |v| _msg = v);
-            }
+            let err_val = if let Some(arg) = args.first() {
+                let mut msg = Value::Null;
+                eval(arg, input, env, &mut |v| msg = v);
+                msg
+            } else {
+                input.clone()
+            };
+            super::eval::LAST_ERROR.with(|e| *e.borrow_mut() = Some(err_val));
             // Produce no output (error in jq)
         }
         "env" | "$ENV" => {
@@ -1402,9 +1408,9 @@ pub(super) fn eval_builtin(
         "nth" => {
             if args.len() == 2 {
                 let mut n = 0i64;
-                eval(&args[0], input, &mut |v| n = to_f64(&v) as i64);
+                eval(&args[0], input, env, &mut |v| n = to_f64(&v) as i64);
                 let mut count = 0i64;
-                eval(&args[1], input, &mut |v| {
+                eval(&args[1], input, env, &mut |v| {
                     if count == n {
                         output(v);
                     }
@@ -1413,7 +1419,7 @@ pub(super) fn eval_builtin(
             } else if args.len() == 1 {
                 // nth(n) operates on input as generator — take nth from .[]
                 let mut n = 0i64;
-                eval(&args[0], input, &mut |v| n = to_f64(&v) as i64);
+                eval(&args[0], input, env, &mut |v| n = to_f64(&v) as i64);
                 if let Value::Array(arr) = input
                     && n >= 0
                     && (n as usize) < arr.len()
@@ -1427,16 +1433,49 @@ pub(super) fn eval_builtin(
                 // recurse with no args = ..
                 recurse(input, output);
             } else if args.len() == 1 {
-                recurse_with_filter(&args[0], input, output, 100_000);
+                recurse_with_filter(&args[0], input, env, output, 100_000);
             } else if args.len() == 2 {
                 // recurse(f; cond) — recurse while cond is truthy
-                recurse_with_cond(&args[0], &args[1], input, output, 100_000);
+                recurse_with_cond(&args[0], &args[1], input, env, output, 100_000);
+            }
+        }
+        "walk" => {
+            if let Some(f) = args.first() {
+                fn walk_inner(value: &Value, f: &Filter, env: &Env, output: &mut dyn FnMut(Value)) {
+                    // Bottom-up: first recurse children, then apply f
+                    match value {
+                        Value::Array(arr) => {
+                            let mut new_arr = Vec::with_capacity(arr.len());
+                            for v in arr.iter() {
+                                walk_inner(v, f, env, &mut |walked| {
+                                    new_arr.push(walked);
+                                });
+                            }
+                            let reconstructed = Value::Array(Rc::new(new_arr));
+                            eval(f, &reconstructed, env, output);
+                        }
+                        Value::Object(obj) => {
+                            let mut new_obj = Vec::with_capacity(obj.len());
+                            for (k, v) in obj.iter() {
+                                walk_inner(v, f, env, &mut |walked| {
+                                    new_obj.push((k.clone(), walked));
+                                });
+                            }
+                            let reconstructed = Value::Object(Rc::new(new_obj));
+                            eval(f, &reconstructed, env, output);
+                        }
+                        _ => {
+                            eval(f, value, env, output);
+                        }
+                    }
+                }
+                walk_inner(input, f, env, output);
             }
         }
         "bsearch" => {
             if let (Value::Array(arr), Some(arg)) = (input, args.first()) {
                 let mut target = Value::Null;
-                eval(arg, input, &mut |v| target = v);
+                eval(arg, input, env, &mut |v| target = v);
                 // Binary search on sorted array
                 let mut lo: i64 = 0;
                 let mut hi: i64 = arr.len() as i64 - 1;
@@ -1464,7 +1503,7 @@ pub(super) fn eval_builtin(
                 1 => {
                     // IN(generator) — test if input is in generator's outputs
                     let mut found = false;
-                    eval(&args[0], input, &mut |v| {
+                    eval(&args[0], input, env, &mut |v| {
                         if !found && values_equal(input, &v) {
                             found = true;
                         }
@@ -1473,9 +1512,9 @@ pub(super) fn eval_builtin(
                 }
                 2 => {
                     // IN(stream; generator) — for each output of stream, test if in generator
-                    eval(&args[0], input, &mut |sv| {
+                    eval(&args[0], input, env, &mut |sv| {
                         let mut found = false;
-                        eval(&args[1], input, &mut |gv| {
+                        eval(&args[1], input, env, &mut |gv| {
                             if !found && values_equal(&sv, &gv) {
                                 found = true;
                             }
@@ -1502,7 +1541,7 @@ pub(super) fn eval_builtin(
                 let mut mapped = Vec::new();
                 if let Value::Array(arr) = &entries_val {
                     for item in arr.iter() {
-                        eval(f, item, &mut |v| mapped.push(v));
+                        eval(f, item, env, &mut |v| mapped.push(v));
                     }
                 }
                 let mut result_obj = Vec::new();
@@ -1549,7 +1588,7 @@ pub(super) fn eval_builtin(
         "strftime" => {
             if let (Some(arg), Some(ts)) = (args.first(), input_as_f64(input)) {
                 let mut fmt = String::new();
-                eval(arg, input, &mut |v| {
+                eval(arg, input, env, &mut |v| {
                     if let Value::String(s) = v {
                         fmt = s;
                     }
@@ -1590,16 +1629,22 @@ fn value_contains(haystack: &Value, needle: &Value) -> bool {
     }
 }
 
-fn recurse_with_filter(f: &Filter, value: &Value, output: &mut dyn FnMut(Value), limit: usize) {
+fn recurse_with_filter(
+    f: &Filter,
+    value: &Value,
+    env: &Env,
+    output: &mut dyn FnMut(Value),
+    limit: usize,
+) {
     if limit == 0 {
         return;
     }
     output(value.clone());
-    eval(f, value, &mut |v| {
+    eval(f, value, env, &mut |v| {
         if v != Value::Null || matches!(value, Value::Array(_) | Value::Object(_)) {
             // Avoid infinite recursion on atoms producing null
             if !values_equal(&v, value) {
-                recurse_with_filter(f, &v, output, limit - 1);
+                recurse_with_filter(f, &v, env, output, limit - 1);
             }
         }
     });
@@ -1609,6 +1654,7 @@ fn recurse_with_cond(
     f: &Filter,
     cond: &Filter,
     value: &Value,
+    env: &Env,
     output: &mut dyn FnMut(Value),
     limit: usize,
 ) {
@@ -1616,7 +1662,7 @@ fn recurse_with_cond(
         return;
     }
     let mut is_match = false;
-    eval(cond, value, &mut |v| {
+    eval(cond, value, env, &mut |v| {
         if v.is_truthy() {
             is_match = true;
         }
@@ -1625,9 +1671,9 @@ fn recurse_with_cond(
         return;
     }
     output(value.clone());
-    eval(f, value, &mut |v| {
+    eval(f, value, env, &mut |v| {
         if !values_equal(&v, value) {
-            recurse_with_cond(f, cond, &v, output, limit - 1);
+            recurse_with_cond(f, cond, &v, env, output, limit - 1);
         }
     });
 }

@@ -19,7 +19,7 @@ cargo build --release
 | Throughput (49MB, `-c '.'`) | 40 MB/s | 106 MB/s | 176 MB/s | **2.1 GB/s** |
 | Parallel NDJSON | — | — | — | **yes** |
 | SIMD | — | — | — | **yes (NEON/AVX2)** |
-| jq compat ([jq.test](tests/jq_compat/)) | 100% | 85% | 69% | **42%** |
+| jq compat ([jq.test](tests/jq_compat/)) | 100% | 85% | 69% | **52%** |
 
 Largest wins on parse-dominated workloads over large files; smallest on complex filters where evaluator cost dominates.
 

@@ -2,12 +2,23 @@
 ///
 /// Uses generator semantics: each filter operation calls `output` for
 /// each result, avoiding intermediate Vec allocations.
-use crate::filter::{ArithOp, BoolOp, CmpOp, Filter, ObjKey};
+use crate::filter::{ArithOp, BoolOp, CmpOp, Env, Filter, ObjKey};
 use crate::value::Value;
+use std::cell::RefCell;
 use std::rc::Rc;
 
+thread_local! {
+    /// Last error value set by `error` / `error(msg)` builtins.
+    pub(super) static LAST_ERROR: RefCell<Option<Value>> = const { RefCell::new(None) };
+}
+
+/// Public entry point — creates an empty env for top-level evaluation.
+pub fn eval_filter(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
+    eval(filter, input, &Env::empty(), output);
+}
+
 /// Evaluate a filter against an input value, calling `output` for each result.
-pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
+pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Value)) {
     match filter {
         Filter::Identity => output(input.clone()),
 
@@ -26,7 +37,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
 
         Filter::Index(idx_filter) => {
             // Evaluate the index expression — iterate all outputs for generator semantics
-            eval(idx_filter, input, &mut |idx| match (input, &idx) {
+            eval(idx_filter, input, env, &mut |idx| match (input, &idx) {
                 (Value::Array(arr), Value::Int(i)) => {
                     let index = if *i < 0 { arr.len() as i64 + i } else { *i };
                     if index >= 0 && (index as usize) < arr.len() {
@@ -50,8 +61,8 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         }
 
         Filter::Pipe(left, right) => {
-            eval(left, input, &mut |intermediate| {
-                eval(right, &intermediate, output);
+            eval(left, input, env, &mut |intermediate| {
+                eval(right, &intermediate, env, output);
             });
         }
 
@@ -72,7 +83,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
 
         Filter::Select(cond) => {
             let mut is_truthy = false;
-            eval(cond, input, &mut |v| {
+            eval(cond, input, env, &mut |v| {
                 if v.is_truthy() {
                     is_truthy = true;
                 }
@@ -88,6 +99,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                 idx: usize,
                 current: &mut Vec<(String, Value)>,
                 input: &Value,
+                env: &Env,
                 output: &mut dyn FnMut(Value),
             ) {
                 if idx == pairs.len() {
@@ -98,21 +110,21 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                 match key {
                     ObjKey::Name(s) => {
                         let key_str = s.clone();
-                        eval(val_filter, input, &mut |v| {
+                        eval(val_filter, input, env, &mut |v| {
                             current.push((key_str.clone(), v));
-                            build_object(pairs, idx + 1, current, input, output);
+                            build_object(pairs, idx + 1, current, input, env, output);
                             current.pop();
                         });
                     }
                     ObjKey::Expr(expr) => {
-                        eval(expr, input, &mut |kv| {
+                        eval(expr, input, env, &mut |kv| {
                             let key_str = match kv {
                                 Value::String(s) => s,
                                 _ => return,
                             };
-                            eval(val_filter, input, &mut |v| {
+                            eval(val_filter, input, env, &mut |v| {
                                 current.push((key_str.clone(), v));
-                                build_object(pairs, idx + 1, current, input, output);
+                                build_object(pairs, idx + 1, current, input, env, output);
                                 current.pop();
                             });
                         });
@@ -120,12 +132,12 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                 }
             }
             let mut current = Vec::with_capacity(pairs.len());
-            build_object(pairs, 0, &mut current, input, output);
+            build_object(pairs, 0, &mut current, input, env, output);
         }
 
         Filter::ArrayConstruct(expr) => {
             let mut arr = Vec::new();
-            eval(expr, input, &mut |v| {
+            eval(expr, input, env, &mut |v| {
                 arr.push(v);
             });
             output(Value::Array(Rc::new(arr)));
@@ -134,8 +146,8 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         Filter::Literal(val) => output(val.clone()),
 
         Filter::Compare(left, op, right) => {
-            eval(left, input, &mut |lval| {
-                eval(right, input, &mut |rval| {
+            eval(left, input, env, &mut |lval| {
+                eval(right, input, env, &mut |rval| {
                     let result = compare_values(&lval, op, &rval);
                     output(Value::Bool(result));
                 });
@@ -143,8 +155,8 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         }
 
         Filter::Arith(left, op, right) => {
-            eval(left, input, &mut |lval| {
-                eval(right, input, &mut |rval| {
+            eval(left, input, env, &mut |lval| {
+                eval(right, input, env, &mut |rval| {
                     if let Some(result) = arith_values(&lval, op, &rval) {
                         output(result);
                     }
@@ -154,7 +166,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
 
         Filter::Comma(items) => {
             for item in items {
-                eval(item, input, output);
+                eval(item, input, env, output);
             }
         }
 
@@ -163,23 +175,23 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         }
 
         Filter::Builtin(name, args) => {
-            super::builtins::eval_builtin(name, args, input, output);
+            super::builtins::eval_builtin(name, args, input, env, output);
         }
 
         Filter::Not(inner) => {
-            eval(inner, input, &mut |v| {
+            eval(inner, input, env, &mut |v| {
                 output(Value::Bool(!v.is_truthy()));
             });
         }
 
         Filter::BoolOp(left, op, right) => {
             let mut lval = Value::Null;
-            eval(left, input, &mut |v| lval = v);
+            eval(left, input, env, &mut |v| lval = v);
             match op {
                 BoolOp::And => {
                     if lval.is_truthy() {
                         let mut rval = Value::Null;
-                        eval(right, input, &mut |v| rval = v);
+                        eval(right, input, env, &mut |v| rval = v);
                         output(Value::Bool(rval.is_truthy()));
                     } else {
                         output(Value::Bool(false));
@@ -190,7 +202,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                         output(Value::Bool(true));
                     } else {
                         let mut rval = Value::Null;
-                        eval(right, input, &mut |v| rval = v);
+                        eval(right, input, env, &mut |v| rval = v);
                         output(Value::Bool(rval.is_truthy()));
                     }
                 }
@@ -198,11 +210,11 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         }
 
         Filter::IfThenElse(cond, then_branch, else_branch) => {
-            eval(cond, input, &mut |cond_val| {
+            eval(cond, input, env, &mut |cond_val| {
                 if cond_val.is_truthy() {
-                    eval(then_branch, input, output);
+                    eval(then_branch, input, env, output);
                 } else if let Some(else_br) = else_branch {
-                    eval(else_br, input, output);
+                    eval(else_br, input, env, output);
                 } else {
                     output(input.clone());
                 }
@@ -212,7 +224,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         Filter::Alternative(left, right) => {
             let mut lval = Value::Null;
             let mut got_value = false;
-            eval(left, input, &mut |v| {
+            eval(left, input, env, &mut |v| {
                 if !got_value {
                     lval = v;
                     got_value = true;
@@ -221,15 +233,29 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
             if got_value && lval != Value::Null && lval != Value::Bool(false) {
                 output(lval);
             } else {
-                eval(right, input, output);
+                eval(right, input, env, output);
             }
         }
 
         Filter::Try(inner) => {
             // Try: suppress errors, just produce no output on failure.
-            // Since we don't use Result in eval, "errors" are represented
-            // as producing no output, which Try already handles.
-            eval(inner, input, output);
+            LAST_ERROR.with(|e| e.borrow_mut().take());
+            eval(inner, input, env, output);
+            LAST_ERROR.with(|e| e.borrow_mut().take());
+        }
+
+        Filter::TryCatch(body, handler) => {
+            LAST_ERROR.with(|e| e.borrow_mut().take());
+            let mut had_output = false;
+            eval(body, input, env, &mut |v| {
+                had_output = true;
+                output(v);
+            });
+            if !had_output {
+                let err_val = LAST_ERROR.with(|e| e.borrow_mut().take());
+                let catch_input = err_val.unwrap_or_else(|| input.clone());
+                eval(handler, &catch_input, env, output);
+            }
         }
 
         Filter::StringInterp(parts) => {
@@ -238,7 +264,7 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
                 match part {
                     crate::filter::StringPart::Lit(s) => result.push_str(s),
                     crate::filter::StringPart::Expr(f) => {
-                        eval(f, input, &mut |v| match v {
+                        eval(f, input, env, &mut |v| match v {
                             Value::String(s) => result.push_str(&s),
                             Value::Int(n) => result.push_str(itoa::Buffer::new().format(n)),
                             Value::Double(f, _) => result.push_str(ryu::Buffer::new().format(f)),
@@ -257,13 +283,108 @@ pub fn eval(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
         }
 
         Filter::Neg(inner) => {
-            eval(inner, input, &mut |v| match v {
+            eval(inner, input, env, &mut |v| match v {
                 Value::Int(n) => output(Value::Int(-n)),
                 Value::Double(f, _) => output(Value::Double(-f, None)),
                 _ => {}
             });
         }
+
+        Filter::Slice(start_f, end_f) => {
+            let start_val = start_f.as_ref().map(|f| {
+                let mut v = Value::Null;
+                eval(f, input, env, &mut |val| v = val);
+                v
+            });
+            let end_val = end_f.as_ref().map(|f| {
+                let mut v = Value::Null;
+                eval(f, input, env, &mut |val| v = val);
+                v
+            });
+
+            match input {
+                Value::Array(arr) => {
+                    let len = arr.len() as i64;
+                    let s = resolve_slice_index(start_val.as_ref(), 0, len);
+                    let e = resolve_slice_index(end_val.as_ref(), len, len);
+                    if s < e {
+                        output(Value::Array(Rc::new(arr[s as usize..e as usize].to_vec())));
+                    } else {
+                        output(Value::Array(Rc::new(vec![])));
+                    }
+                }
+                Value::String(s) => {
+                    let chars: Vec<char> = s.chars().collect();
+                    let len = chars.len() as i64;
+                    let start = resolve_slice_index(start_val.as_ref(), 0, len);
+                    let end = resolve_slice_index(end_val.as_ref(), len, len);
+                    if start < end {
+                        let sliced: String = chars[start as usize..end as usize].iter().collect();
+                        output(Value::String(sliced));
+                    } else {
+                        output(Value::String(String::new()));
+                    }
+                }
+                _ => output(Value::Null),
+            }
+        }
+
+        Filter::Var(name) => {
+            if let Some(val) = env.get_var(name) {
+                output(val.clone());
+            } else {
+                // Fall through to builtins for special variables like $ENV
+                super::builtins::eval_builtin(name, &[], input, env, output);
+            }
+        }
+
+        Filter::Bind(expr, name, body) => {
+            eval(expr, input, env, &mut |val| {
+                let new_env = env.bind_var(name.clone(), val);
+                eval(body, input, &new_env, output);
+            });
+        }
+
+        Filter::Reduce(source, var, init, update) => {
+            let mut acc = Value::Null;
+            eval(init, input, env, &mut |v| acc = v);
+
+            eval(source, input, env, &mut |val| {
+                let new_env = env.bind_var(var.clone(), val);
+                let cur = acc.clone();
+                eval(update, &cur, &new_env, &mut |v| acc = v);
+            });
+
+            output(acc);
+        }
+
+        Filter::Foreach(source, var, init, update, extract) => {
+            let mut acc = Value::Null;
+            eval(init, input, env, &mut |v| acc = v);
+
+            eval(source, input, env, &mut |val| {
+                let new_env = env.bind_var(var.clone(), val);
+                let cur = acc.clone();
+                eval(update, &cur, &new_env, &mut |v| acc = v);
+                if let Some(ext) = extract {
+                    eval(ext, &acc, &new_env, output);
+                } else {
+                    output(acc.clone());
+                }
+            });
+        }
     }
+}
+
+/// Resolve a slice index: handle negatives (wrap with len), clamp to [0, len].
+fn resolve_slice_index(val: Option<&Value>, default: i64, len: i64) -> i64 {
+    let idx = match val {
+        Some(Value::Int(n)) => *n,
+        Some(Value::Double(f, _)) => *f as i64,
+        _ => return default.clamp(0, len),
+    };
+    let resolved = if idx < 0 { len + idx } else { idx };
+    resolved.clamp(0, len)
 }
 
 fn compare_values(left: &Value, op: &CmpOp, right: &Value) -> bool {
@@ -500,14 +621,14 @@ mod tests {
 
     fn eval_one(filter: &Filter, input: &Value) -> Value {
         let mut results = Vec::new();
-        eval(filter, input, &mut |v| results.push(v));
+        eval_filter(filter, input, &mut |v| results.push(v));
         assert_eq!(results.len(), 1, "expected 1 result, got {:?}", results);
         results.into_iter().next().unwrap()
     }
 
     fn eval_all(filter: &Filter, input: &Value) -> Vec<Value> {
         let mut results = Vec::new();
-        eval(filter, input, &mut |v| results.push(v));
+        eval_filter(filter, input, &mut |v| results.push(v));
         results
     }
 

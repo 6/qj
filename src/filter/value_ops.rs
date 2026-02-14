@@ -1,5 +1,5 @@
 /// Numeric utilities, math FFI, date/time helpers (jiff), and path operations.
-use crate::filter::Filter;
+use crate::filter::{Env, Filter};
 use crate::value::Value;
 use std::rc::Rc;
 
@@ -215,10 +215,11 @@ pub(super) fn enum_paths(
     output: &mut dyn FnMut(Value),
     filter: Option<&Filter>,
 ) {
+    let env = Env::empty();
     match filter {
         Some(f) => {
             let mut is_match = false;
-            eval(f, value, &mut |v| {
+            eval(f, value, &env, &mut |v| {
                 if v.is_truthy() {
                     is_match = true;
                 }
@@ -288,6 +289,7 @@ pub(super) fn path_of(
     current: &mut Vec<Value>,
     output: &mut dyn FnMut(Value),
 ) {
+    let env = Env::empty();
     match filter {
         Filter::Field(name) => {
             current.push(Value::String(name.clone()));
@@ -295,7 +297,7 @@ pub(super) fn path_of(
             current.pop();
         }
         Filter::Index(idx_f) => {
-            eval(idx_f, input, &mut |idx| {
+            eval(idx_f, input, &env, &mut |idx| {
                 current.push(idx);
                 output(Value::Array(Rc::new(current.clone())));
                 current.pop();
@@ -340,7 +342,7 @@ pub(super) fn path_of(
                 }
                 _ => {
                     // Fallback: just evaluate both sides
-                    eval(filter, input, &mut |_| {
+                    eval(filter, input, &env, &mut |_| {
                         output(Value::Array(Rc::new(current.clone())));
                     });
                 }

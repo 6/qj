@@ -238,6 +238,41 @@ This means implementing `def` is a force multiplier — it unlocks not just the
 59 direct tests but potentially 20-30 more tests across `walk` (27 tests),
 multiple outputs/iteration, and other categories.
 
+### Why `def` is deferred
+
+Despite the test multiplier, `def` is the highest-risk feature in the roadmap and
+is deferred from Phase 2. The reasons:
+
+1. **jq function arguments are filters, not values.** `def f(x): x | x;` means `x`
+   is a *thunk* (unevaluated filter) that gets re-evaluated each time it appears in
+   the body. This is fundamentally different from variable binding (`as $x`) where the
+   value is computed once. Getting this wrong causes subtle bugs — functions appear to
+   work for simple inputs but break with side-effectful or multi-output arguments.
+
+2. **Closures over lexical scope.** Functions capture their definition environment,
+   not their call environment. `def f: $x + 1; 42 as $x | f` must use the `$x` from
+   where `f` was defined, not the caller's `$x`. This requires threading a closure
+   environment through function definitions and resolving it correctly at call sites.
+
+3. **Recursive definitions with self-reference.** `def fac: if . == 1 then 1 else
+   . * ((. - 1) | fac) end;` requires the function to be available in its own body's
+   scope — a self-referential closure that needs careful Rc/weak-ref handling to avoid
+   cycles.
+
+4. **Arity overloading.** jq allows `def f: .+1; def f(a): a+.;` — same name,
+   different arities. The evaluator must dispatch by both name and argument count,
+   with last-definition-wins shadowing semantics.
+
+5. **jaq spent months on `def` edge cases.** jaq (69% compat, years of development)
+   still has `def`-related failures in the test suite. The interaction between closures,
+   filter arguments, recursion, and scoping creates a long tail of subtle bugs that
+   take iterative debugging to resolve. For a project prioritizing speed over compat,
+   this is poor ROI.
+
+For Phase 2, `walk` and other `def`-dependent builtins are implemented directly in
+Rust, sidestepping the need for a general `def` mechanism. This captures the practical
+value (working `walk`, `with_entries`, etc.) without the implementation risk.
+
 ---
 
 ## Performance reality check

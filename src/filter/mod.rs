@@ -5,6 +5,8 @@ pub mod parser;
 mod value_ops;
 
 use crate::value::Value;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// A jq filter AST node.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +53,24 @@ pub enum Filter {
     StringInterp(Vec<StringPart>),
     /// Negate numeric value (unary minus)
     Neg(Box<Filter>),
+    /// Try-catch: `try expr catch handler`
+    TryCatch(Box<Filter>, Box<Filter>),
+    /// Array/string slice: `.[start:end]`
+    Slice(Option<Box<Filter>>, Option<Box<Filter>>),
+    /// Variable reference: `$name`
+    Var(String),
+    /// Variable binding: `expr as $name | body`
+    Bind(Box<Filter>, String, Box<Filter>),
+    /// Reduce: `reduce source as $var (init; update)`
+    Reduce(Box<Filter>, String, Box<Filter>, Box<Filter>),
+    /// Foreach: `foreach source as $var (init; update; extract?)`
+    Foreach(
+        Box<Filter>,
+        String,
+        Box<Filter>,
+        Box<Filter>,
+        Option<Box<Filter>>,
+    ),
 }
 
 /// Object construction key — can be a literal string or computed.
@@ -89,6 +109,34 @@ pub enum BoolOp {
 pub enum StringPart {
     Lit(String),
     Expr(Filter),
+}
+
+/// Evaluation environment: variable bindings for `as $var` / `reduce` / `foreach`.
+#[derive(Debug, Clone)]
+pub struct Env {
+    vars: Rc<HashMap<String, Value>>,
+}
+
+impl Env {
+    pub fn empty() -> Self {
+        Env {
+            vars: Rc::new(HashMap::new()),
+        }
+    }
+
+    /// Look up a variable binding (e.g., "$x").
+    pub fn get_var(&self, name: &str) -> Option<&Value> {
+        self.vars.get(name)
+    }
+
+    /// Create a new env with an additional variable binding.
+    pub fn bind_var(&self, name: String, value: Value) -> Env {
+        let mut new_vars = (*self.vars).clone();
+        new_vars.insert(name, value);
+        Env {
+            vars: Rc::new(new_vars),
+        }
+    }
 }
 
 /// Detected passthrough-eligible filter patterns that can bypass the
