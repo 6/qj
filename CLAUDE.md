@@ -15,7 +15,16 @@ shellcheck <file>.sh
 ```
 
 ## Testing
-Run `cargo test` after any code change — it's fast.
+`cargo test` runs the fast suite (unit + e2e + ndjson + ffi, ~5s).
+Compat suites are `#[ignore]` — run them with `--release` after adding features.
+
+```
+cargo test                                                              # fast: unit + e2e (~5s)
+cargo test --release -- --ignored --nocapture                           # all tests including compat (~50s)
+cargo test --release jq_conformance -- --ignored --nocapture            # jq.test pass rate
+cargo test --release jq_compat -- --ignored --nocapture                 # cross-tool comparison
+cargo test --release feature_compat -- --ignored --nocapture            # feature matrix
+```
 
 - **Unit tests:** `#[cfg(test)]` modules alongside code.
 - **Integration tests:** `tests/e2e.rs` — runs the `jx` binary against known JSON inputs.
@@ -25,34 +34,21 @@ Run `cargo test` after any code change — it's fast.
     notation, and raw text are preserved from JSON input through output.
 - **NDJSON tests:** `tests/ndjson.rs` — parallel NDJSON processing integration tests.
 - **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
-- **jq conformance suite:** `tests/jq_conformance.rs` — runs jq's official test suite
-  (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against jx and reports pass rate.
-  ```
-  cargo test jq_conformance -- --nocapture                              # summary
-  cargo test jq_conformance_verbose -- --nocapture --ignored            # show failures
-  ```
-- **Cross-tool compat comparison:** `tests/jq_compat_runner.rs` — runs jq.test against
-  jx, jq, jaq, and gojq (whichever are on `$PATH`), per-category breakdown.
-  Results are also written to `tests/jq_compat/results.md`.
-  ```
-  cargo test jq_compat -- --nocapture              # summary + category table
-  cargo test jq_compat_verbose -- --nocapture --ignored  # show failures
-  ```
+- **jq conformance suite** (`#[ignore]`): `tests/jq_conformance.rs` — runs jq's official test
+  suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against jx and reports pass rate.
+- **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test
+  against jx, jq, jaq, and gojq. Writes `tests/jq_compat/results.md`.
+- **Feature compatibility suite** (`#[ignore]`): `tests/jq_compat/features.toml` — TOML-defined
+  tests, per-feature Y/~/N matrix. Writes `tests/jq_compat/feature_results.md`.
 - **Updating the vendored test suite:** `tests/jq_compat/update_test_suite.sh` — downloads
   `jq.test` and test modules from a jq release tag and updates `mise.toml`.
   ```
   bash tests/jq_compat/update_test_suite.sh          # uses version from mise.toml
   bash tests/jq_compat/update_test_suite.sh 1.9.0    # upgrade to new version
   ```
-- **Feature compatibility suite:** `tests/jq_compat/features.toml` — TOML-defined tests
-  (2-3 per feature), runner produces per-feature Y/~/N matrix across jx, jq, jaq, gojq.
-  ```
-  cargo test feature_compat -- --nocapture              # summary + feature table
-  cargo test feature_compat_verbose -- --nocapture --ignored  # show failures
-  ```
 - **When adding new jq builtins or language features**, always:
   1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
-  2. Re-run `cargo test jq_compat -- --nocapture` and update jq compat % in `README.md`
+  2. Run `cargo test --release jq_compat -- --ignored --nocapture` and update jq compat % in `README.md`
 - **Cache:** External tool results (jq, jaq, gojq) are cached in `tests/jq_compat/.cache/`.
   Cache auto-invalidates when test definitions or tool versions (`mise.toml`) change.
   Delete to force full re-run: `rm -rf tests/jq_compat/.cache/`

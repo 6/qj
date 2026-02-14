@@ -366,7 +366,9 @@ fn run_all(verbose: bool) {
     println!("Results written to {}", results_path.display());
 }
 
+/// Run with: cargo test --release jq_compat -- --nocapture --ignored
 #[test]
+#[ignore]
 fn jq_compat() {
     run_all(false);
 }

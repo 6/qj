@@ -119,7 +119,9 @@ fn run_all_cases() -> (Vec<TestCase>, Vec<TestResult>) {
     (cases, results)
 }
 
+/// Run with: cargo test --release jq_conformance -- --nocapture --ignored
 #[test]
+#[ignore]
 fn jq_conformance() {
     let (_cases, results) = run_all_cases();
 
