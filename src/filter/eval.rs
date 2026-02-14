@@ -2162,4 +2162,132 @@ mod tests {
     fn mod_normal() {
         assert_eq!(eval_one(&parse(". % 3"), &Value::Int(10)), Value::Int(1));
     }
+
+    // --- Division / modulo by zero ---
+
+    #[test]
+    fn int_div_by_zero_no_output() {
+        assert!(eval_all(&parse("1 / 0"), &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn int_mod_by_zero_no_output() {
+        assert!(eval_all(&parse("1 % 0"), &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn float_div_by_zero_infinity() {
+        // 1.0 / 0.0 = infinity, which outputs as null
+        let result = eval_one(&parse("1.0 / 0.0"), &Value::Null);
+        match result {
+            Value::Double(v, _) => assert!(v.is_infinite()),
+            other => panic!("expected infinite Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn float_zero_div_zero_nan() {
+        // 0.0 / 0.0 = NaN
+        let result = eval_one(&parse("0.0 / 0.0"), &Value::Null);
+        match result {
+            Value::Double(v, _) => assert!(v.is_nan()),
+            other => panic!("expected NaN Double, got {other:?}"),
+        }
+    }
+
+    // --- range edge cases ---
+
+    #[test]
+    fn range_step_zero_no_output() {
+        assert!(eval_all(&parse("range(0; 10; 0)"), &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn range_nan_no_output() {
+        assert!(eval_all(&parse("range(nan)"), &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn range_negative_step() {
+        let results = eval_all(&parse("range(5; 0; -2)"), &Value::Null);
+        assert_eq!(results, vec![Value::Int(5), Value::Int(3), Value::Int(1)]);
+    }
+
+    // --- implode edge cases ---
+
+    #[test]
+    fn implode_negative_codepoint_dropped() {
+        // Negative i64 wraps to invalid u32 codepoint → char::from_u32 returns None → dropped
+        let input = Value::Array(Rc::new(vec![Value::Int(-1)]));
+        assert_eq!(
+            eval_one(&parse("implode"), &input),
+            Value::String("".into())
+        );
+    }
+
+    #[test]
+    fn implode_valid_codepoints() {
+        let input = Value::Array(Rc::new(vec![Value::Int(65), Value::Int(66)]));
+        assert_eq!(
+            eval_one(&parse("implode"), &input),
+            Value::String("AB".into())
+        );
+    }
+
+    // --- tonumber edge cases ---
+
+    #[test]
+    fn tonumber_overflow_i64_falls_to_f64() {
+        // "99999999999999999999" overflows i64 → parsed as f64
+        let input = Value::String("99999999999999999999".into());
+        let result = eval_one(&parse("tonumber"), &input);
+        match result {
+            Value::Double(v, _) => assert!(v > 1e19),
+            Value::Int(_) => panic!("should be f64 for overflowing string"),
+            other => panic!("expected number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tonumber_already_int() {
+        assert_eq!(
+            eval_one(&parse("tonumber"), &Value::Int(42)),
+            Value::Int(42)
+        );
+    }
+
+    // --- ceil/round on large doubles ---
+
+    #[test]
+    fn ceil_large_double_stays_double() {
+        let f = parse("ceil");
+        let result = eval_one(&f, &Value::Double(9223372036854775808.0, None));
+        match result {
+            Value::Double(v, _) => assert_eq!(v, 9223372036854775808.0),
+            other => panic!("expected Double for 2^63, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_large_double_stays_double() {
+        let f = parse("round");
+        let result = eval_one(&f, &Value::Double(9223372036854775808.0, None));
+        match result {
+            Value::Double(v, _) => assert_eq!(v, 9223372036854775808.0),
+            other => panic!("expected Double for 2^63, got {other:?}"),
+        }
+    }
+
+    // --- limit edge cases ---
+
+    #[test]
+    fn limit_zero_no_output() {
+        assert!(eval_all(&parse("limit(0; range(10))"), &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn limit_normal() {
+        let results = eval_all(&parse("limit(3; range(10))"), &Value::Null);
+        assert_eq!(results, vec![Value::Int(0), Value::Int(1), Value::Int(2)]);
+    }
 }
