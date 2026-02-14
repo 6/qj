@@ -17,14 +17,34 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Format
+        run: cargo fmt --check
+
       - name: Build
         run: cargo build --release
 
       - name: Test
-        run: cargo test
+        run: cargo test --release
 
       - name: Clippy
         run: cargo clippy --release -- -D warnings
+
+      - name: Compat suites
+        run: |
+          cargo test --release jq_conformance -- --ignored --nocapture
+          cargo test --release jq_compat -- --ignored --nocapture
+          cargo test --release feature_compat -- --ignored --nocapture
+
+      - name: Check compat results are up to date
+        run: |
+          failed=0
+          for f in tests/jq_compat/results.md tests/jq_compat/feature_results.md; do
+            if ! git diff --exit-code "$f"; then
+              echo "::error file=$f::$f is stale. Run the compat suites and commit the updated file."
+              failed=1
+            fi
+          done
+          exit $failed
 
       - name: Check benchmarks compile
         run: cargo bench --no-run
