@@ -7,9 +7,9 @@ full design and history.
 
 ## Current state (2026-02)
 
-789 tests passing (417 unit + 334 e2e + 21 ndjson + 15 ffi + 2 conformance).
-~112 builtins implemented. jq conformance at **56.3%** (280/497 on jq's
-official test suite). Feature compatibility at **87.0%** (144/166 features
+824 tests passing (437 unit + 351 e2e + 21 ndjson + 15 ffi).
+~121 builtins implemented. jq conformance at **57.9%** (288/497 on jq's
+official test suite). Feature compatibility at **93.7%** (155/166 features
 fully passing). Passthrough paths handle "simple query on big file" at
 12-63x jq, 3-14x jaq. Parallel NDJSON processing at ~10x jq, ~5.6x jaq.
 
@@ -37,10 +37,10 @@ Non-passthrough eval is competitive with jaq (~1x) and ~2-4x jq.
 | Assignment | 10/19 (53%) | 19/19 | 11/19 | 14/19 |
 | Paths | 10/22 (45%) | 22/22 | 1/22 | 16/22 |
 | User-defined functions | 25/59 (42%) | 59/59 | 44/59 | 59/59 |
-| toliteral number | 17/43 (40%) | 43/43 | 25/43 | 26/43 |
+| toliteral number | 21/43 (49%) | 43/43 | 25/43 | 26/43 |
 | walk | 8/27 (30%) | 27/27 | 7/27 | 17/27 |
 | Module system | 3/26 (12%) | 26/26 | 6/26 | 15/26 |
-| **Total** | **280/497 (56%)** | **497/497** | **343/497** | **425/497** |
+| **Total** | **288/497 (58%)** | **497/497** | **343/497** | **425/497** |
 
 ---
 
@@ -99,37 +99,61 @@ regex: 0/9 → 9/9. Overall feature compat: 83.4% → 87.0%.
 
 ---
 
-## Priority 4: Format strings
+## ~~Priority 4: String interpolation, format strings, small builtins~~ COMPLETE
 
-**Why:** 0/10 feature tests. Used for data export (`@csv`, `@tsv`),
-encoding (`@base64`, `@uri`), and serialization (`@json`).
+**String interpolation** `"\(.x)"`: Lexer produces `InterpStr(Vec<StringSegment>)`
+tokens, parser builds `Filter::StringInterp(Vec<StringPart>)`. AST and evaluator
+already existed; only lexer/parser were missing. Handles nested parens and
+nested strings inside interpolation expressions.
 
-**Formats:** `@base64`, `@base64d`, `@uri`, `@csv`, `@tsv`, `@json`,
-`@text`, `@html`
+**Format strings** (10 builtins): `@base64`, `@base64d`, `@uri`, `@csv`,
+`@tsv`, `@json`, `@text`, `@html`, `@sh`. Lexer produces `Format(String)`
+token, parser maps to `Filter::Builtin(name, vec![])`. Uses `base64` crate
+for base64 encode/decode; all others implemented with std.
 
-**Needs:** Lexer/parser change to recognize `@name` as a format token.
-Each format is a small, independent implementation.
+**Small builtins**: `in(expr)` (inverse of `has`), `combinations`/`combinations(n)`
+(cartesian product).
 
-**Files:** `src/filter/lexer.rs`, `src/filter/parser.rs`,
-`src/filter/builtins.rs`
+Feature compat: 87.0% → 93.7% (155/166). Conformance: 280/497 → 288/497 (58%).
+String interpolation had cross-cutting conformance impact across walk,
+conditionals, and string operations categories.
 
 ---
 
-## Priority 5: Smaller gaps
+## Priority 5: `def` (user-defined functions)
 
-Individually small but collectively improve conformance and real-world
-compatibility.
+**Why:** Single biggest conformance blocker. 34 direct failures in the
+user-defined functions category, but `def` cascades into walk (19 failures),
+conditionals (7), string operations (28), and iteration (16) since many
+jq.test tests define helper functions. Estimated impact: **+50-60 tests**,
+jumping from 58% to ~70%.
 
-| Feature | Status | Impact |
-|---------|--------|--------|
-| String interpolation `"\(.x)"` | 0/2 feature tests | Common; AST+eval exist, lexer/parser missing |
-| `in` builtin | 0/2 feature tests | Inverse of `has` |
-| `combinations` | 0/2 feature tests | Cartesian product |
-| `pick` | 0/1 feature tests | Extract paths from object |
-| `INDEX` | 0/1 feature tests | Index array by key |
-| `values` type selector | 0/1 feature tests | Filter non-null values |
-| `strptime`/`gmtime`/`mktime` | 0/3 feature tests | Date/time gaps |
-| `del` edge cases | 1/3 feature tests | Path-based deletion |
+**Needs:**
+- AST: `Filter::Def { name, params, body, rest }` node
+- Parser: `def name(params): body; rest` syntax
+- Evaluator: function table in `Env`, lexical scoping, recursion
+- Filter-argument parameters: `def map(f): [.[] | f];`
+- Closure semantics: params shadow outer variables
+
+**Complexity:** High — recursive definitions, filter-argument parameters,
+nested redefinition (`def f: 1; def g: f, def f: 2; ...`).
+
+---
+
+## Priority 6: Quick wins (remaining feature gaps)
+
+10 features still at N in feature_results.md. Some are easy:
+
+| Feature | Status | Effort | Impact |
+|---------|--------|--------|--------|
+| `values` type selector | 0/1 | Low | Filter non-null values |
+| `del` edge cases | 1/3 | Low | Complex path deletion |
+| `pick` | 0/1 | Low | Extract paths from object |
+| `INDEX` | 0/1 | Low | Index array by key |
+| `gmtime`/`mktime` | 0/2 | Medium | Unix epoch ↔ broken-down time |
+| `strptime` | 0/1 | Medium | Date string parsing |
+| `label`-`break` | 0/1 | Medium | Advanced control flow |
+| `input`/`inputs` | 0/1 | Medium | Multi-input reading |
 
 ---
 
@@ -137,22 +161,16 @@ compatibility.
 
 | After | Est. Tests | Est. % | Key unlock |
 |-------|-----------|--------|------------|
-| Current (with regex) | 280/497 | 56% | — |
-| + format strings | ~294/497 | ~59% | @base64, @csv, @tsv |
-| + smaller gaps | ~309/497 | ~62% | cross-cutting fixes |
+| Current | 288/497 | 58% | — |
+| + quick wins (P6) | ~300/497 | ~60% | feature gaps closed |
+| + `def` (P5) | ~350/497 | ~70% | cascading unlock across categories |
+| + number literal fixes | ~370/497 | ~74% | toliteral precision |
 
 ---
 
 ## Later
 
-None of these block the next push. Revisit after Priorities 3-5.
-
-### `def` (user-defined functions)
-
-High impact (34/59 conformance tests failing, cascading effect on walk
-and conditionals categories) but high complexity. Needs: recursive
-definitions, filter-argument parameters (`def map(f): [.[] | f];`),
-lexical scoping. Deferred until the lower-risk items above are done.
+None of these block the next push. Revisit after Priorities 5-6.
 
 ### SmallString for Value type
 
@@ -162,14 +180,16 @@ refactor of `Value::String(String)` → `Value::String(CompactString)`.
 
 ### Number literal preservation
 
-26/43 toliteral number conformance tests failing. The `Value::Double(f64,
+22/43 toliteral number conformance tests failing. The `Value::Double(f64,
 Option<Box<str>>)` raw text tracking exists but has edge cases around
 arithmetic operations, conversions, and output formatting.
 
+### Module system
+
+23/26 failures but low ROI — even jaq only passes 6/26, gojq 15/26.
+Requires module loading infrastructure (`import`/`include`/`modulemeta`).
+
 ### Other deferred items
 
-- `label`/`break` — advanced control flow
-- `input`/`inputs` — multi-input reading
 - `tostream`/`fromstream` — streaming operations
-- Module system (`import`/`include`) — out of scope
 - On-Demand fast path, arena allocation, string interning — perf optimizations
