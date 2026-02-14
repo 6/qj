@@ -126,6 +126,11 @@ static JSON_FILTERS: &[BenchFilter] = &[
         flags: &["-c"],
         expr: ".statuses[] |= (.retweet_count += 1)",
     },
+    BenchFilter {
+        name: "regex (gsub)",
+        flags: &["-c"],
+        expr: r#"[.statuses[]|.user.screen_name|gsub("_"; "-")]"#,
+    },
 ];
 
 static NDJSON_FILTERS: &[BenchFilter] = &[

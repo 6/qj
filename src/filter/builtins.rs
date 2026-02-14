@@ -1965,3 +1965,105 @@ fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -
         ("captures".to_string(), Value::Array(Rc::new(captures))),
     ]))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_regex_basic() {
+        let re = build_regex("^foo", "").unwrap();
+        assert!(re.is_match("foobar"));
+        assert!(!re.is_match("barfoo"));
+    }
+
+    #[test]
+    fn build_regex_case_insensitive() {
+        let re = build_regex("FOO", "i").unwrap();
+        assert!(re.is_match("foobar"));
+    }
+
+    #[test]
+    fn build_regex_extended_mode() {
+        // Extended mode strips whitespace and comments
+        let re = build_regex("foo  # match foo\n  bar", "x").unwrap();
+        assert!(re.is_match("foobar"));
+        assert!(!re.is_match("foo bar"));
+    }
+
+    #[test]
+    fn build_regex_combined_flags() {
+        let re = build_regex("^foo$", "im").unwrap();
+        // Multiline: ^ matches start of each line
+        assert!(re.is_match("bar\nfoo\nbaz"));
+    }
+
+    #[test]
+    fn build_regex_invalid_pattern() {
+        assert!(build_regex("[invalid", "").is_none());
+    }
+
+    #[test]
+    fn match_object_structure() {
+        let re = regex::Regex::new("(o+)").unwrap();
+        let caps = re.captures("foobar").unwrap();
+        let obj = regex_match_object(&re, &caps, "foobar");
+        if let Value::Object(fields) = &obj {
+            let offset = fields
+                .iter()
+                .find(|(k, _)| k == "offset")
+                .unwrap()
+                .1
+                .clone();
+            let length = fields
+                .iter()
+                .find(|(k, _)| k == "length")
+                .unwrap()
+                .1
+                .clone();
+            let string = fields
+                .iter()
+                .find(|(k, _)| k == "string")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(offset, Value::Int(1));
+            assert_eq!(length, Value::Int(2));
+            assert_eq!(string, Value::String("oo".to_string()));
+        } else {
+            panic!("expected object");
+        }
+    }
+
+    #[test]
+    fn match_object_named_capture() {
+        let re = regex::Regex::new("(?P<year>\\d{4})-(?P<month>\\d{2})").unwrap();
+        let caps = re.captures("2024-01-15").unwrap();
+        let obj = regex_match_object(&re, &caps, "2024-01-15");
+        if let Value::Object(fields) = &obj {
+            let captures_val = fields
+                .iter()
+                .find(|(k, _)| k == "captures")
+                .unwrap()
+                .1
+                .clone();
+            if let Value::Array(caps_arr) = captures_val {
+                assert_eq!(caps_arr.len(), 2);
+                // First capture: year
+                if let Value::Object(c0) = &caps_arr[0] {
+                    let name = c0.iter().find(|(k, _)| k == "name").unwrap().1.clone();
+                    assert_eq!(name, Value::String("year".to_string()));
+                }
+                // Second capture: month
+                if let Value::Object(c1) = &caps_arr[1] {
+                    let name = c1.iter().find(|(k, _)| k == "name").unwrap().1.clone();
+                    assert_eq!(name, Value::String("month".to_string()));
+                }
+            } else {
+                panic!("expected array for captures");
+            }
+        } else {
+            panic!("expected object");
+        }
+    }
+}
