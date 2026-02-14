@@ -849,4 +849,173 @@ mod tests {
             other => panic!("expected Pipe, got {other:?}"),
         }
     }
+
+    // --- Phase 2: variables ---
+
+    #[test]
+    fn parse_var_reference() {
+        assert_eq!(p("$x"), Filter::Var("$x".into()));
+    }
+
+    #[test]
+    fn parse_as_binding() {
+        // `. as $x | $x` → Bind(Identity, "$x", Var("$x"))
+        assert_eq!(
+            p(". as $x | $x"),
+            Filter::Bind(
+                Box::new(Filter::Identity),
+                "$x".into(),
+                Box::new(Filter::Var("$x".into())),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_as_binding_in_pipe() {
+        // `.[] | . as $x | $x` → Pipe(Iterate, Bind(Identity, "$x", Var("$x")))
+        let f = p(".[] | . as $x | $x");
+        match f {
+            Filter::Pipe(left, right) => {
+                assert_eq!(*left, Filter::Iterate);
+                match *right {
+                    Filter::Bind(expr, ref name, _) => {
+                        assert_eq!(*expr, Filter::Identity);
+                        assert_eq!(name, "$x");
+                    }
+                    other => panic!("expected Bind, got {other:?}"),
+                }
+            }
+            other => panic!("expected Pipe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_chained_bindings() {
+        // `1 as $x | 2 as $y | $x + $y`
+        let f = p("1 as $x | 2 as $y | $x + $y");
+        match f {
+            Filter::Bind(_, ref name, ref body) => {
+                assert_eq!(name, "$x");
+                match body.as_ref() {
+                    Filter::Bind(_, name2, _) => assert_eq!(name2, "$y"),
+                    other => panic!("expected nested Bind, got {other:?}"),
+                }
+            }
+            other => panic!("expected Bind, got {other:?}"),
+        }
+    }
+
+    // --- Phase 2: slicing ---
+
+    #[test]
+    fn parse_slice_both() {
+        // `.[2:4]` → Slice(Some(2), Some(4))
+        match p(".[2:4]") {
+            Filter::Slice(Some(s), Some(e)) => {
+                assert_eq!(*s, Filter::Literal(Value::Int(2)));
+                assert_eq!(*e, Filter::Literal(Value::Int(4)));
+            }
+            other => panic!("expected Slice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slice_no_start() {
+        // `.[:3]` → Slice(None, Some(3))
+        match p(".[:3]") {
+            Filter::Slice(None, Some(e)) => {
+                assert_eq!(*e, Filter::Literal(Value::Int(3)));
+            }
+            other => panic!("expected Slice(None, Some), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slice_no_end() {
+        // `.[2:]` → Slice(Some(2), None)
+        match p(".[2:]") {
+            Filter::Slice(Some(s), None) => {
+                assert_eq!(*s, Filter::Literal(Value::Int(2)));
+            }
+            other => panic!("expected Slice(Some, None), got {other:?}"),
+        }
+    }
+
+    // --- Phase 2: elif ---
+
+    #[test]
+    fn parse_elif() {
+        let f = p("if . then 1 elif . then 2 else 3 end");
+        match f {
+            Filter::IfThenElse(_, _, Some(else_branch)) => match *else_branch {
+                Filter::IfThenElse(_, _, Some(_)) => {} // nested if from elif
+                other => panic!("expected nested IfThenElse from elif, got {other:?}"),
+            },
+            other => panic!("expected IfThenElse, got {other:?}"),
+        }
+    }
+
+    // --- Phase 2: try-catch ---
+
+    #[test]
+    fn parse_try_keyword() {
+        // `try .foo` → Try(Field("foo"))
+        assert_eq!(
+            p("try .foo"),
+            Filter::Try(Box::new(Filter::Field("foo".into())))
+        );
+    }
+
+    #[test]
+    fn parse_try_catch() {
+        // `try .foo catch .bar` → TryCatch(Field("foo"), Field("bar"))
+        assert_eq!(
+            p("try .foo catch .bar"),
+            Filter::TryCatch(
+                Box::new(Filter::Field("foo".into())),
+                Box::new(Filter::Field("bar".into())),
+            )
+        );
+    }
+
+    // --- Phase 2: reduce ---
+
+    #[test]
+    fn parse_reduce() {
+        let f = p("reduce .[] as $x (0; . + $x)");
+        match f {
+            Filter::Reduce(source, name, init, _update) => {
+                assert_eq!(*source, Filter::Iterate);
+                assert_eq!(name, "$x");
+                assert_eq!(*init, Filter::Literal(Value::Int(0)));
+            }
+            other => panic!("expected Reduce, got {other:?}"),
+        }
+    }
+
+    // --- Phase 2: foreach ---
+
+    #[test]
+    fn parse_foreach_two_arg() {
+        let f = p("foreach .[] as $x (0; . + $x)");
+        match f {
+            Filter::Foreach(_, name, _, _, extract) => {
+                assert_eq!(name, "$x");
+                assert!(extract.is_none());
+            }
+            other => panic!("expected Foreach, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_foreach_three_arg() {
+        let f = p("foreach .[] as $x (0; . + $x; . * 2)");
+        match f {
+            Filter::Foreach(_, name, _, _, extract) => {
+                assert_eq!(name, "$x");
+                assert!(extract.is_some());
+            }
+            other => panic!("expected Foreach with extract, got {other:?}"),
+        }
+    }
 }

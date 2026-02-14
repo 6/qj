@@ -2124,6 +2124,61 @@ fn jq_compat_slicing() {
 }
 
 #[test]
+fn slice_empty_array() {
+    assert_jq_compat(".[5:10]", "[]");
+}
+
+#[test]
+fn slice_inverted_range() {
+    assert_jq_compat(".[3:1]", "[0,1,2,3,4]");
+}
+
+#[test]
+fn slice_negative_both() {
+    assert_jq_compat(".[-3:-1]", "[0,1,2,3,4]");
+}
+
+#[test]
+fn slice_string_empty() {
+    assert_jq_compat(".[0:0]", r#""hello""#);
+}
+
+#[test]
+fn reduce_to_string() {
+    assert_jq_compat(r#"reduce .[] as $x (""; . + $x)"#, r#"["a","b","c"]"#);
+}
+
+#[test]
+fn foreach_three_arg() {
+    assert_jq_compat("[foreach .[] as $x (0; . + $x; . * 10)]", "[1,2,3]");
+}
+
+#[test]
+fn try_keyword_expression() {
+    assert_jq_compat("try .foo", r#"{"foo": 1}"#);
+}
+
+#[test]
+fn try_keyword_on_error() {
+    // try on error builtin suppresses the error
+    let out = jx(r#"try error("fail")"#, "null");
+    assert_eq!(out.trim(), "");
+}
+
+#[test]
+fn walk_nested_arrays() {
+    assert_jq_compat(
+        "walk(if type == \"number\" then . * 2 else . end)",
+        "[1,[2,[3]]]",
+    );
+}
+
+#[test]
+fn walk_identity() {
+    assert_jq_compat("walk(.)", r#"{"a":[1,2],"b":"c"}"#);
+}
+
+#[test]
 fn jq_compat_variables() {
     assert_jq_compat(". as $x | $x", "42");
     assert_jq_compat(". as $x | $x + 1", "10");

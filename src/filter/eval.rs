@@ -1714,4 +1714,304 @@ mod tests {
             panic!("expected object");
         }
     }
+
+    // --- Phase 2: variables ---
+
+    #[test]
+    fn eval_var_basic() {
+        let f = parse(". as $x | $x");
+        assert_eq!(eval_one(&f, &Value::Int(42)), Value::Int(42));
+    }
+
+    #[test]
+    fn eval_var_shadowing() {
+        // Inner binding shadows outer
+        let f = parse("1 as $x | 2 as $x | $x");
+        assert_eq!(eval_one(&f, &Value::Null), Value::Int(2));
+    }
+
+    #[test]
+    fn eval_var_multiple_outputs() {
+        // Generator in binding produces multiple outputs
+        let f = parse(".[] as $x | $x * $x");
+        let input = Value::Array(Rc::new(vec![Value::Int(2), Value::Int(3)]));
+        assert_eq!(eval_all(&f, &input), vec![Value::Int(4), Value::Int(9)]);
+    }
+
+    #[test]
+    fn eval_var_in_arith() {
+        let f = parse(".a as $x | .b as $y | $x + $y");
+        let input = Value::Object(Rc::new(vec![
+            ("a".into(), Value::Int(10)),
+            ("b".into(), Value::Int(20)),
+        ]));
+        assert_eq!(eval_one(&f, &input), Value::Int(30));
+    }
+
+    #[test]
+    fn eval_var_undefined() {
+        // Undefined variable produces no output (falls through to builtins)
+        let f = parse("$nonexistent");
+        let results = eval_all(&f, &Value::Null);
+        // $nonexistent isn't a known builtin either, so no output
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn eval_env_var() {
+        // $ENV should still work after variable support was added
+        let f = parse("$ENV | type");
+        assert_eq!(eval_one(&f, &Value::Null), Value::String("object".into()));
+    }
+
+    // --- Phase 2: slicing ---
+
+    #[test]
+    fn eval_slice_array() {
+        let f = parse(".[1:3]");
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(10),
+            Value::Int(20),
+            Value::Int(30),
+            Value::Int(40),
+        ]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![Value::Int(20), Value::Int(30)]))
+        );
+    }
+
+    #[test]
+    fn eval_slice_array_no_start() {
+        let f = parse(".[:2]");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+        );
+    }
+
+    #[test]
+    fn eval_slice_array_no_end() {
+        let f = parse(".[1:]");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![Value::Int(2), Value::Int(3)]))
+        );
+    }
+
+    #[test]
+    fn eval_slice_array_negative() {
+        let f = parse(".[-2:]");
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![Value::Int(3), Value::Int(4)]))
+        );
+    }
+
+    #[test]
+    fn eval_slice_array_empty_range() {
+        let f = parse(".[3:1]");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(eval_one(&f, &input), Value::Array(Rc::new(vec![])));
+    }
+
+    #[test]
+    fn eval_slice_array_out_of_bounds() {
+        let f = parse(".[0:100]");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+        );
+    }
+
+    #[test]
+    fn eval_slice_string() {
+        let f = parse(".[1:4]");
+        assert_eq!(
+            eval_one(&f, &Value::String("abcdef".into())),
+            Value::String("bcd".into())
+        );
+    }
+
+    #[test]
+    fn eval_slice_string_negative() {
+        let f = parse(".[-3:]");
+        assert_eq!(
+            eval_one(&f, &Value::String("abcdef".into())),
+            Value::String("def".into())
+        );
+    }
+
+    #[test]
+    fn eval_slice_null_input() {
+        let f = parse(".[0:1]");
+        assert_eq!(eval_one(&f, &Value::Null), Value::Null);
+    }
+
+    // --- Phase 2: elif ---
+
+    #[test]
+    fn eval_elif_first_branch() {
+        let f = parse(r#"if . < 0 then "neg" elif . == 0 then "zero" else "pos" end"#);
+        assert_eq!(eval_one(&f, &Value::Int(-5)), Value::String("neg".into()));
+    }
+
+    #[test]
+    fn eval_elif_middle_branch() {
+        let f = parse(r#"if . < 0 then "neg" elif . == 0 then "zero" else "pos" end"#);
+        assert_eq!(eval_one(&f, &Value::Int(0)), Value::String("zero".into()));
+    }
+
+    #[test]
+    fn eval_elif_else_branch() {
+        let f = parse(r#"if . < 0 then "neg" elif . == 0 then "zero" else "pos" end"#);
+        assert_eq!(eval_one(&f, &Value::Int(5)), Value::String("pos".into()));
+    }
+
+    #[test]
+    fn eval_elif_three_branches() {
+        let f = parse(
+            r#"if . == 1 then "one" elif . == 2 then "two" elif . == 3 then "three" else "other" end"#,
+        );
+        assert_eq!(eval_one(&f, &Value::Int(2)), Value::String("two".into()));
+        assert_eq!(eval_one(&f, &Value::Int(3)), Value::String("three".into()));
+        assert_eq!(eval_one(&f, &Value::Int(99)), Value::String("other".into()));
+    }
+
+    // --- Phase 2: try-catch ---
+
+    #[test]
+    fn eval_try_keyword_success() {
+        let f = parse("try .a");
+        let input = Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]));
+        assert_eq!(eval_one(&f, &input), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_try_keyword_error() {
+        let f = parse("try error");
+        let results = eval_all(&f, &Value::Null);
+        assert!(results.is_empty(), "try should suppress error");
+    }
+
+    #[test]
+    fn eval_try_catch_no_error() {
+        let f = parse("try . catch .");
+        assert_eq!(eval_one(&f, &Value::Int(42)), Value::Int(42));
+    }
+
+    #[test]
+    fn eval_try_catch_with_error() {
+        let f = parse(r#"try error("boom") catch ."#);
+        assert_eq!(eval_one(&f, &Value::Null), Value::String("boom".into()));
+    }
+
+    #[test]
+    fn eval_try_catch_error_no_arg() {
+        // `error` with no arg uses input as error value
+        let f = parse("try error catch .");
+        assert_eq!(eval_one(&f, &Value::Int(99)), Value::Int(99));
+    }
+
+    // --- Phase 2: reduce ---
+
+    #[test]
+    fn eval_reduce_sum() {
+        let f = parse("reduce .[] as $x (0; . + $x)");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(eval_one(&f, &input), Value::Int(6));
+    }
+
+    #[test]
+    fn eval_reduce_empty() {
+        let f = parse("reduce .[] as $x (0; . + $x)");
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(eval_one(&f, &input), Value::Int(0));
+    }
+
+    #[test]
+    fn eval_reduce_build_array() {
+        let f = parse("reduce .[] as $x ([]; . + [$x * 2])");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![Value::Int(2), Value::Int(4), Value::Int(6)]))
+        );
+    }
+
+    // --- Phase 2: foreach ---
+
+    #[test]
+    fn eval_foreach_running_sum() {
+        let f = parse("[foreach .[] as $x (0; . + $x)]");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3), Value::Int(6)]))
+        );
+    }
+
+    #[test]
+    fn eval_foreach_with_extract() {
+        let f = parse("[foreach .[] as $x (0; . + $x; . * 10)]");
+        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![
+                Value::Int(10),
+                Value::Int(30),
+                Value::Int(60)
+            ]))
+        );
+    }
+
+    #[test]
+    fn eval_foreach_empty() {
+        let f = parse("[foreach .[] as $x (0; . + $x)]");
+        let input = Value::Array(Rc::new(vec![]));
+        assert_eq!(eval_one(&f, &input), Value::Array(Rc::new(vec![])));
+    }
+
+    // --- Phase 2: walk ---
+
+    #[test]
+    fn eval_walk_numbers() {
+        let f = parse("walk(if type == \"number\" then . + 1 else . end)");
+        let input = Value::Array(Rc::new(vec![
+            Value::Int(1),
+            Value::Array(Rc::new(vec![Value::Int(2)])),
+        ]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Array(Rc::new(vec![
+                Value::Int(2),
+                Value::Array(Rc::new(vec![Value::Int(3)])),
+            ]))
+        );
+    }
+
+    #[test]
+    fn eval_walk_scalar() {
+        let f = parse("walk(. + 1)");
+        assert_eq!(eval_one(&f, &Value::Int(5)), Value::Int(6));
+    }
+
+    #[test]
+    fn eval_walk_object() {
+        let f = parse(r#"walk(if type == "string" then "X" else . end)"#);
+        let input = Value::Object(Rc::new(vec![("a".into(), Value::String("hello".into()))]));
+        assert_eq!(
+            eval_one(&f, &input),
+            Value::Object(Rc::new(vec![("a".into(), Value::String("X".into()))]))
+        );
+    }
 }
