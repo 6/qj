@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
         self.parse_pipe()
     }
 
-    // pipe = def | comma (assign_op pipe | "as" "$var" "|" pipe | "|" comma)*
+    // pipe = def | comma ("|" comma)*
     fn parse_pipe(&mut self) -> Result<Filter> {
         // Check for `def` at the start of a pipe expression
         if self.peek() == Some(&Token::Def) {
@@ -63,36 +63,9 @@ impl<'a> Parser<'a> {
 
         let mut left = self.parse_comma()?;
 
-        // Check for assignment operators before pipe (right-recursive)
-        if let Some(op) = self.peek_assign_op() {
-            self.advance();
-            let right = self.parse_pipe()?;
-            return Ok(Filter::Assign(Box::new(left), op, Box::new(right)));
-        }
-
-        // Check for `expr as $var | body`
-        if self.peek() == Some(&Token::As) {
-            return self.parse_as_binding(left);
-        }
-
         while self.peek() == Some(&Token::Pipe) {
             self.advance();
             let right = self.parse_comma()?;
-
-            // Check for assignment after pipe
-            if let Some(op) = self.peek_assign_op() {
-                self.advance();
-                let rhs = self.parse_pipe()?;
-                let assign = Filter::Assign(Box::new(right), op, Box::new(rhs));
-                return Ok(Filter::Pipe(Box::new(left), Box::new(assign)));
-            }
-
-            // Check for `as $var |` after the right-side comma-expr
-            if self.peek() == Some(&Token::As) {
-                let binding = self.parse_as_binding(right)?;
-                return Ok(Filter::Pipe(Box::new(left), Box::new(binding)));
-            }
-
             left = Filter::Pipe(Box::new(left), Box::new(right));
         }
         Ok(left)
@@ -314,16 +287,35 @@ impl<'a> Parser<'a> {
 
     // comma = alternative ("," alternative)*
     fn parse_comma(&mut self) -> Result<Filter> {
-        let first = self.parse_alternative()?;
+        let first = self.parse_assign()?;
         if self.peek() != Some(&Token::Comma) {
             return Ok(first);
         }
         let mut items = vec![first];
         while self.peek() == Some(&Token::Comma) {
             self.advance();
-            items.push(self.parse_alternative()?);
+            items.push(self.parse_assign()?);
         }
         Ok(Filter::Comma(items))
+    }
+
+    // assign = alternative (assign_op assign | "as" pattern "|" pipe)?
+    fn parse_assign(&mut self) -> Result<Filter> {
+        let left = self.parse_alternative()?;
+
+        // Check for assignment operators (right-recursive within assign level)
+        if let Some(op) = self.peek_assign_op() {
+            self.advance();
+            let right = self.parse_assign()?;
+            return Ok(Filter::Assign(Box::new(left), op, Box::new(right)));
+        }
+
+        // Check for `expr as $var | body`
+        if self.peek() == Some(&Token::As) {
+            return self.parse_as_binding(left);
+        }
+
+        Ok(left)
     }
 
     // alternative = bool_op ("//" bool_op)*
@@ -655,7 +647,36 @@ impl<'a> Parser<'a> {
                     Token::Format(s) => s.clone(),
                     _ => unreachable!(),
                 };
-                Ok(Filter::Builtin(name, vec![]))
+                // @format "string_interp" — apply format to interpolated expressions
+                if matches!(self.peek(), Some(Token::Str(_) | Token::InterpStr(_))) {
+                    let str_filter = self.parse_primary()?;
+                    // Wrap each interpolated Expr part with the format builtin
+                    if let Filter::StringInterp(parts) = str_filter {
+                        let wrapped_parts = parts
+                            .into_iter()
+                            .map(|part| match part {
+                                crate::filter::StringPart::Lit(s) => {
+                                    crate::filter::StringPart::Lit(s)
+                                }
+                                crate::filter::StringPart::Expr(f) => {
+                                    crate::filter::StringPart::Expr(Filter::Pipe(
+                                        Box::new(f),
+                                        Box::new(Filter::Builtin(name.clone(), vec![])),
+                                    ))
+                                }
+                            })
+                            .collect();
+                        Ok(Filter::StringInterp(wrapped_parts))
+                    } else {
+                        // Plain string, no interpolation — apply format to whole thing
+                        Ok(Filter::Pipe(
+                            Box::new(str_filter),
+                            Box::new(Filter::Builtin(name, vec![])),
+                        ))
+                    }
+                } else {
+                    Ok(Filter::Builtin(name, vec![]))
+                }
             }
             // Named identifier — builtin, function call, or variable
             Some(Token::Ident(_)) => {
@@ -862,21 +883,11 @@ impl<'a> Parser<'a> {
 
     // pipe without comma — used in object values and function args
     fn parse_pipe_no_comma(&mut self) -> Result<Filter> {
-        let mut left = self.parse_alternative()?;
-
-        if self.peek() == Some(&Token::As) {
-            return self.parse_as_binding(left);
-        }
+        let mut left = self.parse_assign()?;
 
         while self.peek() == Some(&Token::Pipe) {
             self.advance();
-            let right = self.parse_alternative()?;
-
-            if self.peek() == Some(&Token::As) {
-                let binding = self.parse_as_binding(right)?;
-                return Ok(Filter::Pipe(Box::new(left), Box::new(binding)));
-            }
-
+            let right = self.parse_assign()?;
             left = Filter::Pipe(Box::new(left), Box::new(right));
         }
         Ok(left)

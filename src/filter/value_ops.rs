@@ -114,6 +114,103 @@ pub(super) fn format_strftime_jiff(fmt: &str, secs: i64) -> Option<String> {
     )
 }
 
+pub(super) fn format_strftime_local(fmt: &str, secs: i64) -> Option<String> {
+    let ts = Timestamp::from_second(secs).ok()?;
+    Some(
+        ts.to_zoned(jiff::tz::TimeZone::system())
+            .strftime(fmt)
+            .to_string(),
+    )
+}
+
+/// Convert epoch seconds → jq broken-down time array (UTC).
+/// `[year, month(0-11), day(1-31), hour, min, sec, weekday(0-6 Sun=0), yearday(0-365)]`
+pub(super) fn epoch_to_bdtime(secs: f64, utc: bool) -> Option<Value> {
+    let whole = secs as i64;
+    let ts = Timestamp::from_second(whole).ok()?;
+    let tz = if utc {
+        jiff::tz::TimeZone::UTC
+    } else {
+        jiff::tz::TimeZone::system()
+    };
+    let zdt = ts.to_zoned(tz);
+    let dt = zdt.datetime();
+    let year = dt.year() as i64;
+    // jq months are 0-indexed
+    let month = (dt.month() as i64) - 1;
+    let day = dt.day() as i64;
+    let hour = dt.hour() as i64;
+    let min = dt.minute() as i64;
+    let sec = dt.second() as i64;
+    // jq weekday: 0=Sunday. jiff: Monday=1..Sunday=7
+    let wday = zdt.weekday().to_sunday_zero_offset() as i64;
+    // yearday: 0-based day of year
+    let yday = (zdt.day_of_year() as i64) - 1;
+    Some(Value::Array(std::rc::Rc::new(vec![
+        Value::Int(year),
+        Value::Int(month),
+        Value::Int(day),
+        Value::Int(hour),
+        Value::Int(min),
+        Value::Int(sec),
+        Value::Int(wday),
+        Value::Int(yday),
+    ])))
+}
+
+/// Convert jq broken-down time array → epoch seconds (UTC).
+pub(super) fn bdtime_to_epoch(arr: &[Value]) -> Option<i64> {
+    let get_i = |idx: usize| -> i64 {
+        arr.get(idx)
+            .map(|v| match v {
+                Value::Int(n) => *n,
+                Value::Double(f, _) => *f as i64,
+                _ => 0,
+            })
+            .unwrap_or(0)
+    };
+    let year = get_i(0) as i16;
+    let month = (get_i(1) + 1) as i8; // jq is 0-indexed
+    let day = get_i(2) as i8;
+    let hour = get_i(3) as i8;
+    let min = get_i(4) as i8;
+    let sec = get_i(5) as i8;
+    let dt = jiff::civil::DateTime::new(year, month, day, hour, min, sec, 0).ok()?;
+    let zdt = dt.to_zoned(jiff::tz::TimeZone::UTC).ok()?;
+    Some(zdt.timestamp().as_second())
+}
+
+/// Format a broken-down time array using strftime with the given timezone.
+pub(super) fn bdtime_strftime(arr: &[Value], fmt: &str, utc: bool) -> Option<String> {
+    let epoch = bdtime_to_epoch(arr)?;
+    let ts = Timestamp::from_second(epoch).ok()?;
+    let tz = if utc {
+        jiff::tz::TimeZone::UTC
+    } else {
+        jiff::tz::TimeZone::system()
+    };
+    let zdt = ts.to_zoned(tz);
+    Some(zdt.strftime(fmt).to_string())
+}
+
+/// Parse a datetime string using strptime format → broken-down time array.
+pub(super) fn strptime_to_bdtime(s: &str, fmt: &str) -> Option<Value> {
+    use jiff::fmt::strtime;
+    // Try parsing as a full timestamp with timezone info
+    if let Ok(pieces) = strtime::parse(fmt, s) {
+        // Try to convert to a Timestamp first (handles timezone-aware formats)
+        if let Ok(ts) = pieces.to_timestamp() {
+            return epoch_to_bdtime(ts.as_second() as f64, true);
+        }
+        // Fall back to civil datetime and treat as UTC
+        if let Ok(dt) = pieces.to_datetime() {
+            let zdt = dt.to_zoned(jiff::tz::TimeZone::UTC).ok()?;
+            return epoch_to_bdtime(zdt.timestamp().as_second() as f64, true);
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Path operations
 // ---------------------------------------------------------------------------
@@ -612,35 +709,31 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
             (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a * *b as f64, None)),
             (Value::Object(a), Value::Object(b)) => Ok(object_recursive_merge(a, b)),
             (Value::String(s), Value::Int(n)) | (Value::Int(n), Value::String(s)) => {
-                if *n <= 0 {
+                if *n < 0 {
                     Ok(Value::Null)
+                } else if *n == 0 {
+                    Ok(Value::String(String::new()))
                 } else {
                     // Guard against excessive memory allocation
                     let total = (*n as u64).saturating_mul(s.len() as u64);
                     if total > 100_000_000 {
-                        Err(format!(
-                            "string ({:?}) and number ({}) cannot be multiplied because the result would be too large",
-                            if s.len() > 20 { &s[..20] } else { s.as_str() },
-                            n
-                        ))
+                        Err("Repeat string result too long".to_string())
                     } else {
                         Ok(Value::String(s.repeat(*n as usize)))
                     }
                 }
             }
             (Value::String(s), Value::Double(f, _)) | (Value::Double(f, _), Value::String(s)) => {
-                // Float repetition: truncate to int
+                // Float repetition: truncate to int, negative → null, zero → ""
                 let n = *f as i64;
-                if n <= 0 {
+                if *f < 0.0 {
                     Ok(Value::Null)
+                } else if n <= 0 {
+                    Ok(Value::String(String::new()))
                 } else {
                     let total = (n as u64).saturating_mul(s.len() as u64);
                     if total > 100_000_000 {
-                        Err(format!(
-                            "string ({:?}) and number ({}) cannot be multiplied because the result would be too large",
-                            if s.len() > 20 { &s[..20] } else { s.as_str() },
-                            f
-                        ))
+                        Err("Repeat string result too long".to_string())
                     } else {
                         Ok(Value::String(s.repeat(n as usize)))
                     }

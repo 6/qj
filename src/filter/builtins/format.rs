@@ -34,7 +34,8 @@ pub(super) fn eval_format(
                         '&' => out.push_str("&amp;"),
                         '<' => out.push_str("&lt;"),
                         '>' => out.push_str("&gt;"),
-                        '\'' => out.push_str("&#39;"),
+                        '\'' => out.push_str("&apos;"),
+                        '"' => out.push_str("&quot;"),
                         _ => out.push(c),
                     }
                 }
@@ -65,6 +66,33 @@ pub(super) fn eval_format(
                     }
                 }
                 output(Value::String(out));
+            }
+        }
+        "@urid" => {
+            if let Value::String(s) = input {
+                let bytes = s.as_bytes();
+                let mut decoded_bytes = Vec::with_capacity(s.len());
+                let mut i = 0;
+                while i < bytes.len() {
+                    if bytes[i] == b'%' && i + 2 < bytes.len() {
+                        let hi = (bytes[i + 1] as char).to_digit(16);
+                        let lo = (bytes[i + 2] as char).to_digit(16);
+                        if let (Some(h), Some(l)) = (hi, lo) {
+                            decoded_bytes.push((h * 16 + l) as u8);
+                            i += 3;
+                            continue;
+                        }
+                    }
+                    if bytes[i] == b'+' {
+                        decoded_bytes.push(b' ');
+                    } else {
+                        decoded_bytes.push(bytes[i]);
+                    }
+                    i += 1;
+                }
+                output(Value::String(
+                    String::from_utf8(decoded_bytes).unwrap_or_default(),
+                ));
             }
         }
         "@csv" => {

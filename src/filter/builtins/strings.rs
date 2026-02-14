@@ -104,6 +104,29 @@ pub(super) fn eval_strings(
                 ));
             }
         }
+        "trimstr" => {
+            if let (Value::String(s), Some(arg)) = (input, args.first()) {
+                let mut pat = Value::Null;
+                eval(arg, input, env, &mut |v| pat = v);
+                if let Value::String(p) = pat {
+                    let trimmed = s.strip_prefix(p.as_str()).unwrap_or(s);
+                    output(Value::String(
+                        trimmed
+                            .strip_suffix(p.as_str())
+                            .unwrap_or(trimmed)
+                            .to_string(),
+                    ));
+                } else {
+                    output(input.clone());
+                }
+            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
+                set_error(format!(
+                    "{} ({}) and string cannot have their strings trimmed",
+                    input.type_name(),
+                    input.short_desc()
+                ));
+            }
+        }
         "startswith" => {
             if let (Value::String(s), Some(arg)) = (input, args.first()) {
                 let mut prefix = Value::Null;
@@ -168,37 +191,16 @@ pub(super) fn eval_strings(
                 });
             }
         }
-        "trim" => {
+        "trim" | "ltrim" | "rtrim" => {
             if let Value::String(s) = input {
-                output(Value::String(s.trim().to_string()));
+                let trimmed = match name {
+                    "ltrim" => s.trim_start(),
+                    "rtrim" => s.trim_end(),
+                    _ => s.trim(),
+                };
+                output(Value::String(trimmed.to_string()));
             } else {
-                set_error(format!(
-                    "{} ({}) cannot be trimmed",
-                    input.type_name(),
-                    input.short_desc()
-                ));
-            }
-        }
-        "ltrim" => {
-            if let Value::String(s) = input {
-                output(Value::String(s.trim_start().to_string()));
-            } else {
-                set_error(format!(
-                    "{} ({}) cannot be trimmed",
-                    input.type_name(),
-                    input.short_desc()
-                ));
-            }
-        }
-        "rtrim" => {
-            if let Value::String(s) = input {
-                output(Value::String(s.trim_end().to_string()));
-            } else {
-                set_error(format!(
-                    "{} ({}) cannot be trimmed",
-                    input.type_name(),
-                    input.short_desc()
-                ));
+                set_error("trim input must be a string".to_string());
             }
         }
         "index" => {
@@ -258,7 +260,27 @@ pub(super) fn eval_strings(
                             while let Some(byte_pos) = s[start..].find(n.as_str()) {
                                 let abs_byte = start + byte_pos;
                                 positions.push(Value::Int(s[..abs_byte].chars().count() as i64));
-                                start = abs_byte + n.len();
+                                // Advance by 1 character to allow overlapping matches
+                                let next_char_len =
+                                    s[abs_byte..].chars().next().map_or(1, |c| c.len_utf8());
+                                start = abs_byte + next_char_len;
+                            }
+                        }
+                        output(Value::Array(Rc::new(positions)));
+                    }
+                    (Value::Array(arr), Value::Array(needle_arr)) => {
+                        // Subsequence search for array needles
+                        let mut positions = Vec::new();
+                        let nlen = needle_arr.len();
+                        if nlen > 0 && nlen <= arr.len() {
+                            for i in 0..=arr.len() - nlen {
+                                let matches = arr[i..i + nlen]
+                                    .iter()
+                                    .zip(needle_arr.iter())
+                                    .all(|(a, b)| values_equal(a, b));
+                                if matches {
+                                    positions.push(Value::Int(i as i64));
+                                }
                             }
                         }
                         output(Value::Array(Rc::new(positions)));

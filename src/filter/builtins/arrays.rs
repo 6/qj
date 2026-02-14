@@ -38,19 +38,12 @@ pub(super) fn eval_arrays(
             }
             _ => {}
         },
-        "values" => match input {
-            Value::Object(obj) => {
-                for (_, v) in obj.iter() {
-                    output(v.clone());
-                }
+        "values" => {
+            // values = select(. != null): passes through any non-null input
+            if !matches!(input, Value::Null) {
+                output(input.clone());
             }
-            Value::Array(arr) => {
-                for v in arr.iter() {
-                    output(v.clone());
-                }
-            }
-            _ => {}
-        },
+        }
         "map" => {
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
                 let mut result = Vec::with_capacity(arr.len());
@@ -277,7 +270,13 @@ pub(super) fn eval_arrays(
                 if let Some(f) = args.first() {
                     eval(f, input, env, &mut |d| {
                         let depth = match d {
-                            Value::Int(n) => n,
+                            Value::Int(n) => {
+                                if n < 0 {
+                                    set_error("flatten depth must not be negative".to_string());
+                                    return;
+                                }
+                                n
+                            }
                             _ => i64::MAX,
                         };
                         let mut result = Vec::new();
@@ -378,7 +377,10 @@ pub(super) fn eval_arrays(
                     let mut key = Value::Null;
                     eval(f, item, env, &mut |v| key = v);
                     if best.as_ref().is_none_or(|(bk, _)| {
-                        values_order(&key, bk) == Some(std::cmp::Ordering::Greater)
+                        matches!(
+                            values_order(&key, bk),
+                            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                        )
                     }) {
                         best = Some((key, item.clone()));
                     }
@@ -651,7 +653,7 @@ pub(super) fn eval_arrays(
                     }
                     _ => {
                         set_error(format!(
-                            "{} ({}) is not an array and cannot be searched",
+                            "{} ({}) cannot be searched from",
                             input.type_name(),
                             input.short_desc()
                         ));

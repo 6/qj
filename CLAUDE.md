@@ -21,12 +21,17 @@ Compat suites are `#[ignore]` — run them with `--release` after adding feature
 ```
 cargo test                                                              # fast: unit + e2e (~5s)
 cargo test --release -- --ignored --nocapture                           # all tests including compat (~50s)
-cargo test --release jq_conformance -- --ignored --nocapture            # jq.test pass rate
-cargo test --release conformance_gaps -- --ignored                      # 124 gap tests by category
+cargo test --release jq_conformance -- --ignored                        # jq.test pass rate (summary on stderr)
+cargo test --release jq_conformance_verbose -- --ignored --nocapture    # jq.test with failure details
+cargo test --release conformance_gaps -- --ignored                      # gap tests by category
 cargo test --release gap_label_break -- --ignored                       # run one category
 cargo test --release jq_compat -- --ignored --nocapture                 # cross-tool comparison
 cargo test --release feature_compat -- --ignored --nocapture            # feature matrix
 ```
+
+**Note:** The conformance test prints its summary to stderr (visible without `--nocapture`).
+Never pipe `--nocapture` output through `tail` — the verbose test produces 500+ lines which
+can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose test.
 
 - **Unit tests:** `#[cfg(test)]` modules alongside code.
 - **Integration tests:** `tests/e2e.rs` — runs the `jx` binary against known JSON inputs.

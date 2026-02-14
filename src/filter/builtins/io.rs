@@ -195,6 +195,16 @@ pub(super) fn eval_io(
                 ("modf", 0),
                 ("input", 0),
                 ("inputs", 0),
+                ("strftime", 1),
+                ("gmtime", 0),
+                ("localtime", 0),
+                ("mktime", 0),
+                ("strptime", 1),
+                ("strflocaltime", 1),
+                ("have_decnum", 0),
+                ("have_literal_numbers", 0),
+                ("@urid", 0),
+                ("trimstr", 1),
             ];
             let arr: Vec<Value> = builtins
                 .iter()
@@ -238,6 +248,10 @@ pub(super) fn eval_io(
                 input.clone()
             };
             super::super::eval::LAST_ERROR.with(|e| *e.borrow_mut() = Some(err_val));
+        }
+        "have_decnum" | "have_literal_numbers" => {
+            // jx uses i64/f64, not arbitrary precision decimals
+            output(Value::Bool(false));
         }
         "env" | "$ENV" => {
             let vars: Vec<(String, Value)> = std::env::vars()

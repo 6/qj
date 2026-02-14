@@ -954,17 +954,22 @@ fn builtin_tostring() {
 
 #[test]
 fn builtin_values_object() {
+    // values = select(. != null): passes through non-null input
     let out = jx_compact("values", r#"{"a":1,"b":2}"#);
-    assert_eq!(out.trim(), "1\n2");
-    // Note: jq `values` is a type filter (passes non-null); jx `values` is `.[]`.
-    // Intentional difference — jx provides object/array value iteration.
+    assert_eq!(out.trim(), r#"{"a":1,"b":2}"#);
+    assert_jq_compat("values", r#"{"a":1,"b":2}"#);
 }
 
 #[test]
 fn builtin_values_array() {
+    // values = select(. != null): passes through non-null input
     let out = jx_compact("values", "[10,20,30]");
-    assert_eq!(out.trim(), "10\n20\n30");
-    // Note: jq `values` is a type filter (passes non-null); jx `values` is `.[]`.
+    assert_eq!(out.trim(), "[10,20,30]");
+    assert_jq_compat("values", "[10,20,30]");
+    // Test that null is filtered
+    let out2 = jx_compact("[.[]|values]", "[1,null,2]");
+    assert_eq!(out2.trim(), "[1,2]");
+    assert_jq_compat("[.[]|values]", "[1,null,2]");
 }
 
 // --- Builtin: empty ---

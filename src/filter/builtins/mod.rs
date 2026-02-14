@@ -29,9 +29,9 @@ pub(super) fn eval_builtin(
 
         // String operations
         "tostring" | "tonumber" | "toboolean" | "ascii_downcase" | "ascii_upcase" | "ltrimstr"
-        | "rtrimstr" | "startswith" | "endswith" | "split" | "join" | "trim" | "ltrim"
-        | "rtrim" | "index" | "rindex" | "indices" | "_indices" | "explode" | "implode"
-        | "tojson" | "fromjson" | "utf8bytelength" | "ascii" => {
+        | "rtrimstr" | "trimstr" | "startswith" | "endswith" | "split" | "join" | "trim"
+        | "ltrim" | "rtrim" | "index" | "rindex" | "indices" | "_indices" | "explode"
+        | "implode" | "tojson" | "fromjson" | "utf8bytelength" | "ascii" => {
             strings::eval_strings(name, args, input, env, output)
         }
 
@@ -64,19 +64,22 @@ pub(super) fn eval_builtin(
         }
 
         // Date/time operations
-        "todate" | "fromdate" | "now" | "strftime" => {
-            date::eval_date(name, args, input, env, output)
-        }
+        "todate" | "fromdate" | "now" | "strftime" | "gmtime" | "localtime" | "mktime"
+        | "strptime" | "strflocaltime" => date::eval_date(name, args, input, env, output),
 
         // Format strings
-        "@json" | "@text" | "@html" | "@uri" | "@csv" | "@tsv" | "@sh" | "@base64" | "@base64d" => {
-            format::eval_format(name, args, input, env, output)
-        }
+        "@json" | "@text" | "@html" | "@uri" | "@urid" | "@csv" | "@tsv" | "@sh" | "@base64"
+        | "@base64d" => format::eval_format(name, args, input, env, output),
 
         // I/O and introspection
-        "builtins" | "input" | "debug" | "error" | "env" | "$ENV" => {
-            io::eval_io(name, args, input, env, output)
-        }
+        "builtins"
+        | "input"
+        | "debug"
+        | "error"
+        | "env"
+        | "$ENV"
+        | "have_decnum"
+        | "have_literal_numbers" => io::eval_io(name, args, input, env, output),
 
         _ => {
             // Unknown builtin — silently produce no output

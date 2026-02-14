@@ -160,6 +160,13 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             eval(idx_filter, input, env, &mut |idx| {
                 // Truncate float indices to integer (jq behavior)
                 let idx = match &idx {
+                    Value::Double(f, _) if f.is_nan() => {
+                        // .[nan] → null for arrays
+                        if matches!(input, Value::Array(_) | Value::Null) {
+                            output(Value::Null);
+                        }
+                        return;
+                    }
                     Value::Double(f, _) if f.is_finite() => Value::Int(*f as i64),
                     _ => idx,
                 };
@@ -527,15 +534,24 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         output(Value::String(String::new()));
                     }
                 }
-                _ => output(Value::Null),
+                Value::Null => output(Value::Null),
+                _ => {
+                    LAST_ERROR.with(|e| {
+                        *e.borrow_mut() = Some(Value::String(format!(
+                            "{} ({}) cannot be sliced",
+                            input.type_name(),
+                            input.short_desc()
+                        )));
+                    });
+                }
             }
         }
 
         Filter::Var(name) => {
             if name == "$__loc__" {
-                // $__loc__ returns {"file":"<stdin>","line":1}
+                // $__loc__ returns {"file":"<top-level>","line":1}
                 let loc = Value::Object(Rc::new(vec![
-                    ("file".to_string(), Value::String("<stdin>".to_string())),
+                    ("file".to_string(), Value::String("<top-level>".to_string())),
                     ("line".to_string(), Value::Int(1)),
                 ]));
                 output(loc);
@@ -735,7 +751,7 @@ fn eval_assign(
             // //= only updates if current value is null or false
             if matches!(current, Value::Null | Value::Bool(false)) {
                 let mut result = None;
-                eval(rhs, current, env, &mut |v| {
+                eval(rhs, input, env, &mut |v| {
                     if result.is_none() {
                         result = Some(v);
                     }
@@ -757,7 +773,8 @@ fn eval_assign(
             };
             Box::new(move |current: &Value| {
                 let mut result = None;
-                eval(rhs, current, env, &mut |rhs_val| {
+                // Evaluate rhs against the ORIGINAL input (not the current path value)
+                eval(rhs, input, env, &mut |rhs_val| {
                     if result.is_none() {
                         match arith_values(current, &arith_op, &rhs_val) {
                             Ok(v) => result = Some(v),
@@ -1033,7 +1050,8 @@ fn eval_assign_via_paths(
 fn resolve_slice_index(val: Option<&Value>, default: i64, len: i64) -> i64 {
     let idx = match val {
         Some(Value::Int(n)) => *n,
-        Some(Value::Double(f, _)) => *f as i64,
+        Some(Value::Double(f, _)) if f.is_finite() => *f as i64,
+        // NaN, Infinity, or non-numeric → use default
         _ => return default.clamp(0, len),
     };
     let resolved = if idx < 0 { len + idx } else { idx };
@@ -1720,7 +1738,10 @@ mod tests {
 
     #[test]
     fn eval_string_repeat_zero() {
-        assert_eq!(eval_one(&parse("\"ab\" * 0"), &Value::Null), Value::Null);
+        assert_eq!(
+            eval_one(&parse("\"ab\" * 0"), &Value::Null),
+            Value::String(String::new())
+        );
     }
 
     #[test]
@@ -1751,9 +1772,13 @@ mod tests {
 
     #[test]
     fn eval_values_iterates() {
+        // values acts as select(. != null), passing through non-null input
         let input = obj(&[("a", Value::Int(1)), ("b", Value::Int(2))]);
         let results = eval_all(&parse("values"), &input);
-        assert_eq!(results, vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(results, vec![input.clone()]);
+        // nulls are filtered out
+        let null_results = eval_all(&parse("values"), &Value::Null);
+        assert_eq!(null_results, vec![] as Vec<Value>);
     }
 
     #[test]

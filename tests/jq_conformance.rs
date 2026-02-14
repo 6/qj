@@ -143,17 +143,18 @@ fn jq_conformance() {
     } else {
         0.0
     };
-    println!();
-    println!("jq conformance: {passed}/{total} passed ({pct:.1}%)");
-    println!("  passed:  {passed}");
-    println!("  failed:  {failed}");
-    println!("  errored: {errored}");
+    // Use eprintln so summary is visible even without --nocapture
+    eprintln!();
+    eprintln!("jq conformance: {passed}/{total} passed ({pct:.1}%)");
+    eprintln!("  passed:  {passed}");
+    eprintln!("  failed:  {failed}");
+    eprintln!("  errored: {errored}");
 
     // Regression gate: conformance must not drop below this threshold.
-    // Current baseline: 372/497 (74.8%). Set 3 below for small tolerance.
+    // Current baseline: 402/497 (80.9%). Set 3 below for small tolerance.
     assert!(
-        passed >= 369,
-        "jq conformance regression: {passed}/497 (was >= 369)"
+        passed >= 399,
+        "jq conformance regression: {passed}/497 (was >= 399)"
     );
 }
 
