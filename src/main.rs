@@ -197,13 +197,13 @@ fn main() -> Result<()> {
             io::stdin()
                 .read_to_end(&mut buf)
                 .context("failed to read stdin")?;
-            jx::strip_bom(&mut buf);
-            collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+            jx::input::strip_bom(&mut buf);
+            jx::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
         } else {
             for path in &cli.files {
                 let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
                     .with_context(|| format!("failed to read file: {path}"))?;
-                collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
+                jx::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
             }
         }
         let input = jx::value::Value::Array(Rc::new(values));
@@ -214,7 +214,7 @@ fn main() -> Result<()> {
         io::stdin()
             .read_to_end(&mut buf)
             .context("failed to read stdin")?;
-        jx::strip_bom(&mut buf);
+        jx::input::strip_bom(&mut buf);
         if cli.jsonl || jx::parallel::ndjson::is_ndjson(&buf) {
             let (output, ho) = jx::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
                 .context("failed to process NDJSON from stdin")?;
@@ -460,49 +460,6 @@ fn process_raw_input(
             let input = jx::value::Value::String(line.to_string());
             eval_and_output(filter, &input, env, out, config, had_output);
         }
-    }
-    Ok(())
-}
-
-/// Collect parsed JSON values from a buffer (single doc or NDJSON lines).
-/// Tries single-doc parse first; if that fails and the buffer has newlines,
-/// falls back to line-by-line parsing (handles `1\n2\n3` style multi-value input).
-fn collect_values_from_buf(
-    buf: &[u8],
-    force_jsonl: bool,
-    values: &mut Vec<jx::value::Value>,
-) -> Result<()> {
-    if force_jsonl || jx::parallel::ndjson::is_ndjson(buf) {
-        parse_lines(buf, values)?;
-    } else {
-        let json_len = buf.len();
-        let padded = jx::simdjson::pad_buffer(buf);
-        match jx::simdjson::dom_parse_to_value(&padded, json_len) {
-            Ok(val) => values.push(val),
-            Err(_) if memchr::memchr(b'\n', buf).is_some() => {
-                // Single-doc parse failed but buffer has newlines — try line-by-line
-                parse_lines(buf, values)?;
-            }
-            Err(e) => return Err(e).context("failed to parse JSON"),
-        }
-    }
-    Ok(())
-}
-
-fn parse_lines(buf: &[u8], values: &mut Vec<jx::value::Value>) -> Result<()> {
-    for line in buf.split(|&b| b == b'\n') {
-        let trimmed_end = line
-            .iter()
-            .rposition(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
-            .map_or(0, |p| p + 1);
-        let trimmed = &line[..trimmed_end];
-        if trimmed.is_empty() {
-            continue;
-        }
-        let padded = jx::simdjson::pad_buffer(trimmed);
-        let val = jx::simdjson::dom_parse_to_value(&padded, trimmed.len())
-            .context("failed to parse NDJSON line")?;
-        values.push(val);
     }
     Ok(())
 }

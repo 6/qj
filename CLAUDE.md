@@ -115,6 +115,6 @@ Benchmarks require exclusive CPU access for reliable results.
 - `src/filter/` — jq filter lexer, parser, AST evaluator (On-Demand fast path + DOM fallback)
 - `src/parallel/` — NDJSON chunk splitter + thread pool
 - `src/output/` — pretty-print, compact, raw output formatters
-- `src/io/` — mmap for files, streaming for stdin
+- `src/input.rs` — input preprocessing (BOM stripping, JSON/NDJSON parsing into Values)
 - `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks
 - `fuzz/` — cargo-fuzz targets for simdjson FFI boundary (requires nightly)
