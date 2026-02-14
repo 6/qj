@@ -73,6 +73,13 @@ pub enum Filter {
     ),
     /// Assignment: `path |= expr`, `path = expr`, `path += expr`, etc.
     Assign(Box<Filter>, AssignOp, Box<Filter>),
+    /// User-defined function: `def name(params): body; rest`
+    Def {
+        name: String,
+        params: Vec<String>,
+        body: Box<Filter>,
+        rest: Box<Filter>,
+    },
 }
 
 /// Object construction key — can be a literal string or computed.
@@ -125,16 +132,30 @@ pub enum StringPart {
     Expr(Filter),
 }
 
-/// Evaluation environment: variable bindings for `as $var` / `reduce` / `foreach`.
+/// A user-defined function captured from a `def` expression.
+#[derive(Debug, Clone)]
+pub struct UserFunc {
+    pub params: Vec<String>,
+    pub body: Filter,
+    pub closure_env: Env,
+    /// True for real `def` functions, false for filter parameter wrappers.
+    /// Used by the evaluator to decide whether to self-register for recursion.
+    pub is_def: bool,
+}
+
+/// Evaluation environment: variable bindings + user-defined functions.
 #[derive(Debug, Clone)]
 pub struct Env {
     vars: Rc<HashMap<String, Value>>,
+    /// User-defined functions keyed by (name, arity).
+    funcs: Rc<HashMap<(String, usize), UserFunc>>,
 }
 
 impl Env {
     pub fn empty() -> Self {
         Env {
             vars: Rc::new(HashMap::new()),
+            funcs: Rc::new(HashMap::new()),
         }
     }
 
@@ -154,7 +175,23 @@ impl Env {
         new_vars.insert(name, value);
         Env {
             vars: Rc::new(new_vars),
+            funcs: self.funcs.clone(),
         }
+    }
+
+    /// Register a user-defined function.
+    pub fn bind_func(&self, name: String, arity: usize, func: UserFunc) -> Env {
+        let mut new_funcs = (*self.funcs).clone();
+        new_funcs.insert((name, arity), func);
+        Env {
+            vars: self.vars.clone(),
+            funcs: Rc::new(new_funcs),
+        }
+    }
+
+    /// Look up a user-defined function by (name, arity).
+    pub fn get_func(&self, name: &str, arity: usize) -> Option<&UserFunc> {
+        self.funcs.get(&(name.to_string(), arity))
     }
 }
 
@@ -303,6 +340,7 @@ impl Filter {
                     && extract.as_ref().is_none_or(|f| f.is_parallel_safe())
             }
             Filter::Assign(path, _, rhs) => path.is_parallel_safe() && rhs.is_parallel_safe(),
+            Filter::Def { body, rest, .. } => body.is_parallel_safe() && rest.is_parallel_safe(),
             Filter::StringInterp(parts) => parts.iter().all(|p| match p {
                 StringPart::Lit(_) => true,
                 StringPart::Expr(f) => f.is_parallel_safe(),

@@ -91,12 +91,14 @@ fn jx_raw(filter: &str, input: &str) -> String {
 fn identity_object() {
     let out = jx_compact(".", r#"{"a":1,"b":2}"#);
     assert_eq!(out.trim(), r#"{"a":1,"b":2}"#);
+    assert_jq_compat(".", r#"{"a":1,"b":2}"#);
 }
 
 #[test]
 fn identity_array() {
     let out = jx_compact(".", "[1,2,3]");
     assert_eq!(out.trim(), "[1,2,3]");
+    assert_jq_compat(".", "[1,2,3]");
 }
 
 #[test]
@@ -105,6 +107,10 @@ fn identity_scalar() {
     assert_eq!(jx_compact(".", "true").trim(), "true");
     assert_eq!(jx_compact(".", "null").trim(), "null");
     assert_eq!(jx_compact(".", r#""hello""#).trim(), r#""hello""#);
+    assert_jq_compat(".", "42");
+    assert_jq_compat(".", "true");
+    assert_jq_compat(".", "null");
+    assert_jq_compat(".", r#""hello""#);
 }
 
 // --- Field access ---
@@ -196,6 +202,11 @@ fn arithmetic() {
     assert_eq!(jx_compact(".x * 2", r#"{"x":10}"#).trim(), "20");
     assert_eq!(jx_compact(".x / 2", r#"{"x":10}"#).trim(), "5");
     assert_eq!(jx_compact(".x % 3", r#"{"x":10}"#).trim(), "1");
+    assert_jq_compat(".x + 5", r#"{"x":10}"#);
+    assert_jq_compat(".x - 3", r#"{"x":10}"#);
+    assert_jq_compat(".x * 2", r#"{"x":10}"#);
+    assert_jq_compat(".x / 2", r#"{"x":10}"#);
+    assert_jq_compat(".x % 3", r#"{"x":10}"#);
 }
 
 // --- Comparison ---
@@ -206,6 +217,10 @@ fn comparison() {
     assert_eq!(jx_compact(".x < 5", r#"{"x":10}"#).trim(), "false");
     assert_eq!(jx_compact(".x == 10", r#"{"x":10}"#).trim(), "true");
     assert_eq!(jx_compact(".x != 10", r#"{"x":10}"#).trim(), "false");
+    assert_jq_compat(".x > 5", r#"{"x":10}"#);
+    assert_jq_compat(".x < 5", r#"{"x":10}"#);
+    assert_jq_compat(".x == 10", r#"{"x":10}"#);
+    assert_jq_compat(".x != 10", r#"{"x":10}"#);
 }
 
 // --- Builtins ---
@@ -214,34 +229,41 @@ fn comparison() {
 fn builtin_length() {
     assert_eq!(jx_compact("length", "[1,2,3]").trim(), "3");
     assert_eq!(jx_compact("length", r#""hello""#).trim(), "5");
+    assert_jq_compat("length", "[1,2,3]");
+    assert_jq_compat("length", r#""hello""#);
 }
 
 #[test]
 fn builtin_keys() {
     let out = jx_compact("keys", r#"{"b":2,"a":1}"#);
     assert_eq!(out.trim(), r#"["a","b"]"#);
+    assert_jq_compat("keys", r#"{"b":2,"a":1}"#);
 }
 
 #[test]
 fn builtin_sort() {
     let out = jx_compact("sort", "[3,1,2]");
     assert_eq!(out.trim(), "[1,2,3]");
+    assert_jq_compat("sort", "[3,1,2]");
 }
 
 #[test]
 fn builtin_map() {
     let out = jx_compact("map(. + 10)", "[1,2,3]");
     assert_eq!(out.trim(), "[11,12,13]");
+    assert_jq_compat("map(. + 10)", "[1,2,3]");
 }
 
 #[test]
 fn builtin_add() {
     assert_eq!(jx_compact("add", "[1,2,3]").trim(), "6");
+    assert_jq_compat("add", "[1,2,3]");
 }
 
 #[test]
 fn builtin_reverse() {
     assert_eq!(jx_compact("reverse", "[1,2,3]").trim(), "[3,2,1]");
+    assert_jq_compat("reverse", "[1,2,3]");
 }
 
 #[test]
@@ -251,6 +273,8 @@ fn builtin_split_join() {
 
     let out = jx_compact(r#"join("-")"#, r#"["a","b","c"]"#);
     assert_eq!(out.trim(), r#""a-b-c""#);
+    assert_jq_compat(r#"split(" ")"#, r#""hello world""#);
+    assert_jq_compat(r#"join("-")"#, r#"["a","b","c"]"#);
 }
 
 // --- If/then/else ---
@@ -262,6 +286,8 @@ fn if_then_else() {
 
     let out = jx_compact(r#"if . > 5 then "big" else "small" end"#, "3");
     assert_eq!(out.trim(), r#""small""#);
+    assert_jq_compat(r#"if . > 5 then "big" else "small" end"#, "10");
+    assert_jq_compat(r#"if . > 5 then "big" else "small" end"#, "3");
 }
 
 // --- Alternative ---
@@ -270,6 +296,8 @@ fn if_then_else() {
 fn alternative_operator() {
     assert_eq!(jx_compact(".x // 42", r#"{"y":1}"#).trim(), "42");
     assert_eq!(jx_compact(".x // 42", r#"{"x":7}"#).trim(), "7");
+    assert_jq_compat(".x // 42", r#"{"y":1}"#);
+    assert_jq_compat(".x // 42", r#"{"x":7}"#);
 }
 
 // --- Comma (multiple outputs) ---
@@ -278,6 +306,7 @@ fn alternative_operator() {
 fn comma_multiple_outputs() {
     let out = jx_compact(".a, .b", r#"{"a":1,"b":2}"#);
     assert_eq!(out.trim(), "1\n2");
+    assert_jq_compat(".a, .b", r#"{"a":1,"b":2}"#);
 }
 
 // --- Pretty output ---
@@ -302,18 +331,21 @@ fn raw_string_output() {
 fn passthrough_identity_compact_object() {
     let out = jx_compact(".", r#"{"a": 1, "b": [2, 3]}"#);
     assert_eq!(out.trim(), r#"{"a":1,"b":[2,3]}"#);
+    assert_jq_compat(".", r#"{"a": 1, "b": [2, 3]}"#);
 }
 
 #[test]
 fn passthrough_identity_compact_array() {
     let out = jx_compact(".", r#"[ 1 , 2 , 3 ]"#);
     assert_eq!(out.trim(), "[1,2,3]");
+    assert_jq_compat(".", r#"[ 1 , 2 , 3 ]"#);
 }
 
 #[test]
 fn passthrough_identity_compact_nested() {
     let out = jx_compact(".", r#"{"a": {"b": {"c": [1, 2, 3]}}}"#);
     assert_eq!(out.trim(), r#"{"a":{"b":{"c":[1,2,3]}}}"#);
+    assert_jq_compat(".", r#"{"a": {"b": {"c": [1, 2, 3]}}}"#);
 }
 
 #[test]
@@ -322,6 +354,10 @@ fn passthrough_identity_compact_scalar() {
     assert_eq!(jx_compact(".", "true").trim(), "true");
     assert_eq!(jx_compact(".", "null").trim(), "null");
     assert_eq!(jx_compact(".", r#""hello""#).trim(), r#""hello""#);
+    assert_jq_compat(".", "42");
+    assert_jq_compat(".", "true");
+    assert_jq_compat(".", "null");
+    assert_jq_compat(".", r#""hello""#);
 }
 
 #[test]
@@ -337,35 +373,41 @@ fn passthrough_identity_pretty_not_affected() {
 fn passthrough_field_compact_basic() {
     let out = jx_compact(".name", r#"{"name":"alice","age":30}"#);
     assert_eq!(out.trim(), r#""alice""#);
+    assert_jq_compat(".name", r#"{"name":"alice","age":30}"#);
 }
 
 #[test]
 fn passthrough_field_compact_object_value() {
     let out = jx_compact(".data", r#"{"data":{"x":1,"y":[2,3]}}"#);
     assert_eq!(out.trim(), r#"{"x":1,"y":[2,3]}"#);
+    assert_jq_compat(".data", r#"{"data":{"x":1,"y":[2,3]}}"#);
 }
 
 #[test]
 fn passthrough_field_compact_nested() {
     let out = jx_compact(".a.b.c", r#"{"a":{"b":{"c":42}}}"#);
     assert_eq!(out.trim(), "42");
+    assert_jq_compat(".a.b.c", r#"{"a":{"b":{"c":42}}}"#);
 }
 
 #[test]
 fn passthrough_field_compact_missing() {
     let out = jx_compact(".missing", r#"{"name":"alice"}"#);
     assert_eq!(out.trim(), "null");
+    assert_jq_compat(".missing", r#"{"name":"alice"}"#);
 }
 
 #[test]
 fn passthrough_field_compact_nested_missing() {
     let out = jx_compact(".a.b.missing", r#"{"a":{"b":{"c":42}}}"#);
     assert_eq!(out.trim(), "null");
+    assert_jq_compat(".a.b.missing", r#"{"a":{"b":{"c":42}}}"#);
 }
 
 #[test]
 fn passthrough_field_compact_non_object() {
-    // .field on an array should return null (jq semantics)
+    // .field on a non-object returns null in jx (jq errors instead).
+    // Intentional difference — jx is permissive on field access.
     let out = jx_compact(".x", "[1,2,3]");
     assert_eq!(out.trim(), "null");
 }
@@ -375,6 +417,7 @@ fn passthrough_field_compact_stdin() {
     // Same as basic but exercises the stdin path
     let out = jx_compact(".name", r#"{"name":"bob"}"#);
     assert_eq!(out.trim(), r#""bob""#);
+    assert_jq_compat(".name", r#"{"name":"bob"}"#);
 }
 
 #[test]
@@ -390,6 +433,7 @@ fn passthrough_field_pretty_not_affected() {
 fn passthrough_field_length_compact() {
     let out = jx_compact(".items | length", r#"{"items":[1,2,3]}"#);
     assert_eq!(out.trim(), "3");
+    assert_jq_compat(".items | length", r#"{"items":[1,2,3]}"#);
 }
 
 #[test]
@@ -403,42 +447,49 @@ fn passthrough_field_length_pretty() {
 fn passthrough_nested_field_length() {
     let out = jx(".a.b | length", r#"{"a":{"b":[10,20]}}"#);
     assert_eq!(out.trim(), "2");
+    assert_jq_compat(".a.b | length", r#"{"a":{"b":[10,20]}}"#);
 }
 
 #[test]
 fn passthrough_missing_field_length() {
     let out = jx(".missing | length", r#"{"name":"alice"}"#);
     assert_eq!(out.trim(), "0");
+    assert_jq_compat(".missing | length", r#"{"name":"alice"}"#);
 }
 
 #[test]
 fn passthrough_bare_length_array() {
     let out = jx("length", "[1,2,3,4]");
     assert_eq!(out.trim(), "4");
+    assert_jq_compat("length", "[1,2,3,4]");
 }
 
 #[test]
 fn passthrough_bare_length_string() {
     let out = jx("length", r#""hello""#);
     assert_eq!(out.trim(), "5");
+    assert_jq_compat("length", r#""hello""#);
 }
 
 #[test]
 fn passthrough_bare_length_object() {
     let out = jx("length", r#"{"a":1,"b":2,"c":3}"#);
     assert_eq!(out.trim(), "3");
+    assert_jq_compat("length", r#"{"a":1,"b":2,"c":3}"#);
 }
 
 #[test]
 fn passthrough_field_length_object_value() {
     let out = jx(".data | length", r#"{"data":{"x":1,"y":2}}"#);
     assert_eq!(out.trim(), "2");
+    assert_jq_compat(".data | length", r#"{"data":{"x":1,"y":2}}"#);
 }
 
 #[test]
 fn passthrough_field_length_string_value() {
     let out = jx(".name | length", r#"{"name":"hello"}"#);
     assert_eq!(out.trim(), "5");
+    assert_jq_compat(".name | length", r#"{"name":"hello"}"#);
 }
 
 // --- Passthrough: .field | keys ---
@@ -447,6 +498,7 @@ fn passthrough_field_length_string_value() {
 fn passthrough_field_keys_object() {
     let out = jx_compact(".data | keys", r#"{"data":{"b":2,"a":1}}"#);
     assert_eq!(out.trim(), r#"["a","b"]"#);
+    assert_jq_compat(".data | keys", r#"{"data":{"b":2,"a":1}}"#);
 }
 
 #[test]
@@ -462,18 +514,21 @@ fn passthrough_field_keys_pretty() {
 fn passthrough_bare_keys_object() {
     let out = jx_compact("keys", r#"{"b":2,"a":1,"c":3}"#);
     assert_eq!(out.trim(), r#"["a","b","c"]"#);
+    assert_jq_compat("keys", r#"{"b":2,"a":1,"c":3}"#);
 }
 
 #[test]
 fn passthrough_bare_keys_array() {
     let out = jx_compact("keys", "[10,20,30]");
     assert_eq!(out.trim(), "[0,1,2]");
+    assert_jq_compat("keys", "[10,20,30]");
 }
 
 #[test]
 fn passthrough_field_keys_array_value() {
     let out = jx_compact(".items | keys", r#"{"items":["x","y"]}"#);
     assert_eq!(out.trim(), "[0,1]");
+    assert_jq_compat(".items | keys", r#"{"items":["x","y"]}"#);
 }
 
 // --- Number literal preservation ---
@@ -590,16 +645,19 @@ fn jx_args(args: &[&str], input: &str) -> String {
 #[test]
 fn builtin_any_with_condition() {
     assert_eq!(jx_compact("any(. > 2)", "[1,2,3]").trim(), "true");
+    assert_jq_compat("any(. > 2)", "[1,2,3]");
 }
 
 #[test]
 fn builtin_any_bare() {
     assert_eq!(jx_compact("any", "[false,null,1]").trim(), "true");
+    assert_jq_compat("any", "[false,null,1]");
 }
 
 #[test]
 fn builtin_any_all_false() {
     assert_eq!(jx_compact("any", "[false,null,false]").trim(), "false");
+    assert_jq_compat("any", "[false,null,false]");
 }
 
 // --- Builtin: all ---
@@ -607,16 +665,19 @@ fn builtin_any_all_false() {
 #[test]
 fn builtin_all_with_condition() {
     assert_eq!(jx_compact("all(. > 0)", "[1,2,3]").trim(), "true");
+    assert_jq_compat("all(. > 0)", "[1,2,3]");
 }
 
 #[test]
 fn builtin_all_fails() {
     assert_eq!(jx_compact("all(. > 2)", "[1,2,3]").trim(), "false");
+    assert_jq_compat("all(. > 2)", "[1,2,3]");
 }
 
 #[test]
 fn builtin_all_bare() {
     assert_eq!(jx_compact("all", "[true,1,\"yes\"]").trim(), "true");
+    assert_jq_compat("all", r#"[true,1,"yes"]"#);
 }
 
 // --- Builtin: contains ---
@@ -624,11 +685,13 @@ fn builtin_all_bare() {
 #[test]
 fn builtin_contains_string() {
     assert_eq!(jx_compact(r#"contains("ll")"#, r#""hello""#).trim(), "true");
+    assert_jq_compat(r#"contains("ll")"#, r#""hello""#);
 }
 
 #[test]
 fn builtin_contains_array() {
     assert_eq!(jx_compact("contains([2])", "[1,2,3]").trim(), "true");
+    assert_jq_compat("contains([2])", "[1,2,3]");
 }
 
 #[test]
@@ -637,6 +700,7 @@ fn builtin_contains_object() {
         jx_compact(r#"contains({"a":1})"#, r#"{"a":1,"b":2}"#).trim(),
         "true"
     );
+    assert_jq_compat(r#"contains({"a":1})"#, r#"{"a":1,"b":2}"#);
 }
 
 // --- Builtin: to_entries / from_entries ---
@@ -647,6 +711,7 @@ fn builtin_to_entries() {
         jx_compact("to_entries", r#"{"a":1}"#).trim(),
         r#"[{"key":"a","value":1}]"#
     );
+    assert_jq_compat("to_entries", r#"{"a":1}"#);
 }
 
 #[test]
@@ -655,6 +720,7 @@ fn builtin_from_entries() {
         jx_compact("from_entries", r#"[{"key":"a","value":1}]"#).trim(),
         r#"{"a":1}"#
     );
+    assert_jq_compat("from_entries", r#"[{"key":"a","value":1}]"#);
 }
 
 #[test]
@@ -663,6 +729,7 @@ fn builtin_from_entries_name_value() {
         jx_compact("from_entries", r#"[{"name":"a","value":1}]"#).trim(),
         r#"{"a":1}"#
     );
+    assert_jq_compat("from_entries", r#"[{"name":"a","value":1}]"#);
 }
 
 // --- Builtin: flatten ---
@@ -670,11 +737,13 @@ fn builtin_from_entries_name_value() {
 #[test]
 fn builtin_flatten() {
     assert_eq!(jx_compact("flatten", "[[1,[2]],3]").trim(), "[1,2,3]");
+    assert_jq_compat("flatten", "[[1,[2]],3]");
 }
 
 #[test]
 fn builtin_flatten_depth() {
     assert_eq!(jx_compact("flatten(1)", "[[1,[2]],3]").trim(), "[1,[2],3]");
+    assert_jq_compat("flatten(1)", "[[1,[2]],3]");
 }
 
 // --- Builtin: first / last ---
@@ -682,21 +751,25 @@ fn builtin_flatten_depth() {
 #[test]
 fn builtin_first_bare() {
     assert_eq!(jx_compact("first", "[1,2,3]").trim(), "1");
+    assert_jq_compat("first", "[1,2,3]");
 }
 
 #[test]
 fn builtin_first_generator() {
     assert_eq!(jx_compact("first(.[])", "[10,20,30]").trim(), "10");
+    assert_jq_compat("first(.[])", "[10,20,30]");
 }
 
 #[test]
 fn builtin_last_bare() {
     assert_eq!(jx_compact("last", "[1,2,3]").trim(), "3");
+    assert_jq_compat("last", "[1,2,3]");
 }
 
 #[test]
 fn builtin_last_generator() {
     assert_eq!(jx_compact("last(.[])", "[10,20,30]").trim(), "30");
+    assert_jq_compat("last(.[])", "[10,20,30]");
 }
 
 // --- Builtin: group_by ---
@@ -711,6 +784,10 @@ fn builtin_group_by() {
         out.trim(),
         r#"[[{"a":1,"b":"x"},{"a":1,"b":"z"}],[{"a":2,"b":"y"}]]"#
     );
+    assert_jq_compat(
+        "group_by(.a)",
+        r#"[{"a":1,"b":"x"},{"a":2,"b":"y"},{"a":1,"b":"z"}]"#,
+    );
 }
 
 // --- Builtin: unique / unique_by ---
@@ -718,6 +795,7 @@ fn builtin_group_by() {
 #[test]
 fn builtin_unique() {
     assert_eq!(jx_compact("unique", "[1,2,1,3]").trim(), "[1,2,3]");
+    assert_jq_compat("unique", "[1,2,1,3]");
 }
 
 #[test]
@@ -727,6 +805,10 @@ fn builtin_unique_by() {
         r#"[{"a":1,"b":1},{"a":2,"b":2},{"a":1,"b":3}]"#,
     );
     assert_eq!(out.trim(), r#"[{"a":1,"b":1},{"a":2,"b":2}]"#);
+    assert_jq_compat(
+        "unique_by(.a)",
+        r#"[{"a":1,"b":1},{"a":2,"b":2},{"a":1,"b":3}]"#,
+    );
 }
 
 // --- Builtin: min / max ---
@@ -734,21 +816,25 @@ fn builtin_unique_by() {
 #[test]
 fn builtin_min() {
     assert_eq!(jx_compact("min", "[3,1,2]").trim(), "1");
+    assert_jq_compat("min", "[3,1,2]");
 }
 
 #[test]
 fn builtin_max() {
     assert_eq!(jx_compact("max", "[3,1,2]").trim(), "3");
+    assert_jq_compat("max", "[3,1,2]");
 }
 
 #[test]
 fn builtin_min_empty() {
     assert_eq!(jx_compact("min", "[]").trim(), "null");
+    assert_jq_compat("min", "[]");
 }
 
 #[test]
 fn builtin_max_empty() {
     assert_eq!(jx_compact("max", "[]").trim(), "null");
+    assert_jq_compat("max", "[]");
 }
 
 // --- Builtin: min_by / max_by ---
@@ -759,6 +845,7 @@ fn builtin_min_by() {
         jx_compact("min_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#).trim(),
         r#"{"x":1}"#
     );
+    assert_jq_compat("min_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#);
 }
 
 #[test]
@@ -767,6 +854,7 @@ fn builtin_max_by() {
         jx_compact("max_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#).trim(),
         r#"{"x":3}"#
     );
+    assert_jq_compat("max_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#);
 }
 
 // --- Builtin: sort_by ---
@@ -777,6 +865,7 @@ fn builtin_sort_by() {
         jx_compact("sort_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#).trim(),
         r#"[{"x":1},{"x":2},{"x":3}]"#
     );
+    assert_jq_compat("sort_by(.x)", r#"[{"x":3},{"x":1},{"x":2}]"#);
 }
 
 // --- Builtin: del ---
@@ -787,6 +876,7 @@ fn builtin_del() {
         jx_compact("del(.a)", r#"{"a":1,"b":2}"#).trim(),
         r#"{"b":2}"#
     );
+    assert_jq_compat("del(.a)", r#"{"a":1,"b":2}"#);
 }
 
 // --- Builtin: ltrimstr / rtrimstr ---
@@ -797,6 +887,7 @@ fn builtin_ltrimstr() {
         jx_compact(r#"ltrimstr("hel")"#, r#""hello""#).trim(),
         r#""lo""#
     );
+    assert_jq_compat(r#"ltrimstr("hel")"#, r#""hello""#);
 }
 
 #[test]
@@ -805,6 +896,7 @@ fn builtin_rtrimstr() {
         jx_compact(r#"rtrimstr("lo")"#, r#""hello""#).trim(),
         r#""hel""#
     );
+    assert_jq_compat(r#"rtrimstr("lo")"#, r#""hello""#);
 }
 
 // --- Builtin: startswith / endswith ---
@@ -819,6 +911,8 @@ fn builtin_startswith() {
         jx_compact(r#"startswith("xyz")"#, r#""hello""#).trim(),
         "false"
     );
+    assert_jq_compat(r#"startswith("hel")"#, r#""hello""#);
+    assert_jq_compat(r#"startswith("xyz")"#, r#""hello""#);
 }
 
 #[test]
@@ -831,6 +925,8 @@ fn builtin_endswith() {
         jx_compact(r#"endswith("xyz")"#, r#""hello""#).trim(),
         "false"
     );
+    assert_jq_compat(r#"endswith("llo")"#, r#""hello""#);
+    assert_jq_compat(r#"endswith("xyz")"#, r#""hello""#);
 }
 
 // --- Builtin: tonumber / tostring ---
@@ -840,6 +936,9 @@ fn builtin_tonumber() {
     assert_eq!(jx_compact("tonumber", r#""42""#).trim(), "42");
     assert_eq!(jx_compact("tonumber", r#""3.14""#).trim(), "3.14");
     assert_eq!(jx_compact("tonumber", "42").trim(), "42");
+    assert_jq_compat("tonumber", r#""42""#);
+    assert_jq_compat("tonumber", r#""3.14""#);
+    assert_jq_compat("tonumber", "42");
 }
 
 #[test]
@@ -847,6 +946,9 @@ fn builtin_tostring() {
     assert_eq!(jx_compact("tostring", "42").trim(), r#""42""#);
     assert_eq!(jx_compact("tostring", "null").trim(), r#""null""#);
     assert_eq!(jx_compact("tostring", "true").trim(), r#""true""#);
+    assert_jq_compat("tostring", "42");
+    assert_jq_compat("tostring", "null");
+    assert_jq_compat("tostring", "true");
 }
 
 // --- Builtin: values ---
@@ -855,12 +957,15 @@ fn builtin_tostring() {
 fn builtin_values_object() {
     let out = jx_compact("values", r#"{"a":1,"b":2}"#);
     assert_eq!(out.trim(), "1\n2");
+    // Note: jq `values` is a type filter (passes non-null); jx `values` is `.[]`.
+    // Intentional difference — jx provides object/array value iteration.
 }
 
 #[test]
 fn builtin_values_array() {
     let out = jx_compact("values", "[10,20,30]");
     assert_eq!(out.trim(), "10\n20\n30");
+    // Note: jq `values` is a type filter (passes non-null); jx `values` is `.[]`.
 }
 
 // --- Builtin: empty ---
@@ -869,6 +974,7 @@ fn builtin_values_array() {
 fn builtin_empty() {
     let out = jx_compact("[1, empty, 2]", "null");
     assert_eq!(out.trim(), "[1,2]");
+    assert_jq_compat("[1, empty, 2]", "null");
 }
 
 // --- Builtin: not ---
@@ -876,16 +982,19 @@ fn builtin_empty() {
 #[test]
 fn builtin_not_true() {
     assert_eq!(jx_compact("not", "true").trim(), "false");
+    assert_jq_compat("not", "true");
 }
 
 #[test]
 fn builtin_not_false() {
     assert_eq!(jx_compact("not", "false").trim(), "true");
+    assert_jq_compat("not", "false");
 }
 
 #[test]
 fn builtin_not_null() {
     assert_eq!(jx_compact("not", "null").trim(), "true");
+    assert_jq_compat("not", "null");
 }
 
 // --- Builtin: keys_unsorted ---
@@ -895,6 +1004,7 @@ fn builtin_keys_unsorted() {
     let out = jx_compact("keys_unsorted", r#"{"b":2,"a":1}"#);
     // keys_unsorted preserves insertion order
     assert_eq!(out.trim(), r#"["b","a"]"#);
+    assert_jq_compat("keys_unsorted", r#"{"b":2,"a":1}"#);
 }
 
 // --- Builtin: has (e2e) ---
@@ -906,12 +1016,16 @@ fn builtin_has_object() {
         jx_compact(r#"has("z")"#, r#"{"a":1,"b":2}"#).trim(),
         "false"
     );
+    assert_jq_compat(r#"has("a")"#, r#"{"a":1,"b":2}"#);
+    assert_jq_compat(r#"has("z")"#, r#"{"a":1,"b":2}"#);
 }
 
 #[test]
 fn builtin_has_array() {
     assert_eq!(jx_compact("has(1)", "[10,20,30]").trim(), "true");
     assert_eq!(jx_compact("has(5)", "[10,20,30]").trim(), "false");
+    assert_jq_compat("has(1)", "[10,20,30]");
+    assert_jq_compat("has(5)", "[10,20,30]");
 }
 
 // --- Builtin: type (e2e) ---
@@ -925,6 +1039,13 @@ fn builtin_type_all() {
     assert_eq!(jx_compact("type", "null").trim(), r#""null""#);
     assert_eq!(jx_compact("type", "[1]").trim(), r#""array""#);
     assert_eq!(jx_compact("type", r#"{"a":1}"#).trim(), r#""object""#);
+    assert_jq_compat("type", "42");
+    assert_jq_compat("type", r#""hi""#);
+    assert_jq_compat("type", "true");
+    assert_jq_compat("type", "false");
+    assert_jq_compat("type", "null");
+    assert_jq_compat("type", "[1]");
+    assert_jq_compat("type", r#"{"a":1}"#);
 }
 
 // --- Builtin: ascii_downcase / ascii_upcase (dedicated e2e) ---
@@ -935,6 +1056,7 @@ fn builtin_ascii_downcase() {
         jx_compact("ascii_downcase", r#""HELLO WORLD""#).trim(),
         r#""hello world""#
     );
+    assert_jq_compat("ascii_downcase", r#""HELLO WORLD""#);
 }
 
 #[test]
@@ -943,6 +1065,7 @@ fn builtin_ascii_upcase() {
         jx_compact("ascii_upcase", r#""hello world""#).trim(),
         r#""HELLO WORLD""#
     );
+    assert_jq_compat("ascii_upcase", r#""hello world""#);
 }
 
 // --- Language: Recursive descent ---
@@ -965,12 +1088,16 @@ fn recursive_descent_strings() {
 fn boolean_and() {
     assert_eq!(jx_compact("true and false", "null").trim(), "false");
     assert_eq!(jx_compact("true and true", "null").trim(), "true");
+    assert_jq_compat("true and false", "null");
+    assert_jq_compat("true and true", "null");
 }
 
 #[test]
 fn boolean_or() {
     assert_eq!(jx_compact("false or true", "null").trim(), "true");
     assert_eq!(jx_compact("false or false", "null").trim(), "false");
+    assert_jq_compat("false or true", "null");
+    assert_jq_compat("false or false", "null");
 }
 
 // --- Language: not (as filter) ---
@@ -979,6 +1106,7 @@ fn boolean_or() {
 fn not_in_select() {
     let out = jx_compact("[.[] | select(. > 2 | not)]", "[1,2,3,4,5]");
     assert_eq!(out.trim(), "[1,2]");
+    assert_jq_compat("[.[] | select(. > 2 | not)]", "[1,2,3,4,5]");
 }
 
 // --- Language: Try (?) ---
@@ -1018,6 +1146,7 @@ fn negative_literal() {
 fn if_then_no_else_true() {
     let out = jx_compact(r#"if . > 5 then "big" end"#, "10");
     assert_eq!(out.trim(), r#""big""#);
+    assert_jq_compat(r#"if . > 5 then "big" end"#, "10");
 }
 
 #[test]
@@ -1025,6 +1154,7 @@ fn if_then_no_else_false() {
     // When condition is false and no else, jq passes through the input
     let out = jx_compact(r#"if . > 5 then "big" end"#, "3");
     assert_eq!(out.trim(), "3");
+    assert_jq_compat(r#"if . > 5 then "big" end"#, "3");
 }
 
 // --- Language: Object shorthand ---
@@ -1033,6 +1163,7 @@ fn if_then_no_else_false() {
 fn object_shorthand() {
     let out = jx_compact("{name}", r#"{"name":"alice","age":30}"#);
     assert_eq!(out.trim(), r#"{"name":"alice"}"#);
+    assert_jq_compat("{name}", r#"{"name":"alice","age":30}"#);
 }
 
 // --- Language: Computed object keys ---
@@ -1048,6 +1179,7 @@ fn computed_object_keys() {
 #[test]
 fn parenthesized_expression() {
     assert_eq!(jx_compact("(.a + .b) * 2", r#"{"a":3,"b":4}"#).trim(), "14");
+    assert_jq_compat("(.a + .b) * 2", r#"{"a":3,"b":4}"#);
 }
 
 // --- Edge cases: Error handling ---
@@ -1320,12 +1452,14 @@ fn jq_compat_any_all() {
 fn operator_precedence_mul_before_add() {
     let out = jx_compact("1 + 2 * 3", "null");
     assert_eq!(out.trim(), "7");
+    assert_jq_compat("1 + 2 * 3", "null");
 }
 
 #[test]
 fn operator_precedence_div_before_sub() {
     let out = jx_compact("10 - 6 / 2", "null");
     assert_eq!(out.trim(), "7");
+    assert_jq_compat("10 - 6 / 2", "null");
 }
 
 #[test]
@@ -1341,6 +1475,7 @@ fn jq_compat_operator_precedence() {
 fn sort_mixed_types() {
     let out = jx_compact("sort", r#"[3,"a",null,true,false,1]"#);
     assert_eq!(out.trim(), r#"[null,false,true,1,3,"a"]"#);
+    assert_jq_compat("sort", r#"[3,"a",null,true,false,1]"#);
 }
 
 #[test]
@@ -1352,6 +1487,7 @@ fn jq_compat_sort_mixed() {
 fn unique_returns_sorted() {
     let out = jx_compact("unique", "[3,1,2,1,3]");
     assert_eq!(out.trim(), "[1,2,3]");
+    assert_jq_compat("unique", "[3,1,2,1,3]");
 }
 
 #[test]
@@ -1392,48 +1528,56 @@ fn jq_compat_range() {
 fn math_floor() {
     let out = jx_compact("floor", "3.7");
     assert_eq!(out.trim(), "3");
+    assert_jq_compat("floor", "3.7");
 }
 
 #[test]
 fn math_ceil() {
     let out = jx_compact("ceil", "3.2");
     assert_eq!(out.trim(), "4");
+    assert_jq_compat("ceil", "3.2");
 }
 
 #[test]
 fn math_round() {
     let out = jx_compact("round", "3.5");
     assert_eq!(out.trim(), "4");
+    assert_jq_compat("round", "3.5");
 }
 
 #[test]
 fn math_sqrt() {
     let out = jx_compact("sqrt", "9");
     assert_eq!(out.trim(), "3");
+    assert_jq_compat("sqrt", "9");
 }
 
 #[test]
 fn math_fabs() {
     let out = jx_compact("fabs", "-5.5");
     assert_eq!(out.trim(), "5.5");
+    assert_jq_compat("fabs", "-5.5");
 }
 
 #[test]
 fn math_nan_isnan() {
     let out = jx_compact("nan | isnan", "null");
     assert_eq!(out.trim(), "true");
+    assert_jq_compat("nan | isnan", "null");
 }
 
 #[test]
 fn math_infinite_isinfinite() {
     let out = jx_compact("infinite | isinfinite", "null");
     assert_eq!(out.trim(), "true");
+    assert_jq_compat("infinite | isinfinite", "null");
 }
 
 #[test]
 fn math_isfinite() {
     let out = jx_compact("isfinite", "42");
     assert_eq!(out.trim(), "true");
+    assert_jq_compat("isfinite", "42");
 }
 
 #[test]
@@ -1494,6 +1638,7 @@ fn jq_compat_object_generator() {
 fn split_empty_separator() {
     let out = jx_compact(r#"split("")"#, r#""abc""#);
     assert_eq!(out.trim(), r#"["a","b","c"]"#);
+    assert_jq_compat(r#"split("")"#, r#""abc""#);
 }
 
 #[test]
@@ -1507,66 +1652,77 @@ fn ascii_downcase_only_ascii() {
 fn string_explode() {
     let out = jx_compact("explode", r#""abc""#);
     assert_eq!(out.trim(), "[97,98,99]");
+    assert_jq_compat("explode", r#""abc""#);
 }
 
 #[test]
 fn string_implode() {
     let out = jx_compact("implode", "[97,98,99]");
     assert_eq!(out.trim(), r#""abc""#);
+    assert_jq_compat("implode", "[97,98,99]");
 }
 
 #[test]
 fn tojson_fromjson() {
     let out = jx_compact("[1,2] | tojson", "null");
     assert_eq!(out.trim(), r#""[1,2]""#);
+    assert_jq_compat("[1,2] | tojson", "null");
 }
 
 #[test]
 fn fromjson_basic() {
     let out = jx_compact(r#"fromjson"#, r#""[1,2,3]""#);
     assert_eq!(out.trim(), "[1,2,3]");
+    assert_jq_compat("fromjson", r#""[1,2,3]""#);
 }
 
 #[test]
 fn utf8bytelength() {
     let out = jx_compact("utf8bytelength", r#""café""#);
     assert_eq!(out.trim(), "5"); // é is 2 bytes in UTF-8
+    assert_jq_compat("utf8bytelength", r#""café""#);
 }
 
 #[test]
 fn inside_string() {
     let out = jx_compact(r#"inside("foobar")"#, r#""foo""#);
     assert_eq!(out.trim(), "true");
+    assert_jq_compat(r#"inside("foobar")"#, r#""foo""#);
 }
 
 #[test]
 fn string_times_number() {
     let out = jx_compact(r#""ab" * 3"#, "null");
     assert_eq!(out.trim(), r#""ababab""#);
+    assert_jq_compat(r#""ab" * 3"#, "null");
 }
 
 #[test]
 fn string_divide_string() {
     let out = jx_compact(r#""a,b,c" / ",""#, "null");
     assert_eq!(out.trim(), r#"["a","b","c"]"#);
+    assert_jq_compat(r#""a,b,c" / ",""#, "null");
 }
 
 #[test]
 fn index_string() {
     let out = jx_compact(r#"index("bar")"#, r#""foobar""#);
     assert_eq!(out.trim(), "3");
+    assert_jq_compat(r#"index("bar")"#, r#""foobar""#);
 }
 
 #[test]
 fn rindex_string() {
     let out = jx_compact(r#"rindex("o")"#, r#""fooboo""#);
     assert_eq!(out.trim(), "5");
+    assert_jq_compat(r#"rindex("o")"#, r#""fooboo""#);
 }
 
 #[test]
 fn indices_string() {
     let out = jx_compact(r#"indices("o")"#, r#""foobar""#);
     assert_eq!(out.trim(), "[1,2]");
+    assert_jq_compat(r#"indices("o")"#, r#""foobar""#);
 }
 
 #[test]
@@ -1593,12 +1749,14 @@ fn jq_compat_string_builtins() {
 fn from_entries_capitalized_keys() {
     let out = jx_compact("from_entries", r#"[{"Key":"a","Value":1}]"#);
     assert_eq!(out.trim(), r#"{"a":1}"#);
+    assert_jq_compat("from_entries", r#"[{"Key":"a","Value":1}]"#);
 }
 
 #[test]
 fn array_subtraction() {
     let out = jx_compact("[1,2,3] - [2]", "null");
     assert_eq!(out.trim(), "[1,3]");
+    assert_jq_compat("[1,2,3] - [2]", "null");
 }
 
 #[test]
@@ -1610,6 +1768,7 @@ fn jq_compat_array_subtraction() {
 fn object_recursive_merge() {
     let out = jx_compact(r#"{"a":{"b":1}} * {"a":{"c":2}}"#, "null");
     assert_eq!(out.trim(), r#"{"a":{"b":1,"c":2}}"#);
+    assert_jq_compat(r#"{"a":{"b":1}} * {"a":{"c":2}}"#, "null");
 }
 
 #[test]
@@ -1621,6 +1780,7 @@ fn jq_compat_object_merge() {
 fn float_modulo() {
     let out = jx_compact(". % 3", "10.5");
     assert_eq!(out.trim(), "1.5");
+    // Note: jq truncates to integer for %, jx does float modulo. Intentional difference.
 }
 
 #[test]
@@ -1629,6 +1789,7 @@ fn int_division_produces_float() {
     // jq: 0.3333333333333333
     let f: f64 = out.trim().parse().expect("expected float");
     assert!((f - 1.0 / 3.0).abs() < 1e-10);
+    assert_jq_compat("1 / 3", "null");
 }
 
 #[test]
@@ -1636,6 +1797,7 @@ fn index_generator() {
     // .[expr] where expr produces multiple outputs
     let out = jx_compact(r#".[0,2]"#, "[10,20,30]");
     assert_eq!(out.trim(), "10\n30");
+    assert_jq_compat(".[0,2]", "[10,20,30]");
 }
 
 #[test]
@@ -2407,11 +2569,13 @@ fn assign_update_field() {
         jx_compact(".foo |= . + 1", r#"{"foo":42}"#).trim(),
         r#"{"foo":43}"#
     );
+    assert_jq_compat(".foo |= . + 1", r#"{"foo":42}"#);
 }
 
 #[test]
 fn assign_update_iterate() {
     assert_eq!(jx_compact(".[] |= . * 2", "[1,2,3]").trim(), "[2,4,6]");
+    assert_jq_compat(".[] |= . * 2", "[1,2,3]");
 }
 
 #[test]
@@ -2420,6 +2584,7 @@ fn assign_set_field() {
         jx_compact(".a = 42", r#"{"a":1,"b":2}"#).trim(),
         r#"{"a":42,"b":2}"#
     );
+    assert_jq_compat(".a = 42", r#"{"a":1,"b":2}"#);
 }
 
 #[test]
@@ -2429,31 +2594,37 @@ fn assign_set_cross_reference() {
         jx_compact(".foo = .bar", r#"{"bar":42}"#).trim(),
         r#"{"bar":42,"foo":42}"#
     );
+    assert_jq_compat(".foo = .bar", r#"{"bar":42}"#);
 }
 
 #[test]
 fn assign_plus_iterate() {
     assert_eq!(jx_compact(".[] += 2", "[1,3,5]").trim(), "[3,5,7]");
+    assert_jq_compat(".[] += 2", "[1,3,5]");
 }
 
 #[test]
 fn assign_mul_iterate() {
     assert_eq!(jx_compact(".[] *= 2", "[1,3,5]").trim(), "[2,6,10]");
+    assert_jq_compat(".[] *= 2", "[1,3,5]");
 }
 
 #[test]
 fn assign_sub_iterate() {
     assert_eq!(jx_compact(".[] -= 2", "[1,3,5]").trim(), "[-1,1,3]");
+    assert_jq_compat(".[] -= 2", "[1,3,5]");
 }
 
 #[test]
 fn assign_div() {
     assert_eq!(jx_compact(".x /= 2", r#"{"x":10}"#).trim(), r#"{"x":5}"#);
+    assert_jq_compat(".x /= 2", r#"{"x":10}"#);
 }
 
 #[test]
 fn assign_mod() {
     assert_eq!(jx_compact(".x %= 3", r#"{"x":10}"#).trim(), r#"{"x":1}"#);
+    assert_jq_compat(".x %= 3", r#"{"x":10}"#);
 }
 
 #[test]
@@ -2462,6 +2633,7 @@ fn assign_alt_null() {
         jx_compact(r#".a //= "default""#, r#"{"a":null}"#).trim(),
         r#"{"a":"default"}"#
     );
+    assert_jq_compat(r#".a //= "default""#, r#"{"a":null}"#);
 }
 
 #[test]
@@ -2470,6 +2642,7 @@ fn assign_alt_existing() {
         jx_compact(r#".a //= "default""#, r#"{"a":1}"#).trim(),
         r#"{"a":1}"#
     );
+    assert_jq_compat(r#".a //= "default""#, r#"{"a":1}"#);
 }
 
 #[test]
@@ -2479,6 +2652,7 @@ fn assign_update_empty_deletion() {
         jx_compact("(.[] | select(. >= 2)) |= empty", "[1,5,3,0,7]").trim(),
         "[1,0]"
     );
+    assert_jq_compat("(.[] | select(. >= 2)) |= empty", "[1,5,3,0,7]");
 }
 
 #[test]
@@ -2487,6 +2661,7 @@ fn assign_nested_path() {
         jx_compact(".a.b |= . + 1", r#"{"a":{"b":10}}"#).trim(),
         r#"{"a":{"b":11}}"#
     );
+    assert_jq_compat(".a.b |= . + 1", r#"{"a":{"b":10}}"#);
 }
 
 #[test]
@@ -2495,6 +2670,7 @@ fn assign_auto_create_structure() {
         jx_compact(".[2][3] = 1", "[4]").trim(),
         "[4,null,[null,null,null,1]]"
     );
+    assert_jq_compat(".[2][3] = 1", "[4]");
 }
 
 #[test]
@@ -2503,11 +2679,13 @@ fn assign_update_object_construction() {
         jx_compact(r#".[0].a |= {"old":., "new":(.+1)}"#, r#"[{"a":1,"b":2}]"#).trim(),
         r#"[{"a":{"old":1,"new":2},"b":2}]"#
     );
+    assert_jq_compat(r#".[0].a |= {"old":., "new":(.+1)}"#, r#"[{"a":1,"b":2}]"#);
 }
 
 #[test]
 fn assign_update_with_index() {
     assert_eq!(jx_compact(".[0] |= . + 10", "[1,2,3]").trim(), "[11,2,3]");
+    assert_jq_compat(".[0] |= . + 10", "[1,2,3]");
 }
 
 #[test]
@@ -2516,6 +2694,7 @@ fn assign_set_new_field() {
         jx_compact(".c = 3", r#"{"a":1,"b":2}"#).trim(),
         r#"{"a":1,"b":2,"c":3}"#
     );
+    assert_jq_compat(".c = 3", r#"{"a":1,"b":2}"#);
 }
 
 // --- Regex builtins ---
@@ -2742,4 +2921,125 @@ fn builtin_combinations_n() {
         "[[0,0],[0,1],[1,0],[1,1]]"
     );
     assert_jq_compat("[combinations(2)]", "[0,1]");
+}
+
+// --- def (user-defined functions) ---
+
+#[test]
+fn def_zero_arg() {
+    assert_eq!(jx_compact("def f: . + 1; f", "5").trim(), "6");
+    assert_jq_compat("def f: . + 1; f", "5");
+}
+
+#[test]
+fn def_filter_param() {
+    assert_eq!(jx_compact("def f(x): x | x; f(. + 1)", "5").trim(), "7");
+    assert_jq_compat("def f(x): x | x; f(. + 1)", "5");
+}
+
+#[test]
+fn def_generator_body() {
+    assert_eq!(jx_compact("def f: (1,2); [f]", "null").trim(), "[1,2]");
+    assert_jq_compat("def f: (1,2); [f]", "null");
+}
+
+#[test]
+fn def_generator_filter_param() {
+    // Filter params are generators: x produces 1, then 2; x|x produces 1,2,1,2
+    assert_eq!(
+        jx_compact("def f(x): x | x; [f(1,2)]", "null").trim(),
+        "[1,2,1,2]"
+    );
+    assert_jq_compat("def f(x): x | x; [f(1,2)]", "null");
+}
+
+#[test]
+fn def_dollar_param() {
+    assert_eq!(jx_compact("def f($x): $x + 1; f(10)", "null").trim(), "11");
+    assert_jq_compat("def f($x): $x + 1; f(10)", "null");
+}
+
+#[test]
+fn def_multiple_dollar_params() {
+    assert_eq!(
+        jx_compact("def add($a; $b): $a + $b; add(3; 4)", "null").trim(),
+        "7"
+    );
+    assert_jq_compat("def add($a; $b): $a + $b; add(3; 4)", "null");
+}
+
+#[test]
+fn def_nested() {
+    assert_eq!(
+        jx_compact("def f: . + 1; def g: f | f; 3 | g", "null").trim(),
+        "5"
+    );
+    assert_jq_compat("def f: . + 1; def g: f | f; 3 | g", "null");
+}
+
+#[test]
+fn def_shadowing() {
+    // Later def of same name/arity shadows earlier one
+    assert_eq!(
+        jx_compact("def f: . + 1; def f: . * 2; 10 | f", "null").trim(),
+        "20"
+    );
+    assert_jq_compat("def f: . + 1; def f: . * 2; 10 | f", "null");
+}
+
+#[test]
+fn def_arity_overload() {
+    // Same name, different arity — both coexist
+    assert_eq!(
+        jx_compact("def f: . + 1; def f(x): . + x; [5 | f, f(10)]", "null").trim(),
+        "[6,15]"
+    );
+    assert_jq_compat("def f: . + 1; def f(x): . + x; [5 | f, f(10)]", "null");
+}
+
+#[test]
+fn def_recursion_factorial() {
+    assert_eq!(
+        jx_compact(
+            "def fac: if . == 1 then 1 else . * ((. - 1) | fac) end; 5 | fac",
+            "null"
+        )
+        .trim(),
+        "120"
+    );
+    assert_jq_compat(
+        "def fac: if . == 1 then 1 else . * ((. - 1) | fac) end; 5 | fac",
+        "null",
+    );
+}
+
+#[test]
+fn def_closure_captures_var() {
+    assert_eq!(jx_compact("5 as $x | def f: $x + 1; f", "null").trim(), "6");
+    assert_jq_compat("5 as $x | def f: $x + 1; f", "null");
+}
+
+#[test]
+fn def_map_with_user_func() {
+    assert_eq!(
+        jx_compact("def addone: . + 1; [.[] | addone]", "[1,2,3]").trim(),
+        "[2,3,4]"
+    );
+    assert_jq_compat("def addone: . + 1; [.[] | addone]", "[1,2,3]");
+}
+
+#[test]
+fn def_recursive_sum() {
+    assert_eq!(
+        jx_compact(
+            "def sum: if length == 0 then 0 else .[0] + (.[1:] | sum) end; sum",
+            "[1,2,3,4,5]"
+        )
+        .trim(),
+        "15"
+    );
+    assert_jq_compat(
+        "def sum: if length == 0 then 0 else .[0] + (.[1:] | sum) end; sum",
+        "[1,2,3,4,5]",
+    );
 }

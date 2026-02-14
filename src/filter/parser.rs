@@ -54,8 +54,13 @@ impl<'a> Parser<'a> {
         self.parse_pipe()
     }
 
-    // pipe = comma (assign_op pipe | "as" "$var" "|" pipe | "|" comma)*
+    // pipe = def | comma (assign_op pipe | "as" "$var" "|" pipe | "|" comma)*
     fn parse_pipe(&mut self) -> Result<Filter> {
+        // Check for `def` at the start of a pipe expression
+        if self.peek() == Some(&Token::Def) {
+            return self.parse_def();
+        }
+
         let mut left = self.parse_comma()?;
 
         // Check for assignment operators before pipe (right-recursive)
@@ -134,6 +139,59 @@ impl<'a> Parser<'a> {
             Box::new(then_branch),
             else_branch,
         ))
+    }
+
+    /// Parse `def name: body;` or `def name(p1; p2): body;`
+    /// followed by a continuation (the rest of the expression).
+    fn parse_def(&mut self) -> Result<Filter> {
+        self.advance(); // consume `def`
+
+        // Parse function name
+        let name = match self.advance() {
+            Some(Token::Ident(s)) => s.clone(),
+            Some(tok) => bail!("expected function name after 'def', got {tok:?}"),
+            None => bail!("expected function name after 'def', got end of input"),
+        };
+
+        // Parse optional parameters: (p1; p2) or ($p1; $p2)
+        let mut params = Vec::new();
+        if self.peek() == Some(&Token::LParen) {
+            self.advance(); // consume '('
+            if self.peek() != Some(&Token::RParen) {
+                params.push(self.parse_def_param()?);
+                while self.peek() == Some(&Token::Semicolon) {
+                    self.advance();
+                    params.push(self.parse_def_param()?);
+                }
+            }
+            self.expect(&Token::RParen)?;
+        }
+
+        self.expect(&Token::Colon)?;
+
+        // Parse body (everything until `;`)
+        let body = self.parse_expr()?;
+
+        self.expect(&Token::Semicolon)?;
+
+        // Parse continuation (the rest of the expression after the `;`)
+        let rest = self.parse_pipe()?;
+
+        Ok(Filter::Def {
+            name,
+            params,
+            body: Box::new(body),
+            rest: Box::new(rest),
+        })
+    }
+
+    /// Parse a single def parameter name. Accepts `name` or `$name`.
+    fn parse_def_param(&mut self) -> Result<String> {
+        match self.advance() {
+            Some(Token::Ident(s)) => Ok(s.clone()),
+            Some(tok) => bail!("expected parameter name in def, got {tok:?}"),
+            None => bail!("expected parameter name in def, got end of input"),
+        }
     }
 
     /// Parse `as $var | body` — the `as` token is consumed here.

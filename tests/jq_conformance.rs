@@ -148,6 +148,13 @@ fn jq_conformance() {
     println!("  passed:  {passed}");
     println!("  failed:  {failed}");
     println!("  errored: {errored}");
+
+    // Regression gate: conformance must not drop below this threshold.
+    // Current baseline: 298/497 (60%). Set 3 below for small tolerance.
+    assert!(
+        passed >= 295,
+        "jq conformance regression: {passed}/497 (was >= 295)"
+    );
 }
 
 /// Run with: cargo test jq_conformance_verbose -- --nocapture --ignored

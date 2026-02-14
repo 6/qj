@@ -7,10 +7,12 @@ full design and history.
 
 ## Current state (2026-02)
 
-824 tests passing (437 unit + 351 e2e + 21 ndjson + 15 ffi).
-~121 builtins implemented. jq conformance at **57.9%** (288/497 on jq's
-official test suite). Feature compatibility at **93.7%** (155/166 features
-fully passing). Passthrough paths handle "simple query on big file" at
+837 tests passing (437 unit + 364 e2e + 21 ndjson + 15 ffi).
+~121 builtins implemented. `def` (user-defined functions) implemented with
+filter parameters, `$param` sugar, recursion, arity overloading, and closures.
+jq conformance at **60.0%** (298/497 on jq's official test suite). Feature
+compatibility at **93.7%** (155/166 features fully passing). Passthrough
+paths handle "simple query on big file" at
 12-63x jq, 3-14x jaq. Parallel NDJSON processing at ~10x jq, ~5.6x jaq.
 
 | Filter (49MB file) | jx | jq | jaq | vs jq | vs jaq |
@@ -36,11 +38,11 @@ Non-passthrough eval is competitive with jaq (~1x) and ~2-4x jq.
 | Multiple outputs/iteration | 33/49 (67%) | 49/49 | 44/49 | 48/49 |
 | Assignment | 10/19 (53%) | 19/19 | 11/19 | 14/19 |
 | Paths | 10/22 (45%) | 22/22 | 1/22 | 16/22 |
-| User-defined functions | 25/59 (42%) | 59/59 | 44/59 | 59/59 |
+| User-defined functions | 35/59 (59%) | 59/59 | 44/59 | 59/59 |
 | toliteral number | 21/43 (49%) | 43/43 | 25/43 | 26/43 |
 | walk | 8/27 (30%) | 27/27 | 7/27 | 17/27 |
 | Module system | 3/26 (12%) | 26/26 | 6/26 | 15/26 |
-| **Total** | **288/497 (58%)** | **497/497** | **343/497** | **425/497** |
+| **Total** | **298/497 (60%)** | **497/497** | **343/497** | **425/497** |
 
 ---
 
@@ -120,23 +122,23 @@ conditionals, and string operations categories.
 
 ---
 
-## Priority 5: `def` (user-defined functions)
+## ~~Priority 5: `def` (user-defined functions)~~ COMPLETE
 
-**Why:** Single biggest conformance blocker. 34 direct failures in the
-user-defined functions category, but `def` cascades into walk (19 failures),
-conditionals (7), string operations (28), and iteration (16) since many
-jq.test tests define helper functions. Estimated impact: **+50-60 tests**,
-jumping from 58% to ~70%.
-
-**Needs:**
+Implemented `def` with:
 - AST: `Filter::Def { name, params, body, rest }` node
-- Parser: `def name(params): body; rest` syntax
-- Evaluator: function table in `Env`, lexical scoping, recursion
-- Filter-argument parameters: `def map(f): [.[] | f];`
-- Closure semantics: params shadow outer variables
+- Parser: `def name(params): body; rest` syntax, `$param` sugar
+- Evaluator: function table in `Env`, lexical scoping, recursion via
+  self-registration in body_env (only for `is_def` functions, not param wrappers)
+- Filter-argument parameters: params bound as zero-arg functions with caller's
+  closure env, enabling generator semantics and backtracking
+- Arity overloading: `(name, arity)` keying allows same-name functions with
+  different param counts
+- Closures: lexical scoping of `$var` bindings captured at def time
 
-**Complexity:** High — recursive definitions, filter-argument parameters,
-nested redefinition (`def f: 1; def g: f, def f: 2; ...`).
+Impact: +10 conformance tests (288 → 298, 58% → 60%). User-defined functions
+category: 25/59 → 35/59. Remaining failures are mostly: `def` inside expressions
+(parser limitation), destructuring bind patterns, `label`-`break`, and complex
+`try`-`catch` interactions.
 
 ---
 
@@ -161,10 +163,10 @@ nested redefinition (`def f: 1; def g: f, def f: 2; ...`).
 
 | After | Est. Tests | Est. % | Key unlock |
 |-------|-----------|--------|------------|
-| Current | 288/497 | 58% | — |
-| + quick wins (P6) | ~300/497 | ~60% | feature gaps closed |
-| + `def` (P5) | ~350/497 | ~70% | cascading unlock across categories |
-| + number literal fixes | ~370/497 | ~74% | toliteral precision |
+| Current | 298/497 | 60% | — |
+| + quick wins (P6) | ~310/497 | ~62% | feature gaps closed |
+| + def-in-expressions | ~330/497 | ~66% | cascading unlock across categories |
+| + number literal fixes | ~350/497 | ~70% | toliteral precision |
 
 ---
 

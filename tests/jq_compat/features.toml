@@ -255,6 +255,8 @@ name = "def"
 tests = [
   { filter = 'def double: . * 2; 5 | double', input = 'null', expected = '10' },
   { filter = 'def addtwo: . + 2; [1,2,3] | map(addtwo)', input = 'null', expected = '[3,4,5]' },
+  { filter = 'def fac: if . == 1 then 1 else . * ((. - 1) | fac) end; 5 | fac', input = 'null', expected = '120' },
+  { filter = 'def f: . + 1; def g: f | f; 3 | g', input = 'null', expected = '5' },
 ]
 
 [[features]]
@@ -263,6 +265,8 @@ name = "def with args"
 tests = [
   { filter = 'def f(x): x | x; 1 | [f(. + 1)]', input = 'null', expected = '[3]' },
   { filter = 'def addthem(x;y): x + y; addthem(2;3)', input = 'null', expected = '5' },
+  { filter = 'def f($x): $x + 1; f(10)', input = 'null', expected = '11' },
+  { filter = 'def add($a; $b): $a + $b; add(3; 4)', input = 'null', expected = '7' },
 ]
 
 [[features]]

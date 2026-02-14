@@ -187,7 +187,12 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         }
 
         Filter::Builtin(name, args) => {
-            super::builtins::eval_builtin(name, args, input, env, output);
+            // Check user-defined functions before builtins
+            if let Some(func) = env.get_func(name, args.len()) {
+                eval_user_func(name, args.len(), func, args, input, env, output);
+            } else {
+                super::builtins::eval_builtin(name, args, input, env, output);
+            }
         }
 
         Filter::Not(inner) => {
@@ -392,7 +397,86 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         Filter::Assign(path_filter, op, rhs) => {
             eval_assign(path_filter, *op, rhs, input, env, output);
         }
+
+        Filter::Def {
+            name,
+            params,
+            body,
+            rest,
+        } => {
+            // Register the function in the environment. Recursion is handled
+            // at call time in eval_user_func, which re-registers the function
+            // (with an updated closure_env) in its own body environment.
+            let func = super::UserFunc {
+                params: params.clone(),
+                body: (**body).clone(),
+                closure_env: env.clone(),
+                is_def: true,
+            };
+            let new_env = env.bind_func(name.clone(), params.len(), func);
+            eval(rest, input, &new_env, output);
+        }
     }
+}
+
+/// Evaluate a user-defined function call.
+///
+/// jq function parameters are **filters** (unevaluated AST), not values.
+/// `def f(x): x | x` means `x` is a filter evaluated each time in the body.
+///
+/// Implementation: each parameter is bound as a zero-arg user function whose
+/// body is the argument filter and whose closure captures the caller's environment.
+/// When the body references a param name, it calls that zero-arg function,
+/// which evaluates the arg filter in the caller's context.
+///
+/// For `$param` style: evaluate the arg filter once, bind result as a variable.
+fn eval_user_func(
+    func_name: &str,
+    func_arity: usize,
+    func: &super::UserFunc,
+    args: &[Filter],
+    input: &Value,
+    caller_env: &Env,
+    output: &mut dyn FnMut(Value),
+) {
+    // Start from the function's closure environment.
+    let mut body_env = func.closure_env.clone();
+
+    // For real `def` functions (not filter parameter wrappers), register the
+    // function in its own body environment so recursive calls can find it.
+    // We create a copy with the current body_env as closure, which enables
+    // the tying-the-knot pattern for recursion.
+    if func.is_def {
+        let self_func = super::UserFunc {
+            params: func.params.clone(),
+            body: func.body.clone(),
+            closure_env: body_env.clone(),
+            is_def: true,
+        };
+        body_env = body_env.bind_func(func_name.to_string(), func_arity, self_func);
+    }
+
+    // Bind each parameter
+    for (param_name, arg_filter) in func.params.iter().zip(args.iter()) {
+        if param_name.starts_with('$') {
+            // $param sugar: evaluate the arg once, bind as a variable
+            let mut val = Value::Null;
+            eval(arg_filter, input, caller_env, &mut |v| val = v);
+            body_env = body_env.bind_var(param_name.clone(), val);
+        } else {
+            // Filter parameter: bind as a zero-arg function in the body environment.
+            // The function's body is the arg filter, and its closure is the caller's env.
+            let param_func = super::UserFunc {
+                params: vec![],
+                body: arg_filter.clone(),
+                closure_env: caller_env.clone(),
+                is_def: false,
+            };
+            body_env = body_env.bind_func(param_name.clone(), 0, param_func);
+        }
+    }
+
+    eval(&func.body, input, &body_env, output);
 }
 
 /// Evaluate an assignment expression: `path_filter op= rhs`.

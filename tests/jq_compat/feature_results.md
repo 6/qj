@@ -49,8 +49,8 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | Variable binding | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | reduce | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | foreach | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
-| def | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
-| def with args | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
+| def | 4 | **4/4 Y** | 4/4 Y | 4/4 Y | 4/4 Y |
+| def with args | 4 | **4/4 Y** | 4/4 Y | 4/4 Y | 4/4 Y |
 | label-break | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
 | empty | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | error | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
@@ -246,7 +246,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **jx** | **155** | **1** | **10** | **93.7%** |
+| **jx** | **157** | **1** | **8** | **94.9%** |
 | jq | 165 | 0 | 1 | 99.4% |
 | jaq | 150 | 3 | 13 | 91.3% |
 | gojq | 163 | 0 | 3 | 98.2% |

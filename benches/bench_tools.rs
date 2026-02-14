@@ -141,6 +141,12 @@ static JSON_FILTERS: &[BenchFilter] = &[
         flags: &["-c"],
         expr: r#"[.statuses[]|.user.screen_name|@base64]"#,
     },
+    // User-defined functions
+    BenchFilter {
+        name: "def (user func)",
+        flags: &["-c"],
+        expr: r#"def hi(rt): if rt > 10 then "viral" elif rt > 0 then "shared" else "none" end; [.statuses[] | hi(.retweet_count)]"#,
+    },
 ];
 
 static NDJSON_FILTERS: &[BenchFilter] = &[
