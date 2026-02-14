@@ -402,74 +402,45 @@ fn eval_assign(
     env: &Env,
     output: &mut dyn FnMut(Value),
 ) {
-    use super::value_ops;
-
-    // Collect all paths from the LHS
-    let mut paths: Vec<Vec<Value>> = Vec::new();
-    value_ops::path_of(path_filter, input, &mut Vec::new(), &mut |p| {
-        if let Value::Array(arr) = p {
-            paths.push(arr.as_ref().clone());
-        }
-    });
-
-    let mut result = input.clone();
-    match op {
-        AssignOp::Update => {
-            // For |= empty (deletion), process paths in reverse order to avoid
-            // index shifting when deleting from arrays.
-            let mut deletions: Vec<Vec<Value>> = Vec::new();
-            for path in &paths {
-                let current = value_ops::get_path(&result, path);
-                let mut produced = false;
-                let mut new_val = Value::Null;
-                eval(rhs, &current, env, &mut |v| {
-                    if !produced {
-                        new_val = v;
-                        produced = true;
-                    }
-                });
-                if produced {
-                    result = value_ops::set_path(&result, path, &new_val);
-                } else {
-                    // |= empty → delete the path
-                    deletions.push(path.clone());
-                }
-            }
-            // Process deletions in reverse index order to avoid shifting
-            deletions.sort_by(|a, b| {
-                // Compare the last segment (the one being deleted)
-                let a_last = a.last();
-                let b_last = b.last();
-                match (a_last, b_last) {
-                    (Some(Value::Int(ai)), Some(Value::Int(bi))) => bi.cmp(ai),
-                    _ => std::cmp::Ordering::Equal,
+    // Build the leaf updater closure based on the operation type.
+    // Returns Some(new_value) or None (for deletion, e.g. |= empty).
+    type Updater<'a> = Box<dyn Fn(&Value) -> Option<Value> + 'a>;
+    let updater: Updater<'_> = match op {
+        AssignOp::Update => Box::new(|current: &Value| {
+            let mut result = None;
+            eval(rhs, current, env, &mut |v| {
+                if result.is_none() {
+                    result = Some(v);
                 }
             });
-            for path in &deletions {
-                result = value_ops::del_path(&result, path);
-            }
-        }
-        AssignOp::Set => {
+            result // None means |= empty → deletion
+        }),
+        AssignOp::Set => Box::new(|_current: &Value| {
             // = evaluates RHS with the ORIGINAL input, not the value at path
-            for path in &paths {
-                eval(rhs, input, env, &mut |new_val| {
-                    result = value_ops::set_path(&result, path, &new_val);
-                });
-            }
-        }
-        AssignOp::Alt => {
-            // //= only updates if current value is null or false
-            for path in &paths {
-                let current = value_ops::get_path(&result, path);
-                if matches!(current, Value::Null | Value::Bool(false)) {
-                    eval(rhs, &current, env, &mut |new_val| {
-                        result = value_ops::set_path(&result, path, &new_val);
-                    });
+            let mut result = None;
+            eval(rhs, input, env, &mut |v| {
+                if result.is_none() {
+                    result = Some(v);
                 }
+            });
+            result
+        }),
+        AssignOp::Alt => Box::new(|current: &Value| {
+            // //= only updates if current value is null or false
+            if matches!(current, Value::Null | Value::Bool(false)) {
+                let mut result = None;
+                eval(rhs, current, env, &mut |v| {
+                    if result.is_none() {
+                        result = Some(v);
+                    }
+                });
+                Some(result.unwrap_or_else(|| current.clone()))
+            } else {
+                Some(current.clone())
             }
-        }
+        }),
         _ => {
-            // +=, -=, *=, /=, %= → desugar to |= . OP rhs
+            // +=, -=, *=, /=, %=
             let arith_op = match op {
                 AssignOp::Add => ArithOp::Add,
                 AssignOp::Sub => ArithOp::Sub,
@@ -478,16 +449,270 @@ fn eval_assign(
                 AssignOp::Mod => ArithOp::Mod,
                 _ => unreachable!(),
             };
-            for path in &paths {
-                let current = value_ops::get_path(&result, path);
-                eval(rhs, &current, env, &mut |rhs_val| {
-                    if let Some(new_val) = arith_values(&current, &arith_op, &rhs_val) {
-                        result = value_ops::set_path(&result, path, &new_val);
+            Box::new(move |current: &Value| {
+                let mut result = None;
+                eval(rhs, current, env, &mut |rhs_val| {
+                    if result.is_none() {
+                        result = arith_values(current, &arith_op, &rhs_val);
                     }
                 });
+                result
+            })
+        }
+    };
+
+    // Fast path: recursive single-pass update (O(N) for iterators).
+    if is_update_path_supported(path_filter) {
+        if let Some(result) = update_recursive(path_filter, input, env, &*updater) {
+            output(result);
+        }
+        return;
+    }
+
+    // Slow path: collect paths, apply updates one by one (O(N²) for iterators).
+    eval_assign_via_paths(path_filter, input, &*updater, output);
+}
+
+/// Check if a path filter can be handled by the fast recursive update.
+fn is_update_path_supported(f: &Filter) -> bool {
+    match f {
+        Filter::Identity | Filter::Field(_) | Filter::Iterate | Filter::Select(_) => true,
+        Filter::Index(_) => true,
+        Filter::Pipe(a, b) => is_update_path_supported(a) && is_update_path_supported(b),
+        Filter::Comma(items) => items.iter().all(is_update_path_supported),
+        _ => false,
+    }
+}
+
+/// Recursively apply update through a path filter in O(N) for iterators.
+///
+/// Instead of collecting all paths and doing N separate set_path calls (each
+/// cloning the entire root — O(N²)), this navigates the path structure and
+/// updates each container in a single pass.
+///
+/// Returns `Some(updated_value)` or `None` (deletion at this level).
+fn update_recursive(
+    path_filter: &Filter,
+    input: &Value,
+    env: &Env,
+    updater: &dyn Fn(&Value) -> Option<Value>,
+) -> Option<Value> {
+    match path_filter {
+        Filter::Identity => updater(input),
+
+        Filter::Field(name) => match input {
+            Value::Object(obj) => {
+                let mut result: Vec<(String, Value)> = Vec::with_capacity(obj.len());
+                let mut found = false;
+                for (k, v) in obj.iter() {
+                    if k == name && !found {
+                        found = true;
+                        if let Some(new_v) = updater(v) {
+                            result.push((k.clone(), new_v));
+                        }
+                        // None → delete this key
+                    } else {
+                        result.push((k.clone(), v.clone()));
+                    }
+                }
+                if !found && let Some(new_v) = updater(&Value::Null) {
+                    result.push((name.clone(), new_v));
+                }
+                Some(Value::Object(Rc::new(result)))
+            }
+            Value::Null => {
+                if let Some(new_v) = updater(&Value::Null) {
+                    Some(Value::Object(Rc::new(vec![(name.clone(), new_v)])))
+                } else {
+                    Some(Value::Null)
+                }
+            }
+            _ => Some(input.clone()),
+        },
+
+        Filter::Iterate => match input {
+            Value::Array(arr) => {
+                let mut result = Vec::with_capacity(arr.len());
+                for elem in arr.iter() {
+                    if let Some(new_elem) = updater(elem) {
+                        result.push(new_elem);
+                    }
+                    // None → element deleted
+                }
+                Some(Value::Array(Rc::new(result)))
+            }
+            Value::Object(obj) => {
+                let mut result = Vec::with_capacity(obj.len());
+                for (k, v) in obj.iter() {
+                    if let Some(new_v) = updater(v) {
+                        result.push((k.clone(), new_v));
+                    }
+                }
+                Some(Value::Object(Rc::new(result)))
+            }
+            _ => Some(input.clone()),
+        },
+
+        Filter::Index(idx_f) => {
+            let mut indices = Vec::new();
+            eval(idx_f, input, env, &mut |v| indices.push(v));
+
+            match input {
+                Value::Array(arr) => {
+                    let mut result = arr.as_ref().clone();
+                    let mut to_delete = Vec::new();
+
+                    for idx_val in &indices {
+                        if let Value::Int(i) = idx_val {
+                            let idx = if *i < 0 {
+                                (result.len() as i64 + i).max(0) as usize
+                            } else {
+                                *i as usize
+                            };
+                            while result.len() <= idx {
+                                result.push(Value::Null);
+                            }
+                            match updater(&result[idx]) {
+                                Some(new_v) => result[idx] = new_v,
+                                None => to_delete.push(idx),
+                            }
+                        }
+                    }
+
+                    to_delete.sort_unstable();
+                    to_delete.dedup();
+                    for idx in to_delete.into_iter().rev() {
+                        if idx < result.len() {
+                            result.remove(idx);
+                        }
+                    }
+
+                    Some(Value::Array(Rc::new(result)))
+                }
+                Value::Object(obj) => {
+                    let mut result: Vec<(String, Value)> = obj.as_ref().clone();
+                    let mut keys_to_delete = Vec::new();
+
+                    for idx_val in &indices {
+                        if let Value::String(k) = idx_val {
+                            if let Some(entry) = result.iter_mut().find(|(ek, _)| ek == k) {
+                                match updater(&entry.1) {
+                                    Some(new_v) => entry.1 = new_v,
+                                    None => keys_to_delete.push(k.clone()),
+                                }
+                            } else if let Some(new_v) = updater(&Value::Null) {
+                                result.push((k.clone(), new_v));
+                            }
+                        }
+                    }
+
+                    result.retain(|(k, _)| !keys_to_delete.contains(k));
+
+                    Some(Value::Object(Rc::new(result)))
+                }
+                Value::Null => {
+                    if let Some(idx_val) = indices.first() {
+                        match idx_val {
+                            Value::Int(i) => {
+                                let idx = (*i).max(0) as usize;
+                                let mut arr = vec![Value::Null; idx + 1];
+                                if let Some(new_v) = updater(&Value::Null) {
+                                    arr[idx] = new_v;
+                                }
+                                Some(Value::Array(Rc::new(arr)))
+                            }
+                            Value::String(k) => {
+                                if let Some(new_v) = updater(&Value::Null) {
+                                    Some(Value::Object(Rc::new(vec![(k.clone(), new_v)])))
+                                } else {
+                                    Some(Value::Null)
+                                }
+                            }
+                            _ => Some(Value::Null),
+                        }
+                    } else {
+                        Some(Value::Null)
+                    }
+                }
+                _ => Some(input.clone()),
+            }
+        }
+
+        Filter::Pipe(a, b) => {
+            // a |= (b |= rhs): navigate to a, then recursively update b within
+            update_recursive(a, input, env, &|val: &Value| -> Option<Value> {
+                update_recursive(b, val, env, updater)
+            })
+        }
+
+        Filter::Select(cond) => {
+            let mut is_match = false;
+            eval(cond, input, env, &mut |v| {
+                if v.is_truthy() {
+                    is_match = true;
+                }
+            });
+            if is_match {
+                updater(input)
+            } else {
+                Some(input.clone())
+            }
+        }
+
+        Filter::Comma(items) => {
+            let mut result = input.clone();
+            for item in items {
+                if let Some(updated) = update_recursive(item, &result, env, updater) {
+                    result = updated;
+                }
+            }
+            Some(result)
+        }
+
+        _ => unreachable!("checked by is_update_path_supported"),
+    }
+}
+
+/// Fallback path-based assignment for patterns not supported by recursive update.
+fn eval_assign_via_paths(
+    path_filter: &Filter,
+    input: &Value,
+    updater: &dyn Fn(&Value) -> Option<Value>,
+    output: &mut dyn FnMut(Value),
+) {
+    use super::value_ops;
+
+    let mut paths: Vec<Vec<Value>> = Vec::new();
+    value_ops::path_of(path_filter, input, &mut Vec::new(), &mut |p| {
+        if let Value::Array(arr) = p {
+            paths.push(arr.as_ref().clone());
+        }
+    });
+
+    let mut result = input.clone();
+    let mut deletions: Vec<Vec<Value>> = Vec::new();
+
+    for path in &paths {
+        let current = value_ops::get_path(&result, path);
+        match updater(&current) {
+            Some(new_val) => {
+                result = value_ops::set_path(&result, path, &new_val);
+            }
+            None => {
+                deletions.push(path.clone());
             }
         }
     }
+
+    // Process deletions in reverse index order to avoid shifting
+    deletions.sort_by(|a, b| match (a.last(), b.last()) {
+        (Some(Value::Int(ai)), Some(Value::Int(bi))) => bi.cmp(ai),
+        _ => std::cmp::Ordering::Equal,
+    });
+    for path in &deletions {
+        result = value_ops::del_path(&result, path);
+    }
+
     output(result);
 }
 
