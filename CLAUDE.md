@@ -43,9 +43,9 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 - **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
 - **jq conformance suite** (`#[ignore]`): `tests/jq_conformance.rs` — runs jq's official test
   suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against jx and reports pass rate.
-- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 124 individual tests for
-  every currently-failing jq.test case, categorized by feature (label/break, foreach, destructuring,
-  time functions, modules, etc.) with fix suggestions in comments. Run by category to track progress.
+- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 93 individual tests for
+  currently-failing jq.test cases, categorized by feature (label/break, foreach, destructuring,
+  modules, bignum, etc.) with fix suggestions in comments. Run by category to track progress.
 - **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test
   against jx, jq, jaq, and gojq. Writes `tests/jq_compat/results.md`.
 - **Feature compatibility suite** (`#[ignore]`): `tests/jq_compat/features.toml` — TOML-defined

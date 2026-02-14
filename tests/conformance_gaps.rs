@@ -1,4 +1,4 @@
-/// Conformance gap tests — 124 jq.test cases that jx currently fails.
+/// Conformance gap tests — 93 jq.test cases that jx currently fails.
 ///
 /// Auto-generated from jq.test failure analysis. Each test documents
 /// a specific gap with category and fix suggestion. Run individual tests
@@ -39,60 +39,6 @@ fn assert_gap(filter: &str, input: &str, expected: &[&str]) {
         expected,
         actual
     );
-}
-
-// ======================================================================
-// Category: Format strings: @text, @csv, @tsv, @html, @uri, @urid, @sh
-// 4 test(s)
-//
-// Fix: Implement missing format builtins in src/filter/builtins/. @text=identity for strings, @csv/@tsv=array-to-delimited, @html=entity-encode, @uri/@urid=percent-encode/decode, @sh=shell-quote.
-// ======================================================================
-
-/// jq.test line 72: `@text,@json,([1,.]|@csv,@tsv),@html,(@uri|.,@urid),@sh,(@base64|.,@base64d)`
-#[test]
-#[ignore]
-fn gap_format_strings_line72_text_json_1_csv_tsv_html_ur() {
-    assert_gap(
-        "@text,@json,([1,.]|@csv,@tsv),@html,(@uri|.,@urid),@sh,(@base64|.,@base64d)",
-        "\"!()<>&'\\\"\\t\"",
-        &[
-            "\"!()<>&'\\\"\\t\"",
-            "\"\\\"!()<>&'\\\\\\\"\\\\t\\\"\"",
-            "\"1,\\\"!()<>&'\\\"\\\"\\t\\\"\"",
-            "\"1\\t!()<>&'\\\"\\\\t\"",
-            "\"!()&lt;&gt;&amp;&apos;&quot;\\t\"",
-            "\"%21%28%29%3C%3E%26%27%22%09\"",
-            "\"!()<>&'\\\"\\t\"",
-            "\"'!()<>&'\\\\''\\\"\\t'\"",
-            "\"ISgpPD4mJyIJ\"",
-            "\"!()<>&'\\\"\\t\"",
-        ],
-    );
-}
-
-/// jq.test line 98: `@urid`
-#[test]
-#[ignore]
-fn gap_format_strings_line98_urid() {
-    assert_gap("@urid", "\"%CE%BC\"", &["\"\\u03bc\""]);
-}
-
-/// jq.test line 102: `@html "<b>\(.)</b>"`
-#[test]
-#[ignore]
-fn gap_format_strings_line102_html_b_b() {
-    assert_gap(
-        "@html \"<b>\\(.)</b>\"",
-        "\"<script>hax</script>\"",
-        &["\"<b>&lt;script&gt;hax&lt;/script&gt;</b>\""],
-    );
-}
-
-/// jq.test line 2506: `strflocaltime("" | ., @uri)`
-#[test]
-#[ignore]
-fn gap_format_strings_line2506_strflocaltime_uri() {
-    assert_gap("strflocaltime(\"\" | ., @uri)", "0", &["\"\"", "\"\""]);
 }
 
 // ======================================================================
@@ -401,7 +347,7 @@ fn gap_del_complex_line1175_del_1_6_2_3_9() {
 
 // ======================================================================
 // Category: Assignment operator edge cases
-// 13 test(s)
+// 10 test(s)
 //
 // Fix: Fix compound assignment (.[] +=, -=, *=, /=, %=) to work with array iteration. Fix .foo += .foo to not double-evaluate. Handle update-assignment with def-based paths and getpath-based update assignments.
 // ======================================================================
@@ -454,30 +400,6 @@ fn gap_assignment_edge_cases_line478_2_4_a_b_a_b_c() {
     );
 }
 
-/// jq.test line 1216: `.[] += 2, .[] *= 2, .[] -= 2, .[] /= 2, .[] %=2`
-#[test]
-#[ignore]
-fn gap_assignment_edge_cases_line1216_2_2_2_2() {
-    assert_gap(
-        ".[] += 2, .[] *= 2, .[] -= 2, .[] /= 2, .[] %=2",
-        "[1,3,5]",
-        &[
-            "[3,5,7]",
-            "[2,6,10]",
-            "[-1,1,3]",
-            "[0.5, 1.5, 2.5]",
-            "[1,1,1]",
-        ],
-    );
-}
-
-/// jq.test line 1228: `.foo += .foo`
-#[test]
-#[ignore]
-fn gap_assignment_edge_cases_line1228_foo_foo() {
-    assert_gap(".foo += .foo", "{\"foo\":2}", &["{\"foo\":4}"]);
-}
-
 /// jq.test line 1236: `def inc(x): x |= .+1; inc(.[].a)`
 #[test]
 #[ignore]
@@ -508,17 +430,6 @@ fn gap_assignment_edge_cases_line1277_try_map_select_a_1_a_1() {
         "try ((map(select(.a == 1))[].a) |= .+1) catch .",
         "[{\"a\":0},{\"a\":1}]",
         &["\"Invalid path expression near attempt to iterate through [{\\\"a\\\":1}]\""],
-    );
-}
-
-/// jq.test line 1357: `.[] //= .[0]`
-#[test]
-#[ignore]
-fn gap_assignment_edge_cases_line1357_0() {
-    assert_gap(
-        ".[] //= .[0]",
-        "[\"hello\",true,false,[false],null]",
-        &["[\"hello\",true,\"hello\",[false],\"hello\"]"],
     );
 }
 
@@ -600,58 +511,10 @@ fn gap_def_advanced_line1285_try_def_x_reverse_x_10_catch() {
 
 // ======================================================================
 // Category: String operation edge cases: join, trimstr, trim, implode/explode, string*number
-// 10 test(s)
+// 6 test(s)
 //
 // Fix: Fix join to produce errors on non-string elements. Fix trimstr to only trim prefixes/suffixes (not substrings). Fix implode/explode for edge cases. String multiplication: handle negative/float multipliers and error on too-large values.
 // ======================================================================
-
-/// jq.test line 1511: `[.[]|trimstr("foo")]`
-#[test]
-#[ignore]
-fn gap_string_ops_line1511_trimstr_foo() {
-    assert_gap(
-        "[.[]|trimstr(\"foo\")]",
-        "[\"fo\", \"foo\", \"barfoo\", \"foobarfoo\", \"foob\"]",
-        &["[\"fo\",\"\",\"bar\",\"bar\",\"b\"]"],
-    );
-}
-
-/// jq.test line 1537: `try trim catch ., try ltrim catch ., try rtrim catch .`
-#[test]
-#[ignore]
-fn gap_string_ops_line1537_try_trim_catch_try_ltrim_catch() {
-    assert_gap(
-        "try trim catch ., try ltrim catch ., try rtrim catch .",
-        "123",
-        &[
-            "\"trim input must be a string\"",
-            "\"trim input must be a string\"",
-            "\"trim input must be a string\"",
-        ],
-    );
-}
-
-/// jq.test line 1587: `[.[] * "abc"]`
-#[test]
-#[ignore]
-fn gap_string_ops_line1587_abc() {
-    assert_gap(
-        "[.[] * \"abc\"]",
-        "[-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 3.7, 10.0]",
-        &["[null,null,\"\",\"\",\"abc\",\"abc\",\"abcabcabc\",\"abcabcabcabcabcabcabcabcabcabc\"]"],
-    );
-}
-
-/// jq.test line 1603: `try (. * 1000000000) catch .`
-#[test]
-#[ignore]
-fn gap_string_ops_line1603_try_1000000000_catch() {
-    assert_gap(
-        "try (. * 1000000000) catch .",
-        "\"abc\"",
-        &["\"Repeat string result too long\""],
-    );
-}
 
 /// jq.test line 1967: `"x" * range(0; 12; 2) + "☆" * 5 | try -. catch .`
 #[test]
@@ -729,31 +592,6 @@ fn gap_string_ops_line2369_try_0_implode_catch() {
 }
 
 // ======================================================================
-// Category: String/array index, rindex, indices with multiple args
-// 2 test(s)
-//
-// Fix: Support multi-arg variants: `index(",","|")` finds first occurrence of either. Fix indices to handle overlapping matches correctly.
-// ======================================================================
-
-/// jq.test line 1519: `[ index("aba"), rindex("aba"), indices("aba") ]`
-#[test]
-#[ignore]
-fn gap_string_index_line1519_index_aba_rindex_aba_indices() {
-    assert_gap(
-        "[ index(\"aba\"), rindex(\"aba\"), indices(\"aba\") ]",
-        "\"xababababax\"",
-        &["[1,7,[1,3,5,7]]"],
-    );
-}
-
-/// jq.test line 1547: `indices([1,2])`
-#[test]
-#[ignore]
-fn gap_string_index_line1547_indices_1_2() {
-    assert_gap("indices([1,2])", "[0,1,2,3,1,4,2,5,1,2,6,7]", &["[1,8]"]);
-}
-
-// ======================================================================
 // Category: Float index and slice edge cases
 // 3 test(s)
 //
@@ -783,7 +621,7 @@ fn gap_float_index_line2401_range_10_1_7_3_5() {
 
 // ======================================================================
 // Category: sort_by/group_by with multiple keys, min_by/max_by edge cases
-// 2 test(s)
+// 1 test(s)
 //
 // Fix: Support `sort_by(.a, .b)` as multi-key sort. Fix min_by/max_by tie-breaking. Fix group_by with expression arguments.
 // ======================================================================
@@ -802,35 +640,6 @@ fn gap_sort_group_edge_cases_line1639_sort_by_b_sort_by_a_sort_by_a() {
             "[[{\"a\": 4, \"b\": 1, \"c\": 3}], [{\"a\": 0, \"b\": 2, \"c\": 43}], [{\"a\": 1, \"b\": 4, \"c\": 14}, {\"a\": 1, \"b\": 4, \"c\": 3}]]",
             "[[{\"a\": 1, \"b\": 4, \"c\": 14}, {\"a\": 0, \"b\": 2, \"c\": 43}], [{\"a\": 4, \"b\": 1, \"c\": 3}, {\"a\": 1, \"b\": 4, \"c\": 3}]]",
         ],
-    );
-}
-
-/// jq.test line 1655: `[min, max, min_by(.[1]), max_by(.[1]), min_by(.[2]), max_by(.[2])]`
-#[test]
-#[ignore]
-fn gap_sort_group_edge_cases_line1655_min_max_min_by_1_max_by_1_m() {
-    assert_gap(
-        "[min, max, min_by(.[1]), max_by(.[1]), min_by(.[2]), max_by(.[2])]",
-        "[[4,2,\"a\"],[3,1,\"a\"],[2,4,\"a\"],[1,3,\"a\"]]",
-        &["[[1,3,\"a\"],[4,2,\"a\"],[3,1,\"a\"],[2,4,\"a\"],[4,2,\"a\"],[1,3,\"a\"]]"],
-    );
-}
-
-// ======================================================================
-// Category: Flatten with multiple depth args / negative depth
-// 1 test(s)
-//
-// Fix: Support `flatten(3,2,1)` as generator producing multiple results. Error on negative depth with appropriate message.
-// ======================================================================
-
-/// jq.test line 1773: `try flatten(-1) catch .`
-#[test]
-#[ignore]
-fn gap_flatten_edge_cases_line1773_try_flatten_1_catch() {
-    assert_gap(
-        "try flatten(-1) catch .",
-        "[0, [1], [[2]], [[[3]]]]",
-        &["\"flatten depth must not be negative\""],
     );
 }
 
@@ -867,24 +676,6 @@ fn gap_pick_builtin_line1197_try_pick_last_catch() {
 }
 
 // ======================================================================
-// Category: Binary search builtin
-// 1 test(s)
-//
-// Fix: Implement `bsearch(x)` — binary search for x in sorted array. Returns index if found, or -(insertion_point)-1 if not. Support multiple search args as generator.
-// ======================================================================
-
-/// jq.test line 1801: `try ["OK", bsearch(0)] catch ["KO",.]`
-#[test]
-#[ignore]
-fn gap_bsearch_line1801_try_ok_bsearch_0_catch_ko() {
-    assert_gap(
-        "try [\"OK\", bsearch(0)] catch [\"KO\",.]",
-        "\"aa\"",
-        &["[\"KO\",\"string (\\\"aa\\\") cannot be searched from\"]"],
-    );
-}
-
-// ======================================================================
 // Category: SQL-style operators: INDEX, JOIN, IN
 // 3 test(s)
 //
@@ -914,24 +705,6 @@ fn gap_sql_style_ops_line2079_in_range_10_20_range_10() {
 #[ignore]
 fn gap_sql_style_ops_line2083_in_range_5_20_range_10() {
     assert_gap("IN(range(5;20); range(10))", "null", &["true"]);
-}
-
-// ======================================================================
-// Category: Values builtin edge cases
-// 1 test(s)
-//
-// Fix: Fix `values` to filter out null entries from arrays (jq behavior). Currently may be including nulls.
-// ======================================================================
-
-/// jq.test line 1745: `[.[]|values]`
-#[test]
-#[ignore]
-fn gap_values_edge_cases_line1745_values() {
-    assert_gap(
-        "[.[]|values]",
-        "[1,2,\"foo\",[],[3,[]],{},true,false,null]",
-        &["[1,2,\"foo\",[],[3,[]],{},true,false]"],
-    );
 }
 
 // ======================================================================
@@ -983,7 +756,7 @@ fn gap_fromjson_edge_cases_line2456_try_fromjson_catch() {
 
 // ======================================================================
 // Category: NaN and Infinity edge cases
-// 5 test(s)
+// 3 test(s)
 //
 // Fix: Handle NaN/Infinity in: arithmetic (inf % n), string operations (* nan), index/slice with nan, and .[] = 1 on arrays containing special float values.
 // ======================================================================
@@ -1008,20 +781,6 @@ fn gap_nan_handling_line1289_1() {
         "[1,null,Infinity,-Infinity,NaN,-NaN]",
         &["[1,1,1,1,1,1]"],
     );
-}
-
-/// jq.test line 2425: `[range(3)] | .[1:nan]`
-#[test]
-#[ignore]
-fn gap_nan_handling_line2425_range_3_1_nan() {
-    assert_gap("[range(3)] | .[1:nan]", "null", &["[1,2]"]);
-}
-
-/// jq.test line 2429: `[range(3)] | .[nan]`
-#[test]
-#[ignore]
-fn gap_nan_handling_line2429_range_3_nan() {
-    assert_gap("[range(3)] | .[nan]", "null", &["null"]);
 }
 
 /// jq.test line 2433: `try ([range(3)] | .[nan] = 9) catch .`
@@ -1055,21 +814,10 @@ fn gap_alternative_edge_cases_line1353_foo_bar() {
 
 // ======================================================================
 // Category: Keywords usable as identifiers: $foreach, $and, {if:0, as:1}
-// 3 test(s)
+// 2 test(s)
 //
 // Fix: Allow jq keywords (if, and, or, then, else, elif, end, as, def, reduce, foreach, try, catch, label, import, include, module) as object keys and after $ in variable names.
 // ======================================================================
-
-/// jq.test line 1482: `try error("\($__loc__)") catch .`
-#[test]
-#[ignore]
-fn gap_keyword_identifiers_line1482_try_error_loc_catch() {
-    assert_gap(
-        "try error(\"\\($__loc__)\") catch .",
-        "null",
-        &["\"{\\\"file\\\":\\\"<top-level>\\\",\\\"line\\\":1}\""],
-    );
-}
 
 /// jq.test line 2251: `1 as $foreach | 2 as $and | 3 as $or | { $foreach, $and, $or, a }`
 #[test]
@@ -1097,46 +845,10 @@ fn gap_keyword_identifiers_line2262_a_loc_c() {
 
 // ======================================================================
 // Category: Time functions: strftime, strptime, mktime, gmtime, strflocaltime
-// 12 test(s)
+// 3 test(s)
 //
 // Fix: Implement time builtins using libc or chrono. strftime/strptime use C format strings. mktime converts broken-down time array to epoch. gmtime converts epoch to array.
 // ======================================================================
-
-/// jq.test line 1805: `strftime("%Y-%m-%dT%H:%M:%SZ")`
-#[test]
-#[ignore]
-fn gap_time_functions_line1805_strftime_y_m_dt_h_m_sz() {
-    assert_gap(
-        "strftime(\"%Y-%m-%dT%H:%M:%SZ\")",
-        "[2015,2,5,23,51,47,4,63]",
-        &["\"2015-03-05T23:51:47Z\""],
-    );
-}
-
-/// jq.test line 1813: `strftime("%Y-%m-%dT%H:%M:%SZ")`
-#[test]
-#[ignore]
-fn gap_time_functions_line1813_strftime_y_m_dt_h_m_sz() {
-    assert_gap(
-        "strftime(\"%Y-%m-%dT%H:%M:%SZ\")",
-        "[2024,2,15]",
-        &["\"2024-03-15T00:00:00Z\""],
-    );
-}
-
-/// jq.test line 1817: `mktime`
-#[test]
-#[ignore]
-fn gap_time_functions_line1817_mktime() {
-    assert_gap("mktime", "[2024,8,21]", &["1726876800"]);
-}
-
-/// jq.test line 1821: `gmtime`
-#[test]
-#[ignore]
-fn gap_time_functions_line1821_gmtime() {
-    assert_gap("gmtime", "1425599507", &["[2015,2,5,23,51,47,4,63]"]);
-}
 
 /// jq.test line 1826: `try strftime("%Y-%m-%dT%H:%M:%SZ") catch .`
 #[test]
@@ -1168,61 +880,6 @@ fn gap_time_functions_line1834_try_mktime_catch() {
         "try mktime catch .",
         "[\"a\",1,2,3,4,5,6,7]",
         &["\"mktime requires parsed datetime inputs\""],
-    );
-}
-
-/// jq.test line 1839: `try ["OK", strftime([])] catch ["KO", .]`
-#[test]
-#[ignore]
-fn gap_time_functions_line1839_try_ok_strftime_catch_ko() {
-    assert_gap(
-        "try [\"OK\", strftime([])] catch [\"KO\", .]",
-        "0",
-        &["[\"KO\",\"strftime/1 requires a string format\"]"],
-    );
-}
-
-/// jq.test line 1843: `try ["OK", strflocaltime({})] catch ["KO", .]`
-#[test]
-#[ignore]
-fn gap_time_functions_line1843_try_ok_strflocaltime_catch_ko() {
-    assert_gap(
-        "try [\"OK\", strflocaltime({})] catch [\"KO\", .]",
-        "0",
-        &["[\"KO\",\"strflocaltime/1 requires a string format\"]"],
-    );
-}
-
-/// jq.test line 1847: `[strptime("%Y-%m-%dT%H:%M:%SZ")|(.,mktime)]`
-#[test]
-#[ignore]
-fn gap_time_functions_line1847_strptime_y_m_dt_h_m_sz_mktim() {
-    assert_gap(
-        "[strptime(\"%Y-%m-%dT%H:%M:%SZ\")|(.,mktime)]",
-        "\"2015-03-05T23:51:47Z\"",
-        &["[[2015,2,5,23,51,47,4,63],1425599507]"],
-    );
-}
-
-/// jq.test line 1851: `[strptime("%FT%T")|(.,mktime)]`
-#[test]
-#[ignore]
-fn gap_time_functions_line1851_strptime_ft_t_mktime() {
-    assert_gap(
-        "[strptime(\"%FT%T\")|(.,mktime)]",
-        "\"2025-06-07T08:09:10\"",
-        &["[[2025,5,7,8,9,10,6,157],1749283750]"],
-    );
-}
-
-/// jq.test line 1857: `last(range(365 * 67)|("1970-03-01T01:02:03Z"|strptime("%Y-%m-%dT%H:%M:%SZ")|mkti...`
-#[test]
-#[ignore]
-fn gap_time_functions_line1857_last_range_365_67_1970_03_01t0() {
-    assert_gap(
-        "last(range(365 * 67)|(\"1970-03-01T01:02:03Z\"|strptime(\"%Y-%m-%dT%H:%M:%SZ\")|mktime) + (86400 * .)|strftime(\"%Y-%m-%dT%H:%M:%SZ\")|strptime(\"%Y-%m-%dT%H:%M:%SZ\"))",
-        "null",
-        &["[2037,1,11,1,2,3,3,41]"],
     );
 }
 
@@ -1355,7 +1012,7 @@ fn gap_module_system_line1955_import_test_bind_order_as_chec() {
 
 // ======================================================================
 // Category: Big number / arbitrary precision (have_decnum)
-// 13 test(s)
+// 12 test(s)
 //
 // Fix: jx uses i64/f64; jq with decnum uses arbitrary precision. Most of these tests check `have_decnum` conditionals. Consider implementing the non-decnum branch or skipping.
 // ======================================================================
@@ -1445,17 +1102,6 @@ fn gap_bignum_line2182_tojson_if_have_decnum_then_139() {
     );
 }
 
-/// jq.test line 2186: `-. | tojson == if have_decnum then "0.12345678901234567890123456789" else "0.123...`
-#[test]
-#[ignore]
-fn gap_bignum_line2186_tojson_if_have_decnum_then_0_1() {
-    assert_gap(
-        "-. | tojson == if have_decnum then \"0.12345678901234567890123456789\" else \"0.12345678901234568\" end",
-        "-0.12345678901234567890123456789",
-        &["true"],
-    );
-}
-
 /// jq.test line 2190: `[1E+1000,-1E+1000 | tojson] == if have_decnum then ["1E+1000","-1E+1000"] else [...`
 #[test]
 #[ignore]
@@ -1522,21 +1168,10 @@ fn gap_input_builtin_line2295_try_input_catch() {
 
 // ======================================================================
 // Category: Miscellaneous conformance gaps
-// 7 test(s)
+// 6 test(s)
 //
 // Fix: Various edge cases that do not fit neatly into other categories.
 // ======================================================================
-
-/// jq.test line 195: `[.[]|.[1:3]?]`
-#[test]
-#[ignore]
-fn gap_misc_line195_1_3() {
-    assert_gap(
-        "[.[]|.[1:3]?]",
-        "[1,null,true,false,\"abcdef\",{},{\"a\":1,\"b\":2},[],[1,2,3,4,5],[1,2]]",
-        &["[null,\"bc\",[],[2,3],[2]]"],
-    );
-}
 
 /// jq.test line 906: `[reduce .[] / .[] as $i (0; . + $i)]`
 #[test]

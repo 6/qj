@@ -101,7 +101,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | keys | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | keys_unsorted | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 0/1 N |
 | values (iterate) | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| values (type selector) | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
+| values (type selector) | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | has | 3 | **3/3 Y** | 3/3 Y | 3/3 Y | 3/3 Y |
 | in | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | to_entries | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
@@ -168,7 +168,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | strings | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | booleans | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | nulls | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| values (selector) | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
+| values (selector) | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | scalars | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | iterables | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 
@@ -192,8 +192,8 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | todate | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | fromdate | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | strftime | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
-| strptime | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
-| gmtime/mktime | 2 | **0/2 N** | 2/2 Y | 2/2 Y | 2/2 Y |
+| strptime | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
+| gmtime/mktime | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | now | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 
 ### Assignment operators
@@ -246,7 +246,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **jx** | **159** | **1** | **6** | **96.1%** |
+| **jx** | **163** | **1** | **2** | **98.5%** |
 | jq | 165 | 0 | 1 | 99.4% |
 | jaq | 150 | 3 | 13 | 91.3% |
 | gojq | 163 | 0 | 3 | 98.2% |
