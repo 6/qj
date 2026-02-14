@@ -51,12 +51,13 @@ fn run_tool_with_flags(
     filter: &str,
     input: &str,
     flags: Option<&str>,
+    cache: &mut common::ToolCache,
 ) -> Option<String> {
     if let Some(flags_str) = flags {
         let parts: Vec<&str> = flags_str.split_whitespace().collect();
-        common::run_tool(tool, filter, input, &parts)
+        common::run_tool_cached(tool, filter, input, &parts, cache)
     } else {
-        common::run_tool(tool, filter, input, &["-c", "--"])
+        common::run_tool_cached(tool, filter, input, &["-c", "--"], cache)
     }
 }
 
@@ -89,6 +90,18 @@ fn run_all(verbose: bool) {
     let test_file = load_test_file();
     let tools = common::discover_tools();
 
+    let features_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/jq_compat/features.toml");
+    let features_content =
+        std::fs::read_to_string(&features_path).expect("failed to read features.toml");
+    let content_hash = common::compute_cache_hash(&features_content);
+    let loaded = common::load_cache("feature_compat", content_hash);
+    let cache_hit = loaded.is_some();
+    let mut cache = loaded.unwrap_or(common::ToolCache {
+        content_hash,
+        results: std::collections::HashMap::new(),
+    });
+
     println!();
     println!(
         "Tools: {}",
@@ -98,6 +111,9 @@ fn run_all(verbose: bool) {
             .collect::<Vec<_>>()
             .join(", ")
     );
+    if cache_hit {
+        println!("  (using cached results for external tools)");
+    }
     println!();
 
     // results[tool_idx][feature_idx] = Vec<bool> (per-test pass/fail)
@@ -113,8 +129,13 @@ fn run_all(verbose: bool) {
             let mut feature_results = Vec::new();
             for test in &feature.tests {
                 total_tests += 1;
-                let output =
-                    run_tool_with_flags(tool, &test.filter, &test.input, test.flags.as_deref());
+                let output = run_tool_with_flags(
+                    tool,
+                    &test.filter,
+                    &test.input,
+                    test.flags.as_deref(),
+                    &mut cache,
+                );
                 let passed = test_passes(output.as_deref(), &test.expected);
                 if passed {
                     total_pass += 1;
@@ -158,6 +179,7 @@ fn run_all(verbose: bool) {
 
         results.push(tool_results);
     }
+    common::save_cache("feature_compat", &cache);
     println!();
 
     // --- Generate markdown ---

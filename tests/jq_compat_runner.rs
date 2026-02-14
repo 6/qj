@@ -158,6 +158,14 @@ fn run_all(verbose: bool) {
     let cases = parse_jq_test_file(&content);
     let tools = common::discover_tools();
 
+    let content_hash = common::compute_cache_hash(&content);
+    let loaded = common::load_cache("jq_compat_runner", content_hash);
+    let cache_hit = loaded.is_some();
+    let mut cache = loaded.unwrap_or(common::ToolCache {
+        content_hash,
+        results: std::collections::HashMap::new(),
+    });
+
     println!();
     println!(
         "Tools: {}",
@@ -167,6 +175,9 @@ fn run_all(verbose: bool) {
             .collect::<Vec<_>>()
             .join(", ")
     );
+    if cache_hit {
+        println!("  (using cached results for external tools)");
+    }
     println!();
 
     // Collect ordered categories
@@ -195,7 +206,8 @@ fn run_all(verbose: bool) {
 
         for case in &cases {
             total_tests += 1;
-            let output = common::run_tool(tool, &case.filter, &case.input, &extra_refs);
+            let output =
+                common::run_tool_cached(tool, &case.filter, &case.input, &extra_refs, &mut cache);
 
             let actual_lines: Vec<&str> = output
                 .as_deref()
@@ -252,6 +264,7 @@ fn run_all(verbose: bool) {
             tool.name, total_pass, total_tests, pct
         );
     }
+    common::save_cache("jq_compat_runner", &cache);
     println!();
 
     // --- Generate markdown ---

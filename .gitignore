@@ -21,3 +21,6 @@ benches/results/
 
 # Compat test results (generated)
 tests/jq_compat/results.md
+
+# Compat test cache (external tool results)
+tests/jq_compat/.cache/

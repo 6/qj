@@ -53,6 +53,9 @@ Run `cargo test` after any code change — it's fast.
 - **When adding new jq builtins or language features**, always:
   1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
   2. Re-run `cargo test jq_compat -- --nocapture` and update jq compat % in `README.md`
+- **Cache:** External tool results (jq, jaq, gojq) are cached in `tests/jq_compat/.cache/`.
+  Cache auto-invalidates when test definitions or tool versions (`mise.toml`) change.
+  Delete to force full re-run: `rm -rf tests/jq_compat/.cache/`
 - **Conformance:** compare output against jq on real data.
 ```
 diff <(./target/release/jx '.field' test.json) <(jq '.field' test.json)
