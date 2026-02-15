@@ -12,6 +12,7 @@ repository = "https://github.com/6/qj"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+libc = "0.2"
 memchr = "2"
 rayon = "1"
 itoa = "1"

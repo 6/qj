@@ -8,6 +8,6 @@ pub use bridge::{
     minify,
 };
 pub use types::{
-    Document, JsonType, Parser, iterate_many_count, iterate_many_extract_field, pad_buffer,
-    padding, read_padded, read_padded_file,
+    Document, JsonType, PaddedFile, Parser, iterate_many_count, iterate_many_extract_field,
+    pad_buffer, padding, read_padded, read_padded_file,
 };

@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use crate::value::Value;
 
 /// Output formatting mode.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     /// Pretty-printed with indentation (default for TTY).
     Pretty,

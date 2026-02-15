@@ -8,8 +8,8 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | # | Optimization | Status | Impact |
 |---|-------------|--------|--------|
 | 1 | P-core-only threading | DONE | Avoids E-core contention on Apple Silicon |
-| 2 | mmap for file I/O | TODO | ~8% less system time (proven in gigagrep) |
-| 3 | Expand On-Demand fast paths | TODO | 2-5x for simple filters on large JSON |
+| 2 | mmap for file I/O | DONE | **~23% faster** on 1.1GB NDJSON, ~1% on 49MB |
+| 3 | Expand On-Demand fast paths | DONE | **~40% faster** field-chain on 1.1GB NDJSON |
 | 4 | Arena allocation (bumpalo) | TODO | Reduce malloc pressure in Value tree |
 | 5 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
 | 6 | simdjson parse_many for NDJSON | TODO | Replace manual line splitting |
@@ -28,34 +28,72 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 
 **Why:** E-cores add lock contention without throughput benefit. gigagrep found `-j14` (all cores) was 1.6x *slower* than P-core-only on M4 Pro.
 
-**Change:** `src/main.rs` — added `default_thread_count()` + `rayon::ThreadPoolBuilder` at start of main.
+**Change:** `src/main.rs` — added `default_thread_count()` + `rayon::ThreadPoolBuilder` at start of main. Guarded with `cfg(all(target_os = "macos", target_arch = "aarch64"))` so Intel Macs skip the sysctl call entirely.
 
-### 2. mmap for file I/O
+**Benchmarks (M4 Pro, 10P+4E):**
 
-**Current:** `read_padded_file()` does `vec![0u8; file_len + pad]` + `read_exact` — heap-allocates and copies entire file.
+49MB large_twitter.json (single doc — no parallel processing, P-core change affects startup only):
 
-**Proposed:** `libc::mmap(PROT_READ, MAP_PRIVATE)` for files. Kernel pages data on demand. simdjson reads directly from mapped pages.
+| Query | Before (14 threads) | After (10 P-cores) | Delta |
+|-------|---------------------|---------------------|-------|
+| `-c "."` (identity compact) | 33.9ms ± 6.2 | 29.9ms ± 1.2 | -12% (likely noise — lower σ) |
+| `.statuses[0].user.screen_name` | 183.7ms ± 23.7 | 166.0ms ± 4.9 | -10% (lower σ) |
+| `.statuses \| length` | 54.5ms ± 42.3 | 44.0ms ± 1.4 | -19% (baseline was noisy) |
+| `.statuses[] \| {id, text}` | 171.6ms ± 2.4 | 173.6ms ± 5.6 | ~0% (within noise) |
 
-**Why:** Proven in gigagrep — 8% less system time. Eliminates the largest allocation in the program. simdjson accepts pointer+length, so mmap is near-drop-in.
+79MB 1m.ndjson (parallel — this is where P-core change matters):
 
-**Caveat:** simdjson requires 64 bytes of zeroed padding after data. With mmap, the kernel zero-fills bytes between file end and page boundary. If `file_len % page_size` leaves >= 64 bytes of padding, no extra work needed. Otherwise need a small copy for the tail.
+| Query | Before (14 threads) | After (10 P-cores) | Delta |
+|-------|---------------------|---------------------|-------|
+| `-c "."` (identity compact) | 161.1ms ± 23.0 | 156.6ms ± 9.7 | -3% (much lower σ) |
+| `.name` (field access) | 137.1ms ± 5.8 | 137.5ms ± 5.3 | ~0% |
 
-**Files:** `src/simdjson/types.rs`, `src/main.rs`
+**Verdict:** Single-doc numbers are noise (Rayon unused). NDJSON shows modest wall-time improvement but significantly lower variance — E-cores were adding jitter without helping throughput. Effect would be larger on bigger NDJSON files where contention matters more.
 
-### 3. Expand On-Demand fast paths (bypass Value tree)
+### 2. mmap for file I/O (DONE)
 
-**Current:** Only 3 patterns bypass the Value tree: identity compact (`. -c`), `.field | length`, `.field | keys`.
+**What:** `libc::mmap(PROT_READ, MAP_PRIVATE)` + `MADV_SEQUENTIAL` for file I/O. Kernel pages data on demand — no heap allocation, no memcpy. Falls back to heap when mmap can't provide enough natural padding (file size within 63 bytes of a page boundary). `QJ_NO_MMAP=1` env var for benchmarking.
 
-**Proposed:** Evaluate common filters directly on simdjson without constructing Rust Value tree:
-- `.field` — use existing `dom_find_field_raw()`
-- `.field.nested.path` — chain On-Demand navigation in C++
+**Change:** `src/simdjson/types.rs` — new `PaddedFile` type (mmap or heap-backed), updated `read_padded_file` to try mmap first. Added `libc` dependency.
+
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, sequential runs, 5s cooldown):**
+
+| Query | Heap | mmap | Delta |
+|-------|------|------|-------|
+| `.type` | 548.9ms | 447.7ms | **-18%** |
+| `.actor.login` | 546.5ms | 442.6ms | **-19%** |
+| `length` | 553.3ms | 447.9ms | **-19%** |
+
+49MB large_twitter.json: ~1% (within noise — file is too small for mmap to matter).
+
+**Verdict:** Consistent ~19% wall-time improvement on GB-scale NDJSON. The win comes from avoiding a 1.1GB heap allocation + memcpy. System time drops from ~230ms to ~195ms (15% less kernel overhead).
+
+**Files:** `src/simdjson/types.rs`, `Cargo.toml` (added `libc`)
+
+### 3. Expand On-Demand fast paths (DONE — field-chain)
+
+**What:** For `.field` and `.field.nested.path` patterns on NDJSON, bypass the Rust Value tree entirely. Uses `dom_find_field_raw()` in C++ to extract raw JSON bytes directly from simdjson DOM, avoiding `decode_value()` and the full eval pipeline.
+
+**Change:** `src/parallel/ndjson.rs` — added `NdjsonFastPath` enum, `detect_fast_path()`, `prepare_padded()` (scratch buffer reuse), `unescape_json_string()` (for raw output mode). Modified `process_chunk` and `process_line` to use the fast path. `QJ_NO_FIELD_FAST=1` env var to disable for benchmarking.
+
+**Why:** Value tree construction (`decode_value()`) is the most expensive Rust-side operation. For `.type` on a 1GB file, we were building millions of full Value trees only to extract one string and discard the rest. The fast path skips: simdjson DOM → flat tokens → `decode_value()` → Value tree → eval → output. Instead: simdjson DOM → `dom_find_field_raw` → raw bytes → output.
+
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, sequential runs, 5s cooldown):**
+
+| Query | Without fast path | With fast path | Delta |
+|-------|------------------|---------------|-------|
+| `.type` | 476.9ms | 284.0ms | **-40%** |
+| `.actor.login` | 443.0ms | 261.2ms | **-41%** |
+| `length` | 463.2ms | 463.2ms | ~0% (control — not a field chain) |
+
+**Verdict:** ~40% wall-time improvement on field-chain patterns. User time drops from ~3.8s to ~1.5s (62% less CPU work). The fast path avoids building the Value tree entirely — the dominant cost for simple extractions.
+
+**Still TODO:** More fast-path patterns:
 - `.[] | .field` — iterate array in C++, extract per-element
 - `select(.field == "value")` — evaluate predicate in C++
 - `.field | values, has("k"), type` — extend C++ bridge
 
-**Why:** Value tree construction (`decode_value()`) is the most expensive Rust-side operation. For `.user.name` on a 1GB file, we build millions of full Value trees to extract one string.
-
-**Files:** `src/simdjson/bridge.cpp`, `src/simdjson/bridge.rs`, `src/filter/mod.rs`, `src/filter/eval.rs`
+**Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs` (made `collect_field_chain` public), `src/output.rs` (added `PartialEq, Eq` to `OutputMode`)
 
 ### 4. Arena allocation (bumpalo)
 

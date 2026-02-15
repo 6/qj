@@ -7,6 +7,7 @@
 use anyhow::{Result, bail};
 use std::ffi::c_char;
 use std::fs;
+use std::ops::Deref;
 use std::path::Path;
 
 use super::ffi::*;
@@ -26,20 +27,136 @@ pub fn read_padded(path: &Path) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Read a file directly into a padded buffer — single allocation, no copy.
+// ---------------------------------------------------------------------------
+// PaddedFile: mmap or heap-backed padded buffer for simdjson
+// ---------------------------------------------------------------------------
+
+/// A file loaded into memory with simdjson-required padding.
+/// Uses mmap when the OS provides enough natural zero-fill padding after the
+/// file data (POSIX guarantees zeros from file end to page boundary).
+/// Falls back to heap allocation otherwise.
+pub struct PaddedFile {
+    inner: PaddedFileInner,
+    json_len: usize,
+}
+
+enum PaddedFileInner {
+    #[cfg(unix)]
+    Mmap {
+        ptr: *mut libc::c_void,
+        mapped_len: usize,
+    },
+    Heap(Vec<u8>),
+}
+
+// SAFETY: The mmap is read-only (PROT_READ, MAP_PRIVATE) and the pointer
+// is not shared mutably. Safe to send across threads.
+unsafe impl Send for PaddedFile {}
+unsafe impl Sync for PaddedFile {}
+
+impl PaddedFile {
+    pub fn json_len(&self) -> usize {
+        self.json_len
+    }
+}
+
+impl Deref for PaddedFile {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &self.inner {
+            #[cfg(unix)]
+            PaddedFileInner::Mmap { ptr, mapped_len } => unsafe {
+                std::slice::from_raw_parts(*ptr as *const u8, *mapped_len)
+            },
+            PaddedFileInner::Heap(v) => v,
+        }
+    }
+}
+
+impl Drop for PaddedFile {
+    fn drop(&mut self) {
+        match &self.inner {
+            #[cfg(unix)]
+            PaddedFileInner::Mmap { ptr, mapped_len } => unsafe {
+                libc::munmap(*ptr, *mapped_len);
+            },
+            PaddedFileInner::Heap(_) => {} // Vec drops normally
+        }
+    }
+}
+
+/// Read a file into a padded buffer suitable for simdjson.
 ///
-/// Returns `(buffer, json_len)` where `buffer` has `json_len` bytes of JSON
-/// followed by SIMDJSON_PADDING zeroed bytes.
-pub fn read_padded_file(path: &Path) -> Result<(Vec<u8>, usize)> {
-    use std::io::Read;
+/// Tries mmap first (zero-copy, kernel-paged). Falls back to heap allocation
+/// when mmap can't provide enough natural padding (file size within 64 bytes
+/// of a page boundary) or for empty/tiny files.
+///
+/// Returns `(buffer, json_len)` where `buffer[..json_len]` is the file content
+/// and `buffer[json_len..json_len+padding()]` is guaranteed zeroed.
+pub fn read_padded_file(path: &Path) -> Result<(PaddedFile, usize)> {
     let meta = fs::metadata(path)?;
     let file_len = meta.len() as usize;
     let pad = padding();
+
+    // Try mmap on Unix (skip if QJ_NO_MMAP is set, for benchmarking)
+    #[cfg(unix)]
+    if file_len > 0 && std::env::var_os("QJ_NO_MMAP").is_none() {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        // POSIX guarantees zero-fill from file end to page boundary.
+        // Calculate how many zero bytes the OS provides after the file data.
+        let remainder = file_len % page_size;
+        let natural_padding = if remainder == 0 {
+            0
+        } else {
+            page_size - remainder
+        };
+
+        if natural_padding >= pad {
+            // The OS zero-fill provides enough padding for simdjson.
+            // Map the full pages that cover the file.
+            let mapped_len = file_len + natural_padding;
+            let fd = std::fs::File::open(path)?;
+            use std::os::unix::io::AsRawFd;
+            let ptr = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    mapped_len,
+                    libc::PROT_READ,
+                    libc::MAP_PRIVATE,
+                    fd.as_raw_fd(),
+                    0,
+                )
+            };
+            if ptr != libc::MAP_FAILED {
+                // Hint: we'll read sequentially
+                unsafe {
+                    libc::madvise(ptr, mapped_len, libc::MADV_SEQUENTIAL);
+                }
+                let pf = PaddedFile {
+                    inner: PaddedFileInner::Mmap { ptr, mapped_len },
+                    json_len: file_len,
+                };
+                return Ok((pf, file_len));
+            }
+            // mmap failed — fall through to heap path
+        }
+    }
+
+    // Heap fallback: single allocation, no copy
     let mut buf = vec![0u8; file_len + pad];
-    let mut f = fs::File::open(path)?;
-    f.read_exact(&mut buf[..file_len])?;
-    // Padding bytes are already zeroed from vec! initialization
-    Ok((buf, file_len))
+    if file_len > 0 {
+        use std::io::Read;
+        let mut f = fs::File::open(path)?;
+        f.read_exact(&mut buf[..file_len])?;
+    }
+    Ok((
+        PaddedFile {
+            inner: PaddedFileInner::Heap(buf),
+            json_len: file_len,
+        },
+        file_len,
+    ))
 }
 
 /// Create a padded copy of an in-memory slice.
@@ -424,5 +541,59 @@ mod tests {
         let buf = pad_buffer(ndjson);
         let count = iterate_many_count(&buf, ndjson.len(), 1_000_000).unwrap();
         assert_eq!(count, 2);
+    }
+
+    // --- PaddedFile / mmap tests ---
+
+    #[test]
+    fn read_padded_file_roundtrip() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let json = br#"{"mmap": true, "value": 42}"#;
+        use std::io::Write;
+        tmp.write_all(json).unwrap();
+        tmp.flush().unwrap();
+
+        let (pf, json_len) = read_padded_file(tmp.path()).unwrap();
+        assert_eq!(json_len, json.len());
+        assert_eq!(&pf[..json_len], json);
+        // Verify padding is zeroed
+        let pad = padding();
+        assert!(pf.len() >= json_len + pad);
+        assert!(pf[json_len..json_len + pad].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn read_padded_file_parses_with_simdjson() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let json = br#"{"key": "value"}"#;
+        use std::io::Write;
+        tmp.write_all(json).unwrap();
+        tmp.flush().unwrap();
+
+        let (pf, json_len) = read_padded_file(tmp.path()).unwrap();
+        let mut parser = Parser::new().unwrap();
+        let mut doc = parser.parse(&pf, json_len).unwrap();
+        assert_eq!(doc.find_field_str("key").unwrap(), "value");
+    }
+
+    #[test]
+    fn read_padded_file_empty() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let (pf, json_len) = read_padded_file(tmp.path()).unwrap();
+        assert_eq!(json_len, 0);
+        assert!(pf.len() >= padding());
+    }
+
+    #[test]
+    fn padded_file_deref_slice() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        use std::io::Write;
+        tmp.write_all(b"test data").unwrap();
+        tmp.flush().unwrap();
+
+        let (pf, json_len) = read_padded_file(tmp.path()).unwrap();
+        // Deref to &[u8] should work
+        let slice: &[u8] = &pf;
+        assert_eq!(&slice[..json_len], b"test data");
     }
 }

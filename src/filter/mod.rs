@@ -255,7 +255,8 @@ impl PassthroughPath {
 
 /// Collect a chain of Field accesses from a Pipe tree.
 /// Returns true if the entire tree is a chain of `.field` accesses.
-fn collect_field_chain(filter: &Filter, fields: &mut Vec<String>) -> bool {
+/// Public for use in NDJSON fast-path detection.
+pub fn collect_field_chain(filter: &Filter, fields: &mut Vec<String>) -> bool {
     match filter {
         Filter::Field(name) => {
             fields.push(name.clone());

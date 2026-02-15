@@ -4,6 +4,28 @@ use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+/// Detect P-core count on Apple Silicon via sysctl, fall back to available_parallelism.
+/// Only runs on aarch64 macOS — Intel Macs don't have P/E core distinction.
+fn default_thread_count() -> usize {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        use std::process::Command;
+        if let Ok(output) = Command::new("sysctl")
+            .arg("-n")
+            .arg("hw.perflevel0.logicalcpu")
+            .output()
+            && let Ok(s) = std::str::from_utf8(&output.stdout)
+            && let Ok(n) = s.trim().parse::<usize>()
+            && n > 0
+        {
+            return n;
+        }
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
 #[derive(Parser)]
 #[command(name = "qj", about = "A faster jq", version)]
 struct Cli {
@@ -103,6 +125,13 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Configure Rayon thread pool to use P-cores only on Apple Silicon.
+    // E-cores add contention without throughput benefit for I/O-bound NDJSON work.
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(default_thread_count())
+        .build_global()
+        .ok(); // Ignore error if pool already initialized (e.g., in tests)
+
     // Pre-scan for --args / --jsonargs: split argv before clap sees them.
     // Everything after --args or --jsonargs becomes positional string/JSON values.
     let raw_args: Vec<String> = std::env::args().collect();
