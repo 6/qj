@@ -27,11 +27,18 @@ pub fn dom_parse_to_value(buf: &[u8], json_len: usize) -> Result<Value> {
     assert!(buf.len() >= json_len + padding());
     let mut flat_ptr: *mut u8 = std::ptr::null_mut();
     let mut flat_len: usize = 0;
+    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
+    // (asserted above). flat_ptr/flat_len are valid stack references used as output
+    // parameters. C++ heap-allocates the flat token buffer.
     check(unsafe { jx_dom_to_flat(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len) })?;
 
-    // Safety: flat_ptr is a heap allocation from C++ new[].
+    // SAFETY: flat_ptr was heap-allocated by jx_dom_to_flat above and flat_len is
+    // its byte count. We decode into a Value tree immediately; the pointer is freed
+    // on the next line.
     let flat = unsafe { std::slice::from_raw_parts(flat_ptr, flat_len) };
     let result = decode_value(flat, &mut 0);
+    // SAFETY: flat_ptr was allocated by C++ new[] in jx_dom_to_flat and has not
+    // been freed yet. After this call the pointer is not used again.
     unsafe { jx_flat_buffer_free(flat_ptr) };
     result
 }
@@ -168,8 +175,15 @@ pub fn minify(buf: &[u8], json_len: usize) -> Result<Vec<u8>> {
     );
     let mut out_ptr: *mut c_char = std::ptr::null_mut();
     let mut out_len: usize = 0;
+    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
+    // (asserted above). out_ptr/out_len are valid stack references used as output
+    // parameters. C++ heap-allocates the minified result.
     check(unsafe { jx_minify(buf.as_ptr().cast(), json_len, &mut out_ptr, &mut out_len) })?;
+    // SAFETY: out_ptr was heap-allocated by jx_minify above and out_len is its byte
+    // count. We copy into a Vec immediately; the pointer is freed on the next line.
     let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    // SAFETY: out_ptr was allocated by C++ new[] in jx_minify and has not been freed
+    // yet. After this call the pointer is not used again.
     unsafe { jx_minify_free(out_ptr) };
     Ok(result)
 }
@@ -193,6 +207,10 @@ pub fn dom_find_field_raw(buf: &[u8], json_len: usize, fields: &[&str]) -> Resul
     let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
     let mut out_ptr: *mut c_char = std::ptr::null_mut();
     let mut out_len: usize = 0;
+    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
+    // (asserted above). field_ptrs/field_lens point to valid slices matching
+    // fields.len(). out_ptr/out_len are valid stack references. C++ heap-allocates
+    // the result.
     check(unsafe {
         jx_dom_find_field_raw(
             buf.as_ptr().cast(),
@@ -204,7 +222,12 @@ pub fn dom_find_field_raw(buf: &[u8], json_len: usize, fields: &[&str]) -> Resul
             &mut out_len,
         )
     })?;
+    // SAFETY: out_ptr was heap-allocated by jx_dom_find_field_raw above and out_len
+    // is its byte count. We copy into a Vec immediately; the pointer is freed on the
+    // next line.
     let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    // SAFETY: out_ptr was allocated by C++ new[] in jx_dom_find_field_raw and has
+    // not been freed yet. After this call the pointer is not used again.
     unsafe { jx_minify_free(out_ptr) };
     Ok(result)
 }
@@ -222,6 +245,10 @@ pub fn dom_field_length(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<
     let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
     let mut out_ptr: *mut c_char = std::ptr::null_mut();
     let mut out_len: usize = 0;
+    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
+    // (asserted above). field_ptrs/field_lens point to valid slices matching
+    // fields.len(). out_ptr/out_len are valid stack references. C++ heap-allocates
+    // the result.
     check(unsafe {
         jx_dom_field_length(
             buf.as_ptr().cast(),
@@ -236,7 +263,12 @@ pub fn dom_field_length(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<
     if out_len == usize::MAX - 1 {
         return Ok(None);
     }
+    // SAFETY: out_ptr was heap-allocated by jx_dom_field_length above and out_len
+    // is its byte count. We copy into a Vec immediately; the pointer is freed on the
+    // next line.
     let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    // SAFETY: out_ptr was allocated by C++ new[] in jx_dom_field_length and has not
+    // been freed yet. After this call the pointer is not used again.
     unsafe { jx_minify_free(out_ptr) };
     Ok(Some(result))
 }
@@ -254,6 +286,10 @@ pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Op
     let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
     let mut out_ptr: *mut c_char = std::ptr::null_mut();
     let mut out_len: usize = 0;
+    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
+    // (asserted above). field_ptrs/field_lens point to valid slices matching
+    // fields.len(). out_ptr/out_len are valid stack references. C++ heap-allocates
+    // the result.
     check(unsafe {
         jx_dom_field_keys(
             buf.as_ptr().cast(),
@@ -268,7 +304,12 @@ pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Op
     if out_len == usize::MAX - 1 {
         return Ok(None);
     }
+    // SAFETY: out_ptr was heap-allocated by jx_dom_field_keys above and out_len is
+    // its byte count. We copy into a Vec immediately; the pointer is freed on the
+    // next line.
     let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    // SAFETY: out_ptr was allocated by C++ new[] in jx_dom_field_keys and has not
+    // been freed yet. After this call the pointer is not used again.
     unsafe { jx_minify_free(out_ptr) };
     Ok(Some(result))
 }

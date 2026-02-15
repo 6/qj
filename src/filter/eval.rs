@@ -4,9 +4,11 @@
 /// each result, avoiding intermediate Vec allocations.
 use crate::filter::{ArithOp, AssignOp, BoolOp, Env, Filter, ObjKey, Pattern, PatternKey};
 use crate::value::Value;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
+
+const MAX_EVAL_DEPTH: usize = 256;
 
 use super::value_ops::{arith_values, compare_values, recurse};
 
@@ -116,6 +118,17 @@ thread_local! {
     static BREAK_SIGNAL: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Input queue for `input`/`inputs` builtins.
     pub(super) static INPUT_QUEUE: RefCell<VecDeque<Value>> = const { RefCell::new(VecDeque::new()) };
+    /// Current eval() recursion depth for stack overflow protection.
+    static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// RAII guard that decrements the eval depth counter on drop.
+struct EvalDepthGuard;
+
+impl Drop for EvalDepthGuard {
+    fn drop(&mut self) {
+        EVAL_DEPTH.with(|d| d.set(d.get() - 1));
+    }
 }
 
 /// Take the last error value, if any, clearing the thread-local state.
@@ -159,6 +172,18 @@ pub fn eval_filter_with_env(
 pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Value)) {
     // Check for break signal — stop producing output during label-break unwind.
     if BREAK_SIGNAL.with(|b| b.borrow().is_some()) {
+        return;
+    }
+
+    // Recursion depth limit — prevents stack overflow from infinite recursion.
+    EVAL_DEPTH.with(|d| d.set(d.get() + 1));
+    let _guard = EvalDepthGuard;
+    if EVAL_DEPTH.with(|d| d.get()) > MAX_EVAL_DEPTH {
+        LAST_ERROR.with(|e| {
+            *e.borrow_mut() = Some(Value::String(format!(
+                "Evaluation depth limit exceeded ({MAX_EVAL_DEPTH})"
+            )));
+        });
         return;
     }
     match filter {

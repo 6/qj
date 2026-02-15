@@ -3181,6 +3181,17 @@ fn robustness_fromjson_multibyte_truncation_safe() {
 }
 
 #[test]
+fn robustness_eval_depth_limit() {
+    // def f: f; — infinite recursion should hit eval depth limit, not stack overflow
+    let (ok, _stdout, stderr) = qj_result("def f: f; f", "null");
+    assert!(!ok, "infinite recursion should fail");
+    assert!(
+        stderr.contains("depth limit"),
+        "should mention depth limit: {stderr}"
+    );
+}
+
+#[test]
 fn robustness_no_stale_error_leakage() {
     // An error in one expression should not leak into a subsequent try
     let out = qj_compact(r#"(try error catch "caught") | . + " ok""#, "null");
