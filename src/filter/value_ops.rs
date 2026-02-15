@@ -239,10 +239,10 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
     match (value, seg) {
         (Value::Object(obj), Value::String(k)) => {
             let mut result: Vec<(String, Value)> = obj.as_ref().clone();
-            if let Some(existing) = result.iter_mut().find(|(ek, _)| ek.as_str() == &**k) {
+            if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
                 existing.1 = set_path(&existing.1, rest, new_val)?;
             } else {
-                result.push((k.to_string(), set_path(&Value::Null, rest, new_val)?));
+                result.push((k.clone(), set_path(&Value::Null, rest, new_val)?));
             }
             Ok(Value::Object(Rc::new(result)))
         }
@@ -261,7 +261,7 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
         }
         (Value::Null, Value::String(k)) => {
             let inner = set_path(&Value::Null, rest, new_val)?;
-            Ok(Value::Object(Rc::new(vec![(k.to_string(), inner)])))
+            Ok(Value::Object(Rc::new(vec![(k.clone(), inner)])))
         }
         (Value::Null, Value::Int(i)) => {
             if *i < 0 {
@@ -297,11 +297,7 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
     if path.len() == 1 {
         match (value, &path[0]) {
             (Value::Object(obj), Value::String(k)) => {
-                let result: Vec<_> = obj
-                    .iter()
-                    .filter(|(ek, _)| ek.as_str() != &**k)
-                    .cloned()
-                    .collect();
+                let result: Vec<_> = obj.iter().filter(|(ek, _)| ek != k).cloned().collect();
                 return Value::Object(Rc::new(result));
             }
             (Value::Array(arr), Value::Int(i)) => {
@@ -322,7 +318,7 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
     match (value, seg) {
         (Value::Object(obj), Value::String(k)) => {
             let mut result: Vec<(String, Value)> = obj.as_ref().clone();
-            if let Some(existing) = result.iter_mut().find(|(ek, _)| ek.as_str() == &**k) {
+            if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
                 existing.1 = del_path(&existing.1, rest);
             }
             Value::Object(Rc::new(result))
@@ -349,7 +345,7 @@ pub(super) fn get_path(value: &Value, path: &[Value]) -> Value {
         current = match (&current, seg) {
             (Value::Object(obj), Value::String(k)) => obj
                 .iter()
-                .find(|(ek, _)| ek.as_str() == &**k)
+                .find(|(ek, _)| ek == k)
                 .map(|(_, v)| v.clone())
                 .unwrap_or(Value::Null),
             (Value::Array(arr), Value::Int(i)) => {
@@ -402,7 +398,7 @@ pub(super) fn enum_paths(
         }
         Value::Object(obj) => {
             for (k, v) in obj.iter() {
-                current.push(Value::String(k.clone().into()));
+                current.push(Value::String(k.clone()));
                 if filter.is_none() {
                     output(Value::Array(Rc::new(current.clone())));
                 }
@@ -429,7 +425,7 @@ pub(super) fn enum_leaf_paths(
         }
         Value::Object(obj) => {
             for (k, v) in obj.iter() {
-                current.push(Value::String(k.clone().into()));
+                current.push(Value::String(k.clone()));
                 enum_leaf_paths(v, current, output);
                 current.pop();
             }
@@ -449,7 +445,7 @@ pub(super) fn path_of(
     let env = Env::empty();
     match filter {
         Filter::Field(name) => {
-            current.push(Value::String(name.clone().into()));
+            current.push(Value::String(name.clone()));
             output(Value::Array(Rc::new(current.clone())));
             current.pop();
         }
@@ -513,7 +509,7 @@ pub(super) fn path_of(
             }
             Value::Object(obj) => {
                 for (k, _) in obj.iter() {
-                    current.push(Value::String(k.clone().into()));
+                    current.push(Value::String(k.clone()));
                     output(Value::Array(Rc::new(current.clone())));
                     current.pop();
                 }
@@ -573,7 +569,7 @@ pub(super) fn path_of(
                     }
                     Value::Object(obj) => {
                         for (k, v) in obj.iter() {
-                            current.push(Value::String(k.clone().into()));
+                            current.push(Value::String(k.clone()));
                             recurse_paths(v, current, output);
                             current.pop();
                         }
@@ -739,7 +735,7 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
             (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a + b, None)),
             (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 + b, None)),
             (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a + *b as f64, None)),
-            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}").into())),
+            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
             (Value::Array(a), Value::Array(b)) => {
                 let mut result = Vec::with_capacity(a.len() + b.len());
                 result.extend_from_slice(a);
@@ -800,14 +796,14 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                 if *n < 0 {
                     Ok(Value::Null)
                 } else if *n == 0 {
-                    Ok(Value::String("".into()))
+                    Ok(Value::String(String::new()))
                 } else {
                     // Guard against excessive memory allocation
                     let total = (*n as u64).saturating_mul(s.len() as u64);
                     if total > 100_000_000 {
                         Err("Repeat string result too long".to_string())
                     } else {
-                        Ok(Value::String(s.repeat(*n as usize).into()))
+                        Ok(Value::String(s.repeat(*n as usize)))
                     }
                 }
             }
@@ -818,13 +814,13 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                 }
                 let n = *f as i64;
                 if n <= 0 {
-                    Ok(Value::String("".into()))
+                    Ok(Value::String(String::new()))
                 } else {
                     let total = (n as u64).saturating_mul(s.len() as u64);
                     if total > 100_000_000 {
                         Err("Repeat string result too long".to_string())
                     } else {
-                        Ok(Value::String(s.repeat(n as usize).into()))
+                        Ok(Value::String(s.repeat(n as usize)))
                     }
                 }
             }
@@ -871,7 +867,7 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
             (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a / *b as f64, None)),
             (Value::String(s), Value::String(sep)) => {
                 let parts: Vec<Value> = s
-                    .split(&**sep)
+                    .split(sep.as_str())
                     .map(|part| Value::String(part.into()))
                     .collect();
                 Ok(Value::Array(Rc::new(parts)))
@@ -951,7 +947,7 @@ pub(super) fn recurse(value: &Value, output: &mut dyn FnMut(Value)) {
 
 pub(super) fn value_contains(haystack: &Value, needle: &Value) -> bool {
     match (haystack, needle) {
-        (Value::String(h), Value::String(n)) => h.contains(&**n),
+        (Value::String(h), Value::String(n)) => h.contains(n.as_str()),
         (Value::Array(h), Value::Array(n)) => {
             n.iter().all(|nv| h.iter().any(|hv| value_contains(hv, nv)))
         }

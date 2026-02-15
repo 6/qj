@@ -208,7 +208,7 @@ pub(super) fn eval_io(
             ];
             let arr: Vec<Value> = builtins
                 .iter()
-                .map(|(name, arity)| Value::String(format!("{name}/{arity}").into()))
+                .map(|(name, arity)| Value::String(format!("{name}/{arity}")))
                 .collect();
             output(Value::Array(Rc::new(arr)));
         }
@@ -219,7 +219,7 @@ pub(super) fn eval_io(
             } else {
                 // jq signals break when no more input is available
                 super::super::eval::LAST_ERROR
-                    .with(|e| *e.borrow_mut() = Some(Value::String("break".into())));
+                    .with(|e| *e.borrow_mut() = Some(Value::String("break".to_string())));
             }
         }
         "inputs" => {
@@ -234,7 +234,7 @@ pub(super) fn eval_io(
                 let mut label = String::new();
                 eval(arg, input, env, &mut |v| {
                     if let Value::String(s) = v {
-                        label = s.to_string();
+                        label = s;
                     }
                 });
                 let mut buf = Vec::new();
@@ -269,7 +269,7 @@ pub(super) fn eval_io(
         }
         "env" | "$ENV" => {
             let vars: Vec<(String, Value)> = std::env::vars()
-                .map(|(k, v)| (k, Value::String(v.into())))
+                .map(|(k, v)| (k, Value::String(v)))
                 .collect();
             output(Value::Object(Rc::new(vars)));
         }

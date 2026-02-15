@@ -20,7 +20,7 @@ pub(super) fn eval_date(
             if let Some(ts) = input_as_f64(input)
                 && let Some(s) = todate(ts as i64)
             {
-                output(Value::String(s.into()));
+                output(Value::String(s));
             }
         }
         "fromdate" => {
@@ -39,7 +39,7 @@ pub(super) fn eval_date(
                 let mut fmt_ok = false;
                 eval(arg, input, env, &mut |v| {
                     if let Value::String(s) = v {
-                        fmt = s.to_string();
+                        fmt = s;
                         fmt_ok = true;
                     }
                 });
@@ -50,13 +50,13 @@ pub(super) fn eval_date(
                 // Input can be a number (epoch) or a broken-down time array
                 if let Value::Array(arr) = input {
                     if let Some(s) = bdtime_strftime(arr, &fmt, true) {
-                        output(Value::String(s.into()));
+                        output(Value::String(s));
                     } else {
                         set_error("strftime/1 requires parsed datetime inputs".to_string());
                     }
                 } else if let Some(ts) = input_as_f64(input) {
                     if let Some(s) = format_strftime_jiff(&fmt, ts as i64) {
-                        output(Value::String(s.into()));
+                        output(Value::String(s));
                     }
                 } else if !matches!(input, Value::Null) {
                     set_error("strftime/1 requires parsed datetime inputs".to_string());
@@ -95,7 +95,7 @@ pub(super) fn eval_date(
                 let mut fmt = String::new();
                 eval(arg, input, env, &mut |v| {
                     if let Value::String(s) = v {
-                        fmt = s.to_string();
+                        fmt = s;
                     }
                 });
                 if let Some(arr) = strptime_to_bdtime(s, &fmt) {
@@ -109,7 +109,7 @@ pub(super) fn eval_date(
                 let mut fmt_error = false;
                 eval(arg, input, env, &mut |v| {
                     if let Value::String(s) = v {
-                        fmts.push(s.to_string());
+                        fmts.push(s);
                     } else {
                         fmt_error = true;
                     }
@@ -121,7 +121,7 @@ pub(super) fn eval_date(
                         match input {
                             Value::Array(arr) => {
                                 if let Some(s) = bdtime_strftime(arr, fmt, false) {
-                                    output(Value::String(s.into()));
+                                    output(Value::String(s));
                                 } else {
                                     set_error(
                                         "strflocaltime/1 requires parsed datetime inputs"
@@ -133,7 +133,7 @@ pub(super) fn eval_date(
                                 if let Some(ts) = input_as_f64(input)
                                     && let Some(s) = format_strftime_local(fmt, ts as i64)
                                 {
-                                    output(Value::String(s.into()));
+                                    output(Value::String(s));
                                 }
                             }
                         }

@@ -46,7 +46,7 @@ pub(super) fn eval_regex(
                         if let Some(name) = name {
                             let val = caps
                                 .get(i)
-                                .map(|m| Value::String(m.as_str().into()))
+                                .map(|m| Value::String(m.as_str().to_string()))
                                 .unwrap_or(Value::Null);
                             obj.push((name.to_string(), val));
                         }
@@ -64,13 +64,13 @@ pub(super) fn eval_regex(
                             let arr: Vec<Value> = (1..caps.len())
                                 .map(|i| {
                                     caps.get(i)
-                                        .map(|m| Value::String(m.as_str().into()))
+                                        .map(|m| Value::String(m.as_str().to_string()))
                                         .unwrap_or(Value::Null)
                                 })
                                 .collect();
                             output(Value::Array(Rc::new(arr)));
                         } else {
-                            output(Value::String(caps[0].into()));
+                            output(Value::String(caps[0].to_string()));
                         }
                     }
                 }
@@ -87,7 +87,7 @@ pub(super) fn eval_regex(
                         let match_obj = regex_match_object(&re, &caps, s);
                         eval(repl_f, &match_obj, env, &mut |v| {
                             if let Value::String(rs) = v {
-                                repl_str = rs.to_string();
+                                repl_str = rs;
                             }
                         });
                     }
@@ -97,7 +97,7 @@ pub(super) fn eval_regex(
                         result.push_str(&s[..m.start()]);
                         result.push_str(&repl_str);
                         result.push_str(&s[m.end()..]);
-                        output(Value::String(result.into()));
+                        output(Value::String(result));
                     } else {
                         output(Value::String(s.clone()));
                     }
@@ -118,7 +118,7 @@ pub(super) fn eval_regex(
                             let match_obj = regex_match_object(&re, &caps, s);
                             eval(repl_f, &match_obj, env, &mut |v| {
                                 if let Value::String(rs) = v {
-                                    repl_str = rs.to_string();
+                                    repl_str = rs;
                                 }
                             });
                         }
@@ -126,7 +126,7 @@ pub(super) fn eval_regex(
                         last_end = m.end();
                     }
                     result.push_str(&s[last_end..]);
-                    output(Value::String(result.into()));
+                    output(Value::String(result));
                 }
             }
         }
@@ -136,10 +136,10 @@ pub(super) fn eval_regex(
                 if let Some(re) = build_regex(&pattern, &flags) {
                     let mut last_end = 0;
                     for m in re.find_iter(s) {
-                        output(Value::String(s[last_end..m.start()].into()));
+                        output(Value::String(s[last_end..m.start()].to_string()));
                         last_end = m.end();
                     }
-                    output(Value::String(s[last_end..].into()));
+                    output(Value::String(s[last_end..].to_string()));
                 }
             }
         }
@@ -199,14 +199,14 @@ fn eval_pattern_flags(args: &[Filter], input: &Value, env: &Env) -> (String, Str
     if let Some(pat_f) = args.first() {
         eval(pat_f, input, env, &mut |v| {
             if let Value::String(s) = v {
-                pattern = s.to_string();
+                pattern = s;
             }
         });
     }
     if let Some(flags_f) = args.get(1) {
         eval(flags_f, input, env, &mut |v| {
             if let Value::String(s) = v {
-                flags = s.to_string();
+                flags = s;
             }
         });
     }
@@ -225,14 +225,14 @@ fn eval_sub_pattern_flags(
     if let Some(pat_f) = args.first() {
         eval(pat_f, input, env, &mut |v| {
             if let Value::String(s) = v {
-                pattern = s.to_string();
+                pattern = s;
             }
         });
     }
     if let Some(flags_f) = args.get(flags_idx) {
         eval(flags_f, input, env, &mut |v| {
             if let Value::String(s) = v {
-                flags = s.to_string();
+                flags = s;
             }
         });
     }
@@ -251,10 +251,11 @@ fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -
             Value::Object(Rc::new(vec![
                 ("offset".to_string(), Value::Int(cm.start() as i64)),
                 ("length".to_string(), Value::Int(cm.len() as i64)),
-                ("string".to_string(), Value::String(cm.as_str().into())),
+                ("string".to_string(), Value::String(cm.as_str().to_string())),
                 (
                     "name".to_string(),
-                    name.map(|n| Value::String(n.into())).unwrap_or(Value::Null),
+                    name.map(|n| Value::String(n.to_string()))
+                        .unwrap_or(Value::Null),
                 ),
             ]))
         } else {
@@ -264,7 +265,8 @@ fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -
                 ("string".to_string(), Value::Null),
                 (
                     "name".to_string(),
-                    name.map(|n| Value::String(n.into())).unwrap_or(Value::Null),
+                    name.map(|n| Value::String(n.to_string()))
+                        .unwrap_or(Value::Null),
                 ),
             ]))
         };
@@ -273,7 +275,7 @@ fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -
     Value::Object(Rc::new(vec![
         ("offset".to_string(), Value::Int(m.start() as i64)),
         ("length".to_string(), Value::Int(m.len() as i64)),
-        ("string".to_string(), Value::String(m.as_str().into())),
+        ("string".to_string(), Value::String(m.as_str().to_string())),
         ("captures".to_string(), Value::Array(Rc::new(captures))),
     ]))
 }
@@ -339,7 +341,7 @@ mod tests {
                 .clone();
             assert_eq!(offset, Value::Int(1));
             assert_eq!(length, Value::Int(2));
-            assert_eq!(string, Value::String("oo".into()));
+            assert_eq!(string, Value::String("oo".to_string()));
         } else {
             panic!("expected object");
         }
@@ -361,11 +363,11 @@ mod tests {
                 assert_eq!(caps_arr.len(), 2);
                 if let Value::Object(c0) = &caps_arr[0] {
                     let name = c0.iter().find(|(k, _)| k == "name").unwrap().1.clone();
-                    assert_eq!(name, Value::String("year".into()));
+                    assert_eq!(name, Value::String("year".to_string()));
                 }
                 if let Value::Object(c1) = &caps_arr[1] {
                     let name = c1.iter().find(|(k, _)| k == "name").unwrap().1.clone();
-                    assert_eq!(name, Value::String("month".into()));
+                    assert_eq!(name, Value::String("month".to_string()));
                 }
             } else {
                 panic!("expected array for captures");

@@ -19,10 +19,8 @@ pub(super) fn eval_arrays(
     match name {
         "keys" | "keys_unsorted" => match input {
             Value::Object(obj) => {
-                let mut keys: Vec<Value> = obj
-                    .iter()
-                    .map(|(k, _)| Value::String(k.clone().into()))
-                    .collect();
+                let mut keys: Vec<Value> =
+                    obj.iter().map(|(k, _)| Value::String(k.clone())).collect();
                 if name == "keys" {
                     keys.sort_by(|a, b| {
                         if let (Value::String(a), Value::String(b)) = (a, b) {
@@ -333,7 +331,7 @@ pub(super) fn eval_arrays(
                 result.reverse();
                 output(Value::Array(Rc::new(result)));
             } else if let Value::String(s) = input {
-                output(Value::String(s.chars().rev().collect::<String>().into()));
+                output(Value::String(s.chars().rev().collect()));
             }
         }
         "min" => {
@@ -432,7 +430,7 @@ pub(super) fn eval_arrays(
                             }
                         } else if let Value::String(k) = seg
                             && let Value::Object(obj) = container
-                            && let Some((_, v)) = obj.iter().find(|(ek, _)| ek.as_str() == &**k)
+                            && let Some((_, v)) = obj.iter().find(|(ek, _)| ek == k)
                         {
                             container = v;
                         }
@@ -754,7 +752,7 @@ pub(super) fn eval_arrays(
                     .iter()
                     .map(|(k, v)| {
                         Value::Object(Rc::new(vec![
-                            ("key".into(), Value::String(k.clone().into())),
+                            ("key".into(), Value::String(k.clone())),
                             ("value".into(), v.clone()),
                         ]))
                     })
@@ -773,7 +771,7 @@ pub(super) fn eval_arrays(
                             .iter()
                             .find(|(k, _)| k == "key" || k == "Key" || k == "name" || k == "Name")
                             .map(|(_, v)| match v {
-                                Value::String(s) => s.to_string(),
+                                Value::String(s) => s.clone(),
                                 Value::Int(n) => n.to_string(),
                                 _ => String::new(),
                             })
@@ -894,7 +892,7 @@ pub(super) fn eval_arrays(
                 eval(&args[0], input, env, &mut |item| {
                     eval(&args[1], &item, env, &mut |key| {
                         let key_str = match &key {
-                            Value::String(s) => s.to_string(),
+                            Value::String(s) => s.clone(),
                             _ => {
                                 let mut buf = Vec::new();
                                 crate::output::write_compact(&mut buf, &key, false).unwrap();
@@ -915,7 +913,7 @@ pub(super) fn eval_arrays(
                     for item in arr.iter() {
                         eval(&args[0], item, env, &mut |key| {
                             let key_str = match &key {
-                                Value::String(s) => s.to_string(),
+                                Value::String(s) => s.clone(),
                                 _ => {
                                     let mut buf = Vec::new();
                                     crate::output::write_compact(&mut buf, &key, false).unwrap();
@@ -945,7 +943,7 @@ pub(super) fn eval_arrays(
                     for item in arr.iter() {
                         eval(&args[1], item, env, &mut |key| {
                             let key_str = match &key {
-                                Value::String(s) => s.to_string(),
+                                Value::String(s) => s.clone(),
                                 _ => {
                                     let mut buf = Vec::new();
                                     crate::output::write_compact(&mut buf, &key, false).unwrap();

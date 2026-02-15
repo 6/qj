@@ -12,9 +12,7 @@ pub(super) fn eval_format(
         "@json" => {
             let mut buf = Vec::new();
             crate::output::write_compact(&mut buf, input, false).unwrap();
-            output(Value::String(
-                String::from_utf8(buf).unwrap_or_default().into(),
-            ));
+            output(Value::String(String::from_utf8(buf).unwrap_or_default()));
         }
         "@text" => match input {
             Value::String(_) => output(input.clone()),
@@ -25,9 +23,7 @@ pub(super) fn eval_format(
             Value::Array(_) | Value::Object(_) => {
                 let mut buf = Vec::new();
                 crate::output::write_compact(&mut buf, input, false).unwrap();
-                output(Value::String(
-                    String::from_utf8(buf).unwrap_or_default().into(),
-                ));
+                output(Value::String(String::from_utf8(buf).unwrap_or_default()));
             }
         },
         "@html" => {
@@ -43,7 +39,7 @@ pub(super) fn eval_format(
                         _ => out.push(c),
                     }
                 }
-                output(Value::String(out.into()));
+                output(Value::String(out));
             }
         }
         "@uri" => {
@@ -69,7 +65,7 @@ pub(super) fn eval_format(
                         }
                     }
                 }
-                output(Value::String(out.into()));
+                output(Value::String(out));
             }
         }
         "@urid" => {
@@ -95,7 +91,7 @@ pub(super) fn eval_format(
                     i += 1;
                 }
                 output(Value::String(
-                    String::from_utf8(decoded_bytes).unwrap_or_default().into(),
+                    String::from_utf8(decoded_bytes).unwrap_or_default(),
                 ));
             }
         }
@@ -115,7 +111,7 @@ pub(super) fn eval_format(
                         _ => String::new(),
                     })
                     .collect();
-                output(Value::String(parts.join(",").into()));
+                output(Value::String(parts.join(",")));
             }
         }
         "@tsv" => {
@@ -135,22 +131,20 @@ pub(super) fn eval_format(
                         _ => String::new(),
                     })
                     .collect();
-                output(Value::String(parts.join("\t").into()));
+                output(Value::String(parts.join("\t")));
             }
         }
         "@sh" => {
             if let Value::String(s) = input {
                 let escaped = s.replace('\'', "'\\''");
-                output(Value::String(format!("'{escaped}'").into()));
+                output(Value::String(format!("'{escaped}'")));
             }
         }
         "@base64" => {
             if let Value::String(s) = input {
                 use base64::Engine;
                 output(Value::String(
-                    base64::engine::general_purpose::STANDARD
-                        .encode(s.as_bytes())
-                        .into(),
+                    base64::engine::general_purpose::STANDARD.encode(s.as_bytes()),
                 ));
             }
         }
@@ -160,7 +154,7 @@ pub(super) fn eval_format(
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s.as_bytes())
                     && let Ok(text) = String::from_utf8(decoded)
                 {
-                    output(Value::String(text.into()));
+                    output(Value::String(text));
                 }
             }
         }

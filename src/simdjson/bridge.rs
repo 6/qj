@@ -127,7 +127,7 @@ fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
         }
         TAG_STRING => {
             let s = read_string(buf, pos)?;
-            Ok(Value::String(s.into()))
+            Ok(Value::String(s))
         }
         TAG_ARRAY_START => {
             let count = read_u32(buf, pos)? as usize;
