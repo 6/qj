@@ -40,7 +40,7 @@
 | Filter | **qj (serde_json†)** | vs jq | jq | jaq | vs jq | gojq | vs jq |
 |--------|------:|------:|------:|------:|------:|------:|------:|
 | `-c '.'` | **2.90s** | **42.5x** | 123.35s | 24.95s | 4.9x | 38.73s | 3.2x |
-| `-c '[.[] | select(.type == "PushEvent")]'` | **697ms*** | **89.0x** | 62.05s | 23.57s | 2.6x | 32.19s | 1.9x |
+| `-c '[.[] | select(.type == "PushEvent")]'` | **22.46s** | **2.8x** | 62.05s | 23.57s | 2.6x | 32.19s | 1.9x |
 
 ### Throughput (`-c '.'`, single pass)
 
@@ -48,8 +48,6 @@
 |------|------:|------:|------:|------:|
 | gharchive_large.ndjson | **1.3 GB/s** | 40 MB/s | 214 MB/s | 104 MB/s |
 | gharchive_large.json | **1.6 GB/s** | 39 MB/s | 193 MB/s | 124 MB/s |
-
-\*non-zero exit code (tool crashed or returned an error)
 
 †serde_json fallback for >4GB single-document JSON (simdjson 4GB limit)
 
