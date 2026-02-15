@@ -609,7 +609,7 @@ fn generate_markdown(
         writeln!(md).unwrap();
         writeln!(
             md,
-            "Real-world GitHub event data (~1GB). qj processes NDJSON in parallel across all cores."
+            "Real-world GitHub event data (~1.1GB). qj processes NDJSON in parallel across all cores."
         )
         .unwrap();
         writeln!(md).unwrap();
@@ -644,7 +644,7 @@ fn generate_markdown(
         writeln!(md).unwrap();
         writeln!(
             md,
-            "Same data as above wrapped in a JSON array (~1GB single document)."
+            "Same data as above wrapped in a JSON array (~1.1GB single document)."
         )
         .unwrap();
         writeln!(md).unwrap();

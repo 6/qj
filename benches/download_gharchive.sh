@@ -3,8 +3,8 @@
 # Source: https://www.gharchive.org/ (2024-01-15, a Monday)
 #
 # Outputs:
-#   benches/data/gharchive.ndjson  (~1GB NDJSON, one event per line)
-#   benches/data/gharchive.json    (~1GB JSON array [event,event,...])
+#   benches/data/gharchive.ndjson  (~1.1GB NDJSON, one event per line)
+#   benches/data/gharchive.json    (~1.1GB JSON array [event,event,...])
 #
 # Set QJ_GHARCHIVE_HOURS to download fewer hours (default: 24).
 #   QJ_GHARCHIVE_HOURS=2 bash benches/download_gharchive.sh
@@ -13,7 +13,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)/data"
 mkdir -p "$DIR"
 
-HOURS="${QJ_GHARCHIVE_HOURS:-24}"
+HOURS="${QJ_GHARCHIVE_HOURS:-2}"
 DATE="2024-01-15"
 NDJSON="$DIR/gharchive.ndjson"
 JSON="$DIR/gharchive.json"
