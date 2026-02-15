@@ -54,6 +54,8 @@ pub enum Token {
     Foreach,
     Select,
     Def,
+    Label,
+    Break,
     // Logical
     DoubleSlash,         // // (alternative operator)
     QuestionDoubleSlash, // ?// (alternative match operator)
@@ -347,6 +349,8 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                     "foreach" => Token::Foreach,
                     "select" => Token::Select,
                     "def" => Token::Def,
+                    "label" => Token::Label,
+                    "break" => Token::Break,
                     _ => Token::Ident(word.to_string()),
                 }
             };

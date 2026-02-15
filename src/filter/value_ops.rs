@@ -160,6 +160,13 @@ pub(super) fn epoch_to_bdtime(secs: f64, utc: bool) -> Option<Value> {
 
 /// Convert jq broken-down time array → epoch seconds (UTC).
 pub(super) fn bdtime_to_epoch(arr: &[Value]) -> Option<i64> {
+    // Validate that all elements are numeric (jq rejects non-numeric components)
+    for v in arr.iter().take(8) {
+        match v {
+            Value::Int(_) | Value::Double(_, _) => {}
+            _ => return None,
+        }
+    }
     let get_i = |idx: usize| -> i64 {
         arr.get(idx)
             .map(|v| match v {
@@ -215,9 +222,9 @@ pub(super) fn strptime_to_bdtime(s: &str, fmt: &str) -> Option<Value> {
 // Path operations
 // ---------------------------------------------------------------------------
 
-pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Value {
+pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result<Value, String> {
     if path.is_empty() {
-        return new_val.clone();
+        return Ok(new_val.clone());
     }
     let seg = &path[0];
     let rest = &path[1..];
@@ -225,11 +232,11 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Value 
         (Value::Object(obj), Value::String(k)) => {
             let mut result: Vec<(String, Value)> = obj.as_ref().clone();
             if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
-                existing.1 = set_path(&existing.1, rest, new_val);
+                existing.1 = set_path(&existing.1, rest, new_val)?;
             } else {
-                result.push((k.clone(), set_path(&Value::Null, rest, new_val)));
+                result.push((k.clone(), set_path(&Value::Null, rest, new_val)?));
             }
-            Value::Object(Rc::new(result))
+            Ok(Value::Object(Rc::new(result)))
         }
         (Value::Array(arr), Value::Int(i)) => {
             let mut result = arr.as_ref().clone();
@@ -241,20 +248,31 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Value 
             while result.len() <= idx {
                 result.push(Value::Null);
             }
-            result[idx] = set_path(&result[idx], rest, new_val);
-            Value::Array(Rc::new(result))
+            result[idx] = set_path(&result[idx], rest, new_val)?;
+            Ok(Value::Array(Rc::new(result)))
         }
         (Value::Null, Value::String(k)) => {
-            let inner = set_path(&Value::Null, rest, new_val);
-            Value::Object(Rc::new(vec![(k.clone(), inner)]))
+            let inner = set_path(&Value::Null, rest, new_val)?;
+            Ok(Value::Object(Rc::new(vec![(k.clone(), inner)])))
         }
         (Value::Null, Value::Int(i)) => {
-            let idx = (*i).max(0) as usize;
+            if *i < 0 {
+                return Err("Out of bounds negative array index".to_string());
+            }
+            let idx = *i as usize;
             let mut arr = vec![Value::Null; idx + 1];
-            arr[idx] = set_path(&Value::Null, rest, new_val);
-            Value::Array(Rc::new(arr))
+            arr[idx] = set_path(&Value::Null, rest, new_val)?;
+            Ok(Value::Array(Rc::new(arr)))
         }
-        _ => value.clone(),
+        // Type mismatch errors
+        (Value::Object(_), Value::Int(_)) => Err("Cannot index object with number".to_string()),
+        (Value::Array(_), Value::String(_)) => Err("Cannot index array with string".to_string()),
+        (_, Value::Array(_)) => Err("Cannot update field at array index of array".to_string()),
+        _ => Err(format!(
+            "Cannot index {} with {}",
+            value.type_name(),
+            seg.type_name()
+        )),
     }
 }
 
@@ -424,6 +442,49 @@ pub(super) fn path_of(
                 current.pop();
             });
         }
+        Filter::Slice(s_expr, e_expr) => {
+            if let Value::Array(arr) = input {
+                let len = arr.len() as i64;
+                let val_to_i64 = |v: &Value| -> Option<i64> {
+                    match v {
+                        Value::Int(n) => Some(*n),
+                        Value::Double(f, _) if f.is_finite() => Some(*f as i64),
+                        _ => None,
+                    }
+                };
+                let s = s_expr
+                    .as_ref()
+                    .map(|sf| {
+                        let mut v = 0i64;
+                        eval(sf, input, &env, &mut |sv| {
+                            if let Some(n) = val_to_i64(&sv) {
+                                v = n;
+                            }
+                        });
+                        if v < 0 { (len + v).max(0) } else { v.min(len) }
+                    })
+                    .unwrap_or(0) as usize;
+                let e = e_expr
+                    .as_ref()
+                    .map(|ef| {
+                        let mut v = len;
+                        eval(ef, input, &env, &mut |ev| {
+                            if let Some(n) = val_to_i64(&ev) {
+                                v = n;
+                            }
+                        });
+                        if v < 0 { (len + v).max(0) } else { v.min(len) }
+                    })
+                    .unwrap_or(len) as usize;
+                let start = s.min(arr.len());
+                let end = e.min(arr.len());
+                for i in start..end {
+                    current.push(Value::Int(i as i64));
+                    output(Value::Array(Rc::new(current.clone())));
+                    current.pop();
+                }
+            }
+        }
         Filter::Iterate => match input {
             Value::Array(arr) => {
                 for i in 0..arr.len() {
@@ -504,6 +565,15 @@ pub(super) fn path_of(
             }
             recurse_paths(input, current, output);
         }
+        Filter::PostfixIndex(base, idx) => {
+            // PostfixIndex(base, idx) — same as Pipe(base, Index(idx)) for path purposes
+            let pipe = Filter::Pipe(base.clone(), Box::new(Filter::Index(idx.clone())));
+            path_of(&pipe, input, current, output);
+        }
+        Filter::PostfixSlice(base, s, e) => {
+            let pipe = Filter::Pipe(base.clone(), Box::new(Filter::Slice(s.clone(), e.clone())));
+            path_of(&pipe, input, current, output);
+        }
         Filter::Builtin(name, args) if args.is_empty() => {
             match name.as_str() {
                 "first" => {
@@ -513,11 +583,11 @@ pub(super) fn path_of(
                     current.pop();
                 }
                 "last" => {
-                    // last = .[-1] — needs array length
+                    // last = .[-1]
                     if let Value::Array(arr) = input
                         && !arr.is_empty()
                     {
-                        current.push(Value::Int(arr.len() as i64 - 1));
+                        current.push(Value::Int(-1));
                         output(Value::Array(Rc::new(current.clone())));
                         current.pop();
                     }
@@ -724,11 +794,12 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                 }
             }
             (Value::String(s), Value::Double(f, _)) | (Value::Double(f, _), Value::String(s)) => {
-                // Float repetition: truncate to int, negative → null, zero → ""
+                // Float repetition: NaN → null, negative → null, zero → ""
+                if f.is_nan() || *f < 0.0 {
+                    return Ok(Value::Null);
+                }
                 let n = *f as i64;
-                if *f < 0.0 {
-                    Ok(Value::Null)
-                } else if n <= 0 {
+                if n <= 0 {
                     Ok(Value::String(String::new()))
                 } else {
                     let total = (n as u64).saturating_mul(s.len() as u64);
@@ -965,7 +1036,7 @@ mod tests {
 
     #[test]
     fn test_set_path_creates_nested() {
-        let result = set_path(&Value::Null, &[Value::String("a".into())], &Value::Int(1));
+        let result = set_path(&Value::Null, &[Value::String("a".into())], &Value::Int(1)).unwrap();
         assert_eq!(result, obj(&[("a", Value::Int(1))]));
     }
 

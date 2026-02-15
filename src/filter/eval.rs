@@ -111,6 +111,8 @@ fn collect_pattern_vars(pattern: &Pattern, vars: &mut Vec<String>) {
 thread_local! {
     /// Last error value set by `error` / `error(msg)` builtins.
     pub(super) static LAST_ERROR: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// Break signal for label-break unwinding.
+    static BREAK_SIGNAL: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Public entry point — creates an empty env for top-level evaluation.
@@ -130,6 +132,10 @@ pub fn eval_filter_with_env(
 
 /// Evaluate a filter against an input value, calling `output` for each result.
 pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Value)) {
+    // Check for break signal — stop producing output during label-break unwind.
+    if BREAK_SIGNAL.with(|b| b.borrow().is_some()) {
+        return;
+    }
     match filter {
         Filter::Identity => output(input.clone()),
 
@@ -193,7 +199,6 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         LAST_ERROR.with(|e| {
                             let idx_desc = match &idx {
                                 Value::String(s) => format!("string \"{}\"", s),
-                                Value::Int(n) => format!("number {}", n),
                                 _ => idx.type_name().to_string(),
                             };
                             *e.borrow_mut() = Some(Value::String(format!(
@@ -209,6 +214,10 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
 
         Filter::Pipe(left, right) => {
             eval(left, input, env, &mut |intermediate| {
+                // Stop if an error was raised (e.g., by `error` builtin)
+                if LAST_ERROR.with(|e| e.borrow().is_some()) {
+                    return;
+                }
                 eval(right, &intermediate, env, output);
             });
         }
@@ -226,13 +235,14 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             }
             Value::Null => {
                 LAST_ERROR.with(|e| {
-                    *e.borrow_mut() = Some(Value::String("null is not iterable".to_string()));
+                    *e.borrow_mut() =
+                        Some(Value::String("null is not iterable (null)".to_string()));
                 });
             }
             _ => {
                 LAST_ERROR.with(|e| {
                     *e.borrow_mut() = Some(Value::String(format!(
-                        "{} ({}) is not iterable",
+                        "Cannot iterate over {} ({})",
                         input.type_name(),
                         input.short_desc()
                     )));
@@ -310,8 +320,9 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         Filter::Literal(val) => output(val.clone()),
 
         Filter::Compare(left, op, right) => {
-            eval(left, input, env, &mut |lval| {
-                eval(right, input, env, &mut |rval| {
+            // jq nesting: RHS is outer loop, LHS is inner loop
+            eval(right, input, env, &mut |rval| {
+                eval(left, input, env, &mut |lval| {
                     let result = compare_values(&lval, op, &rval);
                     output(Value::Bool(result));
                 });
@@ -319,12 +330,13 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         }
 
         Filter::Arith(left, op, right) => {
-            eval(left, input, env, &mut |lval| {
+            // jq nesting: RHS is outer loop, LHS is inner loop
+            eval(right, input, env, &mut |rval| {
                 eval(
-                    right,
+                    left,
                     input,
                     env,
-                    &mut |rval| match arith_values(&lval, op, &rval) {
+                    &mut |lval| match arith_values(&lval, op, &rval) {
                         Ok(result) => output(result),
                         Err(msg) => {
                             LAST_ERROR.with(|e| {
@@ -399,16 +411,18 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         }
 
         Filter::Alternative(left, right) => {
-            let mut lval = Value::Null;
-            let mut got_value = false;
+            // Collect all outputs from left, filter to truthy (not null/false).
+            // If any truthy values exist, output them all; otherwise eval right.
+            let mut truthy_vals = Vec::new();
             eval(left, input, env, &mut |v| {
-                if !got_value {
-                    lval = v;
-                    got_value = true;
+                if v != Value::Null && v != Value::Bool(false) {
+                    truthy_vals.push(v);
                 }
             });
-            if got_value && lval != Value::Null && lval != Value::Bool(false) {
-                output(lval);
+            if !truthy_vals.is_empty() {
+                for v in truthy_vals {
+                    output(v);
+                }
             } else {
                 eval(right, input, env, output);
             }
@@ -503,11 +517,23 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             let start_val = start_f.as_ref().map(|f| {
                 let mut v = Value::Null;
                 eval(f, input, env, &mut |val| v = val);
+                // jq floors the start of a slice
+                if let Value::Double(f, _) = &v
+                    && f.is_finite()
+                {
+                    return Value::Int(f.floor() as i64);
+                }
                 v
             });
             let end_val = end_f.as_ref().map(|f| {
                 let mut v = Value::Null;
                 eval(f, input, env, &mut |val| v = val);
+                // jq ceils the end of a slice
+                if let Value::Double(f, _) = &v
+                    && f.is_finite()
+                {
+                    return Value::Int(f.ceil() as i64);
+                }
                 v
             });
 
@@ -586,20 +612,29 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         }
 
         Filter::Foreach(source, pattern, init, update, extract) => {
-            let mut acc = Value::Null;
-            eval(init, input, env, &mut |v| acc = v);
-
-            eval(source, input, env, &mut |val| {
-                if let Some(new_env) = match_pattern(pattern, &val, env) {
-                    let cur = acc.clone();
-                    eval(update, &cur, &new_env, &mut |v| acc = v);
-                    if let Some(ext) = extract {
-                        eval(ext, &acc, &new_env, output);
-                    } else {
-                        output(acc.clone());
+            // Support generators in init: each init value runs a separate foreach
+            let mut init_vals = Vec::new();
+            eval(init, input, env, &mut |v| init_vals.push(v));
+            if init_vals.is_empty() {
+                init_vals.push(Value::Null);
+            }
+            for init_val in init_vals {
+                let mut acc = init_val;
+                eval(source, input, env, &mut |val| {
+                    if BREAK_SIGNAL.with(|b| b.borrow().is_some()) {
+                        return;
                     }
-                }
-            });
+                    if let Some(new_env) = match_pattern(pattern, &val, env) {
+                        let cur = acc.clone();
+                        eval(update, &cur, &new_env, &mut |v| acc = v);
+                        if let Some(ext) = extract {
+                            eval(ext, &acc, &new_env, output);
+                        } else {
+                            output(acc.clone());
+                        }
+                    }
+                });
+            }
         }
 
         Filter::Assign(path_filter, op, rhs) => {
@@ -650,6 +685,141 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         "No pattern matched in ?// expression".to_string(),
                     ));
                 });
+            });
+        }
+
+        Filter::PostfixIndex(base, idx_expr) => {
+            // A[B] — evaluate base against input, then evaluate idx_expr against
+            // original input, and index the base result with each idx result.
+            eval(base, input, env, &mut |base_val| {
+                eval(idx_expr, input, env, &mut |idx| {
+                    // Same indexing logic as Filter::Index
+                    let idx = match &idx {
+                        Value::Double(f, _) if f.is_nan() => {
+                            if matches!(base_val, Value::Array(_) | Value::Null) {
+                                output(Value::Null);
+                            }
+                            return;
+                        }
+                        Value::Double(f, _) if f.is_finite() => Value::Int(*f as i64),
+                        _ => idx,
+                    };
+                    match (&base_val, &idx) {
+                        (Value::Array(arr), Value::Int(i)) => {
+                            let index = if *i < 0 { arr.len() as i64 + i } else { *i };
+                            if index >= 0 && (index as usize) < arr.len() {
+                                output(arr[index as usize].clone());
+                            } else {
+                                output(Value::Null);
+                            }
+                        }
+                        (Value::Object(obj), Value::String(key)) => {
+                            for (k, v) in obj.iter() {
+                                if k == key {
+                                    output(v.clone());
+                                    return;
+                                }
+                            }
+                            output(Value::Null);
+                        }
+                        (Value::Null, _) => output(Value::Null),
+                        _ => {
+                            LAST_ERROR.with(|e| {
+                                let idx_desc = match &idx {
+                                    Value::String(s) => format!("string \"{}\"", s),
+                                    _ => idx.type_name().to_string(),
+                                };
+                                *e.borrow_mut() = Some(Value::String(format!(
+                                    "Cannot index {} with {}",
+                                    base_val.type_name(),
+                                    idx_desc
+                                )));
+                            });
+                        }
+                    }
+                });
+            });
+        }
+
+        Filter::PostfixSlice(base, start_f, end_f) => {
+            // A[s:e] — evaluate base, s, e all against original input.
+            eval(base, input, env, &mut |base_val| {
+                let start_val = start_f.as_ref().map(|f| {
+                    let mut v = Value::Null;
+                    eval(f, input, env, &mut |val| v = val);
+                    if let Value::Double(f, _) = &v
+                        && f.is_finite()
+                    {
+                        return Value::Int(f.floor() as i64);
+                    }
+                    v
+                });
+                let end_val = end_f.as_ref().map(|f| {
+                    let mut v = Value::Null;
+                    eval(f, input, env, &mut |val| v = val);
+                    if let Value::Double(f, _) = &v
+                        && f.is_finite()
+                    {
+                        return Value::Int(f.ceil() as i64);
+                    }
+                    v
+                });
+
+                match &base_val {
+                    Value::Array(arr) => {
+                        let len = arr.len() as i64;
+                        let s = resolve_slice_index(start_val.as_ref(), 0, len);
+                        let e = resolve_slice_index(end_val.as_ref(), len, len);
+                        if s < e {
+                            output(Value::Array(Rc::new(arr[s as usize..e as usize].to_vec())));
+                        } else {
+                            output(Value::Array(Rc::new(vec![])));
+                        }
+                    }
+                    Value::String(s) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let len = chars.len() as i64;
+                        let start = resolve_slice_index(start_val.as_ref(), 0, len);
+                        let end = resolve_slice_index(end_val.as_ref(), len, len);
+                        if start < end {
+                            let sliced: String =
+                                chars[start as usize..end as usize].iter().collect();
+                            output(Value::String(sliced));
+                        } else {
+                            output(Value::String(String::new()));
+                        }
+                    }
+                    Value::Null => output(Value::Null),
+                    _ => {
+                        LAST_ERROR.with(|e| {
+                            *e.borrow_mut() = Some(Value::String(format!(
+                                "{} ({}) cannot be sliced",
+                                base_val.type_name(),
+                                base_val.short_desc()
+                            )));
+                        });
+                    }
+                }
+            });
+        }
+
+        Filter::Label(name, body) => {
+            eval(body, input, env, &mut |v| {
+                if BREAK_SIGNAL.with(|b| b.borrow().is_none()) {
+                    output(v);
+                }
+            });
+            // Clear break signal if it matches our label
+            BREAK_SIGNAL.with(|b| {
+                if b.borrow().as_deref() == Some(name.as_str()) {
+                    *b.borrow_mut() = None;
+                }
+            });
+        }
+
+        Filter::Break(name) => {
+            BREAK_SIGNAL.with(|b| {
+                *b.borrow_mut() = Some(name.clone());
             });
         }
     }
@@ -724,6 +894,25 @@ fn eval_assign(
     env: &Env,
     output: &mut dyn FnMut(Value),
 ) {
+    // For `= expr` where expr is a generator, produce one output per RHS value.
+    if op == AssignOp::Set {
+        // Collect all RHS values (generators produce multiple)
+        let mut rhs_vals = Vec::new();
+        eval(rhs, input, env, &mut |v| rhs_vals.push(v));
+
+        for rhs_val in rhs_vals {
+            let set_updater = |_current: &Value| -> Option<Value> { Some(rhs_val.clone()) };
+            if is_update_path_supported(path_filter) {
+                if let Some(result) = update_recursive(path_filter, input, env, &set_updater) {
+                    output(result);
+                }
+            } else {
+                eval_assign_via_paths(path_filter, input, &set_updater, output);
+            }
+        }
+        return;
+    }
+
     // Build the leaf updater closure based on the operation type.
     // Returns Some(new_value) or None (for deletion, e.g. |= empty).
     type Updater<'a> = Box<dyn Fn(&Value) -> Option<Value> + 'a>;
@@ -736,16 +925,6 @@ fn eval_assign(
                 }
             });
             result // None means |= empty → deletion
-        }),
-        AssignOp::Set => Box::new(|_current: &Value| {
-            // = evaluates RHS with the ORIGINAL input, not the value at path
-            let mut result = None;
-            eval(rhs, input, env, &mut |v| {
-                if result.is_none() {
-                    result = Some(v);
-                }
-            });
-            result
         }),
         AssignOp::Alt => Box::new(|current: &Value| {
             // //= only updates if current value is null or false
@@ -807,7 +986,8 @@ fn eval_assign(
 fn is_update_path_supported(f: &Filter) -> bool {
     match f {
         Filter::Identity | Filter::Field(_) | Filter::Iterate | Filter::Select(_) => true,
-        Filter::Index(_) => true,
+        Filter::Index(_) | Filter::Slice(_, _) => true,
+        Filter::PostfixIndex(a, _) | Filter::PostfixSlice(a, _, _) => is_update_path_supported(a),
         Filter::Pipe(a, b) => is_update_path_supported(a) && is_update_path_supported(b),
         Filter::Comma(items) => items.iter().all(is_update_path_supported),
         _ => false,
@@ -845,14 +1025,20 @@ fn update_recursive(
                         result.push((k.clone(), v.clone()));
                     }
                 }
-                if !found && let Some(new_v) = updater(&Value::Null) {
-                    result.push((name.clone(), new_v));
+                if !found {
+                    if let Some(new_v) = updater(&Value::Null) {
+                        result.push((name.clone(), new_v));
+                    } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
+                        return None; // propagate error
+                    }
                 }
                 Some(Value::Object(Rc::new(result)))
             }
             Value::Null => {
                 if let Some(new_v) = updater(&Value::Null) {
                     Some(Value::Object(Rc::new(vec![(name.clone(), new_v)])))
+                } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
+                    None // propagate error
                 } else {
                     Some(Value::Null)
                 }
@@ -884,8 +1070,27 @@ fn update_recursive(
         },
 
         Filter::Index(idx_f) => {
+            let mut raw_indices = Vec::new();
+            eval(idx_f, input, env, &mut |v| raw_indices.push(v));
+
+            // Truncate float indices to int, handle NaN
             let mut indices = Vec::new();
-            eval(idx_f, input, env, &mut |v| indices.push(v));
+            for v in raw_indices {
+                match &v {
+                    Value::Double(f, _) if f.is_nan() => {
+                        LAST_ERROR.with(|e| {
+                            *e.borrow_mut() = Some(Value::String(
+                                "Cannot set array element at NaN index".into(),
+                            ));
+                        });
+                        return None;
+                    }
+                    Value::Double(f, _) if f.is_finite() => {
+                        indices.push(Value::Int(*f as i64));
+                    }
+                    _ => indices.push(v),
+                }
+            }
 
             match input {
                 Value::Array(arr) => {
@@ -944,16 +1149,35 @@ fn update_recursive(
                     if let Some(idx_val) = indices.first() {
                         match idx_val {
                             Value::Int(i) => {
-                                let idx = (*i).max(0) as usize;
+                                if *i < 0 {
+                                    LAST_ERROR.with(|e| {
+                                        *e.borrow_mut() = Some(Value::String(
+                                            "Out of bounds negative array index".into(),
+                                        ));
+                                    });
+                                    return None;
+                                }
+                                if *i > 1_000_000 {
+                                    LAST_ERROR.with(|e| {
+                                        *e.borrow_mut() =
+                                            Some(Value::String("Array index too large".into()));
+                                    });
+                                    return None;
+                                }
+                                let idx = *i as usize;
                                 let mut arr = vec![Value::Null; idx + 1];
                                 if let Some(new_v) = updater(&Value::Null) {
                                     arr[idx] = new_v;
+                                } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
+                                    return None;
                                 }
                                 Some(Value::Array(Rc::new(arr)))
                             }
                             Value::String(k) => {
                                 if let Some(new_v) = updater(&Value::Null) {
                                     Some(Value::Object(Rc::new(vec![(k.clone(), new_v)])))
+                                } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
+                                    None
                                 } else {
                                     Some(Value::Null)
                                 }
@@ -966,6 +1190,98 @@ fn update_recursive(
                 }
                 _ => Some(input.clone()),
             }
+        }
+
+        Filter::Slice(start_f, end_f) => {
+            match input {
+                Value::String(_) => {
+                    LAST_ERROR.with(|e| {
+                        *e.borrow_mut() = Some(Value::String("Cannot update string slices".into()));
+                    });
+                    None
+                }
+                Value::Array(arr) => {
+                    let len = arr.len() as i64;
+                    let s = resolve_slice_index(
+                        start_f
+                            .as_ref()
+                            .map(|f| {
+                                let mut v = Value::Null;
+                                eval(f, input, env, &mut |val| v = val);
+                                // floor for start
+                                if let Value::Double(fv, _) = &v
+                                    && fv.is_finite()
+                                {
+                                    return Value::Int(fv.floor() as i64);
+                                }
+                                v
+                            })
+                            .as_ref(),
+                        0,
+                        len,
+                    );
+                    let e = resolve_slice_index(
+                        end_f
+                            .as_ref()
+                            .map(|f| {
+                                let mut v = Value::Null;
+                                eval(f, input, env, &mut |val| v = val);
+                                // ceil for end
+                                if let Value::Double(fv, _) = &v
+                                    && fv.is_finite()
+                                {
+                                    return Value::Int(fv.ceil() as i64);
+                                }
+                                v
+                            })
+                            .as_ref(),
+                        len,
+                        len,
+                    );
+                    let s = s as usize;
+                    let e = e as usize;
+                    if let Some(new_val) =
+                        updater(&Value::Array(Rc::new(arr[s..e.min(arr.len())].to_vec())))
+                    {
+                        let mut result = Vec::new();
+                        result.extend_from_slice(&arr[..s]);
+                        if let Value::Array(new_arr) = &new_val {
+                            result.extend_from_slice(new_arr);
+                        } else {
+                            result.push(new_val);
+                        }
+                        if e < arr.len() {
+                            result.extend_from_slice(&arr[e..]);
+                        }
+                        Some(Value::Array(Rc::new(result)))
+                    } else {
+                        // Deletion: remove the slice
+                        let mut result = Vec::new();
+                        result.extend_from_slice(&arr[..s]);
+                        if e < arr.len() {
+                            result.extend_from_slice(&arr[e..]);
+                        }
+                        Some(Value::Array(Rc::new(result)))
+                    }
+                }
+                _ => Some(input.clone()),
+            }
+        }
+
+        Filter::PostfixIndex(base, idx) => {
+            // PostfixIndex(base, idx) — navigate base, then update with Index
+            let idx_filter = Filter::Index(idx.clone());
+            update_recursive(base, input, env, &|val: &Value| -> Option<Value> {
+                update_recursive(&idx_filter, val, env, updater)
+            })
+        }
+
+        Filter::PostfixSlice(base, s, e) => {
+            // PostfixSlice(base, s, e) — navigate base, then update with Slice
+            let slice_filter = Filter::Slice(s.clone(), e.clone());
+            update_recursive(base, input, env, &|val: &Value| -> Option<Value> {
+                update_recursive(&slice_filter, val, env, updater)
+            })
         }
 
         Filter::Pipe(a, b) => {
@@ -1025,9 +1341,13 @@ fn eval_assign_via_paths(
     for path in &paths {
         let current = value_ops::get_path(&result, path);
         match updater(&current) {
-            Some(new_val) => {
-                result = value_ops::set_path(&result, path, &new_val);
-            }
+            Some(new_val) => match value_ops::set_path(&result, path, &new_val) {
+                Ok(v) => result = v,
+                Err(msg) => {
+                    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+                    return;
+                }
+            },
             None => {
                 deletions.push(path.clone());
             }
@@ -1860,14 +2180,14 @@ mod tests {
 
     #[test]
     fn eval_arith_generator() {
-        // (1,2) + (10,20) should produce 11, 21, 12, 22
+        // (1,2) + (10,20): RHS outer loop → 11, 12, 21, 22 (matches jq)
         let results = eval_all(&parse("(1,2) + (10,20)"), &Value::Null);
         assert_eq!(
             results,
             vec![
                 Value::Int(11),
-                Value::Int(21),
                 Value::Int(12),
+                Value::Int(21),
                 Value::Int(22),
             ]
         );
@@ -2638,12 +2958,12 @@ mod tests {
     // --- implode edge cases ---
 
     #[test]
-    fn implode_negative_codepoint_dropped() {
-        // Negative i64 wraps to invalid u32 codepoint → char::from_u32 returns None → dropped
+    fn implode_negative_codepoint_replaced() {
+        // Negative i64 → out of range → replacement char U+FFFD (jq behavior)
         let input = Value::Array(Rc::new(vec![Value::Int(-1)]));
         assert_eq!(
             eval_one(&parse("implode"), &input),
-            Value::String("".into())
+            Value::String("\u{FFFD}".into())
         );
     }
 

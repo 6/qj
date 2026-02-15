@@ -49,7 +49,12 @@ pub(super) fn eval_paths(
                 eval(&args[0], input, env, &mut |v| path = v);
                 eval(&args[1], input, env, &mut |v| val = v);
                 if let Value::Array(path_arr) = path {
-                    output(set_path(input, &path_arr, &val));
+                    match set_path(input, &path_arr, &val) {
+                        Ok(v) => output(v),
+                        Err(msg) => {
+                            LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+                        }
+                    }
                 }
             }
         }

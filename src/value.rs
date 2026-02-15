@@ -67,7 +67,12 @@ impl Value {
             Value::Double(f, _) => format!("{f}"),
             Value::String(s) => {
                 if s.len() > 10 {
-                    format!("\"{}...", s.chars().take(10).collect::<String>())
+                    // Truncate at ~10 bytes, aligned to char boundaries (matches jq)
+                    let mut end = 10;
+                    while end > 0 && !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("\"{}...", &s[..end])
                 } else {
                     format!("\"{s}\"")
                 }
@@ -76,8 +81,13 @@ impl Value {
                 let mut buf = Vec::new();
                 crate::output::write_compact(&mut buf, self, false).unwrap();
                 let s = String::from_utf8(buf).unwrap_or_default();
-                if s.len() > 15 {
-                    format!("{}...", &s[..15])
+                if s.len() > 13 {
+                    // jq truncates at ~11 chars + "..." for objects/arrays > 13 chars
+                    let mut end = 11;
+                    while end > 0 && !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &s[..end])
                 } else {
                     s
                 }

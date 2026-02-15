@@ -67,41 +67,35 @@ pub(super) fn eval_strings(
             }
         }
         "ltrimstr" => {
-            if let (Value::String(s), Some(arg)) = (input, args.first()) {
+            if let Some(arg) = args.first() {
                 let mut prefix = Value::Null;
                 eval(arg, input, env, &mut |v| prefix = v);
-                if let Value::String(p) = prefix {
-                    output(Value::String(
-                        s.strip_prefix(p.as_str()).unwrap_or(s).to_string(),
-                    ));
-                } else {
-                    output(input.clone());
+                match (input, &prefix) {
+                    (Value::String(s), Value::String(p)) => {
+                        output(Value::String(
+                            s.strip_prefix(p.as_str()).unwrap_or(s).to_string(),
+                        ));
+                    }
+                    _ => {
+                        set_error("startswith() requires string inputs".to_string());
+                    }
                 }
-            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
-                set_error(format!(
-                    "{} ({}) and string cannot have their strings trimmed",
-                    input.type_name(),
-                    input.short_desc()
-                ));
             }
         }
         "rtrimstr" => {
-            if let (Value::String(s), Some(arg)) = (input, args.first()) {
+            if let Some(arg) = args.first() {
                 let mut suffix = Value::Null;
                 eval(arg, input, env, &mut |v| suffix = v);
-                if let Value::String(p) = suffix {
-                    output(Value::String(
-                        s.strip_suffix(p.as_str()).unwrap_or(s).to_string(),
-                    ));
-                } else {
-                    output(input.clone());
+                match (input, &suffix) {
+                    (Value::String(s), Value::String(p)) => {
+                        output(Value::String(
+                            s.strip_suffix(p.as_str()).unwrap_or(s).to_string(),
+                        ));
+                    }
+                    _ => {
+                        set_error("endswith() requires string inputs".to_string());
+                    }
                 }
-            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
-                set_error(format!(
-                    "{} ({}) and string cannot have their strings trimmed",
-                    input.type_name(),
-                    input.short_desc()
-                ));
             }
         }
         "trimstr" => {
@@ -128,25 +122,31 @@ pub(super) fn eval_strings(
             }
         }
         "startswith" => {
-            if let (Value::String(s), Some(arg)) = (input, args.first()) {
+            if let Some(arg) = args.first() {
                 let mut prefix = Value::Null;
                 eval(arg, input, env, &mut |v| prefix = v);
-                if let Value::String(p) = prefix {
-                    output(Value::Bool(s.starts_with(p.as_str())));
+                match (input, &prefix) {
+                    (Value::String(s), Value::String(p)) => {
+                        output(Value::Bool(s.starts_with(p.as_str())));
+                    }
+                    _ => {
+                        set_error("startswith() requires string inputs".to_string());
+                    }
                 }
-            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
-                set_error("startswith() requires string inputs".to_string());
             }
         }
         "endswith" => {
-            if let (Value::String(s), Some(arg)) = (input, args.first()) {
+            if let Some(arg) = args.first() {
                 let mut suffix = Value::Null;
                 eval(arg, input, env, &mut |v| suffix = v);
-                if let Value::String(p) = suffix {
-                    output(Value::Bool(s.ends_with(p.as_str())));
+                match (input, &suffix) {
+                    (Value::String(s), Value::String(p)) => {
+                        output(Value::Bool(s.ends_with(p.as_str())));
+                    }
+                    _ => {
+                        set_error("endswith() requires string inputs".to_string());
+                    }
                 }
-            } else if !args.is_empty() && !matches!(input, Value::String(_)) {
-                set_error("endswith() requires string inputs".to_string());
             }
         }
         "split" => {
@@ -175,18 +175,44 @@ pub(super) fn eval_strings(
             if let (Value::Array(arr), Some(arg)) = (input, args.first()) {
                 eval(arg, input, env, &mut |sep| {
                     if let Value::String(p) = sep {
-                        let strs: Vec<String> = arr
-                            .iter()
-                            .filter_map(|v| match v {
-                                Value::String(s) => Some(s.clone()),
-                                Value::Int(n) => Some(itoa::Buffer::new().format(*n).into()),
-                                Value::Double(f, _) => Some(ryu::Buffer::new().format(*f).into()),
-                                Value::Null => Some(String::new()),
-                                Value::Bool(b) => Some(if *b { "true" } else { "false" }.into()),
-                                _ => None,
-                            })
-                            .collect();
-                        output(Value::String(strs.join(&p)));
+                        let mut result = String::new();
+                        let mut first = true;
+                        for v in arr.iter() {
+                            if !first {
+                                result.push_str(&p);
+                            }
+                            first = false;
+                            match v {
+                                Value::String(s) => result.push_str(s),
+                                Value::Int(n) => result.push_str(itoa::Buffer::new().format(*n)),
+                                Value::Double(f, _) => {
+                                    result.push_str(ryu::Buffer::new().format(*f))
+                                }
+                                Value::Null => {}
+                                Value::Bool(b) => {
+                                    result.push_str(if *b { "true" } else { "false" })
+                                }
+                                _ => {
+                                    // jq error: string ("partial,") and object ({...}) cannot be added
+                                    let partial_desc = if result.len() > 10 {
+                                        format!(
+                                            "\"{}...",
+                                            result.chars().take(10).collect::<String>()
+                                        )
+                                    } else {
+                                        format!("\"{result}\"")
+                                    };
+                                    set_error(format!(
+                                        "string ({}) and {} ({}) cannot be added",
+                                        partial_desc,
+                                        v.type_name(),
+                                        v.short_desc()
+                                    ));
+                                    return;
+                                }
+                            }
+                        }
+                        output(Value::String(result));
                     }
                 });
             }
@@ -312,14 +338,31 @@ pub(super) fn eval_strings(
         }
         "implode" => {
             if let Value::Array(arr) = input {
-                let s: String = arr
-                    .iter()
-                    .filter_map(|v| match v {
-                        Value::Int(n) => char::from_u32(*n as u32),
-                        _ => None,
-                    })
-                    .collect();
+                let mut s = String::new();
+                for v in arr.iter() {
+                    let cp = match v {
+                        Value::Int(n) => *n,
+                        Value::Double(f, _) if f.is_finite() => *f as i64,
+                        _ => {
+                            set_error(format!(
+                                "string ({}) can't be imploded, unicode codepoint needs to be numeric",
+                                v.short_desc()
+                            ));
+                            return;
+                        }
+                    };
+                    // Out-of-range or surrogate → replacement char U+FFFD
+                    if !(0..=1114111).contains(&cp) || (55296..=57343).contains(&cp) {
+                        s.push('\u{FFFD}');
+                    } else if let Some(c) = char::from_u32(cp as u32) {
+                        s.push(c);
+                    } else {
+                        s.push('\u{FFFD}');
+                    }
+                }
                 output(Value::String(s));
+            } else {
+                set_error("implode input must be an array".to_string());
             }
         }
         "tojson" => {
@@ -332,7 +375,7 @@ pub(super) fn eval_strings(
                 let trimmed = s.trim();
                 // Handle special numeric values that JSON doesn't normally support
                 match trimmed {
-                    "NaN" | "nan" => {
+                    "NaN" | "nan" | "-NaN" | "-nan" => {
                         output(Value::Double(f64::NAN, None));
                         return;
                     }
@@ -346,15 +389,47 @@ pub(super) fn eval_strings(
                     }
                     _ => {}
                 }
+                // Reject NaN/nan prefix followed by extra chars (e.g., "NaN1")
+                if (trimmed.starts_with("NaN")
+                    || trimmed.starts_with("nan")
+                    || trimmed.starts_with("-NaN")
+                    || trimmed.starts_with("-nan"))
+                    && trimmed != "NaN"
+                    && trimmed != "nan"
+                    && trimmed != "-NaN"
+                    && trimmed != "-nan"
+                {
+                    set_error(format!(
+                        "Invalid numeric literal at EOF at line 1, column {} (while parsing '{}')",
+                        trimmed.len(),
+                        if s.len() > 40 { &s[..40] } else { s }
+                    ));
+                    return;
+                }
                 let padded = crate::simdjson::pad_buffer(s.as_bytes());
                 match crate::simdjson::dom_parse_to_value(&padded, s.len()) {
                     Ok(val) => output(val),
-                    Err(_) => {
-                        set_error(format!(
-                            "Invalid numeric literal at EOF at line 1, column {} (while parsing '{}')",
-                            s.len(),
-                            if s.len() > 40 { &s[..40] } else { s }
-                        ));
+                    Err(_e) => {
+                        // Produce jq-compatible error message
+                        if trimmed.contains('\'') {
+                            // Single-quote detection — find position after closing single-quote
+                            let first = trimmed.find('\'').unwrap_or(0);
+                            let col = trimmed[first + 1..]
+                                .find('\'')
+                                .map(|p| first + 1 + p + 1 + 1) // +1 past close quote, +1 for 1-indexed
+                                .unwrap_or(first + 1);
+                            set_error(format!(
+                                "Invalid string literal; expected \", but got ' at line 1, column {} (while parsing '{}')",
+                                col,
+                                if s.len() > 40 { &s[..40] } else { s }
+                            ));
+                        } else {
+                            set_error(format!(
+                                "Invalid numeric literal at EOF at line 1, column {} (while parsing '{}')",
+                                s.len(),
+                                if s.len() > 40 { &s[..40] } else { s }
+                            ));
+                        }
                     }
                 }
             } else {

@@ -193,16 +193,23 @@ pub(super) fn eval_arrays(
         }
         "sort_by" => {
             if let (Value::Array(arr), Some(f)) = (input, args.first()) {
-                let mut pairs: Vec<(Value, Value)> = arr
+                let mut pairs: Vec<(Vec<Value>, Value)> = arr
                     .iter()
                     .map(|item| {
-                        let mut key = Value::Null;
-                        eval(f, item, env, &mut |v| key = v);
-                        (key, item.clone())
+                        let mut keys = Vec::new();
+                        eval(f, item, env, &mut |v| keys.push(v));
+                        (keys, item.clone())
                     })
                     .collect();
                 pairs.sort_by(|(a, _), (b, _)| {
-                    values_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                    // Lexicographic comparison of key tuples
+                    for (ak, bk) in a.iter().zip(b.iter()) {
+                        let ord = values_order(ak, bk).unwrap_or(std::cmp::Ordering::Equal);
+                        if ord != std::cmp::Ordering::Equal {
+                            return ord;
+                        }
+                    }
+                    a.len().cmp(&b.len())
                 });
                 output(Value::Array(Rc::new(
                     pairs.into_iter().map(|(_, v)| v).collect(),
@@ -393,15 +400,60 @@ pub(super) fn eval_arrays(
             }
         }
         "del" => {
-            if let Some(Filter::Field(name)) = args.first()
-                && let Value::Object(obj) = input
-            {
-                let result: Vec<(String, Value)> =
-                    obj.iter().filter(|(k, _)| k != name).cloned().collect();
-                output(Value::Object(Rc::new(result)));
-                return;
+            if let Some(path_f) = args.first() {
+                // Collect all paths to delete, resolving negative indices
+                let mut paths: Vec<Vec<Value>> = Vec::new();
+                super::super::value_ops::path_of(path_f, input, &mut Vec::new(), &mut |path_val| {
+                    if let Value::Array(arr) = path_val {
+                        paths.push(arr.as_ref().clone());
+                    }
+                });
+                if paths.is_empty() {
+                    output(input.clone());
+                    return;
+                }
+                // Resolve negative indices at each level relative to current container
+                for path in &mut paths {
+                    let mut container = input;
+                    for seg in path.iter_mut() {
+                        if let Value::Int(i) = seg {
+                            if *i < 0
+                                && let Value::Array(arr) = container
+                            {
+                                *i = (arr.len() as i64 + *i).max(0);
+                            }
+                            if let Value::Array(arr) = container {
+                                let idx = *i as usize;
+                                if idx < arr.len() {
+                                    container = &arr[idx];
+                                }
+                            }
+                        } else if let Value::String(k) = seg
+                            && let Value::Object(obj) = container
+                            && let Some((_, v)) = obj.iter().find(|(ek, _)| ek == k)
+                        {
+                            container = v;
+                        }
+                    }
+                }
+                // Sort in reverse order so deletions don't shift indices
+                paths.sort_by(|a, b| {
+                    super::super::value_ops::values_order(
+                        &Value::Array(Rc::new(b.clone())),
+                        &Value::Array(Rc::new(a.clone())),
+                    )
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                // Deduplicate paths (a path that's a prefix of another already deletes it)
+                paths.dedup();
+                let mut result = input.clone();
+                for path in &paths {
+                    result = super::super::value_ops::del_path(&result, path);
+                }
+                output(result);
+            } else {
+                output(input.clone());
             }
-            output(input.clone());
         }
         "transpose" => {
             if let Value::Array(arr) = input {
@@ -562,7 +614,7 @@ pub(super) fn eval_arrays(
                     if n < 0 {
                         LAST_ERROR.with(|e| {
                             *e.borrow_mut() =
-                                Some(Value::String("nth doesn't support negative count".into()));
+                                Some(Value::String("nth doesn't support negative indices".into()));
                         });
                         return;
                     }
@@ -601,9 +653,17 @@ pub(super) fn eval_arrays(
                         Value::Array(arr) => {
                             let mut new_arr = Vec::with_capacity(arr.len());
                             for v in arr.iter() {
+                                // Take only first output from recursive walk
+                                let mut first = None;
                                 walk_inner(v, f, env, &mut |walked| {
-                                    new_arr.push(walked);
+                                    if first.is_none() {
+                                        first = Some(walked);
+                                    }
                                 });
+                                if let Some(walked) = first {
+                                    new_arr.push(walked);
+                                }
+                                // No output → element removed (e.g., select filtered it)
                             }
                             let reconstructed = Value::Array(Rc::new(new_arr));
                             eval(f, &reconstructed, env, output);
@@ -611,9 +671,17 @@ pub(super) fn eval_arrays(
                         Value::Object(obj) => {
                             let mut new_obj = Vec::with_capacity(obj.len());
                             for (k, v) in obj.iter() {
+                                // Take only first output from recursive walk
+                                let mut first = None;
                                 walk_inner(v, f, env, &mut |walked| {
-                                    new_obj.push((k.clone(), walked));
+                                    if first.is_none() {
+                                        first = Some(walked);
+                                    }
                                 });
+                                if let Some(walked) = first {
+                                    new_obj.push((k.clone(), walked));
+                                }
+                                // No output → key removed (e.g., select filtered it)
                             }
                             let reconstructed = Value::Object(Rc::new(new_obj));
                             eval(f, &reconstructed, env, output);
@@ -672,15 +740,18 @@ pub(super) fn eval_arrays(
                 output(Value::Bool(found));
             }
             2 => {
+                // IN(g; s): check if any value from g is found in s
+                let mut found = false;
                 eval(&args[0], input, env, &mut |sv| {
-                    let mut found = false;
-                    eval(&args[1], input, env, &mut |gv| {
-                        if !found && values_equal(&sv, &gv) {
-                            found = true;
-                        }
-                    });
-                    output(Value::Bool(found));
+                    if !found {
+                        eval(&args[1], input, env, &mut |gv| {
+                            if !found && values_equal(&sv, &gv) {
+                                found = true;
+                            }
+                        });
+                    }
                 });
+                output(Value::Bool(found));
             }
             _ => {}
         },
@@ -802,13 +873,25 @@ pub(super) fn eval_arrays(
             if let Some(path_f) = args.first() {
                 // Use path() to get paths, then copy values via setpath
                 let mut acc = Value::Null;
+                let mut had_error = false;
                 super::super::value_ops::path_of(path_f, input, &mut Vec::new(), &mut |path_val| {
+                    if had_error {
+                        return;
+                    }
                     if let Value::Array(path_arr) = &path_val {
                         let val = super::super::value_ops::get_path(input, path_arr);
-                        acc = super::super::value_ops::set_path(&acc, path_arr, &val);
+                        match super::super::value_ops::set_path(&acc, path_arr, &val) {
+                            Ok(v) => acc = v,
+                            Err(msg) => {
+                                set_error(msg);
+                                had_error = true;
+                            }
+                        }
                     }
                 });
-                output(acc);
+                if !had_error {
+                    output(acc);
+                }
             }
         }
         "INDEX" => match args.len() {
@@ -863,7 +946,8 @@ pub(super) fn eval_arrays(
                 // First evaluate the index
                 let mut index = Value::Null;
                 eval(&args[0], input, env, &mut |v| index = v);
-                // Then iterate over input and join
+                // Then iterate over input and join, collecting results
+                let mut results = Vec::new();
                 if let Value::Array(arr) = input {
                     for item in arr.iter() {
                         eval(&args[1], item, env, &mut |key| {
@@ -883,10 +967,11 @@ pub(super) fn eval_arrays(
                             } else {
                                 Value::Null
                             };
-                            output(Value::Array(Rc::new(vec![item.clone(), lookup])));
+                            results.push(Value::Array(Rc::new(vec![item.clone(), lookup])));
                         });
                     }
                 }
+                output(Value::Array(Rc::new(results)));
             }
         }
         _ => {}

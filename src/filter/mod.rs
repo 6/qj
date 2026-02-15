@@ -105,6 +105,15 @@ pub enum Filter {
     /// Alternative match: `expr as pat1 ?// pat2 ?// ... | body`
     /// Tries each pattern left-to-right, uses first that matches.
     AltBind(Box<Filter>, Vec<Pattern>, Box<Filter>),
+    /// Label: `label $name | body` — catches `break $name` signals
+    Label(String, Box<Filter>),
+    /// Break: `break $name` — signals an unwind to matching `label $name`
+    Break(String),
+    /// Postfix index: `A[B]` — evaluates A for navigation and B against
+    /// the same (original) input, then indexes result-of-A with result-of-B.
+    PostfixIndex(Box<Filter>, Box<Filter>),
+    /// Postfix slice: `A[s:e]` — evaluates A, s, e against same input.
+    PostfixSlice(Box<Filter>, Option<Box<Filter>>, Option<Box<Filter>>),
 }
 
 /// Object construction key — can be a literal string or computed.
@@ -367,6 +376,14 @@ impl Filter {
             Filter::Assign(path, _, rhs) => path.is_parallel_safe() && rhs.is_parallel_safe(),
             Filter::Def { body, rest, .. } => body.is_parallel_safe() && rest.is_parallel_safe(),
             Filter::AltBind(expr, _, body) => expr.is_parallel_safe() && body.is_parallel_safe(),
+            Filter::Label(_, body) => body.is_parallel_safe(),
+            Filter::Break(_) => true,
+            Filter::PostfixIndex(base, idx) => base.is_parallel_safe() && idx.is_parallel_safe(),
+            Filter::PostfixSlice(base, s, e) => {
+                base.is_parallel_safe()
+                    && s.as_ref().is_none_or(|f| f.is_parallel_safe())
+                    && e.as_ref().is_none_or(|f| f.is_parallel_safe())
+            }
             Filter::StringInterp(parts) => parts.iter().all(|p| match p {
                 StringPart::Lit(_) => true,
                 StringPart::Expr(f) => f.is_parallel_safe(),

@@ -427,6 +427,11 @@ impl<'a> Parser<'a> {
                             self.advance();
                             node = Filter::Pipe(Box::new(node), Box::new(Filter::Field(name)));
                         }
+                        Some(Token::LBrack) => {
+                            // .foo.[] or .foo.[expr] — treat as postfix bracket
+                            // Don't consume the dot; fall through to LBrack case
+                            continue;
+                        }
                         _ => {
                             bail!("expected field name after '.'");
                         }
@@ -439,9 +444,21 @@ impl<'a> Parser<'a> {
                         self.advance();
                         node = Filter::Pipe(Box::new(node), Box::new(Filter::Iterate));
                     } else {
-                        // .[expr] or .[start:end]
+                        // .[expr] or .[start:end] — postfix form
+                        // In jq, index/slice expressions evaluate against
+                        // the original input, not the navigated result.
                         let inner = self.parse_bracket_index_or_slice()?;
-                        node = Filter::Pipe(Box::new(node), Box::new(inner));
+                        match inner {
+                            Filter::Index(idx) => {
+                                node = Filter::PostfixIndex(Box::new(node), idx);
+                            }
+                            Filter::Slice(s, e) => {
+                                node = Filter::PostfixSlice(Box::new(node), s, e);
+                            }
+                            _ => {
+                                node = Filter::Pipe(Box::new(node), Box::new(inner));
+                            }
+                        }
                     }
                 }
                 Some(Token::Question) => {
@@ -529,7 +546,7 @@ impl<'a> Parser<'a> {
             Some(Token::Reduce) => {
                 // reduce source as pattern (init; update)
                 self.advance();
-                let source = self.parse_postfix()?;
+                let source = self.parse_compare()?;
                 self.expect(&Token::As)?;
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::LParen)?;
@@ -548,7 +565,7 @@ impl<'a> Parser<'a> {
                 // foreach source as pattern (init; update) or
                 // foreach source as pattern (init; update; extract)
                 self.advance();
-                let source = self.parse_postfix()?;
+                let source = self.parse_compare()?;
                 self.expect(&Token::As)?;
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::LParen)?;
@@ -580,6 +597,26 @@ impl<'a> Parser<'a> {
                 } else {
                     Ok(Filter::Try(Box::new(body)))
                 }
+            }
+            Some(Token::Label) => {
+                self.advance();
+                let name = match self.advance() {
+                    Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
+                    Some(tok) => bail!("expected $name after 'label', got {tok:?}"),
+                    None => bail!("expected $name after 'label', got end of input"),
+                };
+                self.expect(&Token::Pipe)?;
+                let body = self.parse_pipe()?;
+                Ok(Filter::Label(name, Box::new(body)))
+            }
+            Some(Token::Break) => {
+                self.advance();
+                let name = match self.advance() {
+                    Some(Token::Ident(s)) if s.starts_with('$') => s.clone(),
+                    Some(tok) => bail!("expected $name after 'break', got {tok:?}"),
+                    None => bail!("expected $name after 'break', got end of input"),
+                };
+                Ok(Filter::Break(name))
             }
             Some(Token::Not) => {
                 self.advance();
@@ -786,6 +823,8 @@ impl<'a> Parser<'a> {
             Token::Foreach => Some("foreach"),
             Token::Select => Some("select"),
             Token::Def => Some("def"),
+            Token::Label => Some("label"),
+            Token::Break => Some("break"),
             Token::True => Some("true"),
             Token::False => Some("false"),
             Token::Null => Some("null"),
@@ -807,11 +846,19 @@ impl<'a> Parser<'a> {
         // Key can be: ident, keyword-as-ident, string, interp-string, or (expr)
         let key = match self.peek() {
             Some(Token::Ident(s)) if s.starts_with('$') => {
-                // $var reference: {$x} means {($x): .$x} — value is the var value
+                // $var reference: {$x} means key="x" (name without $), value=$x
                 let name = s.clone();
                 self.advance();
-                let var_ref = Filter::Var(name);
-                ObjKey::Expr(Box::new(var_ref))
+                // Check for colon → explicit value: {$x: expr}
+                if self.peek() == Some(&Token::Colon) {
+                    self.advance();
+                    let val = self.parse_pipe_no_comma()?;
+                    return Ok((ObjKey::Expr(Box::new(Filter::Var(name))), val));
+                }
+                // Shorthand: {$x} → key="x", value=$x
+                let key_name = name[1..].to_string();
+                let val = Filter::Var(name);
+                return Ok((ObjKey::Name(key_name), val));
             }
             Some(Token::Ident(_)) => {
                 let name = match self.advance().unwrap() {
