@@ -1,6 +1,6 @@
 # qj
 
-Quick JSON. A jq-compatible processor, 3-60x faster on large inputs.
+Quick JSON. A jq-compatible processor, 2-50x faster on large inputs.
 
 ## When to use qj instead of jq
 
@@ -34,20 +34,16 @@ All benchmarks on M4 Pro MacBook Pro. See [benches/](benches/) for methodology.
 
 Parse-dominated workloads (identity, field extraction) show the largest wins. Complex filter workloads where the evaluator dominates are closer to 2-3x over jq and roughly even with jaq.
 
-GB-scale (GH Archive):
+GB-scale NDJSON (1.1 GB GH Archive, parallel processing):
 
-| File | Workload | qj | jq | Speedup |
-|------|----------|----|----|---------|
-| 1.1 GB NDJSON | `-c '.'` | 822ms | 28.3s | **34x** |
-| 1.1 GB NDJSON | filter | 3.05s | 7.51s | **2.5x** |
-| 1.1 GB JSON | `-c '.'` | 474ms | 29.1s | **61x** |
-| 1.1 GB JSON | filter | 3.89s | 13.6s | **3.5x** |
-| 4.8 GB NDJSON | `-c '.'` | 3.52s | 120.7s | **34x** |
-| 4.8 GB JSON† | filter | 22.5s | 62.1s | **2.8x** |
+| Workload | qj | jq | Speedup |
+|----------|----|----|---------|
+| `-c '.'` (minify) | 779ms | 27.9s | **36x** |
+| `.type` (field extract) | 488ms | 7.15s | **15x** |
+| `select(.type == "PushEvent")` | 550ms | 12.7s | **23x** |
+| select + construct | 2.76s | 7.46s | **2.7x** |
 
-†serde_json fallback — simdjson has a 4 GB single-document limit, so qj falls back to serde_json for larger JSON files. **NDJSON (JSONL) is unaffected** (each line is parsed independently).
-
-See [full GB-scale results](benches/results_large_only.md) and [tool comparison data](benches/results.md).
+Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/results_large_only.md)). See also [tool comparison data](benches/results.md).
 
 ## How it works
 
