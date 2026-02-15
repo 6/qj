@@ -4003,3 +4003,82 @@ fn ndjson_jq_compat_multi_field_arr_nested() {
 fn ndjson_jq_compat_multi_field_arr_missing() {
     assert_jq_compat_ndjson("[.x, .y]", "{\"x\":1}\n{\"x\":2,\"y\":3}\n");
 }
+
+// --- Ordering operators in select ---
+
+#[test]
+fn ndjson_jq_compat_select_gt_int() {
+    assert_jq_compat_ndjson(
+        "select(.n > 10)",
+        "{\"n\":5}\n{\"n\":10}\n{\"n\":50}\n{\"n\":100}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_lt_int() {
+    assert_jq_compat_ndjson("select(.n < 10)", "{\"n\":5}\n{\"n\":10}\n{\"n\":50}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_ge_int() {
+    assert_jq_compat_ndjson("select(.n >= 10)", "{\"n\":5}\n{\"n\":10}\n{\"n\":50}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_le_int() {
+    assert_jq_compat_ndjson("select(.n <= 10)", "{\"n\":5}\n{\"n\":10}\n{\"n\":50}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_gt_float() {
+    assert_jq_compat_ndjson(
+        "select(.n > 3)",
+        "{\"n\":3.14}\n{\"n\":2.71}\n{\"n\":1.0}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_gt_negative() {
+    assert_jq_compat_ndjson("select(.n > -1)", "{\"n\":-5}\n{\"n\":0}\n{\"n\":5}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_gt_string() {
+    assert_jq_compat_ndjson(
+        "select(.s > \"banana\")",
+        "{\"s\":\"apple\"}\n{\"s\":\"banana\"}\n{\"s\":\"cherry\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_gt_field_extract() {
+    assert_jq_compat_ndjson(
+        "select(.n > 10) | .name",
+        "{\"n\":20,\"name\":\"a\"}\n{\"n\":5,\"name\":\"b\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_gt_obj_extract() {
+    assert_jq_compat_ndjson(
+        "select(.n > 10) | {name}",
+        "{\"n\":20,\"name\":\"a\"}\n{\"n\":5,\"name\":\"b\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_gt_arr_extract() {
+    assert_jq_compat_ndjson(
+        "select(.n > 10) | [.n, .name]",
+        "{\"n\":20,\"name\":\"a\"}\n{\"n\":5,\"name\":\"b\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_gt_mixed_types() {
+    // jq type ordering: null < false < true < numbers < strings
+    assert_jq_compat_ndjson(
+        "select(.v > 5)",
+        "{\"v\":10}\n{\"v\":3}\n{\"v\":\"hello\"}\n{\"v\":null}\n",
+    );
+}

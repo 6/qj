@@ -612,10 +612,6 @@ fn detect_select_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
         Filter::Compare(lhs, op, rhs) => (lhs, op, rhs),
         _ => return None,
     };
-    // Only support Eq and Ne for byte-level comparison
-    if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
-        return None;
-    }
     // Try both orientations: (.field == lit) and (lit == .field)
     let (fields, literal_bytes) = if let Some((f, b)) = try_field_literal(lhs, rhs) {
         (f, b)
@@ -740,12 +736,70 @@ fn bytes_mismatch_is_definitive(raw: &[u8], literal_bytes: &[u8]) -> bool {
     }
 }
 
-/// Process a line with the select(.field == literal) fast path.
+/// Evaluate a select predicate on raw bytes.
 ///
-/// Uses byte-level comparison as an optimization:
-/// - Bytes match → values definitely equal (fast accept)
-/// - Bytes mismatch + definitive type check → values definitely unequal (fast reject)
-/// - Bytes mismatch + ambiguous → fall back to full parse+eval (safe)
+/// Returns `Some(true)` to output the line, `Some(false)` to skip, `None` to fallback.
+fn evaluate_select_predicate(raw: &[u8], literal_bytes: &[u8], op: CmpOp) -> Option<bool> {
+    match op {
+        CmpOp::Eq | CmpOp::Ne => {
+            if raw == literal_bytes {
+                Some(matches!(op, CmpOp::Eq))
+            } else if bytes_mismatch_is_definitive(raw, literal_bytes) {
+                Some(matches!(op, CmpOp::Ne))
+            } else {
+                None // ambiguous (e.g. 1.0 vs 1, \u0041 vs A)
+            }
+        }
+        CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge => {
+            let raw_type = json_type_tag(raw);
+            let lit_type = json_type_tag(literal_bytes);
+
+            // Both numbers: parse and compare numerically
+            if raw_type == b'0' && lit_type == b'0' {
+                if let (Some(a), Some(b)) =
+                    (parse_json_number(raw), parse_json_number(literal_bytes))
+                {
+                    let ord = a.partial_cmp(&b)?;
+                    return Some(match op {
+                        CmpOp::Lt => ord == std::cmp::Ordering::Less,
+                        CmpOp::Le => ord != std::cmp::Ordering::Greater,
+                        CmpOp::Gt => ord == std::cmp::Ordering::Greater,
+                        CmpOp::Ge => ord != std::cmp::Ordering::Less,
+                        _ => unreachable!(),
+                    });
+                }
+                return None;
+            }
+            // Both strings without escapes: compare inner bytes (UTF-8 preserves codepoint order)
+            if raw_type == b'"' && lit_type == b'"' {
+                let raw_inner = &raw[1..raw.len().saturating_sub(1)];
+                let lit_inner = &literal_bytes[1..literal_bytes.len().saturating_sub(1)];
+                if !raw_inner.contains(&b'\\') && !lit_inner.contains(&b'\\') {
+                    let ord = raw_inner.cmp(lit_inner);
+                    return Some(match op {
+                        CmpOp::Lt => ord == std::cmp::Ordering::Less,
+                        CmpOp::Le => ord != std::cmp::Ordering::Greater,
+                        CmpOp::Gt => ord == std::cmp::Ordering::Greater,
+                        CmpOp::Ge => ord != std::cmp::Ordering::Less,
+                        _ => unreachable!(),
+                    });
+                }
+                return None;
+            }
+            // Different types or unsupported: fall back
+            None
+        }
+    }
+}
+
+/// Parse raw JSON number bytes to f64.
+fn parse_json_number(bytes: &[u8]) -> Option<f64> {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+}
+
+/// Process a line with the select(.field op literal) fast path.
 #[allow(clippy::too_many_arguments)]
 fn process_line_select_eq(
     trimmed: &[u8],
@@ -764,30 +818,22 @@ fn process_line_select_eq(
     let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
         .context("failed to extract field from NDJSON line")?;
 
-    if raw == literal_bytes {
-        // Bytes match → values definitely equal
-        if matches!(op, CmpOp::Eq) {
+    match evaluate_select_predicate(&raw, literal_bytes, op) {
+        Some(true) => {
             *had_output = true;
             output_buf.extend_from_slice(trimmed);
             write_line_terminator(output_buf, config);
         }
-    } else if bytes_mismatch_is_definitive(&raw, literal_bytes) {
-        // Bytes don't match and we're certain values aren't equal
-        if matches!(op, CmpOp::Ne) {
-            *had_output = true;
-            output_buf.extend_from_slice(trimmed);
-            write_line_terminator(output_buf, config);
+        Some(false) => {}
+        None => {
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
         }
-    } else {
-        // Ambiguous: bytes differ but values might be equal (e.g. 1.0 vs 1, \u0041 vs A).
-        // Fall back to full parse + eval for correctness.
-        let padded = prepare_padded(trimmed, scratch);
-        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
-            .context("failed to parse NDJSON line")?;
-        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
-            *had_output = true;
-            output::write_value(output_buf, &v, config).ok();
-        });
     }
     Ok(())
 }
@@ -837,9 +883,6 @@ fn detect_select_extract_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
         Filter::Compare(l, op, r) => (l.as_ref(), op, r.as_ref()),
         _ => return None,
     };
-    if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
-        return None;
-    }
     let (pred_fields, literal_bytes) = if let Some((f, b)) = try_field_literal(cmp_lhs, cmp_rhs) {
         (f, b)
     } else if let Some((f, b)) = try_field_literal(cmp_rhs, cmp_lhs) {
@@ -1040,9 +1083,8 @@ fn process_line_select_eq_field(
     let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
         .context("failed to extract predicate field from NDJSON line")?;
 
-    if raw_pred == literal_bytes {
-        // Bytes match → values definitely equal
-        if matches!(op, CmpOp::Eq) {
+    match evaluate_select_predicate(&raw_pred, literal_bytes, op) {
+        Some(true) => {
             let padded = prepare_padded(trimmed, scratch);
             let out_refs: Vec<&str> = out_fields.iter().map(|s| s.as_str()).collect();
             let raw_out = simdjson::dom_find_field_raw(padded, trimmed.len(), &out_refs)
@@ -1051,26 +1093,16 @@ fn process_line_select_eq_field(
             emit_raw_field(output_buf, &raw_out, config);
             write_line_terminator(output_buf, config);
         }
-    } else if bytes_mismatch_is_definitive(&raw_pred, literal_bytes) {
-        // Bytes don't match and we're certain values aren't equal
-        if matches!(op, CmpOp::Ne) {
+        Some(false) => {}
+        None => {
             let padded = prepare_padded(trimmed, scratch);
-            let out_refs: Vec<&str> = out_fields.iter().map(|s| s.as_str()).collect();
-            let raw_out = simdjson::dom_find_field_raw(padded, trimmed.len(), &out_refs)
-                .context("failed to extract output field from NDJSON line")?;
-            *had_output = true;
-            emit_raw_field(output_buf, &raw_out, config);
-            write_line_terminator(output_buf, config);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
         }
-    } else {
-        // Ambiguous: fall back to full parse+eval
-        let padded = prepare_padded(trimmed, scratch);
-        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
-            .context("failed to parse NDJSON line")?;
-        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
-            *had_output = true;
-            output::write_value(output_buf, &v, config).ok();
-        });
     }
     Ok(())
 }
@@ -1163,20 +1195,18 @@ fn process_line_select_eq_obj(
     let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
         .context("failed to extract predicate field from NDJSON line")?;
 
-    let should_output = if raw_pred == literal_bytes {
-        matches!(op, CmpOp::Eq)
-    } else if bytes_mismatch_is_definitive(&raw_pred, literal_bytes) {
-        matches!(op, CmpOp::Ne)
-    } else {
-        // Ambiguous: fall back to full parse+eval
-        let padded = prepare_padded(trimmed, scratch);
-        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
-            .context("failed to parse NDJSON line")?;
-        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
-            *had_output = true;
-            output::write_value(output_buf, &v, config).ok();
-        });
-        return Ok(());
+    let should_output = match evaluate_select_predicate(&raw_pred, literal_bytes, op) {
+        Some(b) => b,
+        None => {
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+            return Ok(());
+        }
     };
 
     if should_output {
@@ -1225,19 +1255,18 @@ fn process_line_select_eq_arr(
     let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
         .context("failed to extract predicate field from NDJSON line")?;
 
-    let should_output = if raw_pred == literal_bytes {
-        matches!(op, CmpOp::Eq)
-    } else if bytes_mismatch_is_definitive(&raw_pred, literal_bytes) {
-        matches!(op, CmpOp::Ne)
-    } else {
-        let padded = prepare_padded(trimmed, scratch);
-        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
-            .context("failed to parse NDJSON line")?;
-        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
-            *had_output = true;
-            output::write_value(output_buf, &v, config).ok();
-        });
-        return Ok(());
+    let should_output = match evaluate_select_predicate(&raw_pred, literal_bytes, op) {
+        Some(b) => b,
+        None => {
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+            return Ok(());
+        }
     };
 
     if should_output {
@@ -1626,9 +1655,47 @@ mod tests {
     }
 
     #[test]
-    fn fast_path_select_gt_not_supported() {
+    fn fast_path_select_gt_supported() {
         let filter = crate::filter::parse("select(.count > 10)").unwrap();
-        assert!(matches!(detect_fast_path(&filter), NdjsonFastPath::None));
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq {
+                fields,
+                op,
+                literal_bytes,
+            } => {
+                assert_eq!(fields, vec!["count"]);
+                assert_eq!(op, CmpOp::Gt);
+                assert_eq!(literal_bytes, b"10");
+            }
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_select_lt_supported() {
+        let filter = crate::filter::parse("select(.score < 50)").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq { op, .. } => assert_eq!(op, CmpOp::Lt),
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_select_ge_supported() {
+        let filter = crate::filter::parse("select(.n >= 0)").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq { op, .. } => assert_eq!(op, CmpOp::Ge),
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_select_le_supported() {
+        let filter = crate::filter::parse("select(.n <= 100)").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq { op, .. } => assert_eq!(op, CmpOp::Le),
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2381,6 +2448,250 @@ mod tests {
         let env = crate::filter::Env::empty();
         let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "\"a\"\n");
+    }
+
+    // --- Ordering operator (>, <, >=, <=) processing tests ---
+
+    #[test]
+    fn fast_path_select_gt_int() {
+        let data = b"{\"n\":10}\n{\"n\":50}\n{\"n\":5}\n";
+        let filter = crate::filter::parse("select(.n > 9)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"n\":10}\n{\"n\":50}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_lt_int() {
+        let data = b"{\"n\":10}\n{\"n\":50}\n{\"n\":5}\n";
+        let filter = crate::filter::parse("select(.n < 10)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":5}\n");
+    }
+
+    #[test]
+    fn fast_path_select_ge_int() {
+        let data = b"{\"n\":10}\n{\"n\":50}\n{\"n\":5}\n";
+        let filter = crate::filter::parse("select(.n >= 10)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"n\":10}\n{\"n\":50}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_le_int() {
+        let data = b"{\"n\":10}\n{\"n\":50}\n{\"n\":5}\n";
+        let filter = crate::filter::parse("select(.n <= 10)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"n\":10}\n{\"n\":5}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_gt_float() {
+        let data = b"{\"n\":3.14}\n{\"n\":2.71}\n{\"n\":1.0}\n";
+        let filter = crate::filter::parse("select(.n > 3)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":3.14}\n");
+    }
+
+    #[test]
+    fn fast_path_select_gt_string_comparison() {
+        // String ordering: "b" > "a", "a" < "b"
+        let data = b"{\"s\":\"apple\"}\n{\"s\":\"banana\"}\n{\"s\":\"cherry\"}\n";
+        let filter = crate::filter::parse("select(.s > \"banana\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"s\":\"cherry\"}\n");
+    }
+
+    #[test]
+    fn fast_path_select_gt_non_number_fallback() {
+        // .s is a string, comparing with > against a number → fallback to full eval
+        // jq: select("hello" > 5) → type error / false → no output
+        let data = b"{\"s\":\"hello\"}\n{\"s\":\"world\"}\n";
+        let filter = crate::filter::parse("select(.s > 5)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        // jq: strings > numbers in type ordering, so both match
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"s\":\"hello\"}\n{\"s\":\"world\"}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_gt_field_extract() {
+        // select(.n > 10) | .name
+        let data = b"{\"n\":20,\"name\":\"a\"}\n{\"n\":5,\"name\":\"b\"}\n";
+        let filter = crate::filter::parse("select(.n > 10) | .name").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "\"a\"\n");
+    }
+
+    #[test]
+    fn fast_path_select_gt_negative_numbers() {
+        let data = b"{\"n\":-5}\n{\"n\":0}\n{\"n\":5}\n";
+        let filter = crate::filter::parse("select(.n > -1)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":0}\n{\"n\":5}\n");
+    }
+
+    // --- evaluate_select_predicate unit tests ---
+
+    #[test]
+    fn predicate_eq_match() {
+        assert_eq!(
+            evaluate_select_predicate(b"42", b"42", CmpOp::Eq),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn predicate_ne_match() {
+        assert_eq!(
+            evaluate_select_predicate(b"42", b"99", CmpOp::Ne),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn predicate_gt_numbers() {
+        assert_eq!(
+            evaluate_select_predicate(b"50", b"10", CmpOp::Gt),
+            Some(true)
+        );
+        assert_eq!(
+            evaluate_select_predicate(b"5", b"10", CmpOp::Gt),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn predicate_lt_numbers() {
+        assert_eq!(
+            evaluate_select_predicate(b"5", b"10", CmpOp::Lt),
+            Some(true)
+        );
+        assert_eq!(
+            evaluate_select_predicate(b"50", b"10", CmpOp::Lt),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn predicate_ge_numbers() {
+        assert_eq!(
+            evaluate_select_predicate(b"10", b"10", CmpOp::Ge),
+            Some(true)
+        );
+        assert_eq!(
+            evaluate_select_predicate(b"9", b"10", CmpOp::Ge),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn predicate_le_numbers() {
+        assert_eq!(
+            evaluate_select_predicate(b"10", b"10", CmpOp::Le),
+            Some(true)
+        );
+        assert_eq!(
+            evaluate_select_predicate(b"11", b"10", CmpOp::Le),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn predicate_gt_strings() {
+        assert_eq!(
+            evaluate_select_predicate(b"\"banana\"", b"\"apple\"", CmpOp::Gt),
+            Some(true)
+        );
+        assert_eq!(
+            evaluate_select_predicate(b"\"apple\"", b"\"banana\"", CmpOp::Gt),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn predicate_ordering_different_types_fallback() {
+        // Number vs string → different types → fallback
+        assert_eq!(
+            evaluate_select_predicate(b"\"hello\"", b"42", CmpOp::Gt),
+            None
+        );
+    }
+
+    #[test]
+    fn predicate_ordering_string_with_escapes_fallback() {
+        // String with backslash → fallback
+        assert_eq!(
+            evaluate_select_predicate(b"\"he\\nllo\"", b"\"world\"", CmpOp::Gt),
+            None
+        );
+    }
+
+    #[test]
+    fn predicate_float_comparison() {
+        assert_eq!(
+            evaluate_select_predicate(b"3.14", b"3.0", CmpOp::Gt),
+            Some(true)
+        );
+        assert_eq!(
+            evaluate_select_predicate(b"2.5", b"3.0", CmpOp::Gt),
+            Some(false)
+        );
     }
 
     // --- MultiFieldObj / MultiFieldArr processing tests ---

@@ -800,6 +800,120 @@ fn ndjson_select_eq_arr() {
     assert_eq!(out, "[1,\"alice\"]\n");
 }
 
+// --- Ordering operators in select (>, <, >=, <=) ---
+
+#[test]
+fn ndjson_select_gt_int() {
+    let input = r#"{"score":90,"name":"a"}
+{"score":40,"name":"b"}
+{"score":85,"name":"c"}
+"#;
+    let out = qj_stdin(&["-c", "select(.score > 50)"], input);
+    assert_eq!(
+        out,
+        "{\"score\":90,\"name\":\"a\"}\n{\"score\":85,\"name\":\"c\"}\n"
+    );
+}
+
+#[test]
+fn ndjson_select_lt_int() {
+    let input = r#"{"n":10}
+{"n":50}
+{"n":5}
+"#;
+    let out = qj_stdin(&["-c", "select(.n < 10)"], input);
+    assert_eq!(out, "{\"n\":5}\n");
+}
+
+#[test]
+fn ndjson_select_ge_int() {
+    let input = r#"{"n":10}
+{"n":50}
+{"n":5}
+"#;
+    let out = qj_stdin(&["-c", "select(.n >= 10)"], input);
+    assert_eq!(out, "{\"n\":10}\n{\"n\":50}\n");
+}
+
+#[test]
+fn ndjson_select_le_int() {
+    let input = r#"{"n":10}
+{"n":50}
+{"n":5}
+"#;
+    let out = qj_stdin(&["-c", "select(.n <= 10)"], input);
+    assert_eq!(out, "{\"n\":10}\n{\"n\":5}\n");
+}
+
+#[test]
+fn ndjson_select_gt_float() {
+    let input = r#"{"n":3.14}
+{"n":2.71}
+{"n":1.0}
+"#;
+    let out = qj_stdin(&["-c", "select(.n > 3)"], input);
+    assert_eq!(out, "{\"n\":3.14}\n");
+}
+
+#[test]
+fn ndjson_select_gt_negative() {
+    let input = r#"{"n":-5}
+{"n":0}
+{"n":5}
+"#;
+    let out = qj_stdin(&["-c", "select(.n > -1)"], input);
+    assert_eq!(out, "{\"n\":0}\n{\"n\":5}\n");
+}
+
+#[test]
+fn ndjson_select_gt_string() {
+    let input = r#"{"s":"apple"}
+{"s":"banana"}
+{"s":"cherry"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.s > "banana")"#], input);
+    assert_eq!(out, "{\"s\":\"cherry\"}\n");
+}
+
+#[test]
+fn ndjson_select_gt_field_extract() {
+    let input = r#"{"n":20,"name":"a"}
+{"n":5,"name":"b"}
+{"n":100,"name":"c"}
+"#;
+    let out = qj_stdin(&["-c", "select(.n > 10) | .name"], input);
+    assert_eq!(out, "\"a\"\n\"c\"\n");
+}
+
+#[test]
+fn ndjson_select_gt_obj_extract() {
+    let input = r#"{"n":20,"name":"a"}
+{"n":5,"name":"b"}
+"#;
+    let out = qj_stdin(&["-c", "select(.n > 10) | {name}"], input);
+    assert_eq!(out, "{\"name\":\"a\"}\n");
+}
+
+#[test]
+fn ndjson_select_gt_no_match() {
+    let input = r#"{"n":1}
+{"n":2}
+"#;
+    let out = qj_stdin(&["-c", "select(.n > 100)"], input);
+    assert_eq!(out, "");
+}
+
+#[test]
+fn ndjson_select_gt_large() {
+    let mut input = String::new();
+    for i in 0..1000 {
+        input.push_str(&format!("{{\"i\":{i}}}\n"));
+    }
+    let out = qj_stdin(&["-c", "select(.i >= 990)"], &input);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 10);
+}
+
 // --- Multi-field object construction ---
 
 #[test]
