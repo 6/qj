@@ -61,6 +61,196 @@ fn qj_file(args: &[&str], content: &str) -> String {
     String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
 }
 
+/// Run the same filter with fast path enabled (default) and disabled (QJ_NO_FAST_PATH=1),
+/// and assert that they produce identical output.
+fn assert_fast_path_matches_normal(filter: &str, input: &str) {
+    // Fast path enabled (default)
+    let fast = {
+        let output = Command::new(env!("CARGO_BIN_EXE_qj"))
+            .args(["-c", filter])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(input.as_bytes())
+                    .unwrap();
+                child.wait_with_output()
+            })
+            .expect("failed to run qj");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    // Fast path disabled
+    let normal = {
+        let output = Command::new(env!("CARGO_BIN_EXE_qj"))
+            .args(["-c", filter])
+            .env("QJ_NO_FAST_PATH", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(input.as_bytes())
+                    .unwrap();
+                child.wait_with_output()
+            })
+            .expect("failed to run qj");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    assert_eq!(
+        fast, normal,
+        "Fast path output differs from normal path for filter: {filter}"
+    );
+}
+
+// --- Fast path vs normal path comparison tests ---
+
+#[test]
+fn fast_vs_normal_field_chain() {
+    let input = "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n";
+    assert_fast_path_matches_normal(".name", input);
+}
+
+#[test]
+fn fast_vs_normal_nested_field() {
+    let input = "{\"a\":{\"b\":\"deep\"}}\n{\"a\":{\"b\":\"val\"}}\n";
+    assert_fast_path_matches_normal(".a.b", input);
+}
+
+#[test]
+fn fast_vs_normal_select_eq() {
+    let input = "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n";
+    assert_fast_path_matches_normal("select(.type == \"PushEvent\")", input);
+}
+
+#[test]
+fn fast_vs_normal_select_ne() {
+    let input = "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n";
+    assert_fast_path_matches_normal("select(.type != \"PushEvent\")", input);
+}
+
+#[test]
+fn fast_vs_normal_select_gt() {
+    let input = "{\"n\":5}\n{\"n\":15}\n{\"n\":10}\n";
+    assert_fast_path_matches_normal("select(.n > 10)", input);
+}
+
+#[test]
+fn fast_vs_normal_select_le() {
+    let input = "{\"n\":5}\n{\"n\":15}\n{\"n\":10}\n";
+    assert_fast_path_matches_normal("select(.n <= 10)", input);
+}
+
+#[test]
+fn fast_vs_normal_select_eq_extract() {
+    let input = "{\"type\":\"A\",\"x\":1}\n{\"type\":\"B\",\"x\":2}\n";
+    assert_fast_path_matches_normal("select(.type == \"A\") | .x", input);
+}
+
+#[test]
+fn fast_vs_normal_select_eq_obj() {
+    let input = "{\"type\":\"A\",\"x\":1,\"y\":2}\n{\"type\":\"B\",\"x\":3,\"y\":4}\n";
+    assert_fast_path_matches_normal("select(.type == \"A\") | {x: .x, y: .y}", input);
+}
+
+#[test]
+fn fast_vs_normal_select_eq_arr() {
+    let input = "{\"type\":\"A\",\"x\":1,\"y\":2}\n{\"type\":\"B\",\"x\":3,\"y\":4}\n";
+    assert_fast_path_matches_normal("select(.type == \"A\") | [.x, .y]", input);
+}
+
+#[test]
+fn fast_vs_normal_multi_field_obj() {
+    let input = "{\"a\":1,\"b\":2,\"c\":3}\n{\"a\":4,\"b\":5,\"c\":6}\n";
+    assert_fast_path_matches_normal("{a: .a, b: .b}", input);
+}
+
+#[test]
+fn fast_vs_normal_multi_field_arr() {
+    let input = "{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n";
+    assert_fast_path_matches_normal("[.a, .b]", input);
+}
+
+#[test]
+fn fast_vs_normal_length() {
+    let input = "{\"a\":1,\"b\":2}\n{\"x\":1}\n";
+    assert_fast_path_matches_normal("length", input);
+}
+
+#[test]
+fn fast_vs_normal_field_length() {
+    let input = "{\"items\":[1,2,3]}\n{\"items\":[4]}\n";
+    assert_fast_path_matches_normal(".items | length", input);
+}
+
+#[test]
+fn fast_vs_normal_keys() {
+    let input = "{\"b\":2,\"a\":1}\n{\"x\":1}\n";
+    assert_fast_path_matches_normal("keys", input);
+}
+
+#[test]
+fn fast_vs_normal_select_test() {
+    let input = "{\"msg\":\"error: disk full\"}\n{\"msg\":\"ok\"}\n{\"msg\":\"error: timeout\"}\n";
+    assert_fast_path_matches_normal(r#"select(.msg | test("error"))"#, input);
+}
+
+#[test]
+fn fast_vs_normal_select_startswith() {
+    let input = "{\"url\":\"/api/users\"}\n{\"url\":\"/web/home\"}\n";
+    assert_fast_path_matches_normal(r#"select(.url | startswith("/api"))"#, input);
+}
+
+#[test]
+fn fast_vs_normal_select_endswith() {
+    let input = "{\"file\":\"data.json\"}\n{\"file\":\"data.csv\"}\n";
+    assert_fast_path_matches_normal(r#"select(.file | endswith(".json"))"#, input);
+}
+
+#[test]
+fn fast_vs_normal_select_contains() {
+    let input = "{\"desc\":\"hello alice\"}\n{\"desc\":\"hello bob\"}\n";
+    assert_fast_path_matches_normal(r#"select(.desc | contains("alice"))"#, input);
+}
+
+#[test]
+fn fast_vs_normal_select_test_extract() {
+    let input = "{\"msg\":\"error: disk full\",\"code\":500}\n{\"msg\":\"ok\",\"code\":200}\n";
+    assert_fast_path_matches_normal(r#"select(.msg | test("error")) | .code"#, input);
+}
+
+#[test]
+fn fast_vs_normal_select_float_vs_int() {
+    // Edge case: 1.0 == 1 should match in both paths
+    let input = "{\"n\":1.0,\"id\":\"a\"}\n{\"n\":2,\"id\":\"b\"}\n";
+    assert_fast_path_matches_normal("select(.n == 1)", input);
+}
+
+#[test]
+fn fast_vs_normal_select_escaped_string() {
+    // Escaped strings (\n) are handled correctly by both paths
+    let input = "{\"s\":\"line1\\nline2\",\"id\":1}\n{\"s\":\"other\",\"id\":2}\n";
+    assert_fast_path_matches_normal("select(.s == \"line1\\nline2\")", input);
+}
+
+// Note: \u0041 vs "A" intentionally differs between fast/normal paths.
+// Fast path outputs the raw line (preserving \u0041), normal path re-serializes
+// (normalizing to "A"). Both are semantically correct. The fast path falls back
+// to normal eval for the predicate comparison (correctly matching \u0041 == A),
+// but when outputting the matched line, it emits the original raw bytes.
+
 // --- Basic NDJSON processing ---
 
 #[test]
