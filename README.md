@@ -29,7 +29,5 @@ See [benches/](benches/) for methodology, full results, and how to reproduce.
 
 ## Known Limitations
 
-- **`input`/`inputs` builtins** — not yet implemented (TODO stub). Multi-document streaming patterns like `jq -n 'first(inputs)'` won't work.
 - **Module system** — `import`/`include` are not supported. jx focuses on single-filter usage.
 - **Arbitrary precision numbers** — jx uses i64/f64 (not bignum/decnum). This is intentional for performance.
-- **`label`-`break`** — advanced loop control (`label $out | foreach ... (break $out)`) is partially supported.

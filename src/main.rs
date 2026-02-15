@@ -567,9 +567,10 @@ fn eval_and_output(
     had_error: &mut bool,
 ) {
     let mut nul_error = false;
+    let mut write_failed = false;
     jx::filter::eval::eval_filter_with_env(filter, input, env, &mut |v| {
-        if nul_error {
-            return; // Stop outputting after NUL error (matches jq)
+        if nul_error || write_failed {
+            return;
         }
         // Check for embedded NUL in --raw-output0 mode
         if config.null_separator
@@ -580,7 +581,9 @@ fn eval_and_output(
             return;
         }
         *had_output = true;
-        jx::output::write_value(out, &v, config).ok();
+        if jx::output::write_value(out, &v, config).is_err() {
+            write_failed = true;
+        }
     });
     if nul_error {
         *had_error = true;
@@ -738,7 +741,9 @@ fn process_file(
         let t3 = Instant::now();
         for v in &values {
             *had_output = true;
-            jx::output::write_value(out, v, ctx.config).ok();
+            if jx::output::write_value(out, v, ctx.config).is_err() {
+                break;
+            }
         }
         out.flush()?;
         let t_output = t3.elapsed();

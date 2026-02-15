@@ -3,6 +3,11 @@ name = "jx"
 version = "0.1.0"
 edition = "2024"
 autobenches = false
+description = "A faster jq — jq-compatible JSON processor using SIMD and parallel NDJSON"
+license = "MIT"
+keywords = ["json", "jq", "simd", "jsonl", "cli"]
+categories = ["command-line-utilities", "text-processing"]
+repository = "https://github.com/6/qj"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
