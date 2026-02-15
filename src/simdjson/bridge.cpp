@@ -137,7 +137,9 @@ int jx_iterate_many_count(const char* buf, size_t len, size_t batch_size,
 
         uint64_t count = 0;
         for (auto doc_result : stream) {
-            // Just consume the document to advance the parser.
+            // SAFETY: check error before .value() — calling .value() on a
+            // malformed document can abort inside simdjson (fuzz-found crash).
+            if (doc_result.error()) continue;
             ondemand::document& doc = doc_result.value();
             (void)doc;
             count++;
@@ -165,10 +167,19 @@ int jx_iterate_many_extract_field(const char* buf, size_t len,
         if (err) return static_cast<int>(err);
 
         uint64_t total = 0;
-        for (auto doc_result : stream) {
-            ondemand::document& doc = doc_result.value();
+        // Use DOM parser for field extraction — simdjson's on-demand API
+        // segfaults on malformed objects like `{z}` inside iterate_many
+        // (fuzz-found crash). The DOM parser fully validates JSON first.
+        dom::parser dom_parser;
+        auto dom_stream = dom_parser.parse_many(
+            reinterpret_cast<const uint8_t*>(buf), len, batch_size);
+        for (auto doc_result : dom_stream) {
+            dom::element doc;
+            if (doc_result.get(doc)) continue;
+            dom::object obj;
+            if (doc.get_object().get(obj)) continue;
             std::string_view val;
-            auto field_err = doc.find_field(field).get_string().get(val);
+            auto field_err = obj[field].get_string().get(val);
             if (!field_err) {
                 total += val.size();
             }

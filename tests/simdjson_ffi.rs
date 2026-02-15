@@ -157,3 +157,17 @@ fn missing_field_returns_error() {
     let mut doc = parser.parse(&buf, json.len()).unwrap();
     assert!(doc.find_field_str("nonexistent").is_err());
 }
+
+/// Regression test for fuzz-found crash: malformed NDJSON `{z}:` caused a
+/// SIGSEGV inside simdjson's on-demand iterate_many when find_field was called
+/// on an object with matching braces but invalid interior content.
+/// Fixed by switching iterate_many_extract_field to use the DOM parser which
+/// fully validates JSON before field access.
+#[test]
+fn iterate_many_malformed_ndjson_no_crash() {
+    let data: &[u8] = &[123, 122, 125, 58]; // {z}:
+    let buf = pad_buffer(data);
+    // Both must return without crashing — returning an error is fine.
+    let _ = iterate_many_count(&buf, data.len(), 1_000_000);
+    let _ = iterate_many_extract_field(&buf, data.len(), 1_000_000, "a");
+}
