@@ -167,6 +167,92 @@ static NDJSON_FILTERS: &[BenchFilter] = &[
     },
 ];
 
+static GHARCHIVE_NDJSON_FILTERS: &[BenchFilter] = &[
+    BenchFilter {
+        name: "gha passthrough",
+        flags: &["-c"],
+        expr: ".",
+    },
+    BenchFilter {
+        name: "gha shallow field",
+        flags: &[],
+        expr: ".type",
+    },
+    BenchFilter {
+        name: "gha nested field",
+        flags: &[],
+        expr: ".actor.login",
+    },
+    BenchFilter {
+        name: "gha extract subobject",
+        flags: &["-c"],
+        expr: ".payload",
+    },
+    BenchFilter {
+        name: "gha select type",
+        flags: &["-c"],
+        expr: r#"select(.type == "PushEvent")"#,
+    },
+    BenchFilter {
+        name: "gha object construction",
+        flags: &["-c"],
+        expr: "{type, actor: .actor.login, repo: .repo.name}",
+    },
+    BenchFilter {
+        name: "gha optional operator",
+        flags: &["-c"],
+        expr: "{type, ref: .payload.ref?}",
+    },
+    BenchFilter {
+        name: "gha select + construct + alt",
+        flags: &["-c"],
+        expr: r#"select(.type == "PushEvent") | {actor: .actor.login, commits: (.payload.commits // [] | length)}"#,
+    },
+];
+
+static GHARCHIVE_JSON_FILTERS: &[BenchFilter] = &[
+    BenchFilter {
+        name: "gha json passthrough",
+        flags: &["-c"],
+        expr: ".",
+    },
+    BenchFilter {
+        name: "gha json length",
+        flags: &[],
+        expr: "length",
+    },
+    BenchFilter {
+        name: "gha json iterate + field",
+        flags: &[],
+        expr: ".[].type",
+    },
+    BenchFilter {
+        name: "gha json iterate + nested",
+        flags: &[],
+        expr: ".[].actor.login",
+    },
+    BenchFilter {
+        name: "gha json iterate + filter",
+        flags: &["-c"],
+        expr: r#"[.[] | select(.type == "PushEvent")]"#,
+    },
+    BenchFilter {
+        name: "gha json iterate + construct",
+        flags: &["-c"],
+        expr: "[.[] | {type, actor: .actor.login, repo: .repo.name}]",
+    },
+    BenchFilter {
+        name: "gha json iterate + optional",
+        flags: &["-c"],
+        expr: "[.[] | {type, ref: .payload.ref?}]",
+    },
+    BenchFilter {
+        name: "gha json aggregation",
+        flags: &["-c"],
+        expr: "group_by(.type) | map({type: .[0].type, count: length})",
+    },
+];
+
 // --- Tool discovery ---
 
 struct Tool {
@@ -414,6 +500,8 @@ fn generate_markdown(
     tools: &[Tool],
     json_files: &[&str],
     ndjson_files: &[&str],
+    gharchive_ndjson_files: &[&str],
+    gharchive_json_files: &[&str],
     results: &Results,
     data_dir: &Path,
     runs: u32,
@@ -514,6 +602,76 @@ fn generate_markdown(
         }
     }
 
+    // GH Archive NDJSON results
+    if !gharchive_ndjson_files.is_empty() {
+        writeln!(md).unwrap();
+        writeln!(md, "### GH Archive NDJSON (parallel processing)").unwrap();
+        writeln!(md).unwrap();
+        writeln!(
+            md,
+            "Real-world GitHub event data (~1GB). qj processes NDJSON in parallel across all cores."
+        )
+        .unwrap();
+        writeln!(md).unwrap();
+        writeln!(md, "{header}").unwrap();
+        writeln!(md, "{separator}").unwrap();
+
+        for file in gharchive_ndjson_files {
+            for (i, filter) in GHARCHIVE_NDJSON_FILTERS.iter().enumerate() {
+                let filter_key = format!("gha_ndjson_{i}");
+                let display = filter_display(filter);
+                let mut row = format!("| `{display}` | {file} |");
+                for tool in tools {
+                    let val = results.get(&result_key(&filter_key, file, &tool.name));
+                    let formatted = val
+                        .map(|v| format_time(*v))
+                        .unwrap_or_else(|| "-".to_string());
+                    if tool.name == "qj" {
+                        write!(row, " **{formatted}** |").unwrap();
+                    } else {
+                        write!(row, " {formatted} |").unwrap();
+                    }
+                }
+                writeln!(md, "{row}").unwrap();
+            }
+        }
+    }
+
+    // GH Archive JSON results
+    if !gharchive_json_files.is_empty() {
+        writeln!(md).unwrap();
+        writeln!(md, "### GH Archive JSON (single document)").unwrap();
+        writeln!(md).unwrap();
+        writeln!(
+            md,
+            "Same data as above wrapped in a JSON array (~1GB single document)."
+        )
+        .unwrap();
+        writeln!(md).unwrap();
+        writeln!(md, "{header}").unwrap();
+        writeln!(md, "{separator}").unwrap();
+
+        for file in gharchive_json_files {
+            for (i, filter) in GHARCHIVE_JSON_FILTERS.iter().enumerate() {
+                let filter_key = format!("gha_json_{i}");
+                let display = filter_display(filter);
+                let mut row = format!("| `{display}` | {file} |");
+                for tool in tools {
+                    let val = results.get(&result_key(&filter_key, file, &tool.name));
+                    let formatted = val
+                        .map(|v| format_time(*v))
+                        .unwrap_or_else(|| "-".to_string());
+                    if tool.name == "qj" {
+                        write!(row, " **{formatted}** |").unwrap();
+                    } else {
+                        write!(row, " {formatted} |").unwrap();
+                    }
+                }
+                writeln!(md, "{row}").unwrap();
+            }
+        }
+    }
+
     // Throughput
     let largest_file = json_files.last().unwrap();
     let largest_path = data_dir.join(largest_file);
@@ -555,6 +713,48 @@ fn generate_markdown(
         writeln!(md, "{tp_header}").unwrap();
         writeln!(md, "{tp_sep}").unwrap();
         writeln!(md, "{tp_row}").unwrap();
+    }
+
+    // GH Archive throughput (if available)
+    if let Some(gha_file) = gharchive_json_files.last() {
+        let gha_path = data_dir.join(gha_file);
+        let gha_bytes = fs::metadata(&gha_path).map(|m| m.len()).unwrap_or(0);
+        let gha_size_mb = gha_bytes as f64 / (1024.0 * 1024.0);
+
+        let has_gha_tp = tools
+            .iter()
+            .any(|tool| results.contains_key(&result_key("gha_json_0", gha_file, &tool.name)));
+
+        if has_gha_tp {
+            writeln!(md).unwrap();
+            writeln!(
+                md,
+                "GH Archive throughput (`-c '.'` on {gha_file}, {gha_size_mb:.0}MB):"
+            )
+            .unwrap();
+            writeln!(md).unwrap();
+
+            let mut tp_header = String::from("|");
+            let mut tp_sep = String::from("|");
+            let mut tp_row = String::from("|");
+            for tool in tools {
+                let val = results.get(&result_key("gha_json_0", gha_file, &tool.name));
+                let tp = val
+                    .map(|v| format_throughput(gha_bytes, *v))
+                    .unwrap_or_else(|| "-".to_string());
+                if tool.name == "qj" {
+                    write!(tp_header, " **{}** |", tool.name).unwrap();
+                    write!(tp_row, " **{tp}** |").unwrap();
+                } else {
+                    write!(tp_header, " {} |", tool.name).unwrap();
+                    write!(tp_row, " {tp} |").unwrap();
+                }
+                write!(tp_sep, "------|").unwrap();
+            }
+            writeln!(md, "{tp_header}").unwrap();
+            writeln!(md, "{tp_sep}").unwrap();
+            writeln!(md, "{tp_row}").unwrap();
+        }
     }
 
     // Summary: geometric-mean speedup vs jq
@@ -636,6 +836,66 @@ fn generate_markdown(
         writeln!(md, "{ndjson_row}").unwrap();
     }
 
+    // GH Archive NDJSON category
+    if !gharchive_ndjson_files.is_empty() {
+        let gha_ndjson_file = gharchive_ndjson_files.last().unwrap();
+        let mut gha_ndjson_row = format!("| GH Archive NDJSON ({gha_ndjson_file}) |");
+        for tool in tools {
+            if tool.name == "jq" {
+                continue;
+            }
+            let pairs: Vec<(f64, f64)> = GHARCHIVE_NDJSON_FILTERS
+                .iter()
+                .enumerate()
+                .filter_map(|(i, _)| {
+                    let key = format!("gha_ndjson_{i}");
+                    let jq_val = *results.get(&result_key(&key, gha_ndjson_file, "jq"))?;
+                    let tool_val = *results.get(&result_key(&key, gha_ndjson_file, &tool.name))?;
+                    Some((jq_val, tool_val))
+                })
+                .collect();
+            let formatted = geomean_ratio(&pairs)
+                .map(|v| format!("{v:.1}x"))
+                .unwrap_or_else(|| "-".to_string());
+            if tool.name == "qj" {
+                write!(gha_ndjson_row, " **{formatted}** |").unwrap();
+            } else {
+                write!(gha_ndjson_row, " {formatted} |").unwrap();
+            }
+        }
+        writeln!(md, "{gha_ndjson_row}").unwrap();
+    }
+
+    // GH Archive JSON category
+    if !gharchive_json_files.is_empty() {
+        let gha_json_file = gharchive_json_files.last().unwrap();
+        let mut gha_json_row = format!("| GH Archive JSON ({gha_json_file}) |");
+        for tool in tools {
+            if tool.name == "jq" {
+                continue;
+            }
+            let pairs: Vec<(f64, f64)> = GHARCHIVE_JSON_FILTERS
+                .iter()
+                .enumerate()
+                .filter_map(|(i, _)| {
+                    let key = format!("gha_json_{i}");
+                    let jq_val = *results.get(&result_key(&key, gha_json_file, "jq"))?;
+                    let tool_val = *results.get(&result_key(&key, gha_json_file, &tool.name))?;
+                    Some((jq_val, tool_val))
+                })
+                .collect();
+            let formatted = geomean_ratio(&pairs)
+                .map(|v| format!("{v:.1}x"))
+                .unwrap_or_else(|| "-".to_string());
+            if tool.name == "qj" {
+                write!(gha_json_row, " **{formatted}** |").unwrap();
+            } else {
+                write!(gha_json_row, " {formatted} |").unwrap();
+            }
+        }
+        writeln!(md, "{gha_json_row}").unwrap();
+    }
+
     writeln!(md).unwrap();
     writeln!(
         md,
@@ -696,6 +956,15 @@ fn main() {
         ndjson_files.push("1m.ndjson");
     }
 
+    let mut gharchive_ndjson_files: Vec<&str> = Vec::new();
+    if data_dir.join("gharchive.ndjson").exists() {
+        gharchive_ndjson_files.push("gharchive.ndjson");
+    }
+    let mut gharchive_json_files: Vec<&str> = Vec::new();
+    if data_dir.join("gharchive.json").exists() {
+        gharchive_json_files.push("gharchive.json");
+    }
+
     // --- Correctness check ---
     eprintln!("=== Correctness check ===");
     let qj = &tools[0];
@@ -704,6 +973,40 @@ fn main() {
     for file in &json_files {
         let file_path = data_dir.join(file);
         for filter in JSON_FILTERS {
+            let qj_out = run_tool_output(qj, filter, &file_path);
+            let jq_out = run_tool_output(jq, filter, &file_path);
+            if qj_out != jq_out {
+                eprintln!("MISMATCH: {} on {file}", filter.name);
+                for (label, out) in [("qj", &qj_out), ("jq", &jq_out)] {
+                    let preview: String = out.lines().take(3).collect::<Vec<_>>().join("\n");
+                    eprintln!("  {label}: {preview}");
+                }
+                all_correct = false;
+            } else {
+                eprintln!("  OK: {} on {file}", filter.name);
+            }
+        }
+    }
+    for file in &gharchive_ndjson_files {
+        let file_path = data_dir.join(file);
+        for filter in GHARCHIVE_NDJSON_FILTERS {
+            let qj_out = run_tool_output(qj, filter, &file_path);
+            let jq_out = run_tool_output(jq, filter, &file_path);
+            if qj_out != jq_out {
+                eprintln!("MISMATCH: {} on {file}", filter.name);
+                for (label, out) in [("qj", &qj_out), ("jq", &jq_out)] {
+                    let preview: String = out.lines().take(3).collect::<Vec<_>>().join("\n");
+                    eprintln!("  {label}: {preview}");
+                }
+                all_correct = false;
+            } else {
+                eprintln!("  OK: {} on {file}", filter.name);
+            }
+        }
+    }
+    for file in &gharchive_json_files {
+        let file_path = data_dir.join(file);
+        for filter in GHARCHIVE_JSON_FILTERS {
             let qj_out = run_tool_output(qj, filter, &file_path);
             let jq_out = run_tool_output(jq, filter, &file_path);
             if qj_out != jq_out {
@@ -751,11 +1054,39 @@ fn main() {
         );
     }
 
+    if !gharchive_ndjson_files.is_empty() {
+        run_benchmarks(
+            &tools,
+            GHARCHIVE_NDJSON_FILTERS,
+            "gha_ndjson",
+            &gharchive_ndjson_files,
+            data_dir,
+            results_dir,
+            &args,
+            &mut results,
+        );
+    }
+
+    if !gharchive_json_files.is_empty() {
+        run_benchmarks(
+            &tools,
+            GHARCHIVE_JSON_FILTERS,
+            "gha_json",
+            &gharchive_json_files,
+            data_dir,
+            results_dir,
+            &args,
+            &mut results,
+        );
+    }
+
     // --- Generate and write markdown ---
     let md = generate_markdown(
         &tools,
         &json_files,
         &ndjson_files,
+        &gharchive_ndjson_files,
+        &gharchive_json_files,
         &results,
         data_dir,
         args.runs,

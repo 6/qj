@@ -95,10 +95,16 @@ bash benches/build_cpp_bench.sh
 
 ### End-to-end tool comparison (qj vs jq vs jaq vs gojq)
 ```
-bash benches/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
+bash benches/setup_bench_data.sh    # all test data (includes ~1GB GH Archive download)
 cargo run --release --bin bench_tools                               # defaults: 5 runs, 5s cooldown
 cargo run --release --bin bench_tools -- --runs 3 --cooldown 2      # faster run for quick checks
 ```
+
+### GH Archive (real-world ~1GB)
+```
+bash benches/download_gharchive.sh   # gharchive.ndjson (~1GB), gharchive.json (~1GB)
+```
+Use `QJ_GHARCHIVE_HOURS=2` for quick testing with fewer hours of data.
 
 ### Profiling a single run
 ```

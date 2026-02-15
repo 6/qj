@@ -20,9 +20,17 @@ brew install coreutils    # gtimeout (macOS only, needed by run_compat.sh)
 Generate test data and run:
 
 ```bash
+bash benches/setup_bench_data.sh    # all test data (~1GB GH Archive download)
+cargo run --release --bin bench_tools
+```
+
+Individual data scripts (each is idempotent, run by `setup_bench_data.sh`):
+
+```bash
 bash benches/download_testdata.sh   # twitter.json, citm_catalog.json, canada.json
 bash benches/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
-bash benches/bench.sh               # runs hyperfine, writes benches/results.md
+bash benches/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
+bash benches/download_gharchive.sh  # ~1GB gharchive.ndjson, gharchive.json
 ```
 
 ## Other benchmarks
