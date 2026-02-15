@@ -3755,3 +3755,155 @@ fn unbuffered_with_multiple_values() {
     assert_eq!(code, 0);
     assert_eq!(stdout.trim(), "1\n2\n3");
 }
+
+// ---------------------------------------------------------------------------
+// NDJSON fast-path jq compatibility
+// ---------------------------------------------------------------------------
+
+/// Compare qj vs jq output on NDJSON input (multi-line).
+/// Skips if jq is not installed.
+fn assert_jq_compat_ndjson(filter: &str, ndjson_input: &str) {
+    if !jq_available() {
+        return;
+    }
+    let qj_out = qj_compact(filter, ndjson_input);
+    let jq_out = run_jq_compact(filter, ndjson_input)
+        .unwrap_or_else(|| panic!("jq failed on filter={filter:?}"));
+    assert_eq!(
+        qj_out.trim(),
+        jq_out.trim(),
+        "qj vs jq NDJSON mismatch: filter={filter:?}"
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_string() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"PushEvent\")",
+        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n{\"type\":\"PushEvent\",\"id\":3}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_int() {
+    assert_jq_compat_ndjson("select(.n == 42)", "{\"n\":42}\n{\"n\":7}\n{\"n\":42}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_bool() {
+    assert_jq_compat_ndjson(
+        "select(.active == true)",
+        "{\"active\":true}\n{\"active\":false}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_null() {
+    assert_jq_compat_ndjson("select(.x == null)", "{\"x\":null}\n{\"x\":1}\n{\"y\":2}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_ne() {
+    assert_jq_compat_ndjson(
+        "select(.type != \"PushEvent\")",
+        "{\"type\":\"PushEvent\"}\n{\"type\":\"WatchEvent\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_float_vs_int() {
+    // Critical: 1.0 == 1 must match (byte mismatch, value equal)
+    assert_jq_compat_ndjson(
+        "select(.n == 1)",
+        "{\"n\":1.0,\"id\":\"a\"}\n{\"n\":2,\"id\":\"b\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_float_ne() {
+    // 1.0 != 1 should NOT output the 1.0 line
+    assert_jq_compat_ndjson("select(.n != 1)", "{\"n\":1.0}\n{\"n\":2}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_missing_field() {
+    assert_jq_compat_ndjson("select(.x == \"hello\")", "{\"x\":\"hello\"}\n{\"a\":1}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_nested_field() {
+    assert_jq_compat_ndjson(
+        "select(.a.b == \"yes\")",
+        "{\"a\":{\"b\":\"yes\"},\"id\":1}\n{\"a\":{\"b\":\"no\"},\"id\":2}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_bare_length() {
+    assert_jq_compat_ndjson("length", "{\"a\":1,\"b\":2}\n{\"x\":1}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_field_length() {
+    assert_jq_compat_ndjson(
+        ".items | length",
+        "{\"items\":[1,2,3]}\n{\"items\":[4,5]}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_bare_keys() {
+    assert_jq_compat_ndjson("keys", "{\"b\":2,\"a\":1}\n{\"x\":1}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_field_keys() {
+    assert_jq_compat_ndjson(
+        ".data | keys",
+        "{\"data\":{\"b\":2,\"a\":1}}\n{\"data\":{\"x\":1}}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_field_chain() {
+    assert_jq_compat_ndjson(
+        ".actor.login",
+        "{\"actor\":{\"login\":\"alice\"}}\n{\"actor\":{\"login\":\"bob\"}}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_field_chain_missing() {
+    assert_jq_compat_ndjson(".name", "{\"name\":\"alice\"}\n{\"age\":30}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_select_empty_string() {
+    assert_jq_compat_ndjson(
+        "select(.name == \"\")",
+        "{\"name\":\"\"}\n{\"name\":\"bob\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_negative_int() {
+    assert_jq_compat_ndjson("select(.n == -1)", "{\"n\":-1}\n{\"n\":1}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_length_empty() {
+    assert_jq_compat_ndjson("length", "{}\n{\"a\":1}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_keys_empty() {
+    assert_jq_compat_ndjson("keys", "{}\n{\"a\":1}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_string_length_fallback() {
+    assert_jq_compat_ndjson(
+        ".name | length",
+        "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n",
+    );
+}

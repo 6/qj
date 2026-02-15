@@ -282,6 +282,123 @@ fn ndjson_pretty_output() {
     assert_eq!(out, "{\n  \"a\": 1\n}\n{\n  \"b\": 2\n}\n");
 }
 
+// --- FieldChain fast path edge cases ---
+
+#[test]
+fn ndjson_field_chain_deeply_nested() {
+    let input = r#"{"a":{"b":{"c":{"d":"deep"}}}}
+{"a":{"b":{"c":{"d":"val"}}}}
+"#;
+    let out = qj_stdin(&["-c", ".a.b.c.d"], input);
+    assert_eq!(out, "\"deep\"\n\"val\"\n");
+}
+
+#[test]
+fn ndjson_field_chain_missing_intermediate() {
+    // .a.b where .a doesn't have .b — should produce null
+    let input = r#"{"a":{"b":"yes"}}
+{"a":{"c":"no"}}
+{"x":1}
+"#;
+    let out = qj_stdin(&["-c", ".a.b"], input);
+    assert_eq!(out, "\"yes\"\nnull\nnull\n");
+}
+
+#[test]
+fn ndjson_field_chain_null_value() {
+    let input = r#"{"x":null}
+{"x":42}
+"#;
+    let out = qj_stdin(&["-c", ".x"], input);
+    assert_eq!(out, "null\n42\n");
+}
+
+#[test]
+fn ndjson_field_chain_object_value() {
+    let input = r#"{"data":{"nested":true}}
+{"data":{"nested":false}}
+"#;
+    let out = qj_stdin(&["-c", ".data"], input);
+    assert_eq!(out, "{\"nested\":true}\n{\"nested\":false}\n");
+}
+
+#[test]
+fn ndjson_field_chain_array_value() {
+    let input = r#"{"items":[1,2,3]}
+{"items":[]}
+"#;
+    let out = qj_stdin(&["-c", ".items"], input);
+    assert_eq!(out, "[1,2,3]\n[]\n");
+}
+
+#[test]
+fn ndjson_field_chain_boolean_value() {
+    let input = r#"{"active":true}
+{"active":false}
+"#;
+    let out = qj_stdin(&["-c", ".active"], input);
+    assert_eq!(out, "true\nfalse\n");
+}
+
+#[test]
+fn ndjson_field_chain_mixed_types() {
+    // Field has different types across lines
+    let input = r#"{"v":"string"}
+{"v":42}
+{"v":true}
+{"v":null}
+{"v":[1]}
+{"v":{"a":1}}
+"#;
+    let out = qj_stdin(&["-c", ".v"], input);
+    assert_eq!(out, "\"string\"\n42\ntrue\nnull\n[1]\n{\"a\":1}\n");
+}
+
+#[test]
+fn ndjson_field_chain_special_chars_in_value() {
+    // Values with quotes, backslashes, unicode
+    let input = "{\"msg\":\"hello \\\"world\\\"\"}\n{\"msg\":\"line1\\nline2\"}\n";
+    let out = qj_stdin(&["-c", ".msg"], &input);
+    assert_eq!(out, "\"hello \\\"world\\\"\"\n\"line1\\nline2\"\n");
+}
+
+#[test]
+fn ndjson_field_chain_empty_string_value() {
+    let input = r#"{"name":""}
+{"name":"bob"}
+"#;
+    let out = qj_stdin(&["-c", ".name"], input);
+    assert_eq!(out, "\"\"\n\"bob\"\n");
+}
+
+#[test]
+fn ndjson_field_chain_large_values() {
+    // Ensure field extraction works with large nested objects
+    let big_array: String = (0..100)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let input = format!("{{\"data\":[{big_array}]}}\n{{\"data\":[1]}}\n");
+    let out = qj_stdin(&["-c", ".data | length"], &input);
+    assert_eq!(out, "100\n1\n");
+}
+
+#[test]
+fn ndjson_field_chain_whitespace_in_json() {
+    // Lines with extra whitespace (tabs, spaces) that get trimmed
+    let input = "  {\"a\":1}  \n\t{\"a\":2}\t\n";
+    let out = qj_stdin(&["-c", ".a"], &input);
+    assert_eq!(out, "1\n2\n");
+}
+
+#[test]
+fn ndjson_field_chain_raw_output_escape() {
+    // Raw output with escape sequences in the string
+    let input = "{\"msg\":\"hello\\tworld\"}\n{\"msg\":\"foo\\nbar\"}\n";
+    let out = qj_stdin(&["-r", ".msg"], &input);
+    assert_eq!(out, "hello\tworld\nfoo\nbar\n");
+}
+
 // --- select fast path ---
 
 #[test]
@@ -436,6 +553,78 @@ fn ndjson_select_negative_int() {
 "#;
     let out = qj_stdin(&["-c", "select(.n == -1)"], input);
     assert_eq!(out, "{\"n\":-1}\n");
+}
+
+// --- select fallback correctness (byte mismatch but values equal) ---
+
+#[test]
+fn ndjson_select_float_vs_int() {
+    // 1.0 == 1 should match (fallback to full eval)
+    let input = r#"{"n":1.0,"id":"a"}
+{"n":2,"id":"b"}
+"#;
+    let out = qj_stdin(&["-c", "select(.n == 1)"], input);
+    assert_eq!(out, "{\"n\":1.0,\"id\":\"a\"}\n");
+}
+
+#[test]
+fn ndjson_select_scientific_notation() {
+    // 1e2 == 100 should match
+    let input = r#"{"n":1e2,"id":"a"}
+{"n":99,"id":"b"}
+"#;
+    let out = qj_stdin(&["-c", "select(.n == 100)"], input);
+    assert_eq!(out, "{\"n\":1e2,\"id\":\"a\"}\n");
+}
+
+#[test]
+fn ndjson_select_unicode_escape() {
+    // \u0041 is "A" — should match
+    let input = "{\"s\":\"\\u0041\",\"id\":1}\n{\"s\":\"B\",\"id\":2}\n";
+    let out = qj_stdin(&["-c", "select(.s == \"A\")"], &input);
+    assert_eq!(out, "{\"s\":\"\\u0041\",\"id\":1}\n");
+}
+
+#[test]
+fn ndjson_select_trailing_zero_float() {
+    // 42.00 == 42 should match
+    let input = "{\"n\":42.00}\n{\"n\":43}\n";
+    let out = qj_stdin(&["-c", "select(.n == 42)"], &input);
+    assert_eq!(out, "{\"n\":42.00}\n");
+}
+
+#[test]
+fn ndjson_select_type_mismatch_string_vs_int() {
+    // "42" (string) != 42 (int) — should NOT match
+    let input = r#"{"n":"42"}
+{"n":42}
+"#;
+    let out = qj_stdin(&["-c", "select(.n == 42)"], input);
+    assert_eq!(out, "{\"n\":42}\n");
+}
+
+#[test]
+fn ndjson_select_float_ne() {
+    // 1.0 != 1 should NOT output (they're equal), 2 != 1 should output
+    let input = "{\"n\":1.0}\n{\"n\":2}\n";
+    let out = qj_stdin(&["-c", "select(.n != 1)"], &input);
+    assert_eq!(out, "{\"n\":2}\n");
+}
+
+#[test]
+fn ndjson_select_mixed_fallback_and_fast() {
+    // Mix of lines that hit fast path and fallback
+    let input = r#"{"n":42,"id":"exact"}
+{"n":42.0,"id":"float"}
+{"n":1e2,"id":"sci"}
+{"n":100,"id":"plain"}
+{"n":99,"id":"miss"}
+"#;
+    let out = qj_stdin(&["-c", "select(.n == 42)"], input);
+    assert_eq!(
+        out,
+        "{\"n\":42,\"id\":\"exact\"}\n{\"n\":42.0,\"id\":\"float\"}\n"
+    );
 }
 
 // --- length/keys edge cases ---

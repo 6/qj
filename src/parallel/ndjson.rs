@@ -431,7 +431,9 @@ fn process_line(
                 fields,
                 *op,
                 literal_bytes,
+                filter,
                 config,
+                env,
                 output_buf,
                 had_output,
                 scratch,
@@ -551,14 +553,74 @@ fn serialize_literal(filter: &Filter) -> Option<Vec<u8>> {
     }
 }
 
+/// Classify JSON value type from its first byte.
+/// Returns a tag so that different types compare as definitely unequal.
+fn json_type_tag(bytes: &[u8]) -> u8 {
+    match bytes.first() {
+        Some(b'"') => b'"',                     // string
+        Some(b't') | Some(b'f') => b'b',        // boolean
+        Some(b'n') => b'n',                     // null
+        Some(b'{') => b'{',                     // object
+        Some(b'[') => b'[',                     // array
+        Some(b'-') | Some(b'0'..=b'9') => b'0', // number
+        _ => b'?',
+    }
+}
+
+/// Check if a byte mismatch between raw JSON and serialized literal bytes
+/// definitively means the values are not equal (no fallback needed).
+///
+/// Returns `true` when different bytes guarantee different values.
+/// Returns `false` when the values might still be equal despite different
+/// byte representations (e.g., `1.0` vs `1`, `"\u0041"` vs `"A"`).
+fn bytes_mismatch_is_definitive(raw: &[u8], literal_bytes: &[u8]) -> bool {
+    let raw_type = json_type_tag(raw);
+    let lit_type = json_type_tag(literal_bytes);
+
+    // Different JSON types are never equal
+    if raw_type != lit_type {
+        return true;
+    }
+
+    match raw_type {
+        // null, booleans have exactly one byte representation
+        b'n' | b'b' => true,
+        // Strings: if neither side has backslash escapes, byte mismatch = value mismatch.
+        // Escapes like \uXXXX can encode the same char differently.
+        b'"' => {
+            let raw_inner = &raw[1..raw.len().saturating_sub(1)];
+            let lit_inner = &literal_bytes[1..literal_bytes.len().saturating_sub(1)];
+            !raw_inner.contains(&b'\\') && !lit_inner.contains(&b'\\')
+        }
+        // Numbers: if both are plain integers (no '.', 'e', 'E'), byte mismatch = value mismatch.
+        // Different float representations (1.0 vs 1, 1e2 vs 100) need full comparison.
+        b'0' => {
+            let raw_is_plain_int = !raw.iter().any(|&b| b == b'.' || b == b'e' || b == b'E');
+            let lit_is_plain_int = !literal_bytes
+                .iter()
+                .any(|&b| b == b'.' || b == b'e' || b == b'E');
+            raw_is_plain_int && lit_is_plain_int
+        }
+        // Objects/arrays: can't determine from bytes alone
+        _ => false,
+    }
+}
+
 /// Process a line with the select(.field == literal) fast path.
+///
+/// Uses byte-level comparison as an optimization:
+/// - Bytes match → values definitely equal (fast accept)
+/// - Bytes mismatch + definitive type check → values definitely unequal (fast reject)
+/// - Bytes mismatch + ambiguous → fall back to full parse+eval (safe)
 #[allow(clippy::too_many_arguments)]
 fn process_line_select_eq(
     trimmed: &[u8],
     fields: &[String],
     op: CmpOp,
     literal_bytes: &[u8],
+    filter: &Filter,
     config: &OutputConfig,
+    env: &Env,
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
@@ -568,21 +630,40 @@ fn process_line_select_eq(
     let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
         .context("failed to extract field from NDJSON line")?;
 
-    let matches = raw == literal_bytes;
-    let output = match op {
-        CmpOp::Eq => matches,
-        CmpOp::Ne => !matches,
-        _ => unreachable!(),
-    };
-
-    if output {
-        *had_output = true;
-        output_buf.extend_from_slice(trimmed);
-        if config.null_separator {
-            output_buf.push(0);
-        } else if !config.join_output {
-            output_buf.push(b'\n');
+    if raw == literal_bytes {
+        // Bytes match → values definitely equal
+        let output = matches!(op, CmpOp::Eq);
+        if output {
+            *had_output = true;
+            output_buf.extend_from_slice(trimmed);
+            if config.null_separator {
+                output_buf.push(0);
+            } else if !config.join_output {
+                output_buf.push(b'\n');
+            }
         }
+    } else if bytes_mismatch_is_definitive(&raw, literal_bytes) {
+        // Bytes don't match and we're certain values aren't equal
+        let output = matches!(op, CmpOp::Ne);
+        if output {
+            *had_output = true;
+            output_buf.extend_from_slice(trimmed);
+            if config.null_separator {
+                output_buf.push(0);
+            } else if !config.join_output {
+                output_buf.push(b'\n');
+            }
+        }
+    } else {
+        // Ambiguous: bytes differ but values might be equal (e.g. 1.0 vs 1, \u0041 vs A).
+        // Fall back to full parse + eval for correctness.
+        let padded = prepare_padded(trimmed, scratch);
+        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+            .context("failed to parse NDJSON line")?;
+        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+            *had_output = true;
+            output::write_value(output_buf, &v, config).ok();
+        });
     }
     Ok(())
 }
@@ -1421,6 +1502,179 @@ mod tests {
             String::from_utf8(output).unwrap(),
             "[\"a\",\"b\"]\n[\"z\"]\n"
         );
+    }
+
+    // --- bytes_mismatch_is_definitive unit tests ---
+
+    #[test]
+    fn definitive_different_types() {
+        // string vs number
+        assert!(bytes_mismatch_is_definitive(b"\"hello\"", b"42"));
+        // string vs null
+        assert!(bytes_mismatch_is_definitive(b"\"hello\"", b"null"));
+        // number vs bool
+        assert!(bytes_mismatch_is_definitive(b"42", b"true"));
+        // null vs string
+        assert!(bytes_mismatch_is_definitive(b"null", b"\"x\""));
+        // number vs string
+        assert!(bytes_mismatch_is_definitive(b"1", b"\"1\""));
+    }
+
+    #[test]
+    fn definitive_null_and_bools() {
+        // null only has one representation
+        assert!(bytes_mismatch_is_definitive(b"null", b"null ")); // won't happen, but tests the logic
+        // bools only have one representation each
+        assert!(bytes_mismatch_is_definitive(b"true", b"false"));
+        assert!(bytes_mismatch_is_definitive(b"false", b"true"));
+    }
+
+    #[test]
+    fn definitive_plain_strings() {
+        // Plain strings without escapes: mismatch is definitive
+        assert!(bytes_mismatch_is_definitive(b"\"hello\"", b"\"world\""));
+        assert!(bytes_mismatch_is_definitive(b"\"abc\"", b"\"ab\""));
+        assert!(bytes_mismatch_is_definitive(b"\"\"", b"\"x\""));
+    }
+
+    #[test]
+    fn not_definitive_strings_with_escapes() {
+        // \u0041 vs A — same string, different bytes
+        assert!(!bytes_mismatch_is_definitive(b"\"\\u0041\"", b"\"A\""));
+        // Raw has escape
+        assert!(!bytes_mismatch_is_definitive(
+            b"\"caf\\u00e9\"",
+            b"\"cafe\""
+        ));
+    }
+
+    #[test]
+    fn definitive_plain_integers() {
+        // Both plain integers: mismatch is definitive
+        assert!(bytes_mismatch_is_definitive(b"42", b"43"));
+        assert!(bytes_mismatch_is_definitive(b"-1", b"1"));
+        assert!(bytes_mismatch_is_definitive(b"0", b"1"));
+    }
+
+    #[test]
+    fn not_definitive_float_vs_int() {
+        // 1.0 vs 1 — might be equal
+        assert!(!bytes_mismatch_is_definitive(b"1.0", b"1"));
+        // 1e2 vs 100 — might be equal
+        assert!(!bytes_mismatch_is_definitive(b"1e2", b"100"));
+        // 1E2 vs 100
+        assert!(!bytes_mismatch_is_definitive(b"1E2", b"100"));
+        // 42.0 vs 42
+        assert!(!bytes_mismatch_is_definitive(b"42.0", b"42"));
+    }
+
+    // --- Select fast-path correctness with fallback ---
+
+    #[test]
+    fn fast_path_select_float_vs_int_eq() {
+        // 1.0 == 1 should match (like jq)
+        let data = b"{\"n\":1.0,\"id\":\"a\"}\n{\"n\":2,\"id\":\"b\"}\n";
+        let filter = crate::filter::parse("select(.n == 1)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"n\":1.0,\"id\":\"a\"}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_float_vs_int_ne() {
+        // 1.0 != 1 should NOT match (they're equal)
+        let data = b"{\"n\":1.0}\n{\"n\":2}\n";
+        let filter = crate::filter::parse("select(.n != 1)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":2}\n");
+    }
+
+    #[test]
+    fn fast_path_select_scientific_notation() {
+        // 1e2 == 100 should match
+        let data = b"{\"n\":1e2,\"id\":\"a\"}\n{\"n\":99,\"id\":\"b\"}\n";
+        let filter = crate::filter::parse("select(.n == 100)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"n\":1e2,\"id\":\"a\"}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_unicode_escape_match() {
+        // \u0041 is "A" — should match select(.s == "A")
+        let data = b"{\"s\":\"\\u0041\",\"id\":1}\n{\"s\":\"B\",\"id\":2}\n";
+        let filter = crate::filter::parse("select(.s == \"A\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"s\":\"\\u0041\",\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_type_mismatch_no_fallback() {
+        // Field is string "42", literal is int 42 — different types, definitive mismatch
+        let data = b"{\"n\":\"42\"}\n{\"n\":42}\n";
+        let filter = crate::filter::parse("select(.n == 42)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":42}\n");
+    }
+
+    #[test]
+    fn fast_path_select_missing_field_vs_string() {
+        // Missing field returns null, comparing with string "x" — definitive mismatch
+        let data = b"{\"a\":1}\n{\"x\":\"hello\"}\n";
+        let filter = crate::filter::parse("select(.x == \"hello\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"x\":\"hello\"}\n");
+    }
+
+    #[test]
+    fn fast_path_select_trailing_zero_float() {
+        // 42.00 == 42 should match
+        let data = b"{\"n\":42.00}\n{\"n\":43}\n";
+        let filter = crate::filter::parse("select(.n == 42)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":42.00}\n");
     }
 
     // --- Scratch buffer reuse test ---
