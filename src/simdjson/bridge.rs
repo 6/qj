@@ -317,6 +317,77 @@ pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Op
     Ok(Some(result))
 }
 
+/// Batch field extraction: parse once, extract N field chains.
+///
+/// Each entry in `field_chains` is a slice of field segments, e.g. `&["actor", "login"]`.
+/// Returns a Vec of raw JSON byte results, one per chain. Missing fields produce `b"null"`.
+pub fn dom_find_fields_raw(
+    buf: &[u8],
+    json_len: usize,
+    field_chains: &[&[&str]],
+) -> Result<Vec<Vec<u8>>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    if field_chains.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build the triple-pointer structure: chains[i] is an array of c_char pointers
+    let chain_ptrs: Vec<Vec<*const c_char>> = field_chains
+        .iter()
+        .map(|chain| chain.iter().map(|f| f.as_ptr().cast::<c_char>()).collect())
+        .collect();
+    let chain_lens: Vec<Vec<usize>> = field_chains
+        .iter()
+        .map(|chain| chain.iter().map(|f| f.len()).collect())
+        .collect();
+
+    let chain_ptr_ptrs: Vec<*const *const c_char> = chain_ptrs.iter().map(|v| v.as_ptr()).collect();
+    let chain_len_ptrs: Vec<*const usize> = chain_lens.iter().map(|v| v.as_ptr()).collect();
+    let chain_counts: Vec<usize> = field_chains.iter().map(|c| c.len()).collect();
+
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+
+    // SAFETY: buf is padded (asserted). All pointer arrays are valid and match
+    // field_chains dimensions. out_ptr/out_len are valid stack references.
+    check(unsafe {
+        jx_dom_find_fields_raw(
+            buf.as_ptr().cast(),
+            json_len,
+            chain_ptr_ptrs.as_ptr(),
+            chain_len_ptrs.as_ptr(),
+            chain_counts.as_ptr(),
+            field_chains.len(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    })?;
+
+    // Unpack the length-prefixed buffer: [u32 len][bytes][u32 len][bytes]...
+    let packed = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) };
+    let mut results = Vec::with_capacity(field_chains.len());
+    let mut offset = 0;
+    for _ in 0..field_chains.len() {
+        if offset + 4 > packed.len() {
+            bail!("truncated batch field extraction result");
+        }
+        let slen = u32::from_ne_bytes(packed[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        if offset + slen > packed.len() {
+            bail!("truncated batch field extraction result");
+        }
+        results.push(packed[offset..offset + slen].to_vec());
+        offset += slen;
+    }
+
+    // SAFETY: out_ptr was allocated by C++ new[] and has not been freed yet.
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(results)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

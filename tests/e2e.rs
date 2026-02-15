@@ -3951,3 +3951,55 @@ fn ndjson_jq_compat_select_eq_arr() {
         "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n",
     );
 }
+
+// --- Multi-field object/array construction ---
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj() {
+    assert_jq_compat_ndjson(
+        "{type: .type, id: .id, actor: .actor}",
+        "{\"type\":\"PushEvent\",\"id\":1,\"actor\":\"alice\"}\n{\"type\":\"WatchEvent\",\"id\":2,\"actor\":\"bob\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj_shorthand() {
+    assert_jq_compat_ndjson(
+        "{type, id: .id}",
+        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj_nested() {
+    assert_jq_compat_ndjson(
+        "{actor: .actor.login, repo: .repo.name}",
+        "{\"actor\":{\"login\":\"alice\"},\"repo\":{\"name\":\"foo\"}}\n{\"actor\":{\"login\":\"bob\"},\"repo\":{\"name\":\"bar\"}}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj_missing() {
+    assert_jq_compat_ndjson(
+        "{type, id: .id}",
+        "{\"type\":\"PushEvent\"}\n{\"type\":\"WatchEvent\",\"id\":2}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_arr() {
+    assert_jq_compat_ndjson("[.x, .y]", "{\"x\":1,\"y\":2}\n{\"x\":3,\"y\":4}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_arr_nested() {
+    assert_jq_compat_ndjson(
+        "[.a.b, .c]",
+        "{\"a\":{\"b\":\"deep\"},\"c\":1}\n{\"a\":{\"b\":\"val\"},\"c\":2}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_arr_missing() {
+    assert_jq_compat_ndjson("[.x, .y]", "{\"x\":1}\n{\"x\":2,\"y\":3}\n");
+}

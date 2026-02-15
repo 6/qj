@@ -88,6 +88,17 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
 
+    pub(super) fn jx_dom_find_fields_raw(
+        buf: *const c_char,
+        len: usize,
+        chains: *const *const *const c_char,
+        chain_lens: *const *const usize,
+        chain_counts: *const usize,
+        num_chains: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
     pub(super) fn jx_dom_field_keys(
         buf: *const c_char,
         len: usize,

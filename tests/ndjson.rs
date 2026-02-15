@@ -800,6 +800,99 @@ fn ndjson_select_eq_arr() {
     assert_eq!(out, "[1,\"alice\"]\n");
 }
 
+// --- Multi-field object construction ---
+
+#[test]
+fn ndjson_multi_field_obj() {
+    let input = r#"{"type":"PushEvent","id":1,"actor":"alice"}
+{"type":"WatchEvent","id":2,"actor":"bob"}
+"#;
+    let out = qj_stdin(&["-c", "{type, id: .id, actor}"], input);
+    assert_eq!(
+        out,
+        "{\"type\":\"PushEvent\",\"id\":1,\"actor\":\"alice\"}\n{\"type\":\"WatchEvent\",\"id\":2,\"actor\":\"bob\"}\n"
+    );
+}
+
+#[test]
+fn ndjson_multi_field_obj_nested() {
+    let input = r#"{"actor":{"login":"alice"},"repo":{"name":"foo"}}
+{"actor":{"login":"bob"},"repo":{"name":"bar"}}
+"#;
+    let out = qj_stdin(&["-c", "{actor: .actor.login, repo: .repo.name}"], input);
+    assert_eq!(
+        out,
+        "{\"actor\":\"alice\",\"repo\":\"foo\"}\n{\"actor\":\"bob\",\"repo\":\"bar\"}\n"
+    );
+}
+
+#[test]
+fn ndjson_multi_field_obj_missing_field() {
+    let input = r#"{"type":"PushEvent"}
+{"type":"WatchEvent","id":2}
+"#;
+    let out = qj_stdin(&["-c", "{type, id: .id}"], input);
+    assert_eq!(
+        out,
+        "{\"type\":\"PushEvent\",\"id\":null}\n{\"type\":\"WatchEvent\",\"id\":2}\n"
+    );
+}
+
+#[test]
+fn ndjson_multi_field_obj_large() {
+    let mut input = String::new();
+    for i in 0..1000 {
+        input.push_str(&format!("{{\"i\":{i},\"name\":\"n{i}\"}}\n"));
+    }
+    let out = qj_stdin(&["-c", "{i: .i, name}"], &input);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1000);
+    assert_eq!(lines[0], "{\"i\":0,\"name\":\"n0\"}");
+    assert_eq!(lines[999], "{\"i\":999,\"name\":\"n999\"}");
+}
+
+// --- Multi-field array construction ---
+
+#[test]
+fn ndjson_multi_field_arr() {
+    let input = r#"{"x":1,"y":2}
+{"x":3,"y":4}
+"#;
+    let out = qj_stdin(&["-c", "[.x, .y]"], input);
+    assert_eq!(out, "[1,2]\n[3,4]\n");
+}
+
+#[test]
+fn ndjson_multi_field_arr_nested() {
+    let input = r#"{"a":{"b":"deep"},"c":1}
+{"a":{"b":"val"},"c":2}
+"#;
+    let out = qj_stdin(&["-c", "[.a.b, .c]"], input);
+    assert_eq!(out, "[\"deep\",1]\n[\"val\",2]\n");
+}
+
+#[test]
+fn ndjson_multi_field_arr_missing_field() {
+    let input = r#"{"x":1}
+{"x":2,"y":3}
+"#;
+    let out = qj_stdin(&["-c", "[.x, .y]"], input);
+    assert_eq!(out, "[1,null]\n[2,3]\n");
+}
+
+#[test]
+fn ndjson_multi_field_arr_large() {
+    let mut input = String::new();
+    for i in 0..1000 {
+        input.push_str(&format!("{{\"a\":{i},\"b\":{}}}\n", i * 10));
+    }
+    let out = qj_stdin(&["-c", "[.a, .b]"], &input);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1000);
+    assert_eq!(lines[0], "[0,0]");
+    assert_eq!(lines[999], "[999,9990]");
+}
+
 // --- Iterate ---
 
 #[test]

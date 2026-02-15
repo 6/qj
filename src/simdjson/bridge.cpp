@@ -688,4 +688,61 @@ int jx_dom_field_keys(
     } catch (...) { return -1; }
 }
 
+// ---------------------------------------------------------------------------
+// Batch field extraction — parse once, extract N field chains.
+//
+// Each chain is an array of field segments (e.g., ["actor", "login"]).
+// Results are packed into a single heap buffer:
+//   [u32 len1][bytes1][u32 len2][bytes2]...
+// Missing fields produce "null" (4 bytes). Caller frees with jx_minify_free.
+// ---------------------------------------------------------------------------
+
+int jx_dom_find_fields_raw(
+    const char* buf, size_t len,
+    const char* const* const* chains,
+    const size_t* const* chain_lens,
+    const size_t* chain_counts,
+    size_t num_chains,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::parser parser;
+        dom::element doc;
+        auto err = parser.parse(buf, len).get(doc);
+        if (err) return -1;
+
+        // First pass: extract all fields, collect serialized results
+        std::string packed;
+        packed.reserve(num_chains * 32); // rough estimate
+
+        for (size_t i = 0; i < num_chains; i++) {
+            dom::element cur = doc;
+            bool found = true;
+            for (size_t j = 0; j < chain_counts[i]; j++) {
+                std::string_view key(chains[i][j], chain_lens[i][j]);
+                if (cur.type() != dom::element_type::OBJECT) { found = false; break; }
+                auto field_err = cur.at_key(key).get(cur);
+                if (field_err) { found = false; break; }
+            }
+
+            std::string s;
+            if (found) {
+                s = simdjson::to_string(cur);
+            } else {
+                s = "null";
+            }
+
+            // Pack: [u32 len][bytes]
+            uint32_t slen = static_cast<uint32_t>(s.size());
+            packed.append(reinterpret_cast<const char*>(&slen), 4);
+            packed.append(s);
+        }
+
+        *out_len = packed.size();
+        *out_ptr = new char[packed.size()];
+        std::memcpy(*out_ptr, packed.data(), packed.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
 } // extern "C"

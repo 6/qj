@@ -158,6 +158,82 @@ fn missing_field_returns_error() {
     assert!(doc.find_field_str("nonexistent").is_err());
 }
 
+// --- Batch field extraction (dom_find_fields_raw) ---
+
+#[test]
+fn batch_extract_basic() {
+    use qj::simdjson::dom_find_fields_raw;
+    let json = br#"{"type":"PushEvent","id":1,"actor":{"login":"alice"}}"#;
+    let buf = pad_buffer(json);
+    let chains: &[&[&str]] = &[&["type"], &["id"], &["actor", "login"]];
+    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0], b"\"PushEvent\"");
+    assert_eq!(results[1], b"1");
+    assert_eq!(results[2], b"\"alice\"");
+}
+
+#[test]
+fn batch_extract_missing_field() {
+    use qj::simdjson::dom_find_fields_raw;
+    let json = br#"{"type":"PushEvent"}"#;
+    let buf = pad_buffer(json);
+    let chains: &[&[&str]] = &[&["type"], &["missing"]];
+    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], b"\"PushEvent\"");
+    assert_eq!(results[1], b"null");
+}
+
+#[test]
+fn batch_extract_empty_chains() {
+    use qj::simdjson::dom_find_fields_raw;
+    let json = br#"{"a":1}"#;
+    let buf = pad_buffer(json);
+    let chains: &[&[&str]] = &[];
+    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn batch_extract_complex_values() {
+    use qj::simdjson::dom_find_fields_raw;
+    let json = br#"{"arr":[1,2,3],"obj":{"nested":true},"str":"hello","num":42.5,"bool":false,"nil":null}"#;
+    let buf = pad_buffer(json);
+    let chains: &[&[&str]] = &[&["arr"], &["obj"], &["str"], &["num"], &["bool"], &["nil"]];
+    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
+    assert_eq!(results.len(), 6);
+    assert_eq!(results[0], b"[1,2,3]");
+    assert_eq!(results[1], b"{\"nested\":true}");
+    assert_eq!(results[2], b"\"hello\"");
+    assert_eq!(results[3], b"42.5");
+    assert_eq!(results[4], b"false");
+    assert_eq!(results[5], b"null");
+}
+
+#[test]
+fn batch_extract_deep_nesting() {
+    use qj::simdjson::dom_find_fields_raw;
+    let json = br#"{"a":{"b":{"c":{"d":"deep"}}}}"#;
+    let buf = pad_buffer(json);
+    let chains: &[&[&str]] = &[&["a", "b", "c", "d"], &["a", "b"]];
+    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], b"\"deep\"");
+    assert_eq!(results[1], b"{\"c\":{\"d\":\"deep\"}}");
+}
+
+#[test]
+fn batch_extract_single_chain() {
+    use qj::simdjson::dom_find_fields_raw;
+    let json = br#"{"name":"alice"}"#;
+    let buf = pad_buffer(json);
+    let chains: &[&[&str]] = &[&["name"]];
+    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], b"\"alice\"");
+}
+
 /// Regression test for fuzz-found crash: malformed NDJSON `{z}:` caused a
 /// SIGSEGV inside simdjson's on-demand iterate_many when find_field was called
 /// on an object with matching braces but invalid interior content.
