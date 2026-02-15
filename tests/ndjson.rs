@@ -282,6 +282,233 @@ fn ndjson_pretty_output() {
     assert_eq!(out, "{\n  \"a\": 1\n}\n{\n  \"b\": 2\n}\n");
 }
 
+// --- select fast path ---
+
+#[test]
+fn ndjson_select_eq_string() {
+    let input = r#"{"type":"PushEvent","id":1}
+{"type":"WatchEvent","id":2}
+{"type":"PushEvent","id":3}
+"#;
+    let out = qj_stdin(&["-c", "select(.type == \"PushEvent\")"], input);
+    assert_eq!(
+        out,
+        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"PushEvent\",\"id\":3}\n"
+    );
+}
+
+#[test]
+fn ndjson_select_ne_string() {
+    let input = r#"{"type":"PushEvent","id":1}
+{"type":"WatchEvent","id":2}
+"#;
+    let out = qj_stdin(&["-c", "select(.type != \"PushEvent\")"], input);
+    assert_eq!(out, "{\"type\":\"WatchEvent\",\"id\":2}\n");
+}
+
+#[test]
+fn ndjson_select_eq_int() {
+    let input = r#"{"count":42,"name":"a"}
+{"count":7,"name":"b"}
+{"count":42,"name":"c"}
+"#;
+    let out = qj_stdin(&["-c", "select(.count == 42)"], input);
+    assert_eq!(
+        out,
+        "{\"count\":42,\"name\":\"a\"}\n{\"count\":42,\"name\":\"c\"}\n"
+    );
+}
+
+#[test]
+fn ndjson_select_eq_bool() {
+    let input = r#"{"active":true,"name":"a"}
+{"active":false,"name":"b"}
+"#;
+    let out = qj_stdin(&["-c", "select(.active == true)"], input);
+    assert_eq!(out, "{\"active\":true,\"name\":\"a\"}\n");
+}
+
+#[test]
+fn ndjson_select_eq_null() {
+    let input = r#"{"x":null}
+{"x":1}
+{"y":2}
+"#;
+    let out = qj_stdin(&["-c", "select(.x == null)"], input);
+    // Both {"x":null} and {"y":2} match because missing .x returns null
+    assert_eq!(out, "{\"x\":null}\n{\"y\":2}\n");
+}
+
+#[test]
+fn ndjson_select_eq_nested_field() {
+    let input = r#"{"actor":{"login":"alice"},"id":1}
+{"actor":{"login":"bob"},"id":2}
+"#;
+    let out = qj_stdin(&["-c", "select(.actor.login == \"alice\")"], input);
+    assert_eq!(out, "{\"actor\":{\"login\":\"alice\"},\"id\":1}\n");
+}
+
+// --- length/keys fast path ---
+
+#[test]
+fn ndjson_bare_length() {
+    let input = r#"{"a":1,"b":2}
+{"x":1}
+"#;
+    let out = qj_stdin(&["-c", "length"], input);
+    assert_eq!(out, "2\n1\n");
+}
+
+#[test]
+fn ndjson_field_length() {
+    let input = r#"{"items":[1,2,3]}
+{"items":[4,5]}
+"#;
+    let out = qj_stdin(&["-c", ".items | length"], input);
+    assert_eq!(out, "3\n2\n");
+}
+
+#[test]
+fn ndjson_bare_keys() {
+    let input = r#"{"b":2,"a":1}
+{"x":1}
+"#;
+    let out = qj_stdin(&["-c", "keys"], input);
+    assert_eq!(out, "[\"a\",\"b\"]\n[\"x\"]\n");
+}
+
+#[test]
+fn ndjson_field_keys() {
+    let input = r#"{"data":{"b":2,"a":1}}
+{"data":{"x":1}}
+"#;
+    let out = qj_stdin(&["-c", ".data | keys"], input);
+    assert_eq!(out, "[\"a\",\"b\"]\n[\"x\"]\n");
+}
+
+// --- select edge cases ---
+
+#[test]
+fn ndjson_select_no_match() {
+    let input = r#"{"type":"WatchEvent"}
+{"type":"IssuesEvent"}
+"#;
+    let out = qj_stdin(&["-c", "select(.type == \"PushEvent\")"], input);
+    assert_eq!(out, "");
+}
+
+#[test]
+fn ndjson_select_with_empty_lines() {
+    let input = "{\"type\":\"PushEvent\"}\n\n{\"type\":\"WatchEvent\"}\n";
+    let out = qj_stdin(&["-c", "select(.type == \"PushEvent\")"], input);
+    assert_eq!(out, "{\"type\":\"PushEvent\"}\n");
+}
+
+#[test]
+fn ndjson_select_large_line_count() {
+    let mut input = String::new();
+    for i in 0..1000 {
+        input.push_str(&format!(
+            "{{\"i\":{i},\"type\":\"{}\"}}\n",
+            if i % 3 == 0 { "A" } else { "B" }
+        ));
+    }
+    let out = qj_stdin(&["-c", "select(.type == \"A\")"], &input);
+    let count = out.lines().count();
+    // i % 3 == 0: 0,3,6,...,999 → 334 lines
+    assert_eq!(count, 334);
+}
+
+#[test]
+fn ndjson_select_string_with_special_chars() {
+    let input = r#"{"msg":"hello \"world\""}
+{"msg":"normal"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.msg == "normal")"#], input);
+    assert_eq!(out, "{\"msg\":\"normal\"}\n");
+}
+
+#[test]
+fn ndjson_select_negative_int() {
+    let input = r#"{"n":-1}
+{"n":1}
+{"n":0}
+"#;
+    let out = qj_stdin(&["-c", "select(.n == -1)"], input);
+    assert_eq!(out, "{\"n\":-1}\n");
+}
+
+// --- length/keys edge cases ---
+
+#[test]
+fn ndjson_length_empty_objects() {
+    let input = "{}\n{\"a\":1}\n";
+    let out = qj_stdin(&["-c", "length"], input);
+    assert_eq!(out, "0\n1\n");
+}
+
+#[test]
+fn ndjson_keys_empty_object() {
+    let input = "{}\n{\"b\":1,\"a\":2}\n";
+    let out = qj_stdin(&["-c", "keys"], input);
+    assert_eq!(out, "[]\n[\"a\",\"b\"]\n");
+}
+
+#[test]
+fn ndjson_length_on_arrays_ndjson() {
+    let input = "[1,2,3]\n[4,5]\n[]\n";
+    let out = qj_stdin(&["-c", "length"], input);
+    assert_eq!(out, "3\n2\n0\n");
+}
+
+#[test]
+fn ndjson_keys_on_arrays_ndjson() {
+    let input = "[1,2,3]\n[4]\n";
+    let out = qj_stdin(&["-c", "keys"], input);
+    assert_eq!(out, "[0,1,2]\n[0]\n");
+}
+
+#[test]
+fn ndjson_string_length_fallback() {
+    // String length requires fallback from C++ fast path to normal eval
+    let input = r#"{"name":"alice"}
+{"name":"bob"}
+"#;
+    let out = qj_stdin(&["-c", ".name | length"], input);
+    assert_eq!(out, "5\n3\n");
+}
+
+#[test]
+fn ndjson_nested_field_length() {
+    let input = r#"{"a":{"b":[1,2,3]}}
+{"a":{"b":[4]}}
+"#;
+    let out = qj_stdin(&["-c", ".a.b | length"], input);
+    assert_eq!(out, "3\n1\n");
+}
+
+#[test]
+fn ndjson_nested_field_keys() {
+    let input = r#"{"meta":{"b":2,"a":1}}
+{"meta":{"z":1}}
+"#;
+    let out = qj_stdin(&["-c", ".meta | keys"], input);
+    assert_eq!(out, "[\"a\",\"b\"]\n[\"z\"]\n");
+}
+
+#[test]
+fn ndjson_length_large_line_count() {
+    let mut input = String::new();
+    for i in 0..500 {
+        input.push_str(&format!("{{\"i\":{i}}}\n"));
+    }
+    let out = qj_stdin(&["-c", "length"], &input);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 500);
+    // Each line is an object with 1 key
+    assert!(lines.iter().all(|l| *l == "1"));
+}
+
 // --- Iterate ---
 
 #[test]

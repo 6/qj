@@ -8,17 +8,28 @@ use rayon::prelude::*;
 
 use std::collections::HashSet;
 
-use crate::filter::{Env, Filter};
+use crate::filter::{CmpOp, Env, Filter};
 use crate::output::{self, OutputConfig};
 use crate::simdjson;
 
 /// Detected fast-path strategy for NDJSON processing.
 /// Field-chain patterns bypass the Value tree entirely.
+#[derive(Debug)]
 enum NdjsonFastPath {
     /// Normal path: parse → Value → eval → output
     None,
     /// `.field.chain` — extract raw JSON via C++ dom_find_field_raw
     FieldChain(Vec<String>),
+    /// `select(.field == literal)` — compare raw bytes, output whole line or skip
+    SelectEq {
+        fields: Vec<String>,
+        op: CmpOp,
+        literal_bytes: Vec<u8>,
+    },
+    /// `length` or `.field | length` — compute length via C++ bridge
+    Length(Vec<String>),
+    /// `keys` or `.field | keys` — compute keys via C++ bridge
+    Keys(Vec<String>),
 }
 
 /// Target size for parallel chunks.
@@ -166,15 +177,20 @@ pub fn process_ndjson(
 
 fn detect_fast_path(filter: &Filter) -> NdjsonFastPath {
     // Allow disabling fast path for benchmarking A/B comparisons.
-    if std::env::var_os("QJ_NO_FIELD_FAST").is_some() {
+    if std::env::var_os("QJ_NO_FAST_PATH").is_some() {
         return NdjsonFastPath::None;
     }
     let mut fields = Vec::new();
     if crate::filter::collect_field_chain(filter, &mut fields) && !fields.is_empty() {
-        NdjsonFastPath::FieldChain(fields)
-    } else {
-        NdjsonFastPath::None
+        return NdjsonFastPath::FieldChain(fields);
     }
+    if let Some(fp) = detect_select_fast_path(filter) {
+        return fp;
+    }
+    if let Some(fp) = detect_length_keys_fast_path(filter) {
+        return fp;
+    }
+    NdjsonFastPath::None
 }
 
 // ---------------------------------------------------------------------------
@@ -380,43 +396,296 @@ fn process_line(
         return Ok(());
     }
 
-    // Fast path: field-chain extraction via C++ bridge (no Value tree)
-    if let NdjsonFastPath::FieldChain(fields) = fast_path {
-        let padded = prepare_padded(trimmed, scratch);
-        let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-        let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
-            .context("failed to extract field from NDJSON line")?;
-        *had_output = true;
-        // In raw output mode, strip surrounding quotes from string values
-        if config.mode == output::OutputMode::Raw
-            && raw.len() >= 2
-            && raw[0] == b'"'
-            && raw[raw.len() - 1] == b'"'
-        {
-            // Unescape JSON string: handle \n, \t, \\, \", \uXXXX etc.
-            let inner = &raw[1..raw.len() - 1];
-            unescape_json_string(inner, output_buf);
-        } else {
-            output_buf.extend_from_slice(&raw);
+    match fast_path {
+        NdjsonFastPath::FieldChain(fields) => {
+            let padded = prepare_padded(trimmed, scratch);
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+                .context("failed to extract field from NDJSON line")?;
+            *had_output = true;
+            // In raw output mode, strip surrounding quotes from string values
+            if config.mode == output::OutputMode::Raw
+                && raw.len() >= 2
+                && raw[0] == b'"'
+                && raw[raw.len() - 1] == b'"'
+            {
+                // Unescape JSON string: handle \n, \t, \\, \", \uXXXX etc.
+                let inner = &raw[1..raw.len() - 1];
+                unescape_json_string(inner, output_buf);
+            } else {
+                output_buf.extend_from_slice(&raw);
+            }
+            if config.null_separator {
+                output_buf.push(0);
+            } else if !config.join_output {
+                output_buf.push(b'\n');
+            }
         }
+        NdjsonFastPath::SelectEq {
+            fields,
+            op,
+            literal_bytes,
+        } => {
+            process_line_select_eq(
+                trimmed,
+                fields,
+                *op,
+                literal_bytes,
+                config,
+                output_buf,
+                had_output,
+                scratch,
+            )?;
+        }
+        NdjsonFastPath::Length(fields) => {
+            process_line_length(
+                trimmed, fields, filter, config, env, output_buf, had_output, scratch,
+            )?;
+        }
+        NdjsonFastPath::Keys(fields) => {
+            process_line_keys(
+                trimmed, fields, filter, config, env, output_buf, had_output, scratch,
+            )?;
+        }
+        NdjsonFastPath::None => {
+            // Normal path: parse → Value → eval → output
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Fast-path detection: select(.field == literal)
+// ---------------------------------------------------------------------------
+
+fn detect_select_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
+    let inner = match filter {
+        Filter::Select(inner) => inner,
+        _ => return None,
+    };
+    let (lhs, op, rhs) = match inner.as_ref() {
+        Filter::Compare(lhs, op, rhs) => (lhs, op, rhs),
+        _ => return None,
+    };
+    // Only support Eq and Ne for byte-level comparison
+    if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
+        return None;
+    }
+    // Try both orientations: (.field == lit) and (lit == .field)
+    let (fields, literal_bytes) = if let Some((f, b)) = try_field_literal(lhs, rhs) {
+        (f, b)
+    } else if let Some((f, b)) = try_field_literal(rhs, lhs) {
+        (f, b)
+    } else {
+        return None;
+    };
+    Some(NdjsonFastPath::SelectEq {
+        fields,
+        op: *op,
+        literal_bytes,
+    })
+}
+
+/// Try to decompose (field_chain_side, literal_side) into (fields, serialized_bytes).
+fn try_field_literal(field_side: &Filter, lit_side: &Filter) -> Option<(Vec<String>, Vec<u8>)> {
+    let mut fields = Vec::new();
+    if !crate::filter::collect_field_chain(field_side, &mut fields) || fields.is_empty() {
+        return None;
+    }
+    let literal_bytes = serialize_literal(lit_side)?;
+    Some((fields, literal_bytes))
+}
+
+/// Serialize a Filter::Literal scalar to its JSON byte representation.
+fn serialize_literal(filter: &Filter) -> Option<Vec<u8>> {
+    use crate::value::Value;
+    match filter {
+        Filter::Literal(Value::String(s)) => {
+            // JSON-encode: "value"
+            let mut buf = Vec::with_capacity(s.len() + 2);
+            buf.push(b'"');
+            // Escape special characters in the string
+            for &b in s.as_bytes() {
+                match b {
+                    b'"' => buf.extend_from_slice(b"\\\""),
+                    b'\\' => buf.extend_from_slice(b"\\\\"),
+                    b'\n' => buf.extend_from_slice(b"\\n"),
+                    b'\r' => buf.extend_from_slice(b"\\r"),
+                    b'\t' => buf.extend_from_slice(b"\\t"),
+                    b if b < 0x20 => {
+                        buf.extend_from_slice(format!("\\u{:04x}", b).as_bytes());
+                    }
+                    _ => buf.push(b),
+                }
+            }
+            buf.push(b'"');
+            Some(buf)
+        }
+        Filter::Literal(Value::Int(n)) => Some(n.to_string().into_bytes()),
+        Filter::Literal(Value::Double(f, _)) => {
+            // Use serde_json-style float formatting
+            let s = if f.fract() == 0.0 && f.is_finite() {
+                // Integers stored as float: avoid trailing ".0" for exact match
+                format!("{}", *f as i64)
+            } else {
+                format!("{}", f)
+            };
+            Some(s.into_bytes())
+        }
+        Filter::Literal(Value::Bool(b)) => Some(if *b {
+            b"true".to_vec()
+        } else {
+            b"false".to_vec()
+        }),
+        Filter::Literal(Value::Null) => Some(b"null".to_vec()),
+        _ => None,
+    }
+}
+
+/// Process a line with the select(.field == literal) fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_eq(
+    trimmed: &[u8],
+    fields: &[String],
+    op: CmpOp,
+    literal_bytes: &[u8],
+    config: &OutputConfig,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+    let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+        .context("failed to extract field from NDJSON line")?;
+
+    let matches = raw == literal_bytes;
+    let output = match op {
+        CmpOp::Eq => matches,
+        CmpOp::Ne => !matches,
+        _ => unreachable!(),
+    };
+
+    if output {
+        *had_output = true;
+        output_buf.extend_from_slice(trimmed);
         if config.null_separator {
             output_buf.push(0);
         } else if !config.join_output {
             output_buf.push(b'\n');
         }
-        return Ok(());
     }
+    Ok(())
+}
 
-    // Normal path: parse → Value → eval → output
+// ---------------------------------------------------------------------------
+// Fast-path detection: length / keys
+// ---------------------------------------------------------------------------
+
+fn detect_length_keys_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
+    // Bare `length` or `keys`
+    if let Filter::Builtin(name, args) = filter
+        && args.is_empty()
+    {
+        match name.as_str() {
+            "length" => return Some(NdjsonFastPath::Length(vec![])),
+            "keys" | "keys_unsorted" => return Some(NdjsonFastPath::Keys(vec![])),
+            _ => {}
+        }
+    }
+    // `.field | length` or `.field | keys`
+    if let Some((fields, builtin)) = crate::filter::decompose_field_builtin(filter) {
+        match builtin {
+            "length" => return Some(NdjsonFastPath::Length(fields)),
+            "keys" | "keys_unsorted" => return Some(NdjsonFastPath::Keys(fields)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Process a line with the `length` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_length(
+    trimmed: &[u8],
+    fields: &[String],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
-    let value = simdjson::dom_parse_to_value(padded, trimmed.len())
-        .context("failed to parse NDJSON line")?;
+    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+    match simdjson::dom_field_length(padded, trimmed.len(), &field_refs)? {
+        Some(result) => {
+            *had_output = true;
+            output_buf.extend_from_slice(&result);
+            if config.null_separator {
+                output_buf.push(0);
+            } else if !config.join_output {
+                output_buf.push(b'\n');
+            }
+        }
+        None => {
+            // Fallback: unsupported type (e.g. string length) — use normal path
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+        }
+    }
+    Ok(())
+}
 
-    crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
-        *had_output = true;
-        output::write_value(output_buf, &v, config).ok();
-    });
-
+/// Process a line with the `keys` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_keys(
+    trimmed: &[u8],
+    fields: &[String],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+    match simdjson::dom_field_keys(padded, trimmed.len(), &field_refs)? {
+        Some(result) => {
+            *had_output = true;
+            output_buf.extend_from_slice(&result);
+            if config.null_separator {
+                output_buf.push(0);
+            } else if !config.join_output {
+                output_buf.push(b'\n');
+            }
+        }
+        None => {
+            // Fallback: unsupported type — use normal path
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+        }
+    }
     Ok(())
 }
 
@@ -538,7 +807,7 @@ mod tests {
         let filter = crate::filter::parse(".name").unwrap();
         match detect_fast_path(&filter) {
             NdjsonFastPath::FieldChain(fields) => assert_eq!(fields, vec!["name"]),
-            NdjsonFastPath::None => panic!("expected FieldChain"),
+            other => panic!("expected FieldChain, got {:?}", other),
         }
     }
 
@@ -547,7 +816,7 @@ mod tests {
         let filter = crate::filter::parse(".actor.login").unwrap();
         match detect_fast_path(&filter) {
             NdjsonFastPath::FieldChain(fields) => assert_eq!(fields, vec!["actor", "login"]),
-            NdjsonFastPath::None => panic!("expected FieldChain"),
+            other => panic!("expected FieldChain, got {:?}", other),
         }
     }
 
@@ -675,6 +944,483 @@ mod tests {
         // U+1F30D = Earth Globe Europe-Africa (surrogate pair: D83C DF0D)
         unescape_json_string(br#"\uD83C\uDF0D"#, &mut out);
         assert_eq!(String::from_utf8(out).unwrap(), "\u{1F30D}");
+    }
+
+    // --- Select fast-path detection tests ---
+
+    #[test]
+    fn fast_path_detects_select_eq_string() {
+        let filter = crate::filter::parse("select(.type == \"PushEvent\")").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq {
+                fields,
+                op,
+                literal_bytes,
+            } => {
+                assert_eq!(fields, vec!["type"]);
+                assert_eq!(op, CmpOp::Eq);
+                assert_eq!(literal_bytes, b"\"PushEvent\"");
+            }
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_eq_int() {
+        let filter = crate::filter::parse("select(.count == 42)").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq {
+                fields,
+                op,
+                literal_bytes,
+            } => {
+                assert_eq!(fields, vec!["count"]);
+                assert_eq!(op, CmpOp::Eq);
+                assert_eq!(literal_bytes, b"42");
+            }
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_eq_bool() {
+        let filter = crate::filter::parse("select(.active == true)").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq {
+                fields,
+                op,
+                literal_bytes,
+            } => {
+                assert_eq!(fields, vec!["active"]);
+                assert_eq!(op, CmpOp::Eq);
+                assert_eq!(literal_bytes, b"true");
+            }
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_eq_null() {
+        let filter = crate::filter::parse("select(.x == null)").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq {
+                fields,
+                op,
+                literal_bytes,
+            } => {
+                assert_eq!(fields, vec!["x"]);
+                assert_eq!(op, CmpOp::Eq);
+                assert_eq!(literal_bytes, b"null");
+            }
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_ne() {
+        let filter = crate::filter::parse("select(.type != \"PushEvent\")").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq {
+                fields,
+                op,
+                literal_bytes,
+            } => {
+                assert_eq!(fields, vec!["type"]);
+                assert_eq!(op, CmpOp::Ne);
+                assert_eq!(literal_bytes, b"\"PushEvent\"");
+            }
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_reversed_operands() {
+        let filter = crate::filter::parse("select(\"PushEvent\" == .type)").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEq {
+                fields,
+                op,
+                literal_bytes,
+            } => {
+                assert_eq!(fields, vec!["type"]);
+                assert_eq!(op, CmpOp::Eq);
+                assert_eq!(literal_bytes, b"\"PushEvent\"");
+            }
+            other => panic!("expected SelectEq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_select_gt_not_supported() {
+        let filter = crate::filter::parse("select(.count > 10)").unwrap();
+        assert!(matches!(detect_fast_path(&filter), NdjsonFastPath::None));
+    }
+
+    #[test]
+    fn fast_path_select_no_literal_not_supported() {
+        let filter = crate::filter::parse("select(.a == .b)").unwrap();
+        assert!(matches!(detect_fast_path(&filter), NdjsonFastPath::None));
+    }
+
+    #[test]
+    fn fast_path_select_eq_matching_line() {
+        let data = b"{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n";
+        let filter = crate::filter::parse("select(.type == \"PushEvent\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"type\":\"PushEvent\",\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_ne_matching_line() {
+        let data = b"{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n";
+        let filter = crate::filter::parse("select(.type != \"PushEvent\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"type\":\"WatchEvent\",\"id\":2}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_eq_missing_field() {
+        // Missing field returns null — select(.x == null) should match
+        let data = b"{\"a\":1}\n{\"x\":null}\n";
+        let filter = crate::filter::parse("select(.x == null)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"a\":1}\n{\"x\":null}\n"
+        );
+    }
+
+    // --- Length/keys fast-path detection tests ---
+
+    #[test]
+    fn fast_path_detects_bare_length() {
+        let filter = crate::filter::parse("length").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Length(fields) => assert!(fields.is_empty()),
+            other => panic!("expected Length, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_bare_keys() {
+        let filter = crate::filter::parse("keys").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Keys(fields) => assert!(fields.is_empty()),
+            other => panic!("expected Keys, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_field_length() {
+        let filter = crate::filter::parse(".items | length").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Length(fields) => assert_eq!(fields, vec!["items"]),
+            other => panic!("expected Length, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_field_keys() {
+        let filter = crate::filter::parse(".data | keys").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Keys(fields) => assert_eq!(fields, vec!["data"]),
+            other => panic!("expected Keys, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_length_on_objects() {
+        let data = b"{\"a\":1,\"b\":2}\n{\"x\":1}\n";
+        let filter = crate::filter::parse("length").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(String::from_utf8(output).unwrap(), "2\n1\n");
+    }
+
+    #[test]
+    fn fast_path_length_on_arrays() {
+        let data = b"{\"items\":[1,2,3]}\n{\"items\":[4,5]}\n";
+        let filter = crate::filter::parse(".items | length").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "3\n2\n");
+    }
+
+    #[test]
+    fn fast_path_keys_on_objects() {
+        let data = b"{\"b\":2,\"a\":1}\n{\"x\":1}\n";
+        let filter = crate::filter::parse("keys").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "[\"a\",\"b\"]\n[\"x\"]\n"
+        );
+    }
+
+    // --- Select fast-path edge cases ---
+
+    #[test]
+    fn fast_path_select_no_match_no_output() {
+        // No lines match — should produce no output, had_output = false
+        let data = b"{\"type\":\"WatchEvent\"}\n{\"type\":\"IssuesEvent\"}\n";
+        let filter = crate::filter::parse("select(.type == \"PushEvent\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(!had_output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn fast_path_select_all_match() {
+        let data = b"{\"type\":\"PushEvent\"}\n{\"type\":\"PushEvent\"}\n";
+        let filter = crate::filter::parse("select(.type == \"PushEvent\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"type\":\"PushEvent\"}\n{\"type\":\"PushEvent\"}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_empty_string_literal() {
+        let data = b"{\"name\":\"\"}\n{\"name\":\"bob\"}\n";
+        let filter = crate::filter::parse("select(.name == \"\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"name\":\"\"}\n");
+    }
+
+    #[test]
+    fn fast_path_select_nested_field() {
+        let data = b"{\"a\":{\"b\":\"yes\"},\"id\":1}\n{\"a\":{\"b\":\"no\"},\"id\":2}\n";
+        let filter = crate::filter::parse("select(.a.b == \"yes\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"a\":{\"b\":\"yes\"},\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_with_empty_lines() {
+        let data = b"{\"type\":\"PushEvent\"}\n\n{\"type\":\"WatchEvent\"}\n\n";
+        let filter = crate::filter::parse("select(.type == \"PushEvent\")").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"type\":\"PushEvent\"}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_false_literal() {
+        let data = b"{\"active\":false}\n{\"active\":true}\n";
+        let filter = crate::filter::parse("select(.active == false)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"active\":false}\n");
+    }
+
+    #[test]
+    fn fast_path_select_int_zero() {
+        let data = b"{\"n\":0}\n{\"n\":1}\n";
+        let filter = crate::filter::parse("select(.n == 0)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":0}\n");
+    }
+
+    #[test]
+    fn fast_path_select_negative_int() {
+        let data = b"{\"n\":-1}\n{\"n\":1}\n";
+        let filter = crate::filter::parse("select(.n == -1)").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":-1}\n");
+    }
+
+    // --- Length/keys fast-path edge cases ---
+
+    #[test]
+    fn fast_path_length_empty_object() {
+        let data = b"{}\n{\"a\":1}\n";
+        let filter = crate::filter::parse("length").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "0\n1\n");
+    }
+
+    #[test]
+    fn fast_path_length_empty_array_field() {
+        let data = b"{\"items\":[]}\n{\"items\":[1]}\n";
+        let filter = crate::filter::parse(".items | length").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "0\n1\n");
+    }
+
+    #[test]
+    fn fast_path_length_string_fallback() {
+        // String length requires fallback to normal path
+        let data = b"{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n";
+        let filter = crate::filter::parse(".name | length").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "5\n3\n");
+    }
+
+    #[test]
+    fn fast_path_keys_empty_object() {
+        let data = b"{}\n{\"a\":1}\n";
+        let filter = crate::filter::parse("keys").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "[]\n[\"a\"]\n");
+    }
+
+    #[test]
+    fn fast_path_keys_array_fallback() {
+        // Array keys produces indices — requires fallback
+        let data = b"[10,20,30]\n[40]\n";
+        let filter = crate::filter::parse("keys").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "[0,1,2]\n[0]\n");
+    }
+
+    #[test]
+    fn fast_path_length_with_empty_lines() {
+        let data = b"{\"a\":1}\n\n{\"b\":2,\"c\":3}\n";
+        let filter = crate::filter::parse("length").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "1\n2\n");
+    }
+
+    #[test]
+    fn fast_path_nested_field_length() {
+        let data = b"{\"a\":{\"b\":[1,2,3]}}\n{\"a\":{\"b\":[4]}}\n";
+        let filter = crate::filter::parse(".a.b | length").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "3\n1\n");
+    }
+
+    #[test]
+    fn fast_path_nested_field_keys() {
+        let data = b"{\"meta\":{\"b\":2,\"a\":1}}\n{\"meta\":{\"z\":1}}\n";
+        let filter = crate::filter::parse(".meta | keys").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "[\"a\",\"b\"]\n[\"z\"]\n"
+        );
     }
 
     // --- Scratch buffer reuse test ---

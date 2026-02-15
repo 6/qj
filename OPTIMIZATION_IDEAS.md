@@ -10,10 +10,10 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | 1 | P-core-only threading | DONE | Avoids E-core contention on Apple Silicon |
 | 2 | mmap for file I/O | DONE | **~23% faster** on 1.1GB NDJSON, ~1% on 49MB |
 | 3 | Field-chain fast path | DONE | **~40% faster** `.field` on 1.1GB NDJSON |
-| 4 | `select` fast path | TODO | Skip Value tree for non-matching NDJSON lines |
+| 4 | `select` fast path | DONE | **~50% faster** `select(.type=="PushEvent")` on 1.1GB NDJSON |
 | 5 | Multi-field fast path | TODO | `{a: .x, b: .y}` without Value tree |
 | 6 | `select` + field fast path | TODO | Combine filter + extract in one pass |
-| 7 | `length`/`keys` NDJSON fast path | TODO | Extend existing single-doc passthrough |
+| 7 | `length`/`keys` NDJSON fast path | DONE | **~45% faster** `length`/`keys` on 1.1GB NDJSON |
 | 8 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
 | 9 | Per-thread output buffers | TODO | Avoid final concatenation step |
 | — | Rc\<str\> for Value strings | REVERTED | Neutral — Rc indirection offsets clone savings |
@@ -97,9 +97,9 @@ strategy.
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs` (made `collect_field_chain` public), `src/output.rs` (added `PartialEq, Eq` to `OutputMode`)
 
-### 4. `select(.field == literal)` fast path (TODO)
+### 4. `select(.field == literal)` fast path (DONE)
 
-**Pattern:** `select(.type == "PushEvent")`, `select(.count > 100)`, `select(.active == true)`
+**Pattern:** `select(.type == "PushEvent")`, `select(.active == true)`, `select(.count == 42)`
 
 **Approach:** No C++ bridge changes needed. Entirely in Rust:
 1. Detect `Filter::Select(Compare(field_chain, op, Literal(val)))` in `detect_fast_path()`
@@ -108,15 +108,19 @@ strategy.
 4. If match: output the entire raw line from the mmap buffer — zero copy, no Value tree
 5. If no match: skip the line entirely — no parse, no eval, no output
 
-**Why this is huge:** Selective queries are the most common NDJSON workload. `select(.type == "PushEvent")` on gharchive matches ~25% of lines. The current path builds a full Value tree for every line just to check one field. The fast path skips Value construction for 100% of lines (matching lines output raw bytes too).
+**Operators supported:** `==`, `!=` (string/number/bool/null comparison against literal). Both operand orientations handled: `(.field == lit)` and `(lit == .field)`.
 
-**Operators to support:** `==`, `!=` (string/number/bool/null comparison against literal). Numeric `<`, `>`, `<=`, `>=` require parsing the raw bytes as a number — slightly more work but still avoids Value tree.
+**Change:** `src/parallel/ndjson.rs` — added `SelectEq` variant to `NdjsonFastPath`, `detect_select_fast_path()`, `serialize_literal()`, `process_line_select_eq()`. `QJ_NO_FAST_PATH=1` env var disables all fast paths for A/B benchmarking (renamed from `QJ_NO_FIELD_FAST`).
 
-**Complexity:** Low-moderate. Pattern detection is straightforward (match the AST). The raw-bytes comparison is ~30 lines. Reuses `dom_find_field_raw` and `prepare_padded`. ~4 files, similar effort to field-chain fast path.
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, sequential runs, 5s cooldown):**
 
-**Expected impact:** High. On gharchive.ndjson, `select(.type=="PushEvent")` is currently ~565ms. With the fast path, non-matching lines (~75%) cost almost nothing (one field extraction), and matching lines output raw bytes. Estimate ~40-60% faster.
+| Query | Without fast path | With fast path | Delta |
+|-------|------------------|---------------|-------|
+| `select(.type=="PushEvent")` | 515.8ms | 258.0ms | **-50%** |
 
-**Files:** `src/parallel/ndjson.rs` (detect + process), `src/filter/mod.rs` (AST pattern matching)
+**Verdict:** ~50% wall-time improvement. User time drops from ~4.2s to ~1.4s (67% less CPU work). The fast path avoids building the Value tree for every line — matching lines output raw bytes, non-matching lines are skipped entirely after one field extraction.
+
+**Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs` (`CmpOp` already had needed derives)
 
 ### 5. Multi-field extraction fast path (TODO)
 
@@ -151,19 +155,23 @@ strategy.
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs`
 
-### 7. `length`/`keys` NDJSON fast path (TODO)
+### 7. `length`/`keys` NDJSON fast path (DONE)
 
 **Pattern:** `length`, `keys`, `.field | length`, `.field | keys`
 
-**Approach:** We already have `dom_field_length()` and `dom_field_keys()` as single-doc passthrough paths (`PassthroughPath` enum in `filter/mod.rs`). Extend these to work per-NDJSON-line:
-1. Detect these patterns in `detect_fast_path()`
-2. Per line: call existing C++ bridge functions, output result directly
+**Approach:** Uses existing `dom_field_length()` and `dom_field_keys()` C++ bridge functions per NDJSON line. Falls back to normal path for unsupported types (e.g. string length).
 
-**Why:** `length` on gharchive.ndjson is ~463ms with the normal path. The C++ bridge can compute length without building the Value tree.
+**Change:** `src/parallel/ndjson.rs` — added `Length` and `Keys` variants to `NdjsonFastPath`, `detect_length_keys_fast_path()`, `process_line_length()`, `process_line_keys()`. Also made `decompose_field_builtin` `pub(crate)` in `src/filter/mod.rs`.
 
-**Complexity:** Low. The C++ functions already exist. Just need to add variants to `NdjsonFastPath` and call them in `process_line`. ~2 files, minimal new code.
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, sequential runs, 5s cooldown):**
 
-**Expected impact:** Moderate. `length` and `keys` are common but the per-line simdjson DOM parse is still needed — the savings come from skipping `decode_value()` and eval. Estimate ~20-30% faster.
+| Query | Without fast path | With fast path | Delta |
+|-------|------------------|---------------|-------|
+| `length` | 441.0ms | 249.5ms | **-43%** |
+| `.actor \| length` | 437.9ms | 245.5ms | **-44%** |
+| `keys` | 458.2ms | 251.2ms | **-45%** |
+
+**Verdict:** ~43-45% wall-time improvement across all variants. User time drops from ~3.8s to ~1.4-1.6s. The C++ bridge computes length/keys directly from the simdjson DOM without constructing the Rust Value tree.
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs`
 

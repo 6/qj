@@ -270,7 +270,7 @@ pub fn collect_field_chain(filter: &Filter, fields: &mut Vec<String>) -> bool {
 /// Decompose `Pipe(field_chain, Builtin(name, []))` patterns.
 /// Returns `Some((fields, builtin_name))` if the filter is a field chain piped
 /// into a zero-arg builtin; `None` otherwise.
-fn decompose_field_builtin(filter: &Filter) -> Option<(Vec<String>, &str)> {
+pub(crate) fn decompose_field_builtin(filter: &Filter) -> Option<(Vec<String>, &str)> {
     match filter {
         Filter::Pipe(lhs, rhs) => {
             if let Filter::Builtin(name, args) = rhs.as_ref() {
