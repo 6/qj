@@ -7,6 +7,7 @@
 //   - JxParser bundles parser + document together (document borrows parser).
 
 #include "simdjson.h"
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -270,13 +271,6 @@ static void emit_double_with_raw(std::vector<uint8_t>& out, double v,
     }
 }
 
-// Emit a double without raw text (uint64 overflow case).
-static void emit_double_no_raw(std::vector<uint8_t>& out, double v) {
-    emit_u8(out, TAG_DOUBLE);
-    emit_f64(out, v);
-    emit_u32(out, 0);
-}
-
 // Patch a u32 value at a specific position in the output buffer.
 static void patch_u32(std::vector<uint8_t>& out, size_t pos, uint32_t v) {
     out[pos]     = static_cast<uint8_t>(v);
@@ -286,6 +280,20 @@ static void patch_u32(std::vector<uint8_t>& out, size_t pos, uint32_t v) {
 }
 
 static const int MAX_DEPTH = 1024;
+
+// Emit a number from its raw JSON token, handling the case where simdjson
+// rejects integers beyond u64 (BIGINT_ERROR).  When get_number() succeeds
+// we go through emit_number(); otherwise we fall back to strtod + raw text.
+static void emit_number_or_bigint(std::vector<uint8_t>& out,
+                                   std::string_view raw) {
+    // Parse raw token to approximate f64 — strtod handles arbitrarily long
+    // digit strings and gives the closest IEEE 754 double.
+    size_t raw_len = trim_number_len(raw);
+    std::string tmp(raw.data(), raw_len);
+    char* end = nullptr;
+    double d = std::strtod(tmp.c_str(), &end);
+    emit_double_with_raw(out, d, raw);
+}
 
 // Emit a number value from its raw token and number info.
 static void emit_number(std::vector<uint8_t>& out,
@@ -302,7 +310,7 @@ static void emit_number(std::vector<uint8_t>& out,
                 emit_u8(out, TAG_INT);
                 emit_i64(out, static_cast<int64_t>(u));
             } else {
-                emit_double_no_raw(out, static_cast<double>(u));
+                emit_double_with_raw(out, static_cast<double>(u), raw);
             }
             break;
         }
@@ -330,9 +338,14 @@ static void flatten_ondemand(std::vector<uint8_t>& out,
             break;
         case ondemand::json_type::number: {
             std::string_view raw = val.raw_json_token();
-            ondemand::number num = val.get_number().value();
-            val.get_double(); // consume the value
-            emit_number(out, raw, num);
+            auto num_result = val.get_number();
+            if (num_result.error() == BIGINT_ERROR) {
+                emit_number_or_bigint(out, raw);
+            } else {
+                ondemand::number num = num_result.value();
+                val.get_double(); // consume the value
+                emit_number(out, raw, num);
+            }
             break;
         }
         case ondemand::json_type::string:
@@ -405,9 +418,14 @@ int jx_dom_to_flat(const char* buf, size_t len,
                     break;
                 case ondemand::json_type::number: {
                     std::string_view raw = doc.raw_json_token();
-                    ondemand::number num = doc.get_number().value();
-                    doc.get_double(); // consume
-                    emit_number(flat, raw, num);
+                    auto num_result = doc.get_number();
+                    if (num_result.error() == BIGINT_ERROR) {
+                        emit_number_or_bigint(flat, raw);
+                    } else {
+                        ondemand::number num = num_result.value();
+                        doc.get_double(); // consume
+                        emit_number(flat, raw, num);
+                    }
                     break;
                 }
                 case ondemand::json_type::string:

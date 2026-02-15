@@ -381,8 +381,47 @@ mod tests {
         let buf = pad_buffer(json);
         let val = dom_parse_to_value(&buf, json.len()).unwrap();
         match val {
-            Value::Double(d, _) => assert!((d - 9223372036854775808.0).abs() < 1.0),
+            Value::Double(d, raw) => {
+                assert!((d - 9223372036854775808.0).abs() < 1.0);
+                assert_eq!(raw.as_deref(), Some("9223372036854775808"));
+            }
             other => panic!("expected Double, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dom_parse_bigint_beyond_u64() {
+        // 29-digit number — exceeds u64::MAX, previously caused BIGINT_ERROR
+        let json = b"99999999999999999999999999999";
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        match val {
+            Value::Double(d, raw) => {
+                assert!(d > 9.9e28);
+                assert_eq!(raw.as_deref(), Some("99999999999999999999999999999"));
+            }
+            other => panic!("expected Double with raw text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dom_parse_bigint_in_object() {
+        let json = br#"{"id":99999999999999999999999999999}"#;
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value(&buf, json.len()).unwrap();
+        match val {
+            Value::Object(pairs) => {
+                let (key, id_val) = &pairs[0];
+                assert_eq!(key, "id");
+                match id_val {
+                    Value::Double(d, raw) => {
+                        assert!(*d > 9.9e28);
+                        assert_eq!(raw.as_deref(), Some("99999999999999999999999999999"));
+                    }
+                    other => panic!("expected Double, got {:?}", other),
+                }
+            }
+            other => panic!("expected Object, got {:?}", other),
         }
     }
 

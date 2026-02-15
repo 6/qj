@@ -8,7 +8,7 @@ Quick JSON. A jq-compatible processor, 10-50x faster on large inputs.
 
 **NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1M lines: `qj '.name'` takes 117 ms vs jq's 1.3 s (11x) and jaq's 715 ms (6x). No `xargs` or `parallel` needed.
 
-**When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules, `label`-`break`, or arbitrary precision numbers.
+**When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
 ## Quick start
 
@@ -54,10 +54,10 @@ See [benches/](benches/) for methodology and full results.
 **98.5%** feature coverage (163/166 features passing, [details](tests/jq_compat/feature_results.md)).
 **91%** pass rate on jq's official 497-test suite.
 
-What's missing: module system (`import`/`include`), `label`-`break`, arbitrary precision numbers (qj uses i64/f64).
+What's missing: module system (`import`/`include`), arbitrary precision arithmetic (qj uses i64/f64, large numbers preserved on passthrough).
 
 ## Known limitations
 
 - No module system — `import`/`include` are not supported.
-- No arbitrary precision — i64/f64 only. This is intentional for performance.
+- No arbitrary precision arithmetic — i64/f64 internally. Large numbers are preserved on passthrough but arithmetic uses f64 precision.
 - Some edge cases in `def` (def-inside-expressions, destructuring bind patterns).

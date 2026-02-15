@@ -636,6 +636,35 @@ fn number_integers_unchanged() {
 }
 
 #[test]
+fn number_large_uint64_preserves_text() {
+    // i64::MAX + 1 — should preserve original text, not lose precision via f64
+    assert_eq!(
+        qj_compact(".", "9223372036854775808").trim(),
+        "9223372036854775808"
+    );
+    // Larger u64 value
+    assert_eq!(
+        qj_compact(".id", r#"{"id":9999999999999999999}"#).trim(),
+        "9999999999999999999"
+    );
+    // u64::MAX
+    assert_eq!(
+        qj_compact(".", "18446744073709551615").trim(),
+        "18446744073709551615"
+    );
+    // Beyond u64 — preserved via bigint fallback
+    assert_eq!(
+        qj_compact(".", "99999999999999999999999999999").trim(),
+        "99999999999999999999999999999"
+    );
+    // Beyond u64 in object
+    assert_eq!(
+        qj_compact(".id", r#"{"id":99999999999999999999999999999}"#).trim(),
+        "99999999999999999999999999999"
+    );
+}
+
+#[test]
 fn number_pretty_preserves_formatting() {
     // Pretty mode should also preserve number literals
     let out = qj(".", r#"{"x":75.80}"#);
