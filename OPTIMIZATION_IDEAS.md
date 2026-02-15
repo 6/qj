@@ -11,8 +11,8 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | 2 | mmap for file I/O | DONE | **~23% faster** on 1.1GB NDJSON, ~1% on 49MB |
 | 3 | Field-chain fast path | DONE | **~40% faster** `.field` on 1.1GB NDJSON |
 | 4 | `select` fast path | DONE | **~50% faster** `select(.type=="PushEvent")` on 1.1GB NDJSON |
-| 5 | Multi-field fast path | TODO | `{a: .x, b: .y}` without Value tree |
-| 6 | `select` + field fast path | TODO | Combine filter + extract in one pass |
+| 5 | Multi-field fast path | DONE | `{a: .x, b: .y}` without Value tree |
+| 6 | `select` + extract fast path | DONE | **~35-42% faster** `select(.f==lit) \| .field` / `{...}` / `[...]` on 1.1GB NDJSON |
 | 7 | `length`/`keys` NDJSON fast path | DONE | **~45% faster** `length`/`keys` on 1.1GB NDJSON |
 | 8 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
 | 9 | Per-thread output buffers | TODO | Avoid final concatenation step |
@@ -122,7 +122,7 @@ strategy.
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs` (`CmpOp` already had needed derives)
 
-### 5. Multi-field extraction fast path (TODO)
+### 5. Multi-field extraction fast path (DONE)
 
 **Pattern:** `{type, actor: .actor.login}`, `{id, name, email}`, `[.field1, .field2]`
 
@@ -131,29 +131,22 @@ strategy.
 2. Per line: extract each field as raw bytes, write `{"type":RAW,"actor":RAW}\n` directly to output buffer
 3. Similarly for `ArrayConstruct` with field-chain elements: write `[RAW,RAW]\n`
 
-**Why:** Object construction (`{type, actor: .actor.login}`) is one of the most common NDJSON patterns — reshape each line to a subset of fields. Currently builds the full Value tree, evaluates each field, constructs a new Value::Object, then serializes. The fast path does N field extractions and one formatted write.
+**Change:** `src/parallel/ndjson.rs` — added `MultiFieldObj` and `MultiFieldArr` variants to `NdjsonFastPath`, `detect_multi_field_fast_path()`, `try_multi_field_obj()`, `try_multi_field_arr()`, `process_line_multi_field_obj()`, `process_line_multi_field_arr()`. Pre-serializes object keys at detection time via `json_key_bytes()`.
 
-**Complexity:** Moderate. Need to handle the `ObjKey` variants (literal string key vs field shorthand vs expression). Need to write valid JSON output (escaping keys, commas, braces). Array variant is simpler. ~3-4 files.
+**Files:** `src/parallel/ndjson.rs`, `tests/ndjson.rs`, `tests/e2e.rs`
 
-**Expected impact:** Medium-high. The README benchmark `{type, repo: .repo.name, actor: .actor.login}` at 505ms could see 30-50% improvement — 3 field extractions + byte formatting vs full Value tree construction.
+### 6. `select` + extract fast path (DONE)
 
-**Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs`, possibly `src/output.rs`
+**Pattern:** `select(.type == "PushEvent") | .actor.login`, `select(.type == "PushEvent") | {type, actor: .actor.login}`, `select(.type == "PushEvent") | [.type, .id]`
 
-### 6. `select` + field extraction combined (TODO)
+**Approach:** Combine select fast path (#4) with field-chain (#3) or multi-field object/array construction (#5).
+1. Detect `Filter::Pipe(Select(Compare(...)), rhs)` where rhs is a field chain, ObjectConstruct, or ArrayConstruct
+2. Per line: check predicate via raw byte comparison, if match extract field(s), else skip entirely
+3. Three variants: `SelectEqField` (single field output), `SelectEqObj` (object construction), `SelectEqArr` (array construction)
 
-**Pattern:** `select(.type == "PushEvent") | .actor.login`, `select(.active) | {id, name}`
+**Change:** `src/parallel/ndjson.rs` — added `SelectEqField`, `SelectEqObj`, `SelectEqArr` variants to `NdjsonFastPath`. Detection via `detect_select_extract_fast_path()` which reuses `try_field_literal()` for the predicate and `collect_field_chain`/`try_multi_field_obj`/`try_multi_field_arr` for the output side. Detection order: select+extract checked before bare select to avoid partial matches.
 
-**Approach:** Combine select fast path (#4) with field-chain (#3) or multi-field (#5).
-1. Detect `Filter::Pipe(Select(...), field_or_object_construct)`
-2. Per line: check predicate via raw bytes, if match extract field(s), else skip
-
-**Why:** This is the full "filter then reshape" pipeline — probably the single most common NDJSON workflow. Without the combined fast path, select fast path outputs the full raw line, then you'd need another pass to extract fields.
-
-**Complexity:** Low — if #4 and #5 are already done, this is mostly plumbing. Detect the combined pattern, run select check first, then dispatch to field extraction.
-
-**Expected impact:** Additive — combines the wins of #4 and #5. On selective + extract queries, avoids Value tree for all lines.
-
-**Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs`
+**Files:** `src/parallel/ndjson.rs`, `tests/ndjson.rs`, `tests/e2e.rs`
 
 ### 7. `length`/`keys` NDJSON fast path (DONE)
 

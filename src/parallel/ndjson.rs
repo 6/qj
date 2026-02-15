@@ -30,6 +30,34 @@ enum NdjsonFastPath {
     Length(Vec<String>),
     /// `keys` or `.field | keys` — compute keys via C++ bridge
     Keys(Vec<String>),
+    /// `select(.field == literal) | .out_field` — select then extract
+    SelectEqField {
+        pred_fields: Vec<String>,
+        op: CmpOp,
+        literal_bytes: Vec<u8>,
+        out_fields: Vec<String>,
+    },
+    /// `{key1: .field1, key2: .field2}` — multi-field object construction
+    MultiFieldObj {
+        /// Each entry: (pre-serialized JSON key bytes including quotes, field chain)
+        entries: Vec<(Vec<u8>, Vec<String>)>,
+    },
+    /// `[.field1, .field2]` — multi-field array construction
+    MultiFieldArr { entries: Vec<Vec<String>> },
+    /// `select(.f == lit) | {key: .field, ...}` — select then object construct
+    SelectEqObj {
+        pred_fields: Vec<String>,
+        op: CmpOp,
+        literal_bytes: Vec<u8>,
+        entries: Vec<(Vec<u8>, Vec<String>)>,
+    },
+    /// `select(.f == lit) | [.field, ...]` — select then array construct
+    SelectEqArr {
+        pred_fields: Vec<String>,
+        op: CmpOp,
+        literal_bytes: Vec<u8>,
+        entries: Vec<Vec<String>>,
+    },
 }
 
 /// Target size for parallel chunks.
@@ -184,7 +212,14 @@ fn detect_fast_path(filter: &Filter) -> NdjsonFastPath {
     if crate::filter::collect_field_chain(filter, &mut fields) && !fields.is_empty() {
         return NdjsonFastPath::FieldChain(fields);
     }
+    // Select + extract/construct (must be checked before bare select)
+    if let Some(fp) = detect_select_extract_fast_path(filter) {
+        return fp;
+    }
     if let Some(fp) = detect_select_fast_path(filter) {
+        return fp;
+    }
+    if let Some(fp) = detect_multi_field_fast_path(filter) {
         return fp;
     }
     if let Some(fp) = detect_length_keys_fast_path(filter) {
@@ -358,6 +393,50 @@ fn unescape_json_string(data: &[u8], out: &mut Vec<u8>) {
     }
 }
 
+/// Write the line terminator (newline, NUL, or nothing) after a fast-path output.
+#[inline]
+fn write_line_terminator(output_buf: &mut Vec<u8>, config: &OutputConfig) {
+    if config.null_separator {
+        output_buf.push(0);
+    } else if !config.join_output {
+        output_buf.push(b'\n');
+    }
+}
+
+/// Emit a raw field value — in raw mode, strip quotes and unescape; otherwise emit as-is.
+#[inline]
+fn emit_raw_field(output_buf: &mut Vec<u8>, raw: &[u8], config: &OutputConfig) {
+    if config.mode == output::OutputMode::Raw
+        && raw.len() >= 2
+        && raw[0] == b'"'
+        && raw[raw.len() - 1] == b'"'
+    {
+        let inner = &raw[1..raw.len() - 1];
+        unescape_json_string(inner, output_buf);
+    } else {
+        output_buf.extend_from_slice(raw);
+    }
+}
+
+/// Serialize a string as a JSON key with surrounding quotes.
+/// E.g., `actor` → `b"\"actor\""`, `key"with` → `b"\"key\\\"with\""`.
+fn json_key_bytes(key: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(key.len() + 2);
+    buf.push(b'"');
+    for &b in key.as_bytes() {
+        match b {
+            b'"' => buf.extend_from_slice(b"\\\""),
+            b'\\' => buf.extend_from_slice(b"\\\\"),
+            b if b < 0x20 => {
+                buf.extend_from_slice(format!("\\u{:04x}", b).as_bytes());
+            }
+            _ => buf.push(b),
+        }
+    }
+    buf.push(b'"');
+    buf
+}
+
 /// Prepare a reusable padded buffer for simdjson. Avoids allocation per line
 /// by reusing the scratch buffer — only reallocates if the line is larger
 /// than any previous one in this chunk.
@@ -403,23 +482,8 @@ fn process_line(
             let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
                 .context("failed to extract field from NDJSON line")?;
             *had_output = true;
-            // In raw output mode, strip surrounding quotes from string values
-            if config.mode == output::OutputMode::Raw
-                && raw.len() >= 2
-                && raw[0] == b'"'
-                && raw[raw.len() - 1] == b'"'
-            {
-                // Unescape JSON string: handle \n, \t, \\, \", \uXXXX etc.
-                let inner = &raw[1..raw.len() - 1];
-                unescape_json_string(inner, output_buf);
-            } else {
-                output_buf.extend_from_slice(&raw);
-            }
-            if config.null_separator {
-                output_buf.push(0);
-            } else if !config.join_output {
-                output_buf.push(b'\n');
-            }
+            emit_raw_field(output_buf, &raw, config);
+            write_line_terminator(output_buf, config);
         }
         NdjsonFastPath::SelectEq {
             fields,
@@ -447,6 +511,76 @@ fn process_line(
         NdjsonFastPath::Keys(fields) => {
             process_line_keys(
                 trimmed, fields, filter, config, env, output_buf, had_output, scratch,
+            )?;
+        }
+        NdjsonFastPath::SelectEqField {
+            pred_fields,
+            op,
+            literal_bytes,
+            out_fields,
+        } => {
+            process_line_select_eq_field(
+                trimmed,
+                pred_fields,
+                *op,
+                literal_bytes,
+                out_fields,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+            )?;
+        }
+        NdjsonFastPath::MultiFieldObj { entries } => {
+            process_line_multi_field_obj(
+                trimmed, entries, config, output_buf, had_output, scratch,
+            )?;
+        }
+        NdjsonFastPath::MultiFieldArr { entries } => {
+            process_line_multi_field_arr(
+                trimmed, entries, config, output_buf, had_output, scratch,
+            )?;
+        }
+        NdjsonFastPath::SelectEqObj {
+            pred_fields,
+            op,
+            literal_bytes,
+            entries,
+        } => {
+            process_line_select_eq_obj(
+                trimmed,
+                pred_fields,
+                *op,
+                literal_bytes,
+                entries,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+            )?;
+        }
+        NdjsonFastPath::SelectEqArr {
+            pred_fields,
+            op,
+            literal_bytes,
+            entries,
+        } => {
+            process_line_select_eq_arr(
+                trimmed,
+                pred_fields,
+                *op,
+                literal_bytes,
+                entries,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
             )?;
         }
         NdjsonFastPath::None => {
@@ -632,27 +766,17 @@ fn process_line_select_eq(
 
     if raw == literal_bytes {
         // Bytes match → values definitely equal
-        let output = matches!(op, CmpOp::Eq);
-        if output {
+        if matches!(op, CmpOp::Eq) {
             *had_output = true;
             output_buf.extend_from_slice(trimmed);
-            if config.null_separator {
-                output_buf.push(0);
-            } else if !config.join_output {
-                output_buf.push(b'\n');
-            }
+            write_line_terminator(output_buf, config);
         }
     } else if bytes_mismatch_is_definitive(&raw, literal_bytes) {
         // Bytes don't match and we're certain values aren't equal
-        let output = matches!(op, CmpOp::Ne);
-        if output {
+        if matches!(op, CmpOp::Ne) {
             *had_output = true;
             output_buf.extend_from_slice(trimmed);
-            if config.null_separator {
-                output_buf.push(0);
-            } else if !config.join_output {
-                output_buf.push(b'\n');
-            }
+            write_line_terminator(output_buf, config);
         }
     } else {
         // Ambiguous: bytes differ but values might be equal (e.g. 1.0 vs 1, \u0041 vs A).
@@ -694,6 +818,136 @@ fn detect_length_keys_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Fast-path detection: select(.f == lit) | extract
+// ---------------------------------------------------------------------------
+
+/// Detect `select(.field == literal) | field_or_obj_or_arr` composite patterns.
+fn detect_select_extract_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
+    // Must be Pipe(Select(Compare(...)), rhs)
+    let (lhs, rhs) = match filter {
+        Filter::Pipe(lhs, rhs) => (lhs.as_ref(), rhs.as_ref()),
+        _ => return None,
+    };
+    let select_inner = match lhs {
+        Filter::Select(inner) => inner.as_ref(),
+        _ => return None,
+    };
+    let (cmp_lhs, op, cmp_rhs) = match select_inner {
+        Filter::Compare(l, op, r) => (l.as_ref(), op, r.as_ref()),
+        _ => return None,
+    };
+    if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
+        return None;
+    }
+    let (pred_fields, literal_bytes) = if let Some((f, b)) = try_field_literal(cmp_lhs, cmp_rhs) {
+        (f, b)
+    } else if let Some((f, b)) = try_field_literal(cmp_rhs, cmp_lhs) {
+        (f, b)
+    } else {
+        return None;
+    };
+
+    // RHS: try field chain first
+    let mut out_fields = Vec::new();
+    if crate::filter::collect_field_chain(rhs, &mut out_fields) && !out_fields.is_empty() {
+        return Some(NdjsonFastPath::SelectEqField {
+            pred_fields,
+            op: *op,
+            literal_bytes,
+            out_fields,
+        });
+    }
+
+    // RHS: try object construct
+    if let Some(entries) = try_multi_field_obj(rhs) {
+        return Some(NdjsonFastPath::SelectEqObj {
+            pred_fields,
+            op: *op,
+            literal_bytes,
+            entries,
+        });
+    }
+
+    // RHS: try array construct
+    if let Some(entries) = try_multi_field_arr(rhs) {
+        return Some(NdjsonFastPath::SelectEqArr {
+            pred_fields,
+            op: *op,
+            literal_bytes,
+            entries,
+        });
+    }
+
+    None
+}
+
+fn detect_multi_field_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
+    if let Some(entries) = try_multi_field_obj(filter) {
+        return Some(NdjsonFastPath::MultiFieldObj { entries });
+    }
+    if let Some(entries) = try_multi_field_arr(filter) {
+        return Some(NdjsonFastPath::MultiFieldArr { entries });
+    }
+    None
+}
+
+/// Try to decompose an ObjectConstruct into (json_key_bytes, field_chain) pairs.
+/// Returns None if any key is an Expr or any value is not a field chain.
+fn try_multi_field_obj(filter: &Filter) -> Option<Vec<(Vec<u8>, Vec<String>)>> {
+    let pairs = match filter {
+        Filter::ObjectConstruct(pairs) => pairs,
+        _ => return None,
+    };
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(pairs.len());
+    for (key, val_filter) in pairs {
+        let key_name = match key {
+            crate::filter::ObjKey::Name(s) => s,
+            crate::filter::ObjKey::Expr(_) => return None,
+        };
+        let mut fields = Vec::new();
+        if !crate::filter::collect_field_chain(val_filter, &mut fields) || fields.is_empty() {
+            return None;
+        }
+        entries.push((json_key_bytes(key_name), fields));
+    }
+    Some(entries)
+}
+
+/// Try to decompose an ArrayConstruct(Comma([field_chains...])) into field chain entries.
+fn try_multi_field_arr(filter: &Filter) -> Option<Vec<Vec<String>>> {
+    let inner = match filter {
+        Filter::ArrayConstruct(inner) => inner.as_ref(),
+        _ => return None,
+    };
+    let items = match inner {
+        Filter::Comma(items) => items.as_slice(),
+        // Single field chain in array: [.field]
+        other => {
+            let mut fields = Vec::new();
+            if crate::filter::collect_field_chain(other, &mut fields) && !fields.is_empty() {
+                return Some(vec![fields]);
+            }
+            return None;
+        }
+    };
+    if items.is_empty() {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(items.len());
+    for item in items {
+        let mut fields = Vec::new();
+        if !crate::filter::collect_field_chain(item, &mut fields) || fields.is_empty() {
+            return None;
+        }
+        entries.push(fields);
+    }
+    Some(entries)
+}
+
 /// Process a line with the `length` fast path.
 #[allow(clippy::too_many_arguments)]
 fn process_line_length(
@@ -712,11 +966,7 @@ fn process_line_length(
         Some(result) => {
             *had_output = true;
             output_buf.extend_from_slice(&result);
-            if config.null_separator {
-                output_buf.push(0);
-            } else if !config.join_output {
-                output_buf.push(b'\n');
-            }
+            write_line_terminator(output_buf, config);
         }
         None => {
             // Fallback: unsupported type (e.g. string length) — use normal path
@@ -750,11 +1000,7 @@ fn process_line_keys(
         Some(result) => {
             *had_output = true;
             output_buf.extend_from_slice(&result);
-            if config.null_separator {
-                output_buf.push(0);
-            } else if !config.join_output {
-                output_buf.push(b'\n');
-            }
+            write_line_terminator(output_buf, config);
         }
         None => {
             // Fallback: unsupported type — use normal path
@@ -766,6 +1012,234 @@ fn process_line_keys(
                 output::write_value(output_buf, &v, config).ok();
             });
         }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Processing: select(.f == lit) | .field / {obj} / [arr]
+// ---------------------------------------------------------------------------
+
+/// Process a line with the `select(.f == lit) | .field` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_eq_field(
+    trimmed: &[u8],
+    pred_fields: &[String],
+    op: CmpOp,
+    literal_bytes: &[u8],
+    out_fields: &[String],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let pred_refs: Vec<&str> = pred_fields.iter().map(|s| s.as_str()).collect();
+    let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
+        .context("failed to extract predicate field from NDJSON line")?;
+
+    if raw_pred == literal_bytes {
+        // Bytes match → values definitely equal
+        if matches!(op, CmpOp::Eq) {
+            let padded = prepare_padded(trimmed, scratch);
+            let out_refs: Vec<&str> = out_fields.iter().map(|s| s.as_str()).collect();
+            let raw_out = simdjson::dom_find_field_raw(padded, trimmed.len(), &out_refs)
+                .context("failed to extract output field from NDJSON line")?;
+            *had_output = true;
+            emit_raw_field(output_buf, &raw_out, config);
+            write_line_terminator(output_buf, config);
+        }
+    } else if bytes_mismatch_is_definitive(&raw_pred, literal_bytes) {
+        // Bytes don't match and we're certain values aren't equal
+        if matches!(op, CmpOp::Ne) {
+            let padded = prepare_padded(trimmed, scratch);
+            let out_refs: Vec<&str> = out_fields.iter().map(|s| s.as_str()).collect();
+            let raw_out = simdjson::dom_find_field_raw(padded, trimmed.len(), &out_refs)
+                .context("failed to extract output field from NDJSON line")?;
+            *had_output = true;
+            emit_raw_field(output_buf, &raw_out, config);
+            write_line_terminator(output_buf, config);
+        }
+    } else {
+        // Ambiguous: fall back to full parse+eval
+        let padded = prepare_padded(trimmed, scratch);
+        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+            .context("failed to parse NDJSON line")?;
+        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+            *had_output = true;
+            output::write_value(output_buf, &v, config).ok();
+        });
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Processing: multi-field object/array construction
+// ---------------------------------------------------------------------------
+
+/// Process a line with the `{key1: .field1, key2: .field2}` fast path.
+fn process_line_multi_field_obj(
+    trimmed: &[u8],
+    entries: &[(Vec<u8>, Vec<String>)],
+    config: &OutputConfig,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    output_buf.push(b'{');
+    for (i, (key_bytes, fields)) in entries.iter().enumerate() {
+        if i > 0 {
+            output_buf.push(b',');
+        }
+        output_buf.extend_from_slice(key_bytes);
+        output_buf.push(b':');
+        let padded = prepare_padded(trimmed, scratch);
+        let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+        let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+            .context("failed to extract field for object construction")?;
+        output_buf.extend_from_slice(&raw);
+    }
+    output_buf.push(b'}');
+    *had_output = true;
+    write_line_terminator(output_buf, config);
+    Ok(())
+}
+
+/// Process a line with the `[.field1, .field2]` fast path.
+fn process_line_multi_field_arr(
+    trimmed: &[u8],
+    entries: &[Vec<String>],
+    config: &OutputConfig,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    output_buf.push(b'[');
+    for (i, fields) in entries.iter().enumerate() {
+        if i > 0 {
+            output_buf.push(b',');
+        }
+        let padded = prepare_padded(trimmed, scratch);
+        let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+        let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+            .context("failed to extract field for array construction")?;
+        output_buf.extend_from_slice(&raw);
+    }
+    output_buf.push(b']');
+    *had_output = true;
+    write_line_terminator(output_buf, config);
+    Ok(())
+}
+
+/// Process a line with the `select(.f == lit) | {key: .field, ...}` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_eq_obj(
+    trimmed: &[u8],
+    pred_fields: &[String],
+    op: CmpOp,
+    literal_bytes: &[u8],
+    entries: &[(Vec<u8>, Vec<String>)],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let pred_refs: Vec<&str> = pred_fields.iter().map(|s| s.as_str()).collect();
+    let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
+        .context("failed to extract predicate field from NDJSON line")?;
+
+    let should_output = if raw_pred == literal_bytes {
+        matches!(op, CmpOp::Eq)
+    } else if bytes_mismatch_is_definitive(&raw_pred, literal_bytes) {
+        matches!(op, CmpOp::Ne)
+    } else {
+        // Ambiguous: fall back to full parse+eval
+        let padded = prepare_padded(trimmed, scratch);
+        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+            .context("failed to parse NDJSON line")?;
+        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+            *had_output = true;
+            output::write_value(output_buf, &v, config).ok();
+        });
+        return Ok(());
+    };
+
+    if should_output {
+        output_buf.push(b'{');
+        for (i, (key_bytes, fields)) in entries.iter().enumerate() {
+            if i > 0 {
+                output_buf.push(b',');
+            }
+            output_buf.extend_from_slice(key_bytes);
+            output_buf.push(b':');
+            let padded = prepare_padded(trimmed, scratch);
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+                .context("failed to extract field for object construction")?;
+            output_buf.extend_from_slice(&raw);
+        }
+        output_buf.push(b'}');
+        *had_output = true;
+        write_line_terminator(output_buf, config);
+    }
+    Ok(())
+}
+
+/// Process a line with the `select(.f == lit) | [.field, ...]` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_eq_arr(
+    trimmed: &[u8],
+    pred_fields: &[String],
+    op: CmpOp,
+    literal_bytes: &[u8],
+    entries: &[Vec<String>],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let pred_refs: Vec<&str> = pred_fields.iter().map(|s| s.as_str()).collect();
+    let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
+        .context("failed to extract predicate field from NDJSON line")?;
+
+    let should_output = if raw_pred == literal_bytes {
+        matches!(op, CmpOp::Eq)
+    } else if bytes_mismatch_is_definitive(&raw_pred, literal_bytes) {
+        matches!(op, CmpOp::Ne)
+    } else {
+        let padded = prepare_padded(trimmed, scratch);
+        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+            .context("failed to parse NDJSON line")?;
+        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+            *had_output = true;
+            output::write_value(output_buf, &v, config).ok();
+        });
+        return Ok(());
+    };
+
+    if should_output {
+        output_buf.push(b'[');
+        for (i, fields) in entries.iter().enumerate() {
+            if i > 0 {
+                output_buf.push(b',');
+            }
+            let padded = prepare_padded(trimmed, scratch);
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+                .context("failed to extract field for array construction")?;
+            output_buf.extend_from_slice(&raw);
+        }
+        output_buf.push(b']');
+        *had_output = true;
+        write_line_terminator(output_buf, config);
     }
     Ok(())
 }
@@ -1690,5 +2164,311 @@ mod tests {
         let padded2 = prepare_padded(line2, &mut scratch);
         assert!(padded2.len() >= line2.len() + crate::simdjson::padding());
         assert_eq!(&padded2[..line2.len()], line2);
+    }
+
+    // --- SelectEqField detection tests ---
+
+    #[test]
+    fn fast_path_detects_select_eq_field() {
+        let filter = crate::filter::parse("select(.type == \"PushEvent\") | .actor.login").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEqField {
+                pred_fields,
+                op,
+                literal_bytes,
+                out_fields,
+            } => {
+                assert_eq!(pred_fields, vec!["type"]);
+                assert_eq!(op, CmpOp::Eq);
+                assert_eq!(literal_bytes, b"\"PushEvent\"");
+                assert_eq!(out_fields, vec!["actor", "login"]);
+            }
+            other => panic!("expected SelectEqField, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_ne_field() {
+        let filter = crate::filter::parse("select(.type != \"PushEvent\") | .name").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEqField { op, .. } => assert_eq!(op, CmpOp::Ne),
+            other => panic!("expected SelectEqField, got {:?}", other),
+        }
+    }
+
+    // --- MultiFieldObj detection tests ---
+
+    #[test]
+    fn fast_path_detects_multi_field_obj() {
+        let filter = crate::filter::parse("{type: .type, actor: .actor.login}").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::MultiFieldObj { entries } => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].0, b"\"type\"");
+                assert_eq!(entries[0].1, vec!["type"]);
+                assert_eq!(entries[1].0, b"\"actor\"");
+                assert_eq!(entries[1].1, vec!["actor", "login"]);
+            }
+            other => panic!("expected MultiFieldObj, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_multi_field_obj_shorthand() {
+        let filter = crate::filter::parse("{type, name}").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::MultiFieldObj { entries } => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].1, vec!["type"]);
+                assert_eq!(entries[1].1, vec!["name"]);
+            }
+            other => panic!("expected MultiFieldObj, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_not_obj_with_expr_key() {
+        let filter = crate::filter::parse("{(.key): .value}").unwrap();
+        assert!(matches!(detect_fast_path(&filter), NdjsonFastPath::None));
+    }
+
+    #[test]
+    fn fast_path_not_obj_with_complex_value() {
+        let filter = crate::filter::parse("{total: (.x + .y)}").unwrap();
+        assert!(matches!(detect_fast_path(&filter), NdjsonFastPath::None));
+    }
+
+    // --- MultiFieldArr detection tests ---
+
+    #[test]
+    fn fast_path_detects_multi_field_arr() {
+        let filter = crate::filter::parse("[.type, .actor.login]").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::MultiFieldArr { entries } => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0], vec!["type"]);
+                assert_eq!(entries[1], vec!["actor", "login"]);
+            }
+            other => panic!("expected MultiFieldArr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_single_field_arr() {
+        let filter = crate::filter::parse("[.name]").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::MultiFieldArr { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0], vec!["name"]);
+            }
+            other => panic!("expected MultiFieldArr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_not_arr_with_iterate() {
+        let filter = crate::filter::parse("[.[] | .x]").unwrap();
+        assert!(matches!(detect_fast_path(&filter), NdjsonFastPath::None));
+    }
+
+    // --- SelectEqObj / SelectEqArr detection tests ---
+
+    #[test]
+    fn fast_path_detects_select_eq_obj() {
+        let filter =
+            crate::filter::parse("select(.type == \"PushEvent\") | {type, actor: .actor.login}")
+                .unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEqObj {
+                pred_fields,
+                entries,
+                ..
+            } => {
+                assert_eq!(pred_fields, vec!["type"]);
+                assert_eq!(entries.len(), 2);
+            }
+            other => panic!("expected SelectEqObj, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_eq_arr() {
+        let filter = crate::filter::parse("select(.type == \"PushEvent\") | [.type, .id]").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectEqArr {
+                pred_fields,
+                entries,
+                ..
+            } => {
+                assert_eq!(pred_fields, vec!["type"]);
+                assert_eq!(entries.len(), 2);
+            }
+            other => panic!("expected SelectEqArr, got {:?}", other),
+        }
+    }
+
+    // --- SelectEqField processing tests ---
+
+    #[test]
+    fn fast_path_select_eq_field_matching() {
+        let data = b"{\"type\":\"PushEvent\",\"name\":\"alice\"}\n{\"type\":\"WatchEvent\",\"name\":\"bob\"}\n";
+        let filter = crate::filter::parse("select(.type == \"PushEvent\") | .name").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(String::from_utf8(output).unwrap(), "\"alice\"\n");
+    }
+
+    #[test]
+    fn fast_path_select_eq_field_no_match() {
+        let data = b"{\"type\":\"WatchEvent\",\"name\":\"a\"}\n{\"type\":\"IssuesEvent\",\"name\":\"b\"}\n";
+        let filter = crate::filter::parse("select(.type == \"PushEvent\") | .name").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(!had_output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn fast_path_select_eq_field_missing_output() {
+        // Predicate matches but output field is missing → null
+        let data = b"{\"type\":\"PushEvent\"}\n{\"type\":\"WatchEvent\",\"name\":\"b\"}\n";
+        let filter = crate::filter::parse("select(.type == \"PushEvent\") | .name").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "null\n");
+    }
+
+    #[test]
+    fn fast_path_select_eq_field_float_fallback() {
+        // 1.0 == 1 requires fallback — should still produce correct result
+        let data = b"{\"n\":1.0,\"name\":\"a\"}\n{\"n\":2,\"name\":\"b\"}\n";
+        let filter = crate::filter::parse("select(.n == 1) | .name").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "\"a\"\n");
+    }
+
+    // --- MultiFieldObj processing tests ---
+
+    #[test]
+    fn fast_path_multi_field_obj_basic() {
+        let data = b"{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n";
+        let filter = crate::filter::parse("{type, id: .id}").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_multi_field_obj_missing_field() {
+        let data = b"{\"name\":\"alice\"}\n{\"name\":\"bob\",\"age\":30}\n";
+        let filter = crate::filter::parse("{name, age: .age}").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"name\":\"alice\",\"age\":null}\n{\"name\":\"bob\",\"age\":30}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_multi_field_obj_nested() {
+        let data = b"{\"type\":\"PushEvent\",\"actor\":{\"login\":\"alice\"}}\n{\"type\":\"WatchEvent\",\"actor\":{\"login\":\"bob\"}}\n";
+        let filter = crate::filter::parse("{type, actor: .actor.login}").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"type\":\"PushEvent\",\"actor\":\"alice\"}\n{\"type\":\"WatchEvent\",\"actor\":\"bob\"}\n"
+        );
+    }
+
+    // --- MultiFieldArr processing tests ---
+
+    #[test]
+    fn fast_path_multi_field_arr_basic() {
+        let data = b"{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n";
+        let filter = crate::filter::parse("[.a, .b]").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "[1,2]\n[3,4]\n");
+    }
+
+    // --- SelectEqObj / SelectEqArr processing tests ---
+
+    #[test]
+    fn fast_path_select_eq_obj_basic() {
+        let data = b"{\"type\":\"A\",\"x\":1}\n{\"type\":\"B\",\"x\":2}\n";
+        let filter = crate::filter::parse("select(.type == \"A\") | {x: .x}").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"x\":1}\n");
+    }
+
+    #[test]
+    fn fast_path_select_eq_obj_no_match() {
+        let data = b"{\"type\":\"B\",\"x\":1}\n{\"type\":\"C\",\"x\":2}\n";
+        let filter = crate::filter::parse("select(.type == \"A\") | {x: .x}").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(!had_output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn fast_path_select_eq_arr_basic() {
+        let data = b"{\"type\":\"A\",\"x\":1,\"y\":2}\n{\"type\":\"B\",\"x\":3,\"y\":4}\n";
+        let filter = crate::filter::parse("select(.type == \"A\") | [.x, .y]").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "[1,2]\n");
     }
 }

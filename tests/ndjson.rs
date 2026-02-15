@@ -698,6 +698,181 @@ fn ndjson_length_large_line_count() {
     assert!(lines.iter().all(|l| *l == "1"));
 }
 
+// --- select + field extraction fast path ---
+
+#[test]
+fn ndjson_select_eq_field_extraction() {
+    let input = r#"{"type":"PushEvent","actor":"alice"}
+{"type":"WatchEvent","actor":"bob"}
+{"type":"PushEvent","actor":"charlie"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.type == "PushEvent") | .actor"#], input);
+    assert_eq!(out, "\"alice\"\n\"charlie\"\n");
+}
+
+#[test]
+fn ndjson_select_eq_field_nested_output() {
+    let input = r#"{"type":"PushEvent","actor":{"login":"alice"}}
+{"type":"WatchEvent","actor":{"login":"bob"}}
+"#;
+    let out = qj_stdin(
+        &["-c", r#"select(.type == "PushEvent") | .actor.login"#],
+        input,
+    );
+    assert_eq!(out, "\"alice\"\n");
+}
+
+#[test]
+fn ndjson_select_eq_field_raw_output() {
+    let input = r#"{"type":"PushEvent","name":"alice"}
+{"type":"WatchEvent","name":"bob"}
+"#;
+    let out = qj_stdin(&["-r", r#"select(.type == "PushEvent") | .name"#], input);
+    assert_eq!(out, "alice\n");
+}
+
+#[test]
+fn ndjson_select_ne_field_extraction() {
+    let input = r#"{"type":"PushEvent","name":"a"}
+{"type":"WatchEvent","name":"b"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.type != "PushEvent") | .name"#], input);
+    assert_eq!(out, "\"b\"\n");
+}
+
+#[test]
+fn ndjson_select_eq_field_no_match() {
+    let input = r#"{"type":"WatchEvent","name":"a"}
+{"type":"IssuesEvent","name":"b"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.type == "PushEvent") | .name"#], input);
+    assert_eq!(out, "");
+}
+
+#[test]
+fn ndjson_select_eq_field_missing_output() {
+    let input = r#"{"type":"PushEvent"}
+{"type":"WatchEvent","name":"b"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.type == "PushEvent") | .name"#], input);
+    assert_eq!(out, "null\n");
+}
+
+#[test]
+fn ndjson_select_eq_field_float_fallback() {
+    // 1.0 == 1 should match via fallback
+    let input = r#"{"n":1.0,"name":"a"}
+{"n":2,"name":"b"}
+"#;
+    let out = qj_stdin(&["-c", "select(.n == 1) | .name"], input);
+    assert_eq!(out, "\"a\"\n");
+}
+
+// --- multi-field object construction ---
+
+#[test]
+fn ndjson_multi_field_obj() {
+    let input = r#"{"type":"PushEvent","id":1,"extra":"x"}
+{"type":"WatchEvent","id":2,"extra":"y"}
+"#;
+    let out = qj_stdin(&["-c", "{type, id: .id}"], input);
+    assert_eq!(
+        out,
+        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n"
+    );
+}
+
+#[test]
+fn ndjson_multi_field_obj_nested() {
+    let input = r#"{"type":"PushEvent","actor":{"login":"alice"}}
+{"type":"WatchEvent","actor":{"login":"bob"}}
+"#;
+    let out = qj_stdin(&["-c", "{type, actor: .actor.login}"], input);
+    assert_eq!(
+        out,
+        "{\"type\":\"PushEvent\",\"actor\":\"alice\"}\n{\"type\":\"WatchEvent\",\"actor\":\"bob\"}\n"
+    );
+}
+
+#[test]
+fn ndjson_multi_field_obj_missing() {
+    let input = r#"{"name":"alice"}
+{"name":"bob","age":30}
+"#;
+    let out = qj_stdin(&["-c", "{name, age: .age}"], input);
+    assert_eq!(
+        out,
+        "{\"name\":\"alice\",\"age\":null}\n{\"name\":\"bob\",\"age\":30}\n"
+    );
+}
+
+#[test]
+fn ndjson_multi_field_obj_large() {
+    let mut input = String::new();
+    for i in 0..1000 {
+        input.push_str(&format!(
+            "{{\"type\":\"Event\",\"id\":{i},\"extra\":\"x\"}}\n"
+        ));
+    }
+    let out = qj_stdin(&["-c", "{type, id: .id}"], &input);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1000);
+    assert_eq!(lines[0], "{\"type\":\"Event\",\"id\":0}");
+    assert_eq!(lines[999], "{\"type\":\"Event\",\"id\":999}");
+}
+
+// --- multi-field array construction ---
+
+#[test]
+fn ndjson_multi_field_arr() {
+    let input = r#"{"a":1,"b":2}
+{"a":3,"b":4}
+"#;
+    let out = qj_stdin(&["-c", "[.a, .b]"], input);
+    assert_eq!(out, "[1,2]\n[3,4]\n");
+}
+
+#[test]
+fn ndjson_multi_field_arr_nested() {
+    let input = r#"{"x":{"y":1},"z":2}
+{"x":{"y":3},"z":4}
+"#;
+    let out = qj_stdin(&["-c", "[.x.y, .z]"], input);
+    assert_eq!(out, "[1,2]\n[3,4]\n");
+}
+
+// --- select + object construction ---
+
+#[test]
+fn ndjson_select_eq_obj() {
+    let input = r#"{"type":"PushEvent","id":1,"actor":"alice"}
+{"type":"WatchEvent","id":2,"actor":"bob"}
+{"type":"PushEvent","id":3,"actor":"charlie"}
+"#;
+    let out = qj_stdin(
+        &["-c", r#"select(.type == "PushEvent") | {id: .id, actor}"#],
+        input,
+    );
+    assert_eq!(
+        out,
+        "{\"id\":1,\"actor\":\"alice\"}\n{\"id\":3,\"actor\":\"charlie\"}\n"
+    );
+}
+
+// --- select + array construction ---
+
+#[test]
+fn ndjson_select_eq_arr() {
+    let input = r#"{"type":"PushEvent","id":1,"actor":"alice"}
+{"type":"WatchEvent","id":2,"actor":"bob"}
+"#;
+    let out = qj_stdin(
+        &["-c", r#"select(.type == "PushEvent") | [.id, .actor]"#],
+        input,
+    );
+    assert_eq!(out, "[1,\"alice\"]\n");
+}
+
 // --- Iterate ---
 
 #[test]

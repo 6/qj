@@ -3907,3 +3907,80 @@ fn ndjson_jq_compat_string_length_fallback() {
         "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n",
     );
 }
+
+// --- select + field extraction jq compat ---
+
+#[test]
+fn ndjson_jq_compat_select_eq_field() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"PushEvent\") | .actor",
+        "{\"type\":\"PushEvent\",\"actor\":\"alice\"}\n{\"type\":\"WatchEvent\",\"actor\":\"bob\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_eq_nested_field() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"PushEvent\") | .actor.login",
+        "{\"type\":\"PushEvent\",\"actor\":{\"login\":\"alice\"}}\n{\"type\":\"WatchEvent\",\"actor\":{\"login\":\"bob\"}}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_eq_field_float_fallback() {
+    assert_jq_compat_ndjson(
+        "select(.n == 1) | .name",
+        "{\"n\":1.0,\"name\":\"a\"}\n{\"n\":2,\"name\":\"b\"}\n",
+    );
+}
+
+// --- multi-field object construction jq compat ---
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj() {
+    assert_jq_compat_ndjson(
+        "{type: .type, id: .id}",
+        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj_shorthand() {
+    assert_jq_compat_ndjson(
+        "{type, name}",
+        "{\"type\":\"PushEvent\",\"name\":\"alice\"}\n{\"type\":\"WatchEvent\",\"name\":\"bob\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj_missing() {
+    assert_jq_compat_ndjson(
+        "{name, age: .age}",
+        "{\"name\":\"alice\"}\n{\"name\":\"bob\",\"age\":30}\n",
+    );
+}
+
+// --- multi-field array construction jq compat ---
+
+#[test]
+fn ndjson_jq_compat_multi_field_arr() {
+    assert_jq_compat_ndjson("[.a, .b]", "{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n");
+}
+
+// --- select + object/array construction jq compat ---
+
+#[test]
+fn ndjson_jq_compat_select_eq_obj() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"PushEvent\") | {type: .type, actor: .actor}",
+        "{\"type\":\"PushEvent\",\"actor\":\"alice\"}\n{\"type\":\"WatchEvent\",\"actor\":\"bob\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_eq_arr() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"PushEvent\") | [.type, .id]",
+        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n",
+    );
+}
