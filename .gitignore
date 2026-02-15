@@ -19,7 +19,6 @@ benches/bench_cpp
 # Benchmark results (generated)
 benches/results/
 benches/.bench_large_tmp/
-benches/results_large_only.md
 
 # Compat test results (generated)
 tests/jq_compat/results.md
