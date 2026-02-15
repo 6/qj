@@ -79,6 +79,7 @@ pub(super) fn eval_builtin(
         // I/O and introspection
         "builtins"
         | "input"
+        | "inputs"
         | "debug"
         | "error"
         | "env"

@@ -3306,3 +3306,181 @@ fn from_file_with_input_file() {
     std::fs::remove_file(&filter_path).ok();
     std::fs::remove_file(&input_path).ok();
 }
+
+// ---------------------------------------------------------------------------
+// input / inputs builtins
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inputs_collect_all() {
+    let (code, stdout, _) = jx_exit(&["-nc", "[inputs]"], "1\n2\n3\n");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "[1,2,3]");
+}
+
+#[test]
+fn input_single() {
+    let (code, stdout, _) = jx_exit(&["-nc", "input"], "1\n2\n3\n");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "1");
+}
+
+#[test]
+fn input_multiple_calls() {
+    // Two calls to input: get first two values
+    let (code, stdout, _) = jx_exit(&["-nc", "[input, input]"], "10\n20\n30\n");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "[10,20]");
+}
+
+#[test]
+fn inputs_without_null_input() {
+    // Without -n: first value is ., inputs gets the rest
+    let (code, stdout, _) = jx_exit(&["-c", "[., inputs]"], "1\n2\n3\n");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "[1,2,3]");
+}
+
+#[test]
+fn inputs_empty_queue() {
+    // With -n and no stdin data, inputs should produce empty array
+    let (code, stdout, _) = jx_exit(&["-nc", "[inputs]"], "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "[]");
+}
+
+// ---------------------------------------------------------------------------
+// Color output
+// ---------------------------------------------------------------------------
+
+#[test]
+fn color_output_forced() {
+    // -C forces color even when piped (test is piped)
+    let (code, stdout, _) = jx_exit(&["-Cc", "."], r#"{"a":1}"#);
+    assert_eq!(code, 0);
+    // Should contain ANSI escape codes
+    assert!(
+        stdout.contains("\x1b["),
+        "expected ANSI codes in colored output, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn monochrome_output() {
+    // -M suppresses color
+    let (code, stdout, _) = jx_exit(&["-Mc", "."], r#"{"a":1}"#);
+    assert_eq!(code, 0);
+    assert!(
+        !stdout.contains("\x1b["),
+        "expected no ANSI codes in monochrome output, got: {stdout:?}"
+    );
+    assert_eq!(stdout.trim(), r#"{"a":1}"#);
+}
+
+#[test]
+fn color_pretty_output() {
+    // -C with pretty print
+    let (code, stdout, _) = jx_exit(&["-C", "."], r#"{"a":null,"b":"hi"}"#);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("\x1b["),
+        "expected ANSI codes in colored pretty output"
+    );
+    // Should still contain the actual content
+    assert!(stdout.contains("null"));
+    assert!(stdout.contains("hi"));
+}
+
+// ---------------------------------------------------------------------------
+// --rawfile
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rawfile_binding() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("jx_test_rawfile.txt");
+    std::fs::write(&path, "hello world").unwrap();
+
+    let (code, stdout, _) = jx_exit(
+        &[
+            "-nc",
+            "$content",
+            "--rawfile",
+            "content",
+            path.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#""hello world""#);
+
+    std::fs::remove_file(&path).ok();
+}
+
+// ---------------------------------------------------------------------------
+// --slurpfile
+// ---------------------------------------------------------------------------
+
+#[test]
+fn slurpfile_binding() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("jx_test_slurpfile.json");
+    std::fs::write(&path, "1\n2\n3").unwrap();
+
+    let (code, stdout, _) = jx_exit(
+        &[
+            "-nc",
+            "$data",
+            "--slurpfile",
+            "data",
+            path.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "[1,2,3]");
+
+    std::fs::remove_file(&path).ok();
+}
+
+// ---------------------------------------------------------------------------
+// $ARGS
+// ---------------------------------------------------------------------------
+
+#[test]
+fn args_positional_strings() {
+    let (code, stdout, _) = jx_exit(&["-nc", "$ARGS.positional", "--args", "a", "b", "c"], "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#"["a","b","c"]"#);
+}
+
+#[test]
+fn jsonargs_positional() {
+    let (code, stdout, _) = jx_exit(
+        &[
+            "-nc",
+            "$ARGS.positional",
+            "--jsonargs",
+            "1",
+            "true",
+            r#""hi""#,
+        ],
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#"[1,true,"hi"]"#);
+}
+
+#[test]
+fn args_named_from_arg() {
+    let (code, stdout, _) = jx_exit(&["-nc", "$ARGS.named", "--arg", "name", "alice"], "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#"{"name":"alice"}"#);
+}
+
+#[test]
+fn args_empty_default() {
+    let (code, stdout, _) = jx_exit(&["-nc", "$ARGS"], "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#"{"positional":[],"named":{}}"#);
+}

@@ -392,6 +392,87 @@ impl Filter {
     }
 }
 
+impl Filter {
+    /// Check if this filter AST uses `input` or `inputs` builtins,
+    /// which require sequential processing (not parallel NDJSON).
+    pub fn uses_input_builtins(&self) -> bool {
+        match self {
+            Filter::Builtin(name, args) => {
+                if name == "input" || name == "inputs" {
+                    return true;
+                }
+                args.iter().any(|f| f.uses_input_builtins())
+            }
+            Filter::Identity
+            | Filter::Iterate
+            | Filter::Recurse
+            | Filter::Field(_)
+            | Filter::Var(_)
+            | Filter::Literal(_)
+            | Filter::Break(_) => false,
+            Filter::Index(f)
+            | Filter::Select(f)
+            | Filter::ArrayConstruct(f)
+            | Filter::Not(f)
+            | Filter::Try(f)
+            | Filter::Neg(f) => f.uses_input_builtins(),
+            Filter::Pipe(a, b)
+            | Filter::Compare(a, _, b)
+            | Filter::Arith(a, _, b)
+            | Filter::BoolOp(a, _, b)
+            | Filter::Alternative(a, b)
+            | Filter::TryCatch(a, b)
+            | Filter::Assign(a, _, b) => a.uses_input_builtins() || b.uses_input_builtins(),
+            Filter::Bind(a, _, b) | Filter::AltBind(a, _, b) => {
+                a.uses_input_builtins() || b.uses_input_builtins()
+            }
+            Filter::Comma(filters) => filters.iter().any(|f| f.uses_input_builtins()),
+            Filter::ObjectConstruct(pairs) => pairs.iter().any(|(k, v)| {
+                (match k {
+                    ObjKey::Name(_) => false,
+                    ObjKey::Expr(f) => f.uses_input_builtins(),
+                }) || v.uses_input_builtins()
+            }),
+            Filter::Slice(s, e) => {
+                s.as_ref().is_some_and(|f| f.uses_input_builtins())
+                    || e.as_ref().is_some_and(|f| f.uses_input_builtins())
+            }
+            Filter::IfThenElse(c, t, e) => {
+                c.uses_input_builtins()
+                    || t.uses_input_builtins()
+                    || e.as_ref().is_some_and(|f| f.uses_input_builtins())
+            }
+            Filter::Reduce(src, _, init, update) => {
+                src.uses_input_builtins()
+                    || init.uses_input_builtins()
+                    || update.uses_input_builtins()
+            }
+            Filter::Foreach(src, _, init, update, extract) => {
+                src.uses_input_builtins()
+                    || init.uses_input_builtins()
+                    || update.uses_input_builtins()
+                    || extract.as_ref().is_some_and(|f| f.uses_input_builtins())
+            }
+            Filter::Def { body, rest, .. } => {
+                body.uses_input_builtins() || rest.uses_input_builtins()
+            }
+            Filter::Label(_, body) => body.uses_input_builtins(),
+            Filter::PostfixIndex(base, idx) => {
+                base.uses_input_builtins() || idx.uses_input_builtins()
+            }
+            Filter::PostfixSlice(base, s, e) => {
+                base.uses_input_builtins()
+                    || s.as_ref().is_some_and(|f| f.uses_input_builtins())
+                    || e.as_ref().is_some_and(|f| f.uses_input_builtins())
+            }
+            Filter::StringInterp(parts) => parts.iter().any(|p| match p {
+                StringPart::Lit(_) => false,
+                StringPart::Expr(f) => f.uses_input_builtins(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

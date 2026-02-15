@@ -17,6 +17,53 @@ pub enum OutputMode {
     Raw,
 }
 
+/// ANSI color scheme for JSON output (matches jq's defaults).
+#[derive(Debug, Clone)]
+pub struct ColorScheme {
+    pub null: &'static str,
+    pub bool_val: &'static str,
+    pub number: &'static str,
+    pub string: &'static str,
+    pub array_bracket: &'static str,
+    pub object_brace: &'static str,
+    pub object_key: &'static str,
+    pub reset: &'static str,
+}
+
+impl ColorScheme {
+    /// jq's default color scheme.
+    pub fn jq_default() -> Self {
+        Self {
+            null: "\x1b[1;30m",
+            bool_val: "\x1b[0;39m",
+            number: "\x1b[0;39m",
+            string: "\x1b[0;32m",
+            array_bracket: "\x1b[1;39m",
+            object_brace: "\x1b[1;39m",
+            object_key: "\x1b[34;1m",
+            reset: "\x1b[0m",
+        }
+    }
+
+    /// No-color scheme (all empty strings).
+    pub fn none() -> Self {
+        Self {
+            null: "",
+            bool_val: "",
+            number: "",
+            string: "",
+            array_bracket: "",
+            object_brace: "",
+            object_key: "",
+            reset: "",
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        !self.reset.is_empty()
+    }
+}
+
 /// Configuration for output formatting.
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
@@ -27,6 +74,8 @@ pub struct OutputConfig {
     pub sort_keys: bool,
     /// Suppress trailing newline after each value (`-j`).
     pub join_output: bool,
+    /// Color scheme for output.
+    pub color: ColorScheme,
 }
 
 impl Default for OutputConfig {
@@ -36,6 +85,7 @@ impl Default for OutputConfig {
             indent: "  ".to_string(),
             sort_keys: false,
             join_output: false,
+            color: ColorScheme::none(),
         }
     }
 }
@@ -47,10 +97,12 @@ pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) ->
             let fmt = PrettyFmt {
                 indent: &config.indent,
             };
-            write_value_inner(w, value, &fmt, 0, config.sort_keys)?;
+            write_value_inner(w, value, &fmt, 0, config.sort_keys, &config.color)?;
         }
-        OutputMode::Compact => write_compact(w, value, config.sort_keys)?,
-        OutputMode::Raw => write_raw(w, value, config.sort_keys)?,
+        OutputMode::Compact => {
+            write_value_inner(w, value, &CompactFmt, 0, config.sort_keys, &config.color)?;
+        }
+        OutputMode::Raw => write_raw(w, value, config.sort_keys, &config.color)?,
     }
     if !config.join_output {
         w.write_all(b"\n")?;
@@ -168,33 +220,130 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
     fmt: &F,
     depth: usize,
     sort_keys: bool,
+    color: &ColorScheme,
 ) -> io::Result<()> {
+    let c = color.is_enabled();
     match value {
-        Value::Null => w.write_all(b"null"),
-        Value::Bool(true) => w.write_all(b"true"),
-        Value::Bool(false) => w.write_all(b"false"),
-        Value::Int(n) => {
-            let mut buf = itoa::Buffer::new();
-            w.write_all(buf.format(*n).as_bytes())
+        Value::Null => {
+            if c {
+                w.write_all(color.null.as_bytes())?;
+            }
+            w.write_all(b"null")?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
         }
-        Value::Double(f, raw) => write_double(w, *f, raw.as_deref()),
-        Value::String(s) => write_json_string(w, s),
-        Value::Array(arr) if arr.is_empty() => w.write_all(b"[]"),
+        Value::Bool(true) => {
+            if c {
+                w.write_all(color.bool_val.as_bytes())?;
+            }
+            w.write_all(b"true")?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
+        }
+        Value::Bool(false) => {
+            if c {
+                w.write_all(color.bool_val.as_bytes())?;
+            }
+            w.write_all(b"false")?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
+        }
+        Value::Int(n) => {
+            if c {
+                w.write_all(color.number.as_bytes())?;
+            }
+            let mut buf = itoa::Buffer::new();
+            w.write_all(buf.format(*n).as_bytes())?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
+        }
+        Value::Double(f, raw) => {
+            if c {
+                w.write_all(color.number.as_bytes())?;
+            }
+            write_double(w, *f, raw.as_deref())?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
+        }
+        Value::String(s) => {
+            if c {
+                w.write_all(color.string.as_bytes())?;
+            }
+            write_json_string(w, s)?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
+        }
+        Value::Array(arr) if arr.is_empty() => {
+            if c {
+                w.write_all(color.array_bracket.as_bytes())?;
+            }
+            w.write_all(b"[]")?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
+        }
         Value::Array(arr) => {
+            if c {
+                w.write_all(color.array_bracket.as_bytes())?;
+            }
             fmt.array_open(w, depth)?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
             for (i, v) in arr.iter().enumerate() {
                 if i > 0 {
+                    if c {
+                        w.write_all(color.array_bracket.as_bytes())?;
+                    }
                     fmt.array_sep(w, depth)?;
+                    if c {
+                        w.write_all(color.reset.as_bytes())?;
+                    }
                 } else {
                     fmt.array_first(w, depth)?;
                 }
-                write_value_inner(w, v, fmt, depth + 1, sort_keys)?;
+                write_value_inner(w, v, fmt, depth + 1, sort_keys, color)?;
             }
-            fmt.array_close(w, depth)
+            if c {
+                w.write_all(color.array_bracket.as_bytes())?;
+            }
+            fmt.array_close(w, depth)?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
         }
-        Value::Object(obj) if obj.is_empty() => w.write_all(b"{}"),
+        Value::Object(obj) if obj.is_empty() => {
+            if c {
+                w.write_all(color.object_brace.as_bytes())?;
+            }
+            w.write_all(b"{}")?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
+        }
         Value::Object(obj) => {
+            if c {
+                w.write_all(color.object_brace.as_bytes())?;
+            }
             fmt.object_open(w, depth)?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
             let sorted;
             let pairs: &[(String, Value)] = if sort_keys {
                 sorted = {
@@ -208,15 +357,34 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
             };
             for (i, (k, v)) in pairs.iter().enumerate() {
                 if i > 0 {
+                    if c {
+                        w.write_all(color.object_brace.as_bytes())?;
+                    }
                     fmt.object_sep(w, depth)?;
+                    if c {
+                        w.write_all(color.reset.as_bytes())?;
+                    }
                 } else {
                     fmt.object_first(w, depth)?;
                 }
+                if c {
+                    w.write_all(color.object_key.as_bytes())?;
+                }
                 write_json_string(w, k)?;
+                if c {
+                    w.write_all(color.reset.as_bytes())?;
+                }
                 fmt.kv_sep(w)?;
-                write_value_inner(w, v, fmt, depth + 1, sort_keys)?;
+                write_value_inner(w, v, fmt, depth + 1, sort_keys, color)?;
             }
-            fmt.object_close(w, depth)
+            if c {
+                w.write_all(color.object_brace.as_bytes())?;
+            }
+            fmt.object_close(w, depth)?;
+            if c {
+                w.write_all(color.reset.as_bytes())?;
+            }
+            Ok(())
         }
     }
 }
@@ -226,19 +394,24 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<()> {
-    write_value_inner(w, value, &CompactFmt, 0, sort_keys)
+    write_value_inner(w, value, &CompactFmt, 0, sort_keys, &ColorScheme::none())
 }
 
 // ---------------------------------------------------------------------------
 // Raw output (-r)
 // ---------------------------------------------------------------------------
 
-fn write_raw<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<()> {
+fn write_raw<W: Write>(
+    w: &mut W,
+    value: &Value,
+    sort_keys: bool,
+    color: &ColorScheme,
+) -> io::Result<()> {
     match value {
         // Raw mode: strings are output without quotes
         Value::String(s) => w.write_all(s.as_bytes()),
-        // Everything else is the same as compact
-        _ => write_compact(w, value, sort_keys),
+        // Everything else is the same as compact (with color)
+        _ => write_value_inner(w, value, &CompactFmt, 0, sort_keys, color),
     }
 }
 

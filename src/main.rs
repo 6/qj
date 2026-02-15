@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -57,9 +57,12 @@ struct Cli {
     #[arg(short = 'j', long = "join-output")]
     join_output: bool,
 
-    /// Monochrome output (no-op, jx doesn't emit color yet)
+    /// Force color output even when piped
+    #[arg(short = 'C', long = "color-output")]
+    color: bool,
+
+    /// Monochrome output (no color)
     #[arg(short = 'M', long = "monochrome-output")]
-    #[allow(dead_code)]
     monochrome: bool,
 
     /// Bind $name to string value
@@ -69,6 +72,14 @@ struct Cli {
     /// Bind $name to parsed JSON value
     #[arg(long = "argjson", num_args = 2, value_names = ["NAME", "VALUE"], action = clap::ArgAction::Append)]
     argjson: Vec<String>,
+
+    /// Bind $NAME to raw string contents of FILE
+    #[arg(long = "rawfile", num_args = 2, value_names = ["NAME", "FILE"], action = clap::ArgAction::Append)]
+    rawfile: Vec<String>,
+
+    /// Bind $NAME to array of JSON values parsed from FILE
+    #[arg(long = "slurpfile", num_args = 2, value_names = ["NAME", "FILE"], action = clap::ArgAction::Append)]
+    slurpfile: Vec<String>,
 
     /// Read filter from file instead of first argument
     #[arg(short = 'f', long = "from-file", value_name = "FILE")]
@@ -80,7 +91,26 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // Pre-scan for --args / --jsonargs: split argv before clap sees them.
+    // Everything after --args or --jsonargs becomes positional string/JSON values.
+    let raw_args: Vec<String> = std::env::args().collect();
+    let (clap_args, positional_args, positional_json) = {
+        let mut clap_part = raw_args.clone();
+        let mut pos_str = Vec::new();
+        let mut pos_json = false;
+        if let Some(idx) = raw_args
+            .iter()
+            .position(|a| a == "--args" || a == "--jsonargs")
+        {
+            pos_json = raw_args[idx] == "--jsonargs";
+            let tail: Vec<String> = raw_args[idx + 1..].to_vec();
+            clap_part = raw_args[..idx].to_vec();
+            pos_str = tail;
+        }
+        (clap_part, pos_str, pos_json)
+    };
+
+    let cli = Cli::parse_from(&clap_args);
 
     // Resolve filter string and input files.
     // With --from-file, all positional args are input files.
@@ -125,6 +155,90 @@ fn main() -> Result<()> {
             env = env.bind_var(format!("${}", pair[0]), val);
         }
     }
+    for pair in cli.rawfile.chunks(2) {
+        if pair.len() == 2 {
+            let content = std::fs::read_to_string(&pair[1])
+                .with_context(|| format!("failed to read --rawfile {}: {}", pair[0], pair[1]))?;
+            env = env.bind_var(format!("${}", pair[0]), jx::value::Value::String(content));
+        }
+    }
+    for pair in cli.slurpfile.chunks(2) {
+        if pair.len() == 2 {
+            let buf = std::fs::read(&pair[1])
+                .with_context(|| format!("failed to read --slurpfile {}: {}", pair[0], pair[1]))?;
+            let mut values = Vec::new();
+            jx::input::collect_values_from_buf(&buf, false, &mut values)
+                .with_context(|| format!("failed to parse --slurpfile {}: {}", pair[0], pair[1]))?;
+            env = env.bind_var(
+                format!("${}", pair[0]),
+                jx::value::Value::Array(Rc::new(values)),
+            );
+        }
+    }
+
+    // Build $ARGS: {positional: [...], named: {...}}
+    {
+        let pos_values: Vec<jx::value::Value> = if positional_json {
+            positional_args
+                .iter()
+                .map(|s| {
+                    let padded = jx::simdjson::pad_buffer(s.as_bytes());
+                    jx::simdjson::dom_parse_to_value(&padded, s.len())
+                        .with_context(|| format!("invalid JSON for --jsonargs: {s}"))
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            positional_args
+                .iter()
+                .map(|s| jx::value::Value::String(s.clone()))
+                .collect()
+        };
+
+        let named_pairs: Vec<(String, jx::value::Value)> = {
+            let mut pairs = Vec::new();
+            for pair in cli.args.chunks(2) {
+                if pair.len() == 2 {
+                    pairs.push((pair[0].clone(), jx::value::Value::String(pair[1].clone())));
+                }
+            }
+            for pair in cli.argjson.chunks(2) {
+                if pair.len() == 2 {
+                    let padded = jx::simdjson::pad_buffer(pair[1].as_bytes());
+                    if let Ok(val) = jx::simdjson::dom_parse_to_value(&padded, pair[1].len()) {
+                        pairs.push((pair[0].clone(), val));
+                    }
+                }
+            }
+            pairs
+        };
+
+        let args_obj = jx::value::Value::Object(Rc::new(vec![
+            (
+                "positional".to_string(),
+                jx::value::Value::Array(Rc::new(pos_values)),
+            ),
+            (
+                "named".to_string(),
+                jx::value::Value::Object(Rc::new(named_pairs)),
+            ),
+        ]));
+        env = env.bind_var("$ARGS".to_string(), args_obj);
+    }
+
+    // Color: on by default for TTY, overridden by -C (force on) or -M (force off).
+    // Check before locking stdout.
+    let use_color = if cli.monochrome {
+        false
+    } else if cli.color {
+        true
+    } else {
+        io::stdout().is_terminal()
+    };
+    let color_scheme = if use_color {
+        jx::output::ColorScheme::jq_default()
+    } else {
+        jx::output::ColorScheme::none()
+    };
 
     let stdout = io::stdout().lock();
     let mut out = BufWriter::with_capacity(128 * 1024, stdout);
@@ -135,6 +249,7 @@ fn main() -> Result<()> {
             indent: String::new(),
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
+            color: color_scheme,
         }
     } else if cli.compact {
         jx::output::OutputConfig {
@@ -142,6 +257,7 @@ fn main() -> Result<()> {
             indent: String::new(),
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
+            color: color_scheme,
         }
     } else {
         jx::output::OutputConfig {
@@ -153,21 +269,66 @@ fn main() -> Result<()> {
             },
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
+            color: color_scheme,
         }
     };
 
     // Detect passthrough-eligible patterns. Disable when semantic-changing
-    // flags are active (slurp, raw_input, sort_keys, join_output).
-    let passthrough = if cli.slurp || cli.raw_input || cli.sort_keys || cli.join_output {
+    // flags are active (slurp, raw_input, sort_keys, join_output) or when
+    // color is enabled (passthrough bypasses the output formatter).
+    let passthrough = if cli.slurp || cli.raw_input || cli.sort_keys || cli.join_output || use_color
+    {
         None
     } else {
         jx::filter::passthrough_path(&filter).filter(|p| !p.requires_compact() || cli.compact)
     };
 
+    let uses_input = filter.uses_input_builtins();
     let mut had_output = false;
     let mut had_error = false;
 
     if cli.null_input {
+        // With -n: collect all input values into the input queue (for input/inputs),
+        // then eval with null input.
+        if uses_input {
+            let mut values = Vec::new();
+            if !input_files.is_empty() {
+                for path in &input_files {
+                    if cli.raw_input {
+                        let content = std::fs::read_to_string(path)
+                            .with_context(|| format!("failed to read file: {path}"))?;
+                        for line in content.lines() {
+                            values.push(jx::value::Value::String(line.to_string()));
+                        }
+                    } else {
+                        let (padded, json_len) =
+                            jx::simdjson::read_padded_file(std::path::Path::new(path))
+                                .with_context(|| format!("failed to read file: {path}"))?;
+                        jx::input::collect_values_from_buf(
+                            &padded[..json_len],
+                            cli.jsonl,
+                            &mut values,
+                        )?;
+                    }
+                }
+            } else {
+                let mut buf = Vec::new();
+                io::stdin()
+                    .read_to_end(&mut buf)
+                    .context("failed to read stdin")?;
+                if cli.raw_input {
+                    let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
+                    for line in text.lines() {
+                        values.push(jx::value::Value::String(line.to_string()));
+                    }
+                } else {
+                    jx::input::strip_bom(&mut buf);
+                    jx::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+                }
+            }
+            use std::collections::VecDeque;
+            jx::filter::eval::set_input_queue(VecDeque::from(values));
+        }
         let input = jx::value::Value::Null;
         eval_and_output(
             &filter,
@@ -266,11 +427,27 @@ fn main() -> Result<()> {
             .read_to_end(&mut buf)
             .context("failed to read stdin")?;
         jx::input::strip_bom(&mut buf);
-        if cli.jsonl || jx::parallel::ndjson::is_ndjson(&buf) {
+        if !uses_input && (cli.jsonl || jx::parallel::ndjson::is_ndjson(&buf)) {
             let (output, ho) = jx::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
                 .context("failed to process NDJSON from stdin")?;
             out.write_all(&output)?;
             had_output |= ho;
+        } else if uses_input {
+            // Collect all values; first becomes input, rest go to queue
+            let mut values = Vec::new();
+            jx::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+            let mut queue: std::collections::VecDeque<_> = values.into();
+            let input = queue.pop_front().unwrap_or(jx::value::Value::Null);
+            jx::filter::eval::set_input_queue(queue);
+            eval_and_output(
+                &filter,
+                &input,
+                &env,
+                &mut out,
+                &config,
+                &mut had_output,
+                &mut had_error,
+            );
         } else {
             let json_len = buf.len();
             let padded = jx::simdjson::pad_buffer(&buf);
@@ -294,16 +471,38 @@ fn main() -> Result<()> {
         }
     } else {
         // files
-        let ctx = ProcessCtx {
-            passthrough: &passthrough,
-            force_jsonl: cli.jsonl,
-            filter: &filter,
-            env: &env,
-            config: &config,
-            debug_timing: cli.debug_timing,
-        };
-        for path in &input_files {
-            process_file(path, &ctx, &mut out, &mut had_output, &mut had_error)?;
+        if uses_input {
+            // Collect all values from all files; first becomes input, rest go to queue
+            let mut values = Vec::new();
+            for path in &input_files {
+                let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+                    .with_context(|| format!("failed to read file: {path}"))?;
+                jx::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
+            }
+            let mut queue: std::collections::VecDeque<_> = values.into();
+            let input = queue.pop_front().unwrap_or(jx::value::Value::Null);
+            jx::filter::eval::set_input_queue(queue);
+            eval_and_output(
+                &filter,
+                &input,
+                &env,
+                &mut out,
+                &config,
+                &mut had_output,
+                &mut had_error,
+            );
+        } else {
+            let ctx = ProcessCtx {
+                passthrough: &passthrough,
+                force_jsonl: cli.jsonl,
+                filter: &filter,
+                env: &env,
+                config: &config,
+                debug_timing: cli.debug_timing,
+            };
+            for path in &input_files {
+                process_file(path, &ctx, &mut out, &mut had_output, &mut had_error)?;
+            }
         }
     }
 

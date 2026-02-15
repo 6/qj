@@ -213,7 +213,21 @@ pub(super) fn eval_io(
             output(Value::Array(Rc::new(arr)));
         }
         "input" => {
-            // TODO: requires input stream plumbing
+            let val = super::super::eval::INPUT_QUEUE.with(|q| q.borrow_mut().pop_front());
+            if let Some(v) = val {
+                output(v);
+            } else {
+                // jq signals break when no more input is available
+                super::super::eval::LAST_ERROR
+                    .with(|e| *e.borrow_mut() = Some(Value::String("break".to_string())));
+            }
+        }
+        "inputs" => {
+            let values: Vec<Value> =
+                super::super::eval::INPUT_QUEUE.with(|q| q.borrow_mut().drain(..).collect());
+            for v in values {
+                output(v);
+            }
         }
         "debug" => {
             if let Some(arg) = args.first() {

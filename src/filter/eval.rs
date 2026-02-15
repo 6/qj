@@ -5,6 +5,7 @@
 use crate::filter::{ArithOp, AssignOp, BoolOp, Env, Filter, ObjKey, Pattern, PatternKey};
 use crate::value::Value;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::value_ops::{arith_values, compare_values, recurse};
@@ -113,12 +114,24 @@ thread_local! {
     pub(super) static LAST_ERROR: RefCell<Option<Value>> = const { RefCell::new(None) };
     /// Break signal for label-break unwinding.
     static BREAK_SIGNAL: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Input queue for `input`/`inputs` builtins.
+    pub(super) static INPUT_QUEUE: RefCell<VecDeque<Value>> = const { RefCell::new(VecDeque::new()) };
 }
 
 /// Take the last error value, if any, clearing the thread-local state.
 /// Called after evaluation to check for uncaught runtime errors.
 pub fn take_last_error() -> Option<Value> {
     LAST_ERROR.with(|e| e.borrow_mut().take())
+}
+
+/// Set the input queue for `input`/`inputs` builtins.
+pub fn set_input_queue(values: VecDeque<Value>) {
+    INPUT_QUEUE.with(|q| *q.borrow_mut() = values);
+}
+
+/// Take back the input queue (returns remaining unconsumed values).
+pub fn take_input_queue() -> VecDeque<Value> {
+    INPUT_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
 /// Public entry point — creates an empty env for top-level evaluation.

@@ -19,6 +19,13 @@ pub fn collect_values_from_buf(
     force_jsonl: bool,
     values: &mut Vec<Value>,
 ) -> Result<()> {
+    // Empty/whitespace-only input produces no values.
+    if buf
+        .iter()
+        .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        return Ok(());
+    }
     if force_jsonl || crate::parallel::ndjson::is_ndjson(buf) {
         parse_lines(buf, values)?;
     } else {
