@@ -1,6 +1,6 @@
 # qj — a faster jq for large JSON and JSONL
 
-Fast jq-compatible JSON processor using SIMD parsing (C++ simdjson via FFI), parallel NDJSON processing, and streaming architecture. See PLAN.md for full design.
+Fast jq-compatible JSON processor using SIMD parsing (C++ simdjson via FFI), parallel NDJSON processing, and streaming architecture.
 
 ## After writing Rust code
 ```

@@ -353,7 +353,7 @@ Include a short "Understanding the numbers" section at the top of
 | gh-pages / benchmark-action | Extra infrastructure (gh-pages branch, deploy permissions). `BENCHMARKS.md` in the repo is simpler and more discoverable. Upgrade later if needed. |
 | Self-hosted runners | Maintenance burden. Shared runners are fine — CI numbers are directional, not absolute. |
 | Criterion microbenchmarks for filter eval | Hyperfine end-to-end is what users experience. Microbenchmarks are useful for optimizing internals but shouldn't be the public-facing story. |
-| Windows CI | Not a target platform (PLAN.md). Would need MSVC simdjson build, not worth it yet. |
+| Windows CI | Not a target platform. Would need MSVC simdjson build, not worth it yet. |
 | Scheduled CI runs | Wasteful for a project with infrequent commits. `push` to main with path filters is sufficient. |
 | Blocking PRs on perf regression | Shared runner variance is 10-30%. A hard gate would create false-positive friction. |
 
