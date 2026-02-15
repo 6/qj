@@ -226,11 +226,16 @@ fn main() -> Result<()> {
     }
 
     // Color: on by default for TTY, overridden by -C (force on) or -M (force off).
+    // NO_COLOR env var (https://no-color.org/) disables color by default,
+    // but -C still overrides it (matches jq behavior).
     // Check before locking stdout.
+    let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let use_color = if cli.monochrome {
         false
     } else if cli.color {
         true
+    } else if no_color_env {
+        false
     } else {
         io::stdout().is_terminal()
     };

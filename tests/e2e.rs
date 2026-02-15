@@ -3391,6 +3391,52 @@ fn color_pretty_output() {
     assert!(stdout.contains("hi"));
 }
 
+#[test]
+fn no_color_env_suppresses_color() {
+    // NO_COLOR env var should suppress color (even without -M)
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(["-c", "."])
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(br#"{"a":1}"#).unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !stdout.contains("\x1b["),
+        "NO_COLOR should suppress ANSI codes, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn no_color_env_overridden_by_flag() {
+    // -C should override NO_COLOR
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(["-Cc", "."])
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(br#"{"a":1}"#).unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("\x1b["),
+        "-C should override NO_COLOR, got: {stdout:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // --rawfile
 // ---------------------------------------------------------------------------
