@@ -1193,6 +1193,13 @@ tests = [
 
 [[features]]
 category = "I/O and environment"
+name = "halt_error"
+tests = [
+  { filter = 'halt_error(0)', input = 'null', expected = '' },
+]
+
+[[features]]
+category = "I/O and environment"
 name = "input/inputs"
 tests = [
   { filter = '[inputs]', input = "1\n2\n3", flags = '-cn --', expected = '[1,2,3]' },
@@ -1328,8 +1335,33 @@ tests = [
 
 [[features]]
 category = "CLI flags"
+name = "--stream"
+tests = [
+  { filter = '.', input = '[1,2]', flags = '--stream -c --', expected = "[[0],1]\n[[1],2]\n[[1]]" },
+]
+
+[[features]]
+category = "CLI flags"
 name = "--jsonl"
 jx_only = true
 tests = [
   { filter = '.x', input = '{"x":1}', flags = '--jsonl -c --', expected = '1' },
+]
+
+# =============================================================================
+# Streaming
+# =============================================================================
+
+[[features]]
+category = "Streaming"
+name = "tostream"
+tests = [
+  { filter = '[tostream]', input = '{"a":1,"b":2}', expected = '[[["a"],1],[["b"],2],[["b"]]]' },
+]
+
+[[features]]
+category = "Streaming"
+name = "fromstream"
+tests = [
+  { filter = 'fromstream(tostream)', input = '{"a":1}', expected = '{"a":1}' },
 ]
