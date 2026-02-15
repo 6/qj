@@ -1,15 +1,12 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
 
-use super::super::eval::{LAST_ERROR, eval};
+use super::super::eval::eval;
 use super::super::value_ops::{
     bdtime_strftime, bdtime_to_epoch, epoch_to_bdtime, format_strftime_jiff, format_strftime_local,
     fromdate, input_as_f64, now_timestamp, strptime_to_bdtime, todate,
 };
-
-fn set_error(msg: String) {
-    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
-}
+use super::set_error;
 
 pub(super) fn eval_date(
     name: &str,

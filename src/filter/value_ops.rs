@@ -222,7 +222,15 @@ pub(super) fn strptime_to_bdtime(s: &str, fmt: &str) -> Option<Value> {
 // Path operations
 // ---------------------------------------------------------------------------
 
+/// Maximum path depth for set_path/del_path recursion to prevent stack overflow.
+const MAX_PATH_DEPTH: usize = 1000;
+/// Maximum array index that set_path will allocate when creating from null.
+const MAX_ARRAY_ALLOC: i64 = 1_000_000;
+
 pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result<Value, String> {
+    if path.len() > MAX_PATH_DEPTH {
+        return Err("Path too deep".to_string());
+    }
     if path.is_empty() {
         return Ok(new_val.clone());
     }
@@ -259,6 +267,9 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
             if *i < 0 {
                 return Err("Out of bounds negative array index".to_string());
             }
+            if *i > MAX_ARRAY_ALLOC {
+                return Err("Array index too large".to_string());
+            }
             let idx = *i as usize;
             let mut arr = vec![Value::Null; idx + 1];
             arr[idx] = set_path(&Value::Null, rest, new_val)?;
@@ -279,6 +290,9 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
 pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
     if path.is_empty() {
         return Value::Null;
+    }
+    if path.len() > MAX_PATH_DEPTH {
+        return value.clone(); // Too deep — no-op rather than stack overflow
     }
     if path.len() == 1 {
         match (value, &path[0]) {
@@ -1081,6 +1095,43 @@ mod tests {
     fn f64_to_value_i64_min() {
         // -2^63 is exactly representable and fits in i64
         assert_eq!(f64_to_value(i64::MIN as f64), Value::Int(i64::MIN));
+    }
+
+    #[test]
+    fn set_path_rejects_huge_array_index() {
+        let result = set_path(&Value::Null, &[Value::Int(2_000_000)], &Value::Int(1));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Array index too large"));
+    }
+
+    #[test]
+    fn set_path_rejects_deep_path() {
+        let path: Vec<Value> = (0..1500).map(|i| Value::Int(i)).collect();
+        let result = set_path(&Value::Null, &path, &Value::Int(1));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Path too deep"));
+    }
+
+    #[test]
+    fn del_path_deep_path_returns_value() {
+        let path: Vec<Value> = (0..1500).map(|i| Value::Int(i)).collect();
+        let input = Value::Int(42);
+        let result = del_path(&input, &path);
+        // Should return the value unchanged (no-op) rather than stack overflow
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn set_path_normal_alloc_works() {
+        // A reasonable index should succeed
+        let result = set_path(&Value::Null, &[Value::Int(10)], &Value::String("x".into()));
+        assert!(result.is_ok());
+        if let Ok(Value::Array(arr)) = result {
+            assert_eq!(arr.len(), 11);
+            assert_eq!(arr[10], Value::String("x".into()));
+        } else {
+            panic!("expected array");
+        }
     }
 
     #[test]

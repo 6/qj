@@ -71,15 +71,16 @@ pub fn split_chunks(buf: &[u8], target_size: usize) -> Vec<&[u8]> {
     let mut start = 0;
 
     while start < buf.len() {
-        if start + target_size >= buf.len() {
+        let boundary = start.saturating_add(target_size);
+        if boundary >= buf.len() {
             chunks.push(&buf[start..]);
             break;
         }
 
         // Find newline at or after target boundary
-        match memchr::memchr(b'\n', &buf[start + target_size..]) {
+        match memchr::memchr(b'\n', &buf[boundary..]) {
             Some(offset) => {
-                let end = start + target_size + offset + 1;
+                let end = boundary + offset + 1;
                 chunks.push(&buf[start..end]);
                 start = end;
             }
@@ -302,6 +303,15 @@ mod tests {
     #[test]
     fn split_chunks_empty() {
         assert!(split_chunks(b"", 1024).is_empty());
+    }
+
+    #[test]
+    fn split_chunks_huge_target_size() {
+        // target_size larger than buf — should return one chunk without overflow
+        let data = b"line1\nline2\n";
+        let chunks = split_chunks(data, usize::MAX);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], &data[..]);
     }
 
     #[test]

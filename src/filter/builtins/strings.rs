@@ -2,11 +2,21 @@ use crate::filter::{Env, Filter};
 use crate::value::Value;
 use std::rc::Rc;
 
-use super::super::eval::{LAST_ERROR, eval};
+use super::super::eval::eval;
 use super::super::value_ops::values_equal;
+use super::set_error;
 
-fn set_error(msg: String) {
-    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+/// Truncate a string to at most `max` bytes, ensuring the cut falls on a UTF-8
+/// char boundary. Returns the full string if it's already short enough.
+fn safe_truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 pub(super) fn eval_strings(
@@ -402,7 +412,7 @@ pub(super) fn eval_strings(
                     set_error(format!(
                         "Invalid numeric literal at EOF at line 1, column {} (while parsing '{}')",
                         trimmed.len(),
-                        if s.len() > 40 { &s[..40] } else { s }
+                        safe_truncate(s, 40)
                     ));
                     return;
                 }
@@ -413,21 +423,37 @@ pub(super) fn eval_strings(
                         // Produce jq-compatible error message
                         if trimmed.contains('\'') {
                             // Single-quote detection — find position after closing single-quote
-                            let first = trimmed.find('\'').unwrap_or(0);
-                            let col = trimmed[first + 1..]
+                            // Use char_indices for safe slicing on multi-byte boundaries
+                            let first = trimmed
+                                .char_indices()
+                                .find(|(_, c)| *c == '\'')
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            let after_first =
+                                if first < trimmed.len() && trimmed.is_char_boundary(first + 1) {
+                                    first + 1
+                                } else {
+                                    // Advance past the multi-byte char
+                                    trimmed[first..]
+                                        .char_indices()
+                                        .nth(1)
+                                        .map(|(i, _)| first + i)
+                                        .unwrap_or(trimmed.len())
+                                };
+                            let col = trimmed[after_first..]
                                 .find('\'')
-                                .map(|p| first + 1 + p + 1 + 1) // +1 past close quote, +1 for 1-indexed
-                                .unwrap_or(first + 1);
+                                .map(|p| after_first + p + 1 + 1) // +1 past close quote, +1 for 1-indexed
+                                .unwrap_or(after_first);
                             set_error(format!(
                                 "Invalid string literal; expected \", but got ' at line 1, column {} (while parsing '{}')",
                                 col,
-                                if s.len() > 40 { &s[..40] } else { s }
+                                safe_truncate(s, 40)
                             ));
                         } else {
                             set_error(format!(
                                 "Invalid numeric literal at EOF at line 1, column {} (while parsing '{}')",
                                 s.len(),
-                                if s.len() > 40 { &s[..40] } else { s }
+                                safe_truncate(s, 40)
                             ));
                         }
                     }

@@ -26,3 +26,10 @@ Largest wins on parse-dominated workloads over large files; smallest on complex 
 jq compat % = pass rate on [jq's official test suite](https://github.com/jqlang/jq/blob/jq-1.8.1/tests/jq.test) (497 tests, JSON-aware comparison). Run `cargo test jq_compat -- --nocapture` to reproduce.
 
 See [benches/](benches/) for methodology, full results, and how to reproduce.
+
+## Known Limitations
+
+- **`input`/`inputs` builtins** — not yet implemented (TODO stub). Multi-document streaming patterns like `jq -n 'first(inputs)'` won't work.
+- **Module system** — `import`/`include` are not supported. jx focuses on single-filter usage.
+- **Arbitrary precision numbers** — jx uses i64/f64 (not bignum/decnum). This is intentional for performance.
+- **`label`-`break`** — advanced loop control (`label $out | foreach ... (break $out)`) is partially supported.

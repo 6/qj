@@ -4,10 +4,10 @@ use std::rc::Rc;
 
 use super::super::eval::{LAST_ERROR, eval};
 use super::super::value_ops::{arith_values, recurse, to_f64, values_equal, values_order};
+use super::set_error;
 
-fn set_error(msg: String) {
-    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
-}
+/// Maximum iterations for `until`, `while`, and `repeat` builtins.
+const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 
 pub(super) fn eval_arrays(
     name: &str,
@@ -513,10 +513,7 @@ pub(super) fn eval_arrays(
                 eval(&args[0], input, env, &mut |n_val| {
                     let n = to_f64(&n_val) as i64;
                     if n < 0 {
-                        LAST_ERROR.with(|e| {
-                            *e.borrow_mut() =
-                                Some(Value::String("limit doesn't support negative count".into()));
-                        });
+                        set_error("limit doesn't support negative count".into());
                         return;
                     }
                     let mut count = 0i64;
@@ -538,10 +535,7 @@ pub(super) fn eval_arrays(
                 eval(&args[0], input, env, &mut |n_val| {
                     let n = to_f64(&n_val) as i64;
                     if n < 0 {
-                        LAST_ERROR.with(|e| {
-                            *e.borrow_mut() =
-                                Some(Value::String("skip doesn't support negative count".into()));
-                        });
+                        set_error("skip doesn't support negative count".into());
                         return;
                     }
                     let mut count = 0i64;
@@ -557,7 +551,7 @@ pub(super) fn eval_arrays(
         "until" => {
             if args.len() == 2 {
                 let mut current = input.clone();
-                for _ in 0..1_000_000 {
+                for _ in 0..MAX_LOOP_ITERATIONS {
                     let mut done = false;
                     eval(&args[0], &current, env, &mut |v| done = v.is_truthy());
                     if done {
@@ -576,7 +570,7 @@ pub(super) fn eval_arrays(
         "while" => {
             if args.len() == 2 {
                 let mut current = input.clone();
-                for _ in 0..1_000_000 {
+                for _ in 0..MAX_LOOP_ITERATIONS {
                     let mut cont = false;
                     eval(&args[0], &current, env, &mut |v| cont = v.is_truthy());
                     if !cont {
@@ -594,7 +588,7 @@ pub(super) fn eval_arrays(
         }
         "repeat" => {
             if let Some(f) = args.first() {
-                for _ in 0..1_000_000 {
+                for _ in 0..MAX_LOOP_ITERATIONS {
                     eval(f, input, env, output);
                 }
             }
@@ -612,10 +606,7 @@ pub(super) fn eval_arrays(
                 eval(&args[0], input, env, &mut |idx_val| {
                     let n = to_f64(&idx_val) as i64;
                     if n < 0 {
-                        LAST_ERROR.with(|e| {
-                            *e.borrow_mut() =
-                                Some(Value::String("nth doesn't support negative indices".into()));
-                        });
+                        set_error("nth doesn't support negative indices".into());
                         return;
                     }
                     let mut count = 0i64;

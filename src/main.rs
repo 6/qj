@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 #[derive(Parser)]
 #[command(name = "jx", about = "A faster jq", version)]
 struct Cli {
-    /// jq filter expression
-    filter: String,
+    /// jq filter expression (not needed with --from-file/-f)
+    filter: Option<String>,
 
     /// Input file(s); defaults to stdin
     files: Vec<String>,
@@ -70,6 +70,10 @@ struct Cli {
     #[arg(long = "argjson", num_args = 2, value_names = ["NAME", "VALUE"], action = clap::ArgAction::Append)]
     argjson: Vec<String>,
 
+    /// Read filter from file instead of first argument
+    #[arg(short = 'f', long = "from-file", value_name = "FILE")]
+    from_file: Option<String>,
+
     /// Print timing breakdown to stderr (for profiling)
     #[arg(long = "debug-timing", hide = true)]
     debug_timing: bool,
@@ -78,8 +82,28 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let filter = jx::filter::parse(&cli.filter)
-        .with_context(|| format!("failed to parse filter: {}", cli.filter))?;
+    // Resolve filter string and input files.
+    // With --from-file, all positional args are input files.
+    // Without it, the first positional is the filter expression.
+    let (filter_str, input_files) = if let Some(ref path) = cli.from_file {
+        let filter_str = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read filter file: {path}"))?;
+        let mut files = cli.files.clone();
+        if let Some(ref f) = cli.filter {
+            files.insert(0, f.clone());
+        }
+        (filter_str, files)
+    } else {
+        let filter_str = cli.filter.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no filter provided\nUsage: jx [OPTIONS] FILTER [FILES...]\n       jx -f FILTER_FILE [FILES...]"
+            )
+        })?;
+        (filter_str, cli.files.clone())
+    };
+
+    let filter = jx::filter::parse(&filter_str)
+        .with_context(|| format!("failed to parse filter: {filter_str}"))?;
 
     // Build environment from --arg / --argjson
     // Variable names in the AST include the '$' prefix (e.g., "$name"),
@@ -141,13 +165,22 @@ fn main() -> Result<()> {
     };
 
     let mut had_output = false;
+    let mut had_error = false;
 
     if cli.null_input {
         let input = jx::value::Value::Null;
-        eval_and_output(&filter, &input, &env, &mut out, &config, &mut had_output);
+        eval_and_output(
+            &filter,
+            &input,
+            &env,
+            &mut out,
+            &config,
+            &mut had_output,
+            &mut had_error,
+        );
     } else if cli.raw_input {
         // --raw-input: read lines as strings instead of parsing JSON
-        if cli.files.is_empty() {
+        if input_files.is_empty() {
             let mut buf = Vec::new();
             io::stdin()
                 .read_to_end(&mut buf)
@@ -161,11 +194,12 @@ fn main() -> Result<()> {
                 &mut out,
                 &config,
                 &mut had_output,
+                &mut had_error,
             )?;
         } else if cli.slurp {
             // --raw-input --slurp with files: collect all lines from all files
             let mut all_lines = Vec::new();
-            for path in &cli.files {
+            for path in &input_files {
                 let content = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read file: {path}"))?;
                 for line in content.lines() {
@@ -173,9 +207,17 @@ fn main() -> Result<()> {
                 }
             }
             let input = jx::value::Value::Array(Rc::new(all_lines));
-            eval_and_output(&filter, &input, &env, &mut out, &config, &mut had_output);
+            eval_and_output(
+                &filter,
+                &input,
+                &env,
+                &mut out,
+                &config,
+                &mut had_output,
+                &mut had_error,
+            );
         } else {
-            for path in &cli.files {
+            for path in &input_files {
                 let content = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read file: {path}"))?;
                 process_raw_input(
@@ -186,13 +228,14 @@ fn main() -> Result<()> {
                     &mut out,
                     &config,
                     &mut had_output,
+                    &mut had_error,
                 )?;
             }
         }
     } else if cli.slurp {
         // --slurp: collect all values into an array, eval once
         let mut values = Vec::new();
-        if cli.files.is_empty() {
+        if input_files.is_empty() {
             let mut buf = Vec::new();
             io::stdin()
                 .read_to_end(&mut buf)
@@ -200,15 +243,23 @@ fn main() -> Result<()> {
             jx::input::strip_bom(&mut buf);
             jx::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
         } else {
-            for path in &cli.files {
+            for path in &input_files {
                 let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
                     .with_context(|| format!("failed to read file: {path}"))?;
                 jx::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
             }
         }
         let input = jx::value::Value::Array(Rc::new(values));
-        eval_and_output(&filter, &input, &env, &mut out, &config, &mut had_output);
-    } else if cli.files.is_empty() {
+        eval_and_output(
+            &filter,
+            &input,
+            &env,
+            &mut out,
+            &config,
+            &mut had_output,
+            &mut had_error,
+        );
+    } else if input_files.is_empty() {
         // stdin
         let mut buf = Vec::new();
         io::stdin()
@@ -237,6 +288,7 @@ fn main() -> Result<()> {
                     &mut out,
                     &config,
                     &mut had_output,
+                    &mut had_error,
                 )?;
             }
         }
@@ -250,12 +302,16 @@ fn main() -> Result<()> {
             config: &config,
             debug_timing: cli.debug_timing,
         };
-        for path in &cli.files {
-            process_file(path, &ctx, &mut out, &mut had_output)?;
+        for path in &input_files {
+            process_file(path, &ctx, &mut out, &mut had_output, &mut had_error)?;
         }
     }
 
     out.flush()?;
+
+    if had_error {
+        std::process::exit(5);
+    }
 
     if cli.exit_status && !had_output {
         std::process::exit(4);
@@ -269,6 +325,8 @@ fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Evaluate a filter against an input value and write all outputs.
+/// After evaluation, checks for uncaught runtime errors and reports them
+/// to stderr (like jq's exit-code-5 behavior).
 fn eval_and_output(
     filter: &jx::filter::Filter,
     input: &jx::value::Value,
@@ -276,11 +334,26 @@ fn eval_and_output(
     out: &mut impl Write,
     config: &jx::output::OutputConfig,
     had_output: &mut bool,
+    had_error: &mut bool,
 ) {
     jx::filter::eval::eval_filter_with_env(filter, input, env, &mut |v| {
         *had_output = true;
         jx::output::write_value(out, &v, config).ok();
     });
+    // Check for uncaught runtime errors
+    if let Some(err) = jx::filter::eval::take_last_error() {
+        *had_error = true;
+        let msg = format_error(&err);
+        eprintln!("jx: error: {msg}");
+    }
+}
+
+/// Format an error value for display on stderr.
+fn format_error(err: &jx::value::Value) -> String {
+    match err {
+        jx::value::Value::String(s) => s.clone(),
+        other => other.short_desc(),
+    }
 }
 
 /// Try the passthrough fast path on a padded buffer.
@@ -344,6 +417,7 @@ fn process_file(
     ctx: &ProcessCtx,
     out: &mut impl Write,
     had_output: &mut bool,
+    had_error: &mut bool,
 ) -> Result<()> {
     let t0 = Instant::now();
     let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
@@ -408,6 +482,13 @@ fn process_file(
         });
         let t_eval = t2.elapsed();
 
+        // Check for uncaught runtime errors from the debug-timing eval path
+        if let Some(err) = jx::filter::eval::take_last_error() {
+            *had_error = true;
+            let msg = format_error(&err);
+            eprintln!("jx: error: {msg}");
+        }
+
         let t3 = Instant::now();
         for v in &values {
             *had_output = true;
@@ -426,7 +507,7 @@ fn process_file(
         print_timing_total(total, mb);
     } else {
         process_padded(
-            &padded, json_len, ctx.filter, ctx.env, out, ctx.config, had_output,
+            &padded, json_len, ctx.filter, ctx.env, out, ctx.config, had_output, had_error,
         )?;
     }
 
@@ -439,6 +520,7 @@ fn process_file(
 
 /// Process --raw-input text: each line becomes a Value::String.
 /// If slurp is true, collect all lines into an array.
+#[allow(clippy::too_many_arguments)]
 fn process_raw_input(
     text: &str,
     slurp: bool,
@@ -447,6 +529,7 @@ fn process_raw_input(
     out: &mut impl Write,
     config: &jx::output::OutputConfig,
     had_output: &mut bool,
+    had_error: &mut bool,
 ) -> Result<()> {
     if slurp {
         let arr: Vec<jx::value::Value> = text
@@ -454,16 +537,17 @@ fn process_raw_input(
             .map(|l| jx::value::Value::String(l.to_string()))
             .collect();
         let input = jx::value::Value::Array(Rc::new(arr));
-        eval_and_output(filter, &input, env, out, config, had_output);
+        eval_and_output(filter, &input, env, out, config, had_output, had_error);
     } else {
         for line in text.lines() {
             let input = jx::value::Value::String(line.to_string());
-            eval_and_output(filter, &input, env, out, config, had_output);
+            eval_and_output(filter, &input, env, out, config, had_output, had_error);
         }
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_padded(
     padded: &[u8],
     json_len: usize,
@@ -472,10 +556,11 @@ fn process_padded(
     out: &mut impl Write,
     config: &jx::output::OutputConfig,
     had_output: &mut bool,
+    had_error: &mut bool,
 ) -> Result<()> {
     let input =
         jx::simdjson::dom_parse_to_value(padded, json_len).context("failed to parse JSON")?;
-    eval_and_output(filter, &input, env, out, config, had_output);
+    eval_and_output(filter, &input, env, out, config, had_output, had_error);
     Ok(())
 }
 

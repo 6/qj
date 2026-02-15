@@ -1,10 +1,11 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
 
-use super::super::eval::{LAST_ERROR, eval};
+use super::super::eval::eval;
 use super::super::value_ops::{
     del_path, enum_leaf_paths, enum_paths, path_of, set_path, values_order,
 };
+use super::set_error;
 
 pub(super) fn eval_paths(
     name: &str,
@@ -52,7 +53,7 @@ pub(super) fn eval_paths(
                     match set_path(input, &path_arr, &val) {
                         Ok(v) => output(v),
                         Err(msg) => {
-                            LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+                            set_error(msg);
                         }
                     }
                 }
@@ -83,11 +84,7 @@ pub(super) fn eval_paths(
                     }
                     output(current);
                 } else {
-                    LAST_ERROR.with(|e| {
-                        *e.borrow_mut() = Some(Value::String(
-                            "Paths must be specified as an array".to_string(),
-                        ));
-                    });
+                    set_error("Paths must be specified as an array".to_string());
                 }
             }
         }

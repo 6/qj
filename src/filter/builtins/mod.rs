@@ -12,6 +12,11 @@ mod types;
 use crate::filter::{Env, Filter};
 use crate::value::Value;
 
+/// Set a runtime error value. Shared helper for all builtin modules.
+pub(super) fn set_error(msg: String) {
+    super::eval::LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+}
+
 pub(super) fn eval_builtin(
     name: &str,
     args: &[Filter],

@@ -85,6 +85,60 @@ fn jx_raw(filter: &str, input: &str) -> String {
     String::from_utf8(output.stdout).expect("jx output was not valid UTF-8")
 }
 
+/// Run jx with custom args and return (exit_code, stdout, stderr).
+fn jx_exit(args: &[&str], input: &str) -> (i32, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+/// Run jx and return (exit_success, stdout, stderr).
+fn jx_result(filter: &str, input: &str) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+        .args(["-c", filter])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jx");
+
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
 // --- Identity ---
 
 #[test]
@@ -406,9 +460,17 @@ fn passthrough_field_compact_nested_missing() {
 
 #[test]
 fn passthrough_field_compact_non_object() {
-    // .field on a non-object produces an error (no output), matching jq behavior.
-    let out = jx_compact(".x", "[1,2,3]");
-    assert!(out.trim().is_empty(), "expected no output, got: {out}");
+    // .field on a non-object produces an error (no output) and exit code 5.
+    let (ok, stdout, stderr) = jx_result(".x", "[1,2,3]");
+    assert!(!ok, "expected non-zero exit for .x on array");
+    assert!(
+        stdout.trim().is_empty(),
+        "expected no output, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("Cannot index array"),
+        "expected error message, got: {stderr}"
+    );
 }
 
 #[test]
@@ -1219,9 +1281,17 @@ fn null_iteration_no_output() {
 
 #[test]
 fn field_on_array_produces_error() {
-    // .field on an array produces an error (no output), matching jq behavior
-    let out = jx_compact(".x", "[1,2]");
-    assert!(out.trim().is_empty(), "expected no output, got: {out}");
+    // .field on an array produces an error (no output) and exit code 5
+    let (ok, stdout, stderr) = jx_result(".x", "[1,2]");
+    assert!(!ok, "expected non-zero exit for .x on array");
+    assert!(
+        stdout.trim().is_empty(),
+        "expected no output, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("Cannot index array"),
+        "expected error message, got: {stderr}"
+    );
 }
 
 // --- Edge cases: Index out of bounds ---
@@ -3048,4 +3118,191 @@ fn def_recursive_sum() {
         "def sum: if length == 0 then 0 else .[0] + (.[1:] | sum) end; sum",
         "[1,2,3,4,5]",
     );
+}
+
+// --- Robustness / safety tests ---
+
+#[test]
+fn robustness_setpath_huge_index_rejected() {
+    // setpath with a huge index should produce no output (error), not OOM.
+    let (ok, stdout, stderr) = jx_result("null | setpath([9999999]; 1)", "null");
+    assert!(!ok, "expected non-zero exit for huge setpath");
+    assert!(
+        stdout.trim().is_empty(),
+        "huge setpath should produce no output, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("Array index too large"),
+        "expected error message, got: {stderr}"
+    );
+}
+
+#[test]
+fn robustness_deeply_nested_parens_rejected() {
+    // Parser should reject excessively deep nesting (80 parens → ~160 depth > 128 limit)
+    let deep = "(".repeat(80) + "." + &")".repeat(80);
+    let (ok, _stdout, stderr) = jx_result(&deep, "null");
+    assert!(!ok, "should fail for deep nesting");
+    assert!(
+        stderr.contains("too deeply nested"),
+        "unexpected error: {stderr}"
+    );
+}
+
+#[test]
+fn robustness_fromjson_single_quote_safe() {
+    // fromjson with single-quote input should produce no output (error), not panic.
+    // Wrap in try-catch to capture the error message.
+    let out = jx_compact(r#"("'" | fromjson) // "caught_error""#, "null");
+    // Should get the alternative value since fromjson failed
+    assert_eq!(out.trim(), r#""caught_error""#);
+}
+
+#[test]
+fn robustness_fromjson_multibyte_truncation_safe() {
+    // fromjson with long multi-byte string should not panic on truncation.
+    // 50 copies of é (2 bytes each) = 100 bytes; truncation to 40 must be char-safe.
+    // We use try-catch so we can confirm it produces an error rather than crashing.
+    let long_str = "é".repeat(50);
+    let filter = format!(r#"("{}" | fromjson) // "safe_fallback""#, long_str);
+    let out = jx_compact(&filter, "null");
+    // Should get the fallback since fromjson on gibberish fails
+    assert_eq!(out.trim(), r#""safe_fallback""#);
+}
+
+#[test]
+fn robustness_no_stale_error_leakage() {
+    // An error in one expression should not leak into a subsequent try
+    let out = jx_compact(r#"(try error catch "caught") | . + " ok""#, "null");
+    assert_eq!(out.trim(), r#""caught ok""#);
+}
+
+// --- Exit code tests ---
+
+#[test]
+fn exit_code_0_on_success() {
+    let (code, stdout, _stderr) = jx_exit(&["-c", "."], r#"{"a":1}"#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#"{"a":1}"#);
+}
+
+#[test]
+fn exit_code_5_on_runtime_error() {
+    // error("boom") should produce exit code 5 and print message to stderr
+    let (code, stdout, stderr) = jx_exit(&["-c", r#"error("boom")"#], "null");
+    assert_eq!(code, 5, "expected exit code 5, got {code}");
+    assert!(
+        stdout.trim().is_empty(),
+        "expected no stdout, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("boom"),
+        "expected error message on stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn exit_code_5_on_type_error() {
+    // .foo on a number should produce exit code 5
+    let (code, _stdout, stderr) = jx_exit(&["-c", ".foo"], "42");
+    assert_eq!(code, 5, "expected exit code 5, got {code}");
+    assert!(
+        stderr.contains("Cannot index"),
+        "expected type error on stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn exit_code_4_on_no_output_with_e_flag() {
+    // -e flag with no output should produce exit code 4
+    let (code, stdout, _stderr) = jx_exit(&["-e", "-c", "empty"], "null");
+    assert_eq!(code, 4, "expected exit code 4, got {code}");
+    assert!(stdout.trim().is_empty());
+}
+
+#[test]
+fn exit_code_0_on_output_with_e_flag() {
+    // -e flag with output should produce exit code 0
+    let (code, stdout, _stderr) = jx_exit(&["-e", "-c", "."], "42");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "42");
+}
+
+#[test]
+fn exit_code_5_error_builtin_bare() {
+    // bare error (no message) uses the input as the error value
+    let (code, _stdout, stderr) = jx_exit(&["-c", "error"], r#""my error""#);
+    assert_eq!(code, 5, "expected exit code 5, got {code}");
+    assert!(
+        stderr.contains("my error"),
+        "expected error value on stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn exit_code_0_when_error_caught_by_try() {
+    // error caught by try should exit 0
+    let (code, stdout, _stderr) = jx_exit(&["-c", r#"try error("boom")"#], "null");
+    assert_eq!(code, 0, "expected exit code 0 when error is caught");
+    assert!(stdout.trim().is_empty()); // try suppresses both error and output
+}
+
+#[test]
+fn exit_code_0_when_error_caught_by_try_catch() {
+    // error caught by try-catch should exit 0 and output the catch handler result
+    let (code, stdout, _stderr) = jx_exit(&["-c", r#"try error("boom") catch ."#], "null");
+    assert_eq!(code, 0, "expected exit code 0 when error is caught");
+    assert_eq!(stdout.trim(), r#""boom""#);
+}
+
+#[test]
+fn exit_code_5_precedes_exit_code_4() {
+    // When both an error and -e no-output apply, error (exit 5) takes precedence
+    let (code, _stdout, stderr) = jx_exit(&["-e", "-c", r#"error("x")"#], "null");
+    assert_eq!(code, 5, "error exit code should take precedence over -e");
+    assert!(stderr.contains("x"));
+}
+
+// --- --from-file tests ---
+
+#[test]
+fn from_file_basic() {
+    // Write a filter to a temp file and use -f to read it
+    let dir = std::env::temp_dir();
+    let filter_path = dir.join("jx_test_filter.jq");
+    std::fs::write(&filter_path, ".a + .b").unwrap();
+
+    let (code, stdout, _stderr) = jx_exit(
+        &["-c", "-f", filter_path.to_str().unwrap()],
+        r#"{"a":1,"b":2}"#,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "3");
+
+    std::fs::remove_file(&filter_path).ok();
+}
+
+#[test]
+fn from_file_with_input_file() {
+    // -f filter_file input_file
+    let dir = std::env::temp_dir();
+    let filter_path = dir.join("jx_test_filter2.jq");
+    let input_path = dir.join("jx_test_input2.json");
+    std::fs::write(&filter_path, ".name").unwrap();
+    std::fs::write(&input_path, r#"{"name":"alice"}"#).unwrap();
+
+    let (code, stdout, _stderr) = jx_exit(
+        &[
+            "-c",
+            "-f",
+            filter_path.to_str().unwrap(),
+            input_path.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#""alice""#);
+
+    std::fs::remove_file(&filter_path).ok();
+    std::fs::remove_file(&input_path).ok();
 }

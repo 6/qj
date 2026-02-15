@@ -19,14 +19,36 @@ use super::{ArithOp, AssignOp, BoolOp, CmpOp, Filter, ObjKey, Pattern, PatternKe
 use crate::value::Value;
 use std::rc::Rc;
 
+/// Maximum nesting depth for recursive descent parsing.
+/// Each parenthesized expression adds ~2 to depth (parse_pipe + parse_primary),
+/// so 128 allows ~64 levels of explicit nesting — plenty for real-world filters.
+const MAX_PARSE_DEPTH: usize = 128;
+
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    fn enter_depth(&mut self) -> Result<()> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            bail!("Expression too deeply nested (depth > {MAX_PARSE_DEPTH})");
+        }
+        Ok(())
+    }
+
+    fn leave_depth(&mut self) {
+        self.depth -= 1;
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -56,9 +78,13 @@ impl<'a> Parser<'a> {
 
     // pipe = def | comma ("|" comma)*
     fn parse_pipe(&mut self) -> Result<Filter> {
+        self.enter_depth()?;
+
         // Check for `def` at the start of a pipe expression
         if self.peek() == Some(&Token::Def) {
-            return self.parse_def();
+            let result = self.parse_def();
+            self.leave_depth();
+            return result;
         }
 
         let mut left = self.parse_comma()?;
@@ -68,6 +94,7 @@ impl<'a> Parser<'a> {
             let right = self.parse_comma()?;
             left = Filter::Pipe(Box::new(left), Box::new(right));
         }
+        self.leave_depth();
         Ok(left)
     }
 
@@ -474,6 +501,13 @@ impl<'a> Parser<'a> {
     // primary = "." (ident | "[" ... ) | literal | "(" expr ")" | "[" expr "]"
     //         | "{" obj "}" | select(...) | ident | if-then-else | "-" primary
     fn parse_primary(&mut self) -> Result<Filter> {
+        self.enter_depth()?;
+        let result = self.parse_primary_inner();
+        self.leave_depth();
+        result
+    }
+
+    fn parse_primary_inner(&mut self) -> Result<Filter> {
         match self.peek() {
             Some(Token::Dot) => {
                 self.advance();
@@ -1565,5 +1599,24 @@ mod tests {
             }
             other => panic!("expected Pipe, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_deeply_nested_parens_rejected() {
+        // 80 levels of explicit parens → ~160 depth (2 per level) → exceeds 128 limit
+        let deep = "(".repeat(80) + "." + &")".repeat(80);
+        let tokens = lexer::lex(&deep).unwrap();
+        let result = parse(&tokens);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("too deeply nested"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_moderate_nesting_ok() {
+        // 20 levels of nesting should be fine (~40 depth)
+        let nested = "(".repeat(20) + "." + &")".repeat(20);
+        let tokens = lexer::lex(&nested).unwrap();
+        assert!(parse(&tokens).is_ok());
     }
 }

@@ -115,8 +115,17 @@ thread_local! {
     static BREAK_SIGNAL: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
+/// Take the last error value, if any, clearing the thread-local state.
+/// Called after evaluation to check for uncaught runtime errors.
+pub fn take_last_error() -> Option<Value> {
+    LAST_ERROR.with(|e| e.borrow_mut().take())
+}
+
 /// Public entry point — creates an empty env for top-level evaluation.
 pub fn eval_filter(filter: &Filter, input: &Value, output: &mut dyn FnMut(Value)) {
+    // Clear stale state from any previous evaluation
+    LAST_ERROR.with(|e| *e.borrow_mut() = None);
+    BREAK_SIGNAL.with(|b| *b.borrow_mut() = None);
     eval(filter, input, &Env::empty(), output);
 }
 
@@ -127,6 +136,9 @@ pub fn eval_filter_with_env(
     env: &Env,
     output: &mut dyn FnMut(Value),
 ) {
+    // Clear stale state from any previous evaluation
+    LAST_ERROR.with(|e| *e.borrow_mut() = None);
+    BREAK_SIGNAL.with(|b| *b.borrow_mut() = None);
     eval(filter, input, env, output);
 }
 
@@ -3518,5 +3530,26 @@ mod tests {
     #[test]
     fn alternative_non_null() {
         assert_eq!(eval_one(&parse("1 // 42"), &Value::Null), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_filter_clears_stale_last_error() {
+        // Deliberately set a stale error
+        LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String("stale".into())));
+        // eval_filter should clear it before evaluating
+        eval_filter(&parse("."), &Value::Int(1), &mut |_| {});
+        let has_error = LAST_ERROR.with(|e| e.borrow().is_some());
+        assert!(!has_error, "LAST_ERROR should be cleared after eval_filter");
+    }
+
+    #[test]
+    fn eval_filter_with_env_clears_stale_error() {
+        LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String("stale".into())));
+        eval_filter_with_env(&parse("."), &Value::Int(1), &Env::empty(), &mut |_| {});
+        let has_error = LAST_ERROR.with(|e| e.borrow().is_some());
+        assert!(
+            !has_error,
+            "LAST_ERROR should be cleared after eval_filter_with_env"
+        );
     }
 }

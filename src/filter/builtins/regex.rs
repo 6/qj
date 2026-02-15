@@ -92,7 +92,7 @@ pub(super) fn eval_regex(
                         });
                     }
                     if let Some(caps) = re.captures(s) {
-                        let m = caps.get(0).unwrap();
+                        let m = caps.get(0).expect("regex capture group 0 always exists");
                         let mut result = String::with_capacity(s.len());
                         result.push_str(&s[..m.start()]);
                         result.push_str(&repl_str);
@@ -111,7 +111,7 @@ pub(super) fn eval_regex(
                     let mut result = String::with_capacity(s.len());
                     let mut last_end = 0;
                     for caps in re.captures_iter(s) {
-                        let m = caps.get(0).unwrap();
+                        let m = caps.get(0).expect("regex capture group 0 always exists");
                         result.push_str(&s[last_end..m.start()]);
                         let mut repl_str = String::new();
                         if let Some(repl_f) = args.get(1) {
@@ -241,7 +241,7 @@ fn eval_sub_pattern_flags(
 
 /// Build a jq-compatible match result object from a regex::Captures.
 fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -> Value {
-    let m = caps.get(0).unwrap();
+    let m = caps.get(0).expect("regex capture group 0 always exists");
     let mut captures = Vec::new();
     for (i, name) in re.capture_names().enumerate() {
         if i == 0 {
