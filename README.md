@@ -47,8 +47,9 @@ Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/res
 ## How it works
 
 - **SIMD parsing.** C++ simdjson (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
-- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output.
-- **Fast-path passthrough.** Identity compact uses `simdjson::minify()` at ~10 GB/s, bypassing the value tree entirely.
+- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. On Apple Silicon, uses only performance cores to avoid E-core contention.
+- **Zero-copy I/O.** mmap — no heap allocation or memcpy for the input file.
+- **On-demand extraction.** Common patterns like `.field` and `.field.nested.path` extract raw bytes directly from simdjson's DOM, bypassing Rust value tree construction entirely.
 
 ## Compatibility
 
