@@ -720,8 +720,22 @@ fn process_file(
 
     if ctx.debug_timing {
         let t1 = Instant::now();
-        let input =
-            qj::simdjson::dom_parse_to_value(&padded, json_len).context("failed to parse JSON")?;
+        let input = match qj::simdjson::dom_parse_to_value(&padded, json_len) {
+            Ok(v) => v,
+            Err(e)
+                if e.to_string().contains(&format!(
+                    "simdjson error code {}",
+                    qj::simdjson::SIMDJSON_CAPACITY
+                )) =>
+            {
+                let text = std::str::from_utf8(&padded[..json_len])
+                    .context("file is not valid UTF-8 (serde_json fallback)")?;
+                let serde_val: serde_json::Value = serde_json::from_str(text)
+                    .context("failed to parse JSON (serde_json fallback for >4GB file)")?;
+                qj::value::Value::from(serde_val)
+            }
+            Err(e) => return Err(e).context("failed to parse JSON"),
+        };
         let t_parse = t1.elapsed();
 
         let t2 = Instant::now();
@@ -809,8 +823,23 @@ fn process_padded(
     had_output: &mut bool,
     had_error: &mut bool,
 ) -> Result<()> {
-    let input =
-        qj::simdjson::dom_parse_to_value(padded, json_len).context("failed to parse JSON")?;
+    let input = match qj::simdjson::dom_parse_to_value(padded, json_len) {
+        Ok(v) => v,
+        Err(e)
+            if e.to_string().contains(&format!(
+                "simdjson error code {}",
+                qj::simdjson::SIMDJSON_CAPACITY
+            )) =>
+        {
+            // simdjson CAPACITY limit (~4GB) — fall back to serde_json
+            let text = std::str::from_utf8(&padded[..json_len])
+                .context("file is not valid UTF-8 (serde_json fallback)")?;
+            let serde_val: serde_json::Value = serde_json::from_str(text)
+                .context("failed to parse JSON (serde_json fallback for >4GB file)")?;
+            qj::value::Value::from(serde_val)
+        }
+        Err(e) => return Err(e).context("failed to parse JSON"),
+    };
     eval_and_output(filter, &input, env, out, config, had_output, had_error);
     Ok(())
 }

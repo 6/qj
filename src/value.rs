@@ -96,6 +96,29 @@ impl Value {
     }
 }
 
+impl From<serde_json::Value> for Value {
+    fn from(v: serde_json::Value) -> Self {
+        match v {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else {
+                    Value::Double(n.as_f64().unwrap_or(0.0), None)
+                }
+            }
+            serde_json::Value::String(s) => Value::String(s),
+            serde_json::Value::Array(a) => {
+                Value::Array(Rc::new(a.into_iter().map(Value::from).collect()))
+            }
+            serde_json::Value::Object(o) => Value::Object(Rc::new(
+                o.into_iter().map(|(k, v)| (k, Value::from(v))).collect(),
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

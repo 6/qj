@@ -9,6 +9,9 @@ use crate::value::Value;
 use super::ffi::*;
 use super::types::{check, padding};
 
+/// simdjson CAPACITY error code — returned when input exceeds ~4GB single-document limit.
+pub const SIMDJSON_CAPACITY: i32 = 1;
+
 // Token tags (must match bridge.cpp)
 const TAG_NULL: u8 = 0;
 const TAG_BOOL: u8 = 1;

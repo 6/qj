@@ -33,6 +33,19 @@ pub fn collect_values_from_buf(
         let padded = crate::simdjson::pad_buffer(buf);
         match crate::simdjson::dom_parse_to_value(&padded, json_len) {
             Ok(val) => values.push(val),
+            Err(e)
+                if e.to_string().contains(&format!(
+                    "simdjson error code {}",
+                    crate::simdjson::SIMDJSON_CAPACITY
+                )) =>
+            {
+                // simdjson CAPACITY limit (~4GB) — fall back to serde_json
+                let text = std::str::from_utf8(buf)
+                    .context("input is not valid UTF-8 (serde_json fallback)")?;
+                let serde_val: serde_json::Value = serde_json::from_str(text)
+                    .context("failed to parse JSON (serde_json fallback for >4GB input)")?;
+                values.push(Value::from(serde_val));
+            }
             Err(_) if memchr::memchr(b'\n', buf).is_some() => {
                 // Single-doc parse failed but buffer has newlines — try line-by-line
                 parse_lines(buf, values)?;

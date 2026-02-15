@@ -339,6 +339,28 @@ fn format_throughput(bytes: u64, seconds: f64) -> String {
     }
 }
 
+/// Format a result value as time string, appending `*` if any runs had non-zero exit codes.
+fn format_result(val: Option<&ResultValue>) -> String {
+    match val {
+        Some(&(seconds, failed)) => {
+            let t = format_time(seconds);
+            if failed { format!("{t}*") } else { t }
+        }
+        None => "-".to_string(),
+    }
+}
+
+/// Format a throughput value, appending `*` if any runs had non-zero exit codes.
+fn format_throughput_result(val: Option<&ResultValue>, bytes: u64) -> String {
+    match val {
+        Some(&(seconds, failed)) => {
+            let t = format_throughput(bytes, seconds);
+            if failed { format!("{t}*") } else { t }
+        }
+        None => "-".to_string(),
+    }
+}
+
 /// Geometric mean of jq_time/tool_time ratios.
 fn geomean_ratio(pairs: &[(f64, f64)]) -> Option<f64> {
     let valid: Vec<_> = pairs.iter().filter(|(a, b)| *a > 0.0 && *b > 0.0).collect();
@@ -362,8 +384,10 @@ fn filter_display(filter: &BenchFilter) -> String {
 
 // --- Result storage ---
 
+/// (median_seconds, had_nonzero_exit_code)
+type ResultValue = (f64, bool);
 type ResultKey = (String, String, String); // (filter_key, file, tool)
-type Results = HashMap<ResultKey, f64>;
+type Results = HashMap<ResultKey, ResultValue>;
 
 fn result_key(filter_key: &str, file: &str, tool: &str) -> ResultKey {
     (filter_key.into(), file.into(), tool.into())
@@ -444,12 +468,15 @@ fn run_benchmarks(
             }
             eprintln!();
 
-            // Parse median times from hyperfine JSON output
+            // Parse median times and exit codes from hyperfine JSON output
             let json_content = fs::read_to_string(&json_file).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&json_content).unwrap();
             for (t, tool_name) in cmd_tools.iter().enumerate() {
                 if let Some(median) = parsed["results"][t]["median"].as_f64() {
-                    results.insert(result_key(&filter_key, file, tool_name), median);
+                    let failed = parsed["results"][t]["exit_codes"]
+                        .as_array()
+                        .is_some_and(|codes| codes.iter().any(|c| c.as_i64() != Some(0)));
+                    results.insert(result_key(&filter_key, file, tool_name), (median, failed));
                 }
             }
 
@@ -512,6 +539,7 @@ fn generate_markdown(
     writeln!(md, "{separator}").unwrap();
 
     // JSON results
+    let mut has_failures = false;
     for file in json_files {
         for (i, filter) in JSON_FILTERS.iter().enumerate() {
             let filter_key = format!("json_{i}");
@@ -519,9 +547,10 @@ fn generate_markdown(
             let mut row = format!("| `{display}` | {file} |");
             for tool in tools {
                 let val = results.get(&result_key(&filter_key, file, &tool.name));
-                let formatted = val
-                    .map(|v| format_time(*v))
-                    .unwrap_or_else(|| "-".to_string());
+                if val.is_some_and(|v| v.1) {
+                    has_failures = true;
+                }
+                let formatted = format_result(val);
                 if tool.name == "qj" {
                     write!(row, " **{formatted}** |").unwrap();
                 } else {
@@ -553,9 +582,10 @@ fn generate_markdown(
                 let mut row = format!("| `{display}` | {file} |");
                 for tool in tools {
                     let val = results.get(&result_key(&filter_key, file, &tool.name));
-                    let formatted = val
-                        .map(|v| format_time(*v))
-                        .unwrap_or_else(|| "-".to_string());
+                    if val.is_some_and(|v| v.1) {
+                        has_failures = true;
+                    }
+                    let formatted = format_result(val);
                     if tool.name == "qj" {
                         write!(row, " **{formatted}** |").unwrap();
                     } else {
@@ -588,9 +618,10 @@ fn generate_markdown(
                 let mut row = format!("| `{display}` | {file} |");
                 for tool in tools {
                     let val = results.get(&result_key(&filter_key, file, &tool.name));
-                    let formatted = val
-                        .map(|v| format_time(*v))
-                        .unwrap_or_else(|| "-".to_string());
+                    if val.is_some_and(|v| v.1) {
+                        has_failures = true;
+                    }
+                    let formatted = format_result(val);
                     if tool.name == "qj" {
                         write!(row, " **{formatted}** |").unwrap();
                     } else {
@@ -623,9 +654,10 @@ fn generate_markdown(
                 let mut row = format!("| `{display}` | {file} |");
                 for tool in tools {
                     let val = results.get(&result_key(&filter_key, file, &tool.name));
-                    let formatted = val
-                        .map(|v| format_time(*v))
-                        .unwrap_or_else(|| "-".to_string());
+                    if val.is_some_and(|v| v.1) {
+                        has_failures = true;
+                    }
+                    let formatted = format_result(val);
                     if tool.name == "qj" {
                         write!(row, " **{formatted}** |").unwrap();
                     } else {
@@ -663,9 +695,10 @@ fn generate_markdown(
         let mut tp_row = String::from("|");
         for tool in tools {
             let val = results.get(&result_key("json_0", largest_file, &tool.name));
-            let tp = val
-                .map(|v| format_throughput(largest_bytes, *v))
-                .unwrap_or_else(|| "-".to_string());
+            if val.is_some_and(|v| v.1) {
+                has_failures = true;
+            }
+            let tp = format_throughput_result(val, largest_bytes);
             if tool.name == "qj" {
                 write!(tp_header, " **{}** |", tool.name).unwrap();
                 write!(tp_row, " **{tp}** |").unwrap();
@@ -704,9 +737,10 @@ fn generate_markdown(
             let mut tp_row = String::from("|");
             for tool in tools {
                 let val = results.get(&result_key("gha_json_0", gha_file, &tool.name));
-                let tp = val
-                    .map(|v| format_throughput(gha_bytes, *v))
-                    .unwrap_or_else(|| "-".to_string());
+                if val.is_some_and(|v| v.1) {
+                    has_failures = true;
+                }
+                let tp = format_throughput_result(val, gha_bytes);
                 if tool.name == "qj" {
                     write!(tp_header, " **{}** |", tool.name).unwrap();
                     write!(tp_row, " **{tp}** |").unwrap();
@@ -755,8 +789,8 @@ fn generate_markdown(
             .enumerate()
             .filter_map(|(i, _)| {
                 let key = format!("json_{i}");
-                let jq_val = *results.get(&result_key(&key, json_file, "jq"))?;
-                let tool_val = *results.get(&result_key(&key, json_file, &tool.name))?;
+                let jq_val = results.get(&result_key(&key, json_file, "jq"))?.0;
+                let tool_val = results.get(&result_key(&key, json_file, &tool.name))?.0;
                 Some((jq_val, tool_val))
             })
             .collect();
@@ -784,8 +818,8 @@ fn generate_markdown(
                 .enumerate()
                 .filter_map(|(i, _)| {
                     let key = format!("ndjson_{i}");
-                    let jq_val = *results.get(&result_key(&key, ndjson_file, "jq"))?;
-                    let tool_val = *results.get(&result_key(&key, ndjson_file, &tool.name))?;
+                    let jq_val = results.get(&result_key(&key, ndjson_file, "jq"))?.0;
+                    let tool_val = results.get(&result_key(&key, ndjson_file, &tool.name))?.0;
                     Some((jq_val, tool_val))
                 })
                 .collect();
@@ -814,8 +848,10 @@ fn generate_markdown(
                 .enumerate()
                 .filter_map(|(i, _)| {
                     let key = format!("gha_ndjson_{i}");
-                    let jq_val = *results.get(&result_key(&key, gha_ndjson_file, "jq"))?;
-                    let tool_val = *results.get(&result_key(&key, gha_ndjson_file, &tool.name))?;
+                    let jq_val = results.get(&result_key(&key, gha_ndjson_file, "jq"))?.0;
+                    let tool_val = results
+                        .get(&result_key(&key, gha_ndjson_file, &tool.name))?
+                        .0;
                     Some((jq_val, tool_val))
                 })
                 .collect();
@@ -844,8 +880,8 @@ fn generate_markdown(
                 .enumerate()
                 .filter_map(|(i, _)| {
                     let key = format!("gha_json_{i}");
-                    let jq_val = *results.get(&result_key(&key, gha_json_file, "jq"))?;
-                    let tool_val = *results.get(&result_key(&key, gha_json_file, &tool.name))?;
+                    let jq_val = results.get(&result_key(&key, gha_json_file, "jq"))?.0;
+                    let tool_val = results.get(&result_key(&key, gha_json_file, &tool.name))?.0;
                     Some((jq_val, tool_val))
                 })
                 .collect();
@@ -867,6 +903,15 @@ fn generate_markdown(
         "Geometric mean of per-filter speedups (median time). Higher is better."
     )
     .unwrap();
+
+    if has_failures {
+        writeln!(md).unwrap();
+        writeln!(
+            md,
+            "\\*non-zero exit code (tool crashed or returned an error)"
+        )
+        .unwrap();
+    }
 
     md
 }

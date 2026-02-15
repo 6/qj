@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Quick single-pass benchmark of the large GH Archive dataset across all 4 tools.
-# Uses hyperfine with --runs 1, no warmup. Writes results to benches/results_large_only.md.
+# Benchmark qj/jq/jaq/gojq on large GH Archive datasets at two tiers:
+#   ~1GB tier: gharchive.ndjson + gharchive.json  (2h of 2024-01-15)
+#   ~5GB tier: gharchive_large.ndjson + gharchive_large.json  (24h of 2026-02-01)
+#
+# Features:
+#   - Non-zero exit code detection (appends * to times, with footnote)
+#   - "vs jq" speedup column per tool
+#   - Backend note: qj (simdjson) vs qj (serde_json†) for >4GB JSON
 #
 # Usage:
 #   bash benches/bench_large_only.sh
@@ -10,20 +16,6 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="$DIR/data"
 OUTPUT="$DIR/results_large_only.md"
 RESULTS_DIR="$DIR/.bench_large_tmp"
-
-NDJSON="$DATA/gharchive_large.ndjson"
-JSON="$DATA/gharchive_large.json"
-
-if [ ! -f "$NDJSON" ] || [ ! -f "$JSON" ]; then
-    echo "Error: large GH Archive files not found. Run:"
-    echo "  bash benches/download_gharchive.sh --large"
-    exit 1
-fi
-
-NDJSON_SIZE=$(wc -c < "$NDJSON" | tr -d ' ')
-JSON_SIZE=$(wc -c < "$JSON" | tr -d ' ')
-NDJSON_MB=$(python3 -c "print(f'{$NDJSON_SIZE/1024/1024:.0f}')")
-JSON_MB=$(python3 -c "print(f'{$JSON_SIZE/1024/1024:.0f}')")
 
 # --- Discover tools ---
 QJ="./target/release/qj"
@@ -46,11 +38,36 @@ for tool in jq jaq gojq; do
 done
 
 echo "Tools: ${NAMES[*]}"
-echo "NDJSON: $NDJSON (${NDJSON_MB}MB)"
-echo "JSON:   $JSON (${JSON_MB}MB)"
 echo ""
 
 mkdir -p "$RESULTS_DIR"
+
+# --- Tiers ---
+# Each tier: label, ndjson_file, json_file
+declare -a TIER_LABELS=()
+declare -a TIER_NDJSON=()
+declare -a TIER_JSON=()
+
+# ~1GB tier
+if [ -f "$DATA/gharchive.ndjson" ] && [ -f "$DATA/gharchive.json" ]; then
+    TIER_LABELS+=("~1GB")
+    TIER_NDJSON+=("$DATA/gharchive.ndjson")
+    TIER_JSON+=("$DATA/gharchive.json")
+fi
+
+# ~5GB tier
+if [ -f "$DATA/gharchive_large.ndjson" ] && [ -f "$DATA/gharchive_large.json" ]; then
+    TIER_LABELS+=("~5GB")
+    TIER_NDJSON+=("$DATA/gharchive_large.ndjson")
+    TIER_JSON+=("$DATA/gharchive_large.json")
+fi
+
+if [ ${#TIER_LABELS[@]} -eq 0 ]; then
+    echo "Error: no GH Archive files found. Run one of:"
+    echo "  bash benches/download_gharchive.sh          # ~1GB tier"
+    echo "  bash benches/download_gharchive.sh --large   # ~5GB tier"
+    exit 1
+fi
 
 # --- Filters (2 per format) ---
 NDJSON_FILTER_NAMES=("passthrough" "select + construct")
@@ -77,7 +94,7 @@ run_filter() {
 
     local json_out="$RESULTS_DIR/${section}_${idx}.json"
 
-    local hyp_args=(hyperfine --warmup 0 --runs 3 --ignore-failure --export-json "$json_out")
+    local hyp_args=(caffeinate -dims hyperfine --warmup 0 --runs 2 --ignore-failure --export-json "$json_out")
     for t in "${!TOOLS[@]}"; do
         local cmd="${TOOLS[$t]} $flags '$expr' '$file'"
         hyp_args+=("$cmd")
@@ -87,8 +104,9 @@ run_filter() {
     echo ""
 }
 
-# --- Parse median from hyperfine JSON ---
-parse_median() {
+# --- Parse median and exit code status from hyperfine JSON ---
+# Returns "median,failed" where failed is "1" or "0"
+parse_result() {
     local json_file="$1"
     local tool_idx="$2"
     python3 -c "
@@ -98,9 +116,12 @@ with open('$json_file') as f:
 results = data.get('results', [])
 idx = $tool_idx
 if idx < len(results):
-    print(f'{results[idx][\"median\"]:.4f}')
+    median = results[idx]['median']
+    exit_codes = results[idx].get('exit_codes', [0])
+    failed = 1 if any(c != 0 for c in exit_codes) else 0
+    print(f'{median:.4f},{failed}')
 else:
-    print('0')
+    print('0,0')
 "
 }
 
@@ -116,107 +137,244 @@ else:
 "
 }
 
+format_speedup() {
+    python3 -c "
+jq_time = $1
+tool_time = $2
+if tool_time > 0 and jq_time > 0:
+    ratio = jq_time / tool_time
+    print(f'{ratio:.1f}x')
+else:
+    print('-')
+"
+}
+
 PLATFORM=$(uname -ms)
 DATE=$(date +%Y-%m-%d)
 
-# --- Run benchmarks ---
-echo "=== NDJSON benchmarks (gharchive_large.ndjson, ${NDJSON_MB}MB) ==="
-echo ""
-for i in "${!NDJSON_FILTER_NAMES[@]}"; do
-    echo "--- ${NDJSON_FILTER_NAMES[$i]} ---"
-    run_filter "ndjson" "$i" "${NDJSON_FILTER_FLAGS[$i]}" "${NDJSON_FILTER_EXPRS[$i]}" "$NDJSON"
-done
+# --- Run all benchmarks ---
+for tier_idx in "${!TIER_LABELS[@]}"; do
+    tier="${TIER_LABELS[$tier_idx]}"
+    ndjson="${TIER_NDJSON[$tier_idx]}"
+    json="${TIER_JSON[$tier_idx]}"
 
-echo "=== JSON benchmarks (gharchive_large.json, ${JSON_MB}MB) ==="
-echo ""
-for i in "${!JSON_FILTER_NAMES[@]}"; do
-    echo "--- ${JSON_FILTER_NAMES[$i]} ---"
-    run_filter "json" "$i" "${JSON_FILTER_FLAGS[$i]}" "${JSON_FILTER_EXPRS[$i]}" "$JSON"
+    ndjson_size=$(wc -c < "$ndjson" | tr -d ' ')
+    json_size=$(wc -c < "$json" | tr -d ' ')
+    ndjson_mb=$(python3 -c "print(f'{$ndjson_size/1024/1024:.0f}')")
+    json_mb=$(python3 -c "print(f'{$json_size/1024/1024:.0f}')")
+    ndjson_basename=$(basename "$ndjson")
+    json_basename=$(basename "$json")
+
+    echo "=== Tier $tier: NDJSON ($ndjson_basename, ${ndjson_mb}MB) ==="
+    echo ""
+    for i in "${!NDJSON_FILTER_NAMES[@]}"; do
+        echo "--- ${NDJSON_FILTER_NAMES[$i]} ---"
+        run_filter "tier${tier_idx}_ndjson" "$i" "${NDJSON_FILTER_FLAGS[$i]}" "${NDJSON_FILTER_EXPRS[$i]}" "$ndjson"
+    done
+
+    echo "=== Tier $tier: JSON ($json_basename, ${json_mb}MB) ==="
+    echo ""
+    for i in "${!JSON_FILTER_NAMES[@]}"; do
+        echo "--- ${JSON_FILTER_NAMES[$i]} ---"
+        run_filter "tier${tier_idx}_json" "$i" "${JSON_FILTER_FLAGS[$i]}" "${JSON_FILTER_EXPRS[$i]}" "$json"
+    done
 done
 
 # --- Generate markdown ---
-HEADER="| Filter | File |"
-SEP="|--------|------|"
-for name in "${NAMES[@]}"; do
-    HEADER+=" $name |"
-    SEP+="------|"
-done
+# Track whether we need the exit-code footnote
+HAS_FAILURES=0
+# 4GB threshold in bytes
+FOUR_GB=$((4 * 1024 * 1024 * 1024))
 
 {
     echo "# Large GH Archive Benchmark"
     echo ""
-    echo "> Benchmark on gharchive_large (24h of 2026-02-01, ${NDJSON_MB}MB)."
     echo "> Generated: $DATE on \`$PLATFORM\`"
-    echo "> 3 runs, no warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
+    echo "> 2 runs, no warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
     echo ""
 
-    echo "### NDJSON (${NDJSON_MB}MB, parallel processing)"
-    echo ""
-    echo "$HEADER"
-    echo "$SEP"
-    for i in "${!NDJSON_FILTER_NAMES[@]}"; do
-        flags="${NDJSON_FILTER_FLAGS[$i]}"
-        expr="${NDJSON_FILTER_EXPRS[$i]}"
-        display="$flags '$expr'"
-        row="| \`$display\` | gharchive_large.ndjson |"
-        json_file="$RESULTS_DIR/ndjson_${i}.json"
-        for t in "${!TOOLS[@]}"; do
-            median=$(parse_median "$json_file" "$t")
-            formatted=$(format_time "$median")
-            if [ "${NAMES[$t]}" = "qj" ]; then
-                row+=" **$formatted** |"
+    for tier_idx in "${!TIER_LABELS[@]}"; do
+        tier="${TIER_LABELS[$tier_idx]}"
+        ndjson="${TIER_NDJSON[$tier_idx]}"
+        json="${TIER_JSON[$tier_idx]}"
+
+        ndjson_size=$(wc -c < "$ndjson" | tr -d ' ')
+        json_size=$(wc -c < "$json" | tr -d ' ')
+        ndjson_mb=$(python3 -c "print(f'{$ndjson_size/1024/1024:.0f}')")
+        json_mb=$(python3 -c "print(f'{$json_size/1024/1024:.0f}')")
+        ndjson_basename=$(basename "$ndjson")
+        json_basename=$(basename "$json")
+
+        # Determine qj backend label for JSON tier
+        if [ "$json_size" -gt "$FOUR_GB" ]; then
+            qj_label="qj (serde_json†)"
+            needs_serde_footnote=1
+        else
+            qj_label="qj (simdjson)"
+            needs_serde_footnote=0
+        fi
+
+        echo "## Tier: $tier"
+        echo ""
+
+        # --- NDJSON section ---
+        echo "### NDJSON (${ndjson_basename}, ${ndjson_mb}MB, parallel processing)"
+        echo ""
+
+        # Build header with vs jq columns
+        HEADER="| Filter |"
+        SEP="|--------|"
+        for name in "${NAMES[@]}"; do
+            if [ "$name" = "qj" ]; then
+                HEADER+=" **qj (simdjson)** |"
             else
-                row+=" $formatted |"
+                HEADER+=" $name |"
+            fi
+            SEP+="------:|"
+            if [ "$name" != "jq" ]; then
+                HEADER+=" vs jq |"
+                SEP+="------:|"
             fi
         done
-        echo "$row"
-    done
+        echo "$HEADER"
+        echo "$SEP"
 
-    echo ""
-    echo "### JSON (${JSON_MB}MB, single document)"
-    echo ""
-    echo "$HEADER"
-    echo "$SEP"
-    for i in "${!JSON_FILTER_NAMES[@]}"; do
-        flags="${JSON_FILTER_FLAGS[$i]}"
-        expr="${JSON_FILTER_EXPRS[$i]}"
-        display="$flags '$expr'"
-        row="| \`$display\` | gharchive_large.json |"
-        json_file="$RESULTS_DIR/json_${i}.json"
-        for t in "${!TOOLS[@]}"; do
-            median=$(parse_median "$json_file" "$t")
-            formatted=$(format_time "$median")
-            if [ "${NAMES[$t]}" = "qj" ]; then
-                row+=" **$formatted** |"
-            else
-                row+=" $formatted |"
+        # Find jq index
+        jq_idx=-1
+        for t in "${!NAMES[@]}"; do
+            if [ "${NAMES[$t]}" = "jq" ]; then
+                jq_idx=$t
+                break
             fi
         done
-        echo "$row"
-    done
 
-    # Throughput from passthrough
-    echo ""
-    echo "### Throughput"
-    echo ""
-    echo "Peak throughput (\`-c '.'\`, single pass):"
-    echo ""
-    tp_header="| File |"
-    tp_sep="|------|"
-    for name in "${NAMES[@]}"; do
-        tp_header+=" $name |"
-        tp_sep+="------|"
-    done
-    echo "$tp_header"
-    echo "$tp_sep"
+        for i in "${!NDJSON_FILTER_NAMES[@]}"; do
+            flags="${NDJSON_FILTER_FLAGS[$i]}"
+            expr="${NDJSON_FILTER_EXPRS[$i]}"
+            display="$flags '$expr'"
+            row="| \`$display\` |"
+            json_file="$RESULTS_DIR/tier${tier_idx}_ndjson_${i}.json"
 
-    for section_info in "ndjson:gharchive_large.ndjson:$NDJSON_SIZE" "json:gharchive_large.json:$JSON_SIZE"; do
-        IFS=: read -r section file bytes <<< "$section_info"
-        json_file="$RESULTS_DIR/${section}_0.json"
-        row="| $file |"
-        for t in "${!TOOLS[@]}"; do
-            median=$(parse_median "$json_file" "$t")
-            tp=$(python3 -c "
+            # Get jq median for speedup calculation
+            jq_median=0
+            if [ "$jq_idx" -ge 0 ]; then
+                jq_result=$(parse_result "$json_file" "$jq_idx")
+                jq_median=$(echo "$jq_result" | cut -d, -f1)
+            fi
+
+            for t in "${!TOOLS[@]}"; do
+                result=$(parse_result "$json_file" "$t")
+                median=$(echo "$result" | cut -d, -f1)
+                failed=$(echo "$result" | cut -d, -f2)
+                formatted=$(format_time "$median")
+                if [ "$failed" = "1" ]; then
+                    formatted="${formatted}*"
+                    HAS_FAILURES=1
+                fi
+                if [ "${NAMES[$t]}" = "qj" ]; then
+                    row+=" **$formatted** |"
+                else
+                    row+=" $formatted |"
+                fi
+                # Add vs jq column (skip for jq itself)
+                if [ "${NAMES[$t]}" != "jq" ]; then
+                    speedup=$(format_speedup "$jq_median" "$median")
+                    if [ "${NAMES[$t]}" = "qj" ]; then
+                        row+=" **$speedup** |"
+                    else
+                        row+=" $speedup |"
+                    fi
+                fi
+            done
+            echo "$row"
+        done
+
+        echo ""
+
+        # --- JSON section ---
+        echo "### JSON (${json_basename}, ${json_mb}MB, single document)"
+        echo ""
+
+        # Build header with backend-aware qj label
+        HEADER="| Filter |"
+        SEP="|--------|"
+        for name in "${NAMES[@]}"; do
+            if [ "$name" = "qj" ]; then
+                HEADER+=" **${qj_label}** |"
+            else
+                HEADER+=" $name |"
+            fi
+            SEP+="------:|"
+            if [ "$name" != "jq" ]; then
+                HEADER+=" vs jq |"
+                SEP+="------:|"
+            fi
+        done
+        echo "$HEADER"
+        echo "$SEP"
+
+        for i in "${!JSON_FILTER_NAMES[@]}"; do
+            flags="${JSON_FILTER_FLAGS[$i]}"
+            expr="${JSON_FILTER_EXPRS[$i]}"
+            display="$flags '$expr'"
+            row="| \`$display\` |"
+            json_file="$RESULTS_DIR/tier${tier_idx}_json_${i}.json"
+
+            jq_median=0
+            if [ "$jq_idx" -ge 0 ]; then
+                jq_result=$(parse_result "$json_file" "$jq_idx")
+                jq_median=$(echo "$jq_result" | cut -d, -f1)
+            fi
+
+            for t in "${!TOOLS[@]}"; do
+                result=$(parse_result "$json_file" "$t")
+                median=$(echo "$result" | cut -d, -f1)
+                failed=$(echo "$result" | cut -d, -f2)
+                formatted=$(format_time "$median")
+                if [ "$failed" = "1" ]; then
+                    formatted="${formatted}*"
+                    HAS_FAILURES=1
+                fi
+                if [ "${NAMES[$t]}" = "qj" ]; then
+                    row+=" **$formatted** |"
+                else
+                    row+=" $formatted |"
+                fi
+                if [ "${NAMES[$t]}" != "jq" ]; then
+                    speedup=$(format_speedup "$jq_median" "$median")
+                    if [ "${NAMES[$t]}" = "qj" ]; then
+                        row+=" **$speedup** |"
+                    else
+                        row+=" $speedup |"
+                    fi
+                fi
+            done
+            echo "$row"
+        done
+
+        echo ""
+
+        # --- Throughput ---
+        echo "### Throughput (\`-c '.'\`, single pass)"
+        echo ""
+        tp_header="| File |"
+        tp_sep="|------|"
+        for name in "${NAMES[@]}"; do
+            tp_header+=" $name |"
+            tp_sep+="------:|"
+        done
+        echo "$tp_header"
+        echo "$tp_sep"
+
+        for section_info in "tier${tier_idx}_ndjson:${ndjson_basename}:$ndjson_size" "tier${tier_idx}_json:${json_basename}:$json_size"; do
+            IFS=: read -r section file bytes <<< "$section_info"
+            json_file="$RESULTS_DIR/${section}_0.json"
+            row="| $file |"
+            for t in "${!TOOLS[@]}"; do
+                result=$(parse_result "$json_file" "$t")
+                median=$(echo "$result" | cut -d, -f1)
+                failed=$(echo "$result" | cut -d, -f2)
+                tp=$(python3 -c "
 bytes=$bytes; secs=$median
 if secs <= 0:
     print('-')
@@ -227,14 +385,32 @@ else:
     else:
         print(f'{mbps:.0f} MB/s')
 ")
-            if [ "${NAMES[$t]}" = "qj" ]; then
-                row+=" **$tp** |"
-            else
-                row+=" $tp |"
-            fi
+                suffix=""
+                if [ "$failed" = "1" ]; then
+                    suffix="*"
+                    HAS_FAILURES=1
+                fi
+                if [ "${NAMES[$t]}" = "qj" ]; then
+                    row+=" **${tp}${suffix}** |"
+                else
+                    row+=" ${tp}${suffix} |"
+                fi
+            done
+            echo "$row"
         done
-        echo "$row"
+
+        echo ""
     done
+
+    # --- Footnotes ---
+    if [ "$HAS_FAILURES" = "1" ]; then
+        echo "\\*non-zero exit code (tool crashed or returned an error)"
+        echo ""
+    fi
+    if [ "${needs_serde_footnote:-0}" = "1" ]; then
+        echo "†serde_json fallback for >4GB single-document JSON (simdjson 4GB limit)"
+        echo ""
+    fi
 } > "$OUTPUT"
 
 echo "=== Results written to $OUTPUT ==="
