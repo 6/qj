@@ -1,10 +1,10 @@
 # qj
 
-Quick JSON. A jq-compatible processor, 2-50x faster on large inputs.
+Quick JSON. A jq-compatible processor, 2-20x faster on large inputs.
 
 ## When to use qj instead of jq
 
-**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI) at 2.2 GB/s. On a 49 MB file, `qj -c '.'` finishes in 22 ms vs jq's 1.2 s — 53x faster. Field extraction, `length`, and `keys` are 5-15x faster than jq.
+**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 33 ms vs jq's 395 ms (12x). Field extraction and `keys` are 5-15x faster than jq.
 
 **NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1M lines: `qj '.name'` takes 117 ms vs jq's 1.3 s (11x) and jaq's 715 ms (6x). No `xargs` or `parallel` needed.
 
@@ -27,21 +27,20 @@ All benchmarks on M4 Pro MacBook Pro. See [benches/](benches/) for methodology.
 
 | Workload | qj | jq | jaq | gojq |
 |----------|----|----|-----|------|
-| `-c '.'` | **22 ms** | 1.16 s | 258 ms | 444 ms |
 | `.statuses \| length` | **33 ms** | 395 ms | 172 ms | 291 ms |
 | `.statuses[] \| .user.name` | **153 ms** | 407 ms | 172 ms | 301 ms |
 | `walk(if type == "boolean" then not else . end)` | **373 ms** | 3.57 s | 2.43 s | 1.60 s |
 
-Parse-dominated workloads (identity, field extraction) show the largest wins. Complex filter workloads where the evaluator dominates are closer to 2-3x over jq and roughly even with jaq.
+Field extraction and simple operations show the largest wins. Complex filter workloads where the evaluator dominates are closer to 2-3x over jq and roughly even with jaq.
 
-GB-scale NDJSON (1.1 GB GH Archive, parallel processing):
+GB-scale NDJSON (1.1 GB GitHub Archive, parallel processing):
 
 | Workload | qj | jq | Speedup |
 |----------|----|----|---------|
-| `-c '.'` (minify) | 779ms | 27.9s | **36x** |
-| `.type` (field extract) | 488ms | 7.15s | **15x** |
-| `select(.type == "PushEvent")` | 550ms | 12.7s | **23x** |
-| `select(.type == "PushEvent") \| {actor, commits}` | 2.76s | 7.46s | **2.7x** |
+| `length` | 491ms | 7.06s | **14x** |
+| `select(.type == "PushEvent")` | 783ms | 13.6s | **17x** |
+| `{type, repo: .repo.name, actor: .actor.login}` | 505ms | 7.84s | **16x** |
+| `select(.type == "PushEvent") \| {actor, commits}` | 2.84s | 7.57s | **2.7x** |
 
 Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/results_large_only.md)). See also [tool comparison data](benches/results.md).
 

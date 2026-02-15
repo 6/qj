@@ -68,13 +68,14 @@ if [ ${#TIER_LABELS[@]} -eq 0 ]; then
 fi
 
 # --- Filters (parse-dominated → evaluator-dominated) ---
-FILTER_NAMES=("minify" "field extract" "select" "select + construct")
-FILTER_FLAGS=("-c" "-c" "-c" "-c")
+FILTER_NAMES=("passthrough" "length" "select" "select + construct" "reshape")
+FILTER_FLAGS=("-c" "-c" "-c" "-c" "-c")
 FILTER_EXPRS=(
     "."
-    ".type"
+    "length"
     'select(.type == "PushEvent")'
     'select(.type == "PushEvent") | {actor: .actor.login, commits: (.payload.commits // [] | length)}'
+    '{type, repo: .repo.name, actor: .actor.login}'
 )
 
 # --- Run hyperfine for one filter across all tools ---
