@@ -3403,7 +3403,12 @@ fn no_color_env_suppresses_color() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.take().unwrap().write_all(br#"{"a":1}"#).unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"a":1}"#)
+                .unwrap();
             child.wait_with_output()
         })
         .expect("failed to run jx");
@@ -3426,7 +3431,12 @@ fn no_color_env_overridden_by_flag() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.take().unwrap().write_all(br#"{"a":1}"#).unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"a":1}"#)
+                .unwrap();
             child.wait_with_output()
         })
         .expect("failed to run jx");

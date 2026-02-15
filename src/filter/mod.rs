@@ -5,7 +5,7 @@ pub mod parser;
 mod value_ops;
 
 use crate::value::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// A destructuring pattern for variable binding.
@@ -469,6 +469,144 @@ impl Filter {
                 StringPart::Lit(_) => false,
                 StringPart::Expr(f) => f.uses_input_builtins(),
             }),
+        }
+    }
+}
+
+impl Filter {
+    /// Collect all variable references (`$name`) from the filter AST.
+    pub fn collect_var_refs(&self, out: &mut HashSet<String>) {
+        match self {
+            Filter::Var(name) => {
+                out.insert(name.clone());
+            }
+            Filter::Identity
+            | Filter::Iterate
+            | Filter::Recurse
+            | Filter::Field(_)
+            | Filter::Literal(_)
+            | Filter::Break(_) => {}
+            Filter::Index(f)
+            | Filter::Select(f)
+            | Filter::ArrayConstruct(f)
+            | Filter::Not(f)
+            | Filter::Try(f)
+            | Filter::Neg(f) => f.collect_var_refs(out),
+            Filter::Pipe(a, b)
+            | Filter::Compare(a, _, b)
+            | Filter::Arith(a, _, b)
+            | Filter::BoolOp(a, _, b)
+            | Filter::Alternative(a, b)
+            | Filter::TryCatch(a, b)
+            | Filter::Assign(a, _, b) => {
+                a.collect_var_refs(out);
+                b.collect_var_refs(out);
+            }
+            Filter::Bind(a, pat, b) => {
+                a.collect_var_refs(out);
+                collect_pattern_var_refs(pat, out);
+                b.collect_var_refs(out);
+            }
+            Filter::AltBind(expr, pats, body) => {
+                expr.collect_var_refs(out);
+                for pat in pats {
+                    collect_pattern_var_refs(pat, out);
+                }
+                body.collect_var_refs(out);
+            }
+            Filter::Comma(filters) | Filter::Builtin(_, filters) => {
+                for f in filters {
+                    f.collect_var_refs(out);
+                }
+            }
+            Filter::ObjectConstruct(pairs) => {
+                for (k, v) in pairs {
+                    if let ObjKey::Expr(f) = k {
+                        f.collect_var_refs(out);
+                    }
+                    v.collect_var_refs(out);
+                }
+            }
+            Filter::Slice(s, e) => {
+                if let Some(f) = s {
+                    f.collect_var_refs(out);
+                }
+                if let Some(f) = e {
+                    f.collect_var_refs(out);
+                }
+            }
+            Filter::IfThenElse(c, t, e) => {
+                c.collect_var_refs(out);
+                t.collect_var_refs(out);
+                if let Some(f) = e {
+                    f.collect_var_refs(out);
+                }
+            }
+            Filter::Reduce(src, pat, init, update) => {
+                src.collect_var_refs(out);
+                collect_pattern_var_refs(pat, out);
+                init.collect_var_refs(out);
+                update.collect_var_refs(out);
+            }
+            Filter::Foreach(src, pat, init, update, extract) => {
+                src.collect_var_refs(out);
+                collect_pattern_var_refs(pat, out);
+                init.collect_var_refs(out);
+                update.collect_var_refs(out);
+                if let Some(f) = extract {
+                    f.collect_var_refs(out);
+                }
+            }
+            Filter::Def { body, rest, .. } => {
+                body.collect_var_refs(out);
+                rest.collect_var_refs(out);
+            }
+            Filter::Label(_, body) => body.collect_var_refs(out),
+            Filter::PostfixIndex(base, idx) => {
+                base.collect_var_refs(out);
+                idx.collect_var_refs(out);
+            }
+            Filter::PostfixSlice(base, s, e) => {
+                base.collect_var_refs(out);
+                if let Some(f) = s {
+                    f.collect_var_refs(out);
+                }
+                if let Some(f) = e {
+                    f.collect_var_refs(out);
+                }
+            }
+            Filter::StringInterp(parts) => {
+                for p in parts {
+                    if let StringPart::Expr(f) = p {
+                        f.collect_var_refs(out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collect variable references from a destructuring pattern.
+fn collect_pattern_var_refs(pat: &Pattern, out: &mut HashSet<String>) {
+    match pat {
+        Pattern::Var(name) => {
+            out.insert(name.clone());
+        }
+        Pattern::Array(pats) => {
+            for p in pats {
+                collect_pattern_var_refs(p, out);
+            }
+        }
+        Pattern::Object(pairs) => {
+            for (key, p) in pairs {
+                if let PatternKey::Var(name) = key {
+                    out.insert(name.clone());
+                }
+                if let PatternKey::Expr(f) = key {
+                    f.collect_var_refs(out);
+                }
+                collect_pattern_var_refs(p, out);
+            }
         }
     }
 }

@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use memchr::memchr_iter;
 use rayon::prelude::*;
 
+use std::collections::HashSet;
+
 use crate::filter::{Env, Filter};
 use crate::output::{self, OutputConfig};
 use crate::simdjson;
@@ -106,7 +108,14 @@ pub fn process_ndjson(
     config: &OutputConfig,
     env: &Env,
 ) -> Result<(Vec<u8>, bool)> {
-    if !env.is_empty() || !filter.is_parallel_safe() {
+    let needs_env = if env.is_empty() {
+        false
+    } else {
+        let mut var_refs = HashSet::new();
+        filter.collect_var_refs(&mut var_refs);
+        var_refs.iter().any(|v| env.get_var(v).is_some())
+    };
+    if needs_env || !filter.is_parallel_safe() {
         return process_chunk(data, filter, config, env);
     }
 
