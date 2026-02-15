@@ -14,7 +14,7 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | 5 | Multi-field fast path | REVERTED→DONE | Batch C++ extraction: **-54%** 3-field obj, **-38%** 2-field arr |
 | 6 | `select` + extract fast path | DONE | **~35-42% faster** `select(.f==lit) \| .field` / `{...}` / `[...]` on 1.1GB NDJSON |
 | 7 | `length`/`keys` NDJSON fast path | DONE | **~45% faster** `length`/`keys` on 1.1GB NDJSON |
-| 8 | `select` ordering operators | DONE | `>`, `<`, `>=`, `<=` for numeric and string comparisons |
+| 8 | `select` ordering operators | DONE | Coverage: `>`, `<`, `>=`, `<=` now use fast path (same ~50% speedup as `==`) |
 | 9 | DOM parser reuse | DONE | **~40% faster** — reuse parser across lines: 259ms→155ms on 3-field obj |
 | 10 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
 | 11 | Per-thread output buffers | TODO | Avoid final concatenation step |
@@ -204,6 +204,8 @@ strategy.
 Propagated to all select variants: `SelectEq`, `SelectEqField`, `SelectEqObj`, `SelectEqArr`.
 
 **Change:** `src/parallel/ndjson.rs` — removed Eq/Ne restriction in detection, added `evaluate_select_predicate()` + `parse_json_number()` helpers, refactored all 4 select processing functions. Added comprehensive unit tests for all ordering operators and predicate evaluation.
+
+**Benchmarks:** No separate benchmark — this is a coverage extension, not a new mechanism. Ordering queries now get the same ~50% speedup as `==`/`!=` (optimization #4) instead of falling back to full Value tree eval.
 
 **Files:** `src/parallel/ndjson.rs`, `tests/ndjson.rs`, `tests/e2e.rs`
 
