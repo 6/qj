@@ -41,7 +41,7 @@ GB-scale NDJSON (1.1 GB GH Archive, parallel processing):
 | `-c '.'` (minify) | 779ms | 27.9s | **36x** |
 | `.type` (field extract) | 488ms | 7.15s | **15x** |
 | `select(.type == "PushEvent")` | 550ms | 12.7s | **23x** |
-| select + construct | 2.76s | 7.46s | **2.7x** |
+| `select(.type == "PushEvent") \| {actor, commits}` | 2.76s | 7.46s | **2.7x** |
 
 Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/results_large_only.md)). See also [tool comparison data](benches/results.md).
 
