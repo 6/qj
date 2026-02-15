@@ -1,7 +1,10 @@
 use clap::Parser;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write;
 use std::fs;
+use std::hash::Hasher;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -23,6 +26,21 @@ struct Args {
     /// Output markdown file path
     #[arg(long, default_value = "benches/results.md")]
     output: PathBuf,
+
+    /// Run only these benchmark groups (json, ndjson, gha_ndjson, gha_json).
+    /// Can be repeated. Omit to run all.
+    #[arg(long)]
+    only: Vec<String>,
+
+    /// Skip the correctness check phase
+    #[arg(long)]
+    skip_correctness: bool,
+}
+
+impl Args {
+    fn should_run(&self, group: &str) -> bool {
+        self.only.is_empty() || self.only.iter().any(|g| g == group)
+    }
 }
 
 // --- Filter definitions ---
@@ -174,37 +192,12 @@ static GHARCHIVE_NDJSON_FILTERS: &[BenchFilter] = &[
         expr: ".",
     },
     BenchFilter {
-        name: "gha shallow field",
-        flags: &[],
-        expr: ".type",
-    },
-    BenchFilter {
         name: "gha nested field",
         flags: &[],
         expr: ".actor.login",
     },
     BenchFilter {
-        name: "gha extract subobject",
-        flags: &["-c"],
-        expr: ".payload",
-    },
-    BenchFilter {
-        name: "gha select type",
-        flags: &["-c"],
-        expr: r#"select(.type == "PushEvent")"#,
-    },
-    BenchFilter {
-        name: "gha object construction",
-        flags: &["-c"],
-        expr: "{type, actor: .actor.login, repo: .repo.name}",
-    },
-    BenchFilter {
-        name: "gha optional operator",
-        flags: &["-c"],
-        expr: "{type, ref: .payload.ref?}",
-    },
-    BenchFilter {
-        name: "gha select + construct + alt",
+        name: "gha select + construct",
         flags: &["-c"],
         expr: r#"select(.type == "PushEvent") | {actor: .actor.login, commits: (.payload.commits // [] | length)}"#,
     },
@@ -217,16 +210,6 @@ static GHARCHIVE_JSON_FILTERS: &[BenchFilter] = &[
         expr: ".",
     },
     BenchFilter {
-        name: "gha json length",
-        flags: &[],
-        expr: "length",
-    },
-    BenchFilter {
-        name: "gha json iterate + field",
-        flags: &[],
-        expr: ".[].type",
-    },
-    BenchFilter {
         name: "gha json iterate + nested",
         flags: &[],
         expr: ".[].actor.login",
@@ -235,21 +218,6 @@ static GHARCHIVE_JSON_FILTERS: &[BenchFilter] = &[
         name: "gha json iterate + filter",
         flags: &["-c"],
         expr: r#"[.[] | select(.type == "PushEvent")]"#,
-    },
-    BenchFilter {
-        name: "gha json iterate + construct",
-        flags: &["-c"],
-        expr: "[.[] | {type, actor: .actor.login, repo: .repo.name}]",
-    },
-    BenchFilter {
-        name: "gha json iterate + optional",
-        flags: &["-c"],
-        expr: "[.[] | {type, ref: .payload.ref?}]",
-    },
-    BenchFilter {
-        name: "gha json aggregation",
-        flags: &["-c"],
-        expr: "group_by(.type) | map({type: .[0].type, count: length})",
     },
 ];
 
@@ -336,7 +304,7 @@ fn tool_supports_filter(tool: &Tool, filter: &BenchFilter, file: &Path) -> bool 
         .unwrap_or(false)
 }
 
-/// Run a tool and capture stdout+stderr combined (for correctness comparison).
+/// Run a tool and capture stdout+stderr combined (for correctness comparison on small files).
 fn run_tool_output(tool: &Tool, filter: &BenchFilter, file: &Path) -> String {
     let mut cmd = Command::new(&tool.path);
     for flag in filter.flags {
@@ -352,6 +320,28 @@ fn run_tool_output(tool: &Tool, filter: &BenchFilter, file: &Path) -> String {
         }
         Err(e) => format!("ERROR: {e}"),
     }
+}
+
+/// Run a tool and return a streaming hash of stdout (for correctness comparison on large files).
+/// Avoids loading multi-GB output into memory.
+fn run_tool_hash(tool: &Tool, filter: &BenchFilter, file: &Path) -> u64 {
+    let mut cmd = Command::new(&tool.path);
+    for flag in filter.flags {
+        cmd.arg(flag);
+    }
+    cmd.arg(filter.expr).arg(file);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("failed to spawn tool");
+    let stdout = child.stdout.take().expect("no stdout");
+    let reader = BufReader::with_capacity(256 * 1024, stdout);
+    let mut hasher = DefaultHasher::new();
+    for line in reader.lines() {
+        let line = line.expect("read error");
+        hasher.write(line.as_bytes());
+        hasher.write(b"\n");
+    }
+    let _ = child.wait();
+    hasher.finish()
 }
 
 fn format_time(seconds: f64) -> String {
@@ -966,82 +956,100 @@ fn main() {
     }
 
     // --- Correctness check ---
-    eprintln!("=== Correctness check ===");
     let qj = &tools[0];
     let jq = &tools[1];
-    let mut all_correct = true;
-    for file in &json_files {
-        let file_path = data_dir.join(file);
-        for filter in JSON_FILTERS {
-            let qj_out = run_tool_output(qj, filter, &file_path);
-            let jq_out = run_tool_output(jq, filter, &file_path);
-            if qj_out != jq_out {
-                eprintln!("MISMATCH: {} on {file}", filter.name);
-                for (label, out) in [("qj", &qj_out), ("jq", &jq_out)] {
-                    let preview: String = out.lines().take(3).collect::<Vec<_>>().join("\n");
-                    eprintln!("  {label}: {preview}");
-                }
-                all_correct = false;
-            } else {
-                eprintln!("  OK: {} on {file}", filter.name);
-            }
-        }
-    }
-    for file in &gharchive_ndjson_files {
-        let file_path = data_dir.join(file);
-        for filter in GHARCHIVE_NDJSON_FILTERS {
-            let qj_out = run_tool_output(qj, filter, &file_path);
-            let jq_out = run_tool_output(jq, filter, &file_path);
-            if qj_out != jq_out {
-                eprintln!("MISMATCH: {} on {file}", filter.name);
-                for (label, out) in [("qj", &qj_out), ("jq", &jq_out)] {
-                    let preview: String = out.lines().take(3).collect::<Vec<_>>().join("\n");
-                    eprintln!("  {label}: {preview}");
-                }
-                all_correct = false;
-            } else {
-                eprintln!("  OK: {} on {file}", filter.name);
-            }
-        }
-    }
-    for file in &gharchive_json_files {
-        let file_path = data_dir.join(file);
-        for filter in GHARCHIVE_JSON_FILTERS {
-            let qj_out = run_tool_output(qj, filter, &file_path);
-            let jq_out = run_tool_output(jq, filter, &file_path);
-            if qj_out != jq_out {
-                eprintln!("MISMATCH: {} on {file}", filter.name);
-                for (label, out) in [("qj", &qj_out), ("jq", &jq_out)] {
-                    let preview: String = out.lines().take(3).collect::<Vec<_>>().join("\n");
-                    eprintln!("  {label}: {preview}");
-                }
-                all_correct = false;
-            } else {
-                eprintln!("  OK: {} on {file}", filter.name);
-            }
-        }
-    }
-    eprintln!();
-    if !all_correct {
-        eprintln!("WARNING: Output mismatches detected. Benchmarking anyway.");
+    if args.skip_correctness {
+        eprintln!("=== Correctness check skipped (--skip-correctness) ===");
         eprintln!();
+    } else {
+        eprintln!("=== Correctness check ===");
+        let mut all_correct = true;
+
+        // Only check correctness for small-file groups. GH Archive uses the same
+        // code paths — correctness is validated on twitter.json, and running all 16
+        // filters on 1.1GB files adds ~10 minutes of wall time.
+        let check_groups: Vec<(&[BenchFilter], &[&str], &str)> =
+            vec![(JSON_FILTERS, &json_files, "json")];
+        for (filters, files, group) in &check_groups {
+            if !args.should_run(group) {
+                continue;
+            }
+            for file in *files {
+                let file_path = data_dir.join(file);
+                for filter in *filters {
+                    let qj_out = run_tool_output(qj, filter, &file_path);
+                    let jq_out = run_tool_output(jq, filter, &file_path);
+                    if qj_out != jq_out {
+                        eprintln!("MISMATCH: {} on {file}", filter.name);
+                        for (label, out) in [("qj", &qj_out), ("jq", &jq_out)] {
+                            let preview: String =
+                                out.lines().take(3).collect::<Vec<_>>().join("\n");
+                            eprintln!("  {label}: {preview}");
+                        }
+                        all_correct = false;
+                    } else {
+                        eprintln!("  OK: {} on {file}", filter.name);
+                    }
+                }
+            }
+        }
+        // Hash-based correctness for large files (GH Archive).
+        // Streams output through DefaultHasher to avoid loading GB into memory.
+        let hash_groups: Vec<(&[BenchFilter], &[&str], &str)> = vec![
+            (
+                GHARCHIVE_NDJSON_FILTERS,
+                &gharchive_ndjson_files,
+                "gha_ndjson",
+            ),
+            (GHARCHIVE_JSON_FILTERS, &gharchive_json_files, "gha_json"),
+        ];
+        for (filters, files, group) in &hash_groups {
+            if !args.should_run(group) || files.is_empty() {
+                continue;
+            }
+            // Only check the first filter (passthrough) — same code paths as small files.
+            let filter = &filters[0];
+            for file in *files {
+                let file_path = data_dir.join(file);
+                eprintln!("  hashing: {} on {file}...", filter.name);
+                let qj_hash = run_tool_hash(qj, filter, &file_path);
+                let jq_hash = run_tool_hash(jq, filter, &file_path);
+                if qj_hash != jq_hash {
+                    eprintln!(
+                        "  HASH MISMATCH: {} on {file} (qj={qj_hash:x} jq={jq_hash:x})",
+                        filter.name
+                    );
+                    all_correct = false;
+                } else {
+                    eprintln!("  OK (hash): {} on {file}", filter.name);
+                }
+            }
+        }
+
+        eprintln!();
+        if !all_correct {
+            eprintln!("WARNING: Output mismatches detected. Benchmarking anyway.");
+            eprintln!();
+        }
     }
 
     // --- Run benchmarks ---
     let mut results: Results = HashMap::new();
 
-    run_benchmarks(
-        &tools,
-        JSON_FILTERS,
-        "json",
-        &json_files,
-        data_dir,
-        results_dir,
-        &args,
-        &mut results,
-    );
+    if args.should_run("json") {
+        run_benchmarks(
+            &tools,
+            JSON_FILTERS,
+            "json",
+            &json_files,
+            data_dir,
+            results_dir,
+            &args,
+            &mut results,
+        );
+    }
 
-    if !ndjson_files.is_empty() {
+    if args.should_run("ndjson") && !ndjson_files.is_empty() {
         run_benchmarks(
             &tools,
             NDJSON_FILTERS,
@@ -1054,7 +1062,7 @@ fn main() {
         );
     }
 
-    if !gharchive_ndjson_files.is_empty() {
+    if args.should_run("gha_ndjson") && !gharchive_ndjson_files.is_empty() {
         run_benchmarks(
             &tools,
             GHARCHIVE_NDJSON_FILTERS,
@@ -1067,7 +1075,7 @@ fn main() {
         );
     }
 
-    if !gharchive_json_files.is_empty() {
+    if args.should_run("gha_json") && !gharchive_json_files.is_empty() {
         run_benchmarks(
             &tools,
             GHARCHIVE_JSON_FILTERS,
