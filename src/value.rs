@@ -17,7 +17,7 @@ pub enum Value {
     /// `Some("75.80")` preserves the original formatting from JSON input.
     /// `None` for computed values (arithmetic, filter literals).
     Double(f64, Option<Box<str>>),
-    String(String),
+    String(Rc<str>),
     Array(Rc<Vec<Value>>),
     Object(Rc<Vec<(String, Value)>>),
 }
@@ -108,7 +108,7 @@ impl From<serde_json::Value> for Value {
                     Value::Double(n.as_f64().unwrap_or(0.0), None)
                 }
             }
-            serde_json::Value::String(s) => Value::String(s),
+            serde_json::Value::String(s) => Value::String(s.into()),
             serde_json::Value::Array(a) => {
                 Value::Array(Rc::new(a.into_iter().map(Value::from).collect()))
             }

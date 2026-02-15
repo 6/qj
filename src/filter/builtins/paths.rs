@@ -25,7 +25,7 @@ pub(super) fn eval_paths(
                         current = match (&current, seg) {
                             (Value::Object(obj), Value::String(k)) => obj
                                 .iter()
-                                .find(|(ek, _)| ek == k)
+                                .find(|(ek, _)| ek == &**k)
                                 .map(|(_, v)| v.clone())
                                 .unwrap_or(Value::Null),
                             (Value::Array(arr), Value::Int(i)) => {

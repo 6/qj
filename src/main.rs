@@ -184,7 +184,7 @@ fn main() -> Result<()> {
         if pair.len() == 2 {
             env = env.bind_var(
                 format!("${}", pair[0]),
-                qj::value::Value::String(pair[1].clone()),
+                qj::value::Value::String(pair[1].clone().into()),
             );
         }
     }
@@ -200,7 +200,10 @@ fn main() -> Result<()> {
         if pair.len() == 2 {
             let content = std::fs::read_to_string(&pair[1])
                 .with_context(|| format!("failed to read --rawfile {}: {}", pair[0], pair[1]))?;
-            env = env.bind_var(format!("${}", pair[0]), qj::value::Value::String(content));
+            env = env.bind_var(
+                format!("${}", pair[0]),
+                qj::value::Value::String(content.into()),
+            );
         }
     }
     for pair in cli.slurpfile.chunks(2) {
@@ -231,7 +234,7 @@ fn main() -> Result<()> {
         } else {
             positional_args
                 .iter()
-                .map(|s| qj::value::Value::String(s.clone()))
+                .map(|s| qj::value::Value::String(s.clone().into()))
                 .collect()
         };
 
@@ -239,7 +242,10 @@ fn main() -> Result<()> {
             let mut pairs = Vec::new();
             for pair in cli.args.chunks(2) {
                 if pair.len() == 2 {
-                    pairs.push((pair[0].clone(), qj::value::Value::String(pair[1].clone())));
+                    pairs.push((
+                        pair[0].clone(),
+                        qj::value::Value::String(pair[1].clone().into()),
+                    ));
                 }
             }
             for pair in cli.argjson.chunks(2) {
@@ -358,7 +364,7 @@ fn main() -> Result<()> {
                         let content = std::fs::read_to_string(path)
                             .with_context(|| format!("failed to read file: {path}"))?;
                         for line in content.lines() {
-                            values.push(qj::value::Value::String(line.to_string()));
+                            values.push(qj::value::Value::String(line.into()));
                         }
                     } else {
                         let (padded, json_len) =
@@ -379,7 +385,7 @@ fn main() -> Result<()> {
                 if cli.raw_input {
                     let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
                     for line in text.lines() {
-                        values.push(qj::value::Value::String(line.to_string()));
+                        values.push(qj::value::Value::String(line.into()));
                     }
                 } else {
                     qj::input::strip_bom(&mut buf);
@@ -424,7 +430,7 @@ fn main() -> Result<()> {
                 let content = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read file: {path}"))?;
                 for line in content.lines() {
-                    all_lines.push(qj::value::Value::String(line.to_string()));
+                    all_lines.push(qj::value::Value::String(line.into()));
                 }
             }
             let input = qj::value::Value::Array(Rc::new(all_lines));
@@ -629,7 +635,7 @@ fn eval_and_output(
 /// Format an error value for display on stderr.
 fn format_error(err: &qj::value::Value) -> String {
     match err {
-        qj::value::Value::String(s) => s.clone(),
+        qj::value::Value::String(s) => s.to_string(),
         other => other.short_desc(),
     }
 }
@@ -828,13 +834,13 @@ fn process_raw_input(
     if slurp {
         let arr: Vec<qj::value::Value> = text
             .lines()
-            .map(|l| qj::value::Value::String(l.to_string()))
+            .map(|l| qj::value::Value::String(l.into()))
             .collect();
         let input = qj::value::Value::Array(Rc::new(arr));
         eval_and_output(filter, &input, env, out, config, had_output, had_error);
     } else {
         for line in text.lines() {
-            let input = qj::value::Value::String(line.to_string());
+            let input = qj::value::Value::String(line.into());
             eval_and_output(filter, &input, env, out, config, had_output, had_error);
         }
     }

@@ -26,7 +26,7 @@ pub(super) fn eval_types(
             Value::Bool(_) => output(Value::Null),
         },
         "type" => {
-            output(Value::String(input.type_name().to_string()));
+            output(Value::String(input.type_name().to_string().into()));
         }
         "empty" => {}
         "not" => {
@@ -81,7 +81,7 @@ pub(super) fn eval_types(
                 eval(key_filter, input, env, &mut |v| key_val = v);
                 match (input, &key_val) {
                     (Value::Object(obj), Value::String(key)) => {
-                        let found = obj.iter().any(|(k, _)| k == key);
+                        let found = obj.iter().any(|(k, _)| k == &**key);
                         output(Value::Bool(found));
                     }
                     (Value::Array(arr), Value::Int(idx)) => {
@@ -112,7 +112,7 @@ pub(super) fn eval_types(
                 eval(arg, input, env, &mut |v| container = v);
                 match (&container, input) {
                     (Value::Object(obj), Value::String(key)) => {
-                        output(Value::Bool(obj.iter().any(|(k, _)| k == key)));
+                        output(Value::Bool(obj.iter().any(|(k, _)| k == &**key)));
                     }
                     (Value::Array(arr), Value::Int(idx)) => {
                         output(Value::Bool(*idx >= 0 && (*idx as usize) < arr.len()));
@@ -127,7 +127,7 @@ pub(super) fn eval_types(
                     .iter()
                     .map(|(k, v)| {
                         Value::Object(Rc::new(vec![
-                            ("key".into(), Value::String(k.clone())),
+                            ("key".into(), Value::String(k.clone().into())),
                             ("value".into(), v.clone()),
                         ]))
                     })
@@ -144,7 +144,7 @@ pub(super) fn eval_types(
                             .iter()
                             .find(|(k, _)| k == "key" || k == "Key" || k == "name" || k == "Name")
                             .map(|(_, v)| match v {
-                                Value::String(s) => s.clone(),
+                                Value::String(s) => s.to_string(),
                                 Value::Int(n) => n.to_string(),
                                 _ => String::new(),
                             })

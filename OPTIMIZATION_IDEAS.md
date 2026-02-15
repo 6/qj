@@ -10,10 +10,10 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | 1 | P-core-only threading | DONE | Avoids E-core contention on Apple Silicon |
 | 2 | mmap for file I/O | DONE | **~23% faster** on 1.1GB NDJSON, ~1% on 49MB |
 | 3 | Expand On-Demand fast paths | DONE | **~40% faster** field-chain on 1.1GB NDJSON |
-| 4 | Arena allocation (bumpalo) | TODO | Reduce malloc pressure in Value tree |
-| 5 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
-| 6 | simdjson parse_many for NDJSON | TODO | Replace manual line splitting |
-| 7 | Rc\<str\> for Value strings | TODO | O(1) string clones |
+| 4 | Rc\<str\> for Value strings | DONE | Neutral — Rc indirection offsets clone savings |
+| 5 | Arena allocation (bumpalo) | TODO | Reduce malloc pressure in Value tree |
+| 6 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
+| 7 | simdjson parse_many for NDJSON | TODO | Replace manual line splitting |
 | 8 | Per-thread output buffers | TODO | Avoid final concatenation step |
 | 9 | Lift 4GB single-doc limit | TODO | Rare but blocks large single-doc files |
 | 10 | NEON output formatting | TODO | SIMD string escaping |
@@ -95,7 +95,26 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs` (made `collect_field_chain` public), `src/output.rs` (added `PartialEq, Eq` to `OutputMode`)
 
-### 4. Arena allocation (bumpalo)
+### 4. Rc\<str\> for Value strings (DONE — neutral)
+
+**What:** Changed `Value::String(String)` to `Value::String(Rc<str>)`. String clones are now O(1) reference bumps instead of allocating.
+
+**Change:** Mechanical refactor across 18 files. All `Value::String(expr)` construction sites add `.into()`, destructured strings use `&**s` for `&str`, object keys remain `String`.
+
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, sequential runs, 5s cooldown):**
+
+| Query | Before Rc\<str\> | After Rc\<str\> | Delta |
+|-------|-----------------|----------------|-------|
+| `.type` (fast path) | 284.0ms | 245.0ms | -14% (likely variance) |
+| `.actor.login` (fast path) | 261.2ms | 258.2ms | ~0% |
+| `length` (Value tree) | 463.2ms | 501.7ms | +8% (regression) |
+| `{type, actor: .actor.login}` | — | 535.3ms | high variance |
+
+**Verdict:** Neutral to slightly negative. The Rc pointer indirection adds cache misses that offset the clone savings. Most strings in qj's hot path are constructed once and output once — they aren't cloned repeatedly. The `length` query (builds Value tree, never clones strings) shows the pure overhead of Rc indirection. Keeping the change since it's architecturally cleaner (O(1) clones are correct) and the regression is within noise on real workloads.
+
+**Files:** `src/value.rs`, `src/filter/eval.rs`, `src/filter/builtins/*.rs`, `src/filter/value_ops.rs`, `src/main.rs`, `src/simdjson/bridge.rs`, `src/filter/parser.rs`
+
+### 5. Arena allocation (bumpalo)
 
 **Current:** Every Value node allocates individually: `String::from()`, `Vec::new()`, `Rc::new()`.
 
@@ -111,7 +130,7 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 
 ## Tier 2: Medium Impact
 
-### 5. Streaming NDJSON
+### 6. Streaming NDJSON
 
 **Current:** Entire file loaded into `Vec<u8>` before processing. 10GB file = 10GB RAM.
 
@@ -119,7 +138,7 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 
 **Files:** `src/parallel/ndjson.rs`, `src/main.rs`
 
-### 6. simdjson parse_many for NDJSON
+### 7. simdjson parse_many for NDJSON
 
 **Current:** Rust splits at newlines via `memchr`, parses each line individually.
 
@@ -128,14 +147,6 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 **Caveat:** parse_many is single-threaded internally. Combine with chunking: split into N chunks, each uses parse_many in its own thread.
 
 **Files:** `src/simdjson/bridge.cpp`, `src/parallel/ndjson.rs`
-
-### 7. Rc\<str\> for Value strings
-
-**Current:** `Value::String(String)` — every clone allocates.
-
-**Proposed:** `Value::String(Rc<str>)` — clones are O(1) reference bumps. Also consider `Arc<str>` if needed for Send across threads.
-
-**Files:** `src/value.rs`, `src/filter/eval.rs`
 
 ### 8. Per-thread output buffers with ordered flush
 

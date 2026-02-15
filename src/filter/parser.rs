@@ -693,7 +693,7 @@ impl<'a> Parser<'a> {
                     Token::Str(s) => s.clone(),
                     _ => unreachable!(),
                 };
-                Ok(Filter::Literal(Value::String(s)))
+                Ok(Filter::Literal(Value::String(s.into())))
             }
             Some(Token::InterpStr(_)) => {
                 let segments = match self.advance().unwrap() {

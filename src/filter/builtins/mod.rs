@@ -14,7 +14,7 @@ use crate::value::Value;
 
 /// Set a runtime error value. Shared helper for all builtin modules.
 pub(super) fn set_error(msg: String) {
-    super::eval::LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+    super::eval::LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg.into())));
 }
 
 pub(super) fn eval_builtin(

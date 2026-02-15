@@ -65,7 +65,7 @@ fn match_pattern_inner(pattern: &Pattern, value: &Value, env: &Env, strict: bool
                         let mut result = String::new();
                         eval(expr, value, &new_env, &mut |v| {
                             if let Value::String(s) = v {
-                                result = s;
+                                result = s.to_string();
                             }
                         });
                         (result, None)
@@ -180,9 +180,9 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
     let _guard = EvalDepthGuard;
     if EVAL_DEPTH.with(|d| d.get()) > MAX_EVAL_DEPTH {
         LAST_ERROR.with(|e| {
-            *e.borrow_mut() = Some(Value::String(format!(
-                "Evaluation depth limit exceeded ({MAX_EVAL_DEPTH})"
-            )));
+            *e.borrow_mut() = Some(Value::String(
+                format!("Evaluation depth limit exceeded ({MAX_EVAL_DEPTH})").into(),
+            ));
         });
         return;
     }
@@ -202,11 +202,14 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             Value::Null => output(Value::Null),
             _ => {
                 LAST_ERROR.with(|e| {
-                    *e.borrow_mut() = Some(Value::String(format!(
-                        "Cannot index {} with string \"{}\"",
-                        input.type_name(),
-                        name
-                    )));
+                    *e.borrow_mut() = Some(Value::String(
+                        format!(
+                            "Cannot index {} with string \"{}\"",
+                            input.type_name(),
+                            name
+                        )
+                        .into(),
+                    ));
                 });
             }
         },
@@ -237,7 +240,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     }
                     (Value::Object(obj), Value::String(key)) => {
                         for (k, v) in obj.iter() {
-                            if k == key {
+                            if k.as_str() == &**key {
                                 output(v.clone());
                                 return;
                             }
@@ -251,11 +254,10 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                                 Value::String(s) => format!("string \"{}\"", s),
                                 _ => idx.type_name().to_string(),
                             };
-                            *e.borrow_mut() = Some(Value::String(format!(
-                                "Cannot index {} with {}",
-                                input.type_name(),
-                                idx_desc
-                            )));
+                            *e.borrow_mut() = Some(Value::String(
+                                format!("Cannot index {} with {}", input.type_name(), idx_desc)
+                                    .into(),
+                            ));
                         });
                     }
                 }
@@ -285,17 +287,19 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             }
             Value::Null => {
                 LAST_ERROR.with(|e| {
-                    *e.borrow_mut() =
-                        Some(Value::String("null is not iterable (null)".to_string()));
+                    *e.borrow_mut() = Some(Value::String("null is not iterable (null)".into()));
                 });
             }
             _ => {
                 LAST_ERROR.with(|e| {
-                    *e.borrow_mut() = Some(Value::String(format!(
-                        "Cannot iterate over {} ({})",
-                        input.type_name(),
-                        input.short_desc()
-                    )));
+                    *e.borrow_mut() = Some(Value::String(
+                        format!(
+                            "Cannot iterate over {} ({})",
+                            input.type_name(),
+                            input.short_desc()
+                        )
+                        .into(),
+                    ));
                 });
             }
         },
@@ -338,7 +342,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     ObjKey::Expr(expr) => {
                         eval(expr, input, env, &mut |kv| {
                             let key_str = match kv {
-                                Value::String(s) => s,
+                                Value::String(s) => s.to_string(),
                                 _ => return,
                             };
                             eval(val_filter, input, env, &mut |v| {
@@ -390,7 +394,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         Ok(result) => output(result),
                         Err(msg) => {
                             LAST_ERROR.with(|e| {
-                                *e.borrow_mut() = Some(Value::String(msg));
+                                *e.borrow_mut() = Some(Value::String(msg.into()));
                             });
                         }
                     },
@@ -541,7 +545,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     }
                 }
             }
-            output(Value::String(result));
+            output(Value::String(result.into()));
         }
 
         Filter::Neg(inner) => {
@@ -553,11 +557,10 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                 Value::Double(f, _) => output(Value::Double(-f, None)),
                 _ => {
                     LAST_ERROR.with(|e| {
-                        *e.borrow_mut() = Some(Value::String(format!(
-                            "{} ({}) cannot be negated",
-                            v.type_name(),
-                            v.short_desc()
-                        )));
+                        *e.borrow_mut() = Some(Value::String(
+                            format!("{} ({}) cannot be negated", v.type_name(), v.short_desc())
+                                .into(),
+                        ));
                     });
                 }
             });
@@ -605,19 +608,22 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     let end = resolve_slice_index(end_val.as_ref(), len, len);
                     if start < end {
                         let sliced: String = chars[start as usize..end as usize].iter().collect();
-                        output(Value::String(sliced));
+                        output(Value::String(sliced.into()));
                     } else {
-                        output(Value::String(String::new()));
+                        output(Value::String("".into()));
                     }
                 }
                 Value::Null => output(Value::Null),
                 _ => {
                     LAST_ERROR.with(|e| {
-                        *e.borrow_mut() = Some(Value::String(format!(
-                            "{} ({}) cannot be sliced",
-                            input.type_name(),
-                            input.short_desc()
-                        )));
+                        *e.borrow_mut() = Some(Value::String(
+                            format!(
+                                "{} ({}) cannot be sliced",
+                                input.type_name(),
+                                input.short_desc()
+                            )
+                            .into(),
+                        ));
                     });
                 }
             }
@@ -627,7 +633,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             if name == "$__loc__" {
                 // $__loc__ returns {"file":"<top-level>","line":1}
                 let loc = Value::Object(Rc::new(vec![
-                    ("file".to_string(), Value::String("<top-level>".to_string())),
+                    ("file".to_string(), Value::String("<top-level>".into())),
                     ("line".to_string(), Value::Int(1)),
                 ]));
                 output(loc);
@@ -731,9 +737,8 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                 }
                 // No pattern matched — error
                 LAST_ERROR.with(|e| {
-                    *e.borrow_mut() = Some(Value::String(
-                        "No pattern matched in ?// expression".to_string(),
-                    ));
+                    *e.borrow_mut() =
+                        Some(Value::String("No pattern matched in ?// expression".into()));
                 });
             });
         }
@@ -765,7 +770,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         }
                         (Value::Object(obj), Value::String(key)) => {
                             for (k, v) in obj.iter() {
-                                if k == key {
+                                if k.as_str() == &**key {
                                     output(v.clone());
                                     return;
                                 }
@@ -779,11 +784,14 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                                     Value::String(s) => format!("string \"{}\"", s),
                                     _ => idx.type_name().to_string(),
                                 };
-                                *e.borrow_mut() = Some(Value::String(format!(
-                                    "Cannot index {} with {}",
-                                    base_val.type_name(),
-                                    idx_desc
-                                )));
+                                *e.borrow_mut() = Some(Value::String(
+                                    format!(
+                                        "Cannot index {} with {}",
+                                        base_val.type_name(),
+                                        idx_desc
+                                    )
+                                    .into(),
+                                ));
                             });
                         }
                     }
@@ -834,19 +842,22 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         if start < end {
                             let sliced: String =
                                 chars[start as usize..end as usize].iter().collect();
-                            output(Value::String(sliced));
+                            output(Value::String(sliced.into()));
                         } else {
-                            output(Value::String(String::new()));
+                            output(Value::String("".into()));
                         }
                     }
                     Value::Null => output(Value::Null),
                     _ => {
                         LAST_ERROR.with(|e| {
-                            *e.borrow_mut() = Some(Value::String(format!(
-                                "{} ({}) cannot be sliced",
-                                base_val.type_name(),
-                                base_val.short_desc()
-                            )));
+                            *e.borrow_mut() = Some(Value::String(
+                                format!(
+                                    "{} ({}) cannot be sliced",
+                                    base_val.type_name(),
+                                    base_val.short_desc()
+                                )
+                                .into(),
+                            ));
                         });
                     }
                 }
@@ -1009,7 +1020,7 @@ fn eval_assign(
                             Ok(v) => result = Some(v),
                             Err(msg) => {
                                 LAST_ERROR.with(|e| {
-                                    *e.borrow_mut() = Some(Value::String(msg));
+                                    *e.borrow_mut() = Some(Value::String(msg.into()));
                                 });
                             }
                         }
@@ -1180,13 +1191,15 @@ fn update_recursive(
 
                     for idx_val in &indices {
                         if let Value::String(k) = idx_val {
-                            if let Some(entry) = result.iter_mut().find(|(ek, _)| ek == k) {
+                            if let Some(entry) =
+                                result.iter_mut().find(|(ek, _)| ek.as_str() == &**k)
+                            {
                                 match updater(&entry.1) {
                                     Some(new_v) => entry.1 = new_v,
-                                    None => keys_to_delete.push(k.clone()),
+                                    None => keys_to_delete.push(k.to_string()),
                                 }
                             } else if let Some(new_v) = updater(&Value::Null) {
-                                result.push((k.clone(), new_v));
+                                result.push((k.to_string(), new_v));
                             }
                         }
                     }
@@ -1225,7 +1238,7 @@ fn update_recursive(
                             }
                             Value::String(k) => {
                                 if let Some(new_v) = updater(&Value::Null) {
-                                    Some(Value::Object(Rc::new(vec![(k.clone(), new_v)])))
+                                    Some(Value::Object(Rc::new(vec![(k.to_string(), new_v)])))
                                 } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
                                     None
                                 } else {
@@ -1394,7 +1407,7 @@ fn eval_assign_via_paths(
             Some(new_val) => match value_ops::set_path(&result, path, &new_val) {
                 Ok(v) => result = v,
                 Err(msg) => {
-                    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg)));
+                    LAST_ERROR.with(|e| *e.borrow_mut() = Some(Value::String(msg.into())));
                     return;
                 }
             },
@@ -2110,7 +2123,7 @@ mod tests {
     fn eval_string_repeat_zero() {
         assert_eq!(
             eval_one(&parse("\"ab\" * 0"), &Value::Null),
-            Value::String(String::new())
+            Value::String("".into())
         );
     }
 
@@ -2458,7 +2471,7 @@ mod tests {
             ])))),
         ]);
         let result = eval_one(&filter, &Value::Null);
-        assert_eq!(result, Value::String("items: [1,2]".to_string()));
+        assert_eq!(result, Value::String("items: [1,2]".into()));
     }
 
     #[test]
@@ -2472,19 +2485,19 @@ mod tests {
             )])))),
         ]);
         let result = eval_one(&filter, &Value::Null);
-        assert_eq!(result, Value::String(r#"obj: {"a":1}"#.to_string()));
+        assert_eq!(result, Value::String(r#"obj: {"a":1}"#.into()));
     }
 
     #[test]
     fn eval_tostring_array() {
         let result = eval_one(&parse("[1,2,3] | tostring"), &Value::Null);
-        assert_eq!(result, Value::String("[1,2,3]".to_string()));
+        assert_eq!(result, Value::String("[1,2,3]".into()));
     }
 
     #[test]
     fn eval_tostring_object() {
         let result = eval_one(&parse(r#"{"a":1} | tostring"#), &Value::Null);
-        assert_eq!(result, Value::String(r#"{"a":1}"#.to_string()));
+        assert_eq!(result, Value::String(r#"{"a":1}"#.into()));
     }
 
     #[test]

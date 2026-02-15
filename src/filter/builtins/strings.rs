@@ -36,7 +36,9 @@ pub(super) fn eval_strings(
             Value::Array(_) | Value::Object(_) => {
                 let mut buf = Vec::new();
                 crate::output::write_compact(&mut buf, input, false).unwrap();
-                output(Value::String(String::from_utf8(buf).unwrap_or_default()));
+                output(Value::String(
+                    String::from_utf8(buf).unwrap_or_default().into(),
+                ));
             }
         },
         "tonumber" => match input {
@@ -53,7 +55,10 @@ pub(super) fn eval_strings(
         "ascii_downcase" => {
             if let Value::String(s) = input {
                 output(Value::String(
-                    s.chars().map(|c| c.to_ascii_lowercase()).collect(),
+                    s.chars()
+                        .map(|c| c.to_ascii_lowercase())
+                        .collect::<String>()
+                        .into(),
                 ));
             } else if !matches!(input, Value::Null) {
                 set_error(format!(
@@ -66,7 +71,10 @@ pub(super) fn eval_strings(
         "ascii_upcase" => {
             if let Value::String(s) = input {
                 output(Value::String(
-                    s.chars().map(|c| c.to_ascii_uppercase()).collect(),
+                    s.chars()
+                        .map(|c| c.to_ascii_uppercase())
+                        .collect::<String>()
+                        .into(),
                 ));
             } else if !matches!(input, Value::Null) {
                 set_error(format!(
@@ -83,7 +91,7 @@ pub(super) fn eval_strings(
                 match (input, &prefix) {
                     (Value::String(s), Value::String(p)) => {
                         output(Value::String(
-                            s.strip_prefix(p.as_str()).unwrap_or(s).to_string(),
+                            s.strip_prefix(&**p).unwrap_or(s).to_string().into(),
                         ));
                     }
                     _ => {
@@ -99,7 +107,7 @@ pub(super) fn eval_strings(
                 match (input, &suffix) {
                     (Value::String(s), Value::String(p)) => {
                         output(Value::String(
-                            s.strip_suffix(p.as_str()).unwrap_or(s).to_string(),
+                            s.strip_suffix(&**p).unwrap_or(s).to_string().into(),
                         ));
                     }
                     _ => {
@@ -113,12 +121,13 @@ pub(super) fn eval_strings(
                 let mut pat = Value::Null;
                 eval(arg, input, env, &mut |v| pat = v);
                 if let Value::String(p) = pat {
-                    let trimmed = s.strip_prefix(p.as_str()).unwrap_or(s);
+                    let trimmed = s.strip_prefix(&*p).unwrap_or(s);
                     output(Value::String(
                         trimmed
-                            .strip_suffix(p.as_str())
+                            .strip_suffix(&*p)
                             .unwrap_or(trimmed)
-                            .to_string(),
+                            .to_string()
+                            .into(),
                     ));
                 } else {
                     output(input.clone());
@@ -137,7 +146,7 @@ pub(super) fn eval_strings(
                 eval(arg, input, env, &mut |v| prefix = v);
                 match (input, &prefix) {
                     (Value::String(s), Value::String(p)) => {
-                        output(Value::Bool(s.starts_with(p.as_str())));
+                        output(Value::Bool(s.starts_with(&**p)));
                     }
                     _ => {
                         set_error("startswith() requires string inputs".to_string());
@@ -151,7 +160,7 @@ pub(super) fn eval_strings(
                 eval(arg, input, env, &mut |v| suffix = v);
                 match (input, &suffix) {
                     (Value::String(s), Value::String(p)) => {
-                        output(Value::Bool(s.ends_with(p.as_str())));
+                        output(Value::Bool(s.ends_with(&**p)));
                     }
                     _ => {
                         set_error("endswith() requires string inputs".to_string());
@@ -165,9 +174,11 @@ pub(super) fn eval_strings(
                 eval(arg, input, env, &mut |v| sep = v);
                 if let Value::String(p) = sep {
                     let parts: Vec<Value> = if p.is_empty() {
-                        s.chars().map(|c| Value::String(c.to_string())).collect()
+                        s.chars()
+                            .map(|c| Value::String(c.to_string().into()))
+                            .collect()
                     } else {
-                        s.split(p.as_str())
+                        s.split(&*p)
                             .map(|part| Value::String(part.into()))
                             .collect()
                     };
@@ -222,7 +233,7 @@ pub(super) fn eval_strings(
                                 }
                             }
                         }
-                        output(Value::String(result));
+                        output(Value::String(result.into()));
                     }
                 });
             }
@@ -234,7 +245,7 @@ pub(super) fn eval_strings(
                     "rtrim" => s.trim_end(),
                     _ => s.trim(),
                 };
-                output(Value::String(trimmed.to_string()));
+                output(Value::String(trimmed.to_string().into()));
             } else {
                 set_error("trim input must be a string".to_string());
             }
@@ -246,7 +257,7 @@ pub(super) fn eval_strings(
                     (Value::String(s), Value::String(n)) => {
                         if n.is_empty() {
                             output(Value::Null);
-                        } else if let Some(byte_pos) = s.find(n.as_str()) {
+                        } else if let Some(byte_pos) = s.find(&**n) {
                             output(Value::Int(s[..byte_pos].chars().count() as i64));
                         } else {
                             output(Value::Null);
@@ -269,7 +280,7 @@ pub(super) fn eval_strings(
                     (Value::String(s), Value::String(n)) => {
                         if n.is_empty() {
                             output(Value::Null);
-                        } else if let Some(byte_pos) = s.rfind(n.as_str()) {
+                        } else if let Some(byte_pos) = s.rfind(&**n) {
                             output(Value::Int(s[..byte_pos].chars().count() as i64));
                         } else {
                             output(Value::Null);
@@ -293,7 +304,7 @@ pub(super) fn eval_strings(
                         let mut positions = Vec::new();
                         if !n.is_empty() {
                             let mut start = 0;
-                            while let Some(byte_pos) = s[start..].find(n.as_str()) {
+                            while let Some(byte_pos) = s[start..].find(&**n) {
                                 let abs_byte = start + byte_pos;
                                 positions.push(Value::Int(s[..abs_byte].chars().count() as i64));
                                 // Advance by 1 character to allow overlapping matches
@@ -370,7 +381,7 @@ pub(super) fn eval_strings(
                         s.push('\u{FFFD}');
                     }
                 }
-                output(Value::String(s));
+                output(Value::String(s.into()));
             } else {
                 set_error("implode input must be an array".to_string());
             }
@@ -378,7 +389,9 @@ pub(super) fn eval_strings(
         "tojson" => {
             let mut buf = Vec::new();
             crate::output::write_compact(&mut buf, input, false).unwrap();
-            output(Value::String(String::from_utf8(buf).unwrap_or_default()));
+            output(Value::String(
+                String::from_utf8(buf).unwrap_or_default().into(),
+            ));
         }
         "fromjson" => {
             if let Value::String(s) = input {
@@ -486,7 +499,7 @@ pub(super) fn eval_strings(
         }
         "toboolean" => match input {
             Value::Bool(_) => output(input.clone()),
-            Value::String(s) => match s.as_str() {
+            Value::String(s) => match &**s {
                 "true" => output(Value::Bool(true)),
                 "false" => output(Value::Bool(false)),
                 _ => {
