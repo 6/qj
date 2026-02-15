@@ -149,7 +149,13 @@ else:
 "
 }
 
-PLATFORM=$(uname -ms)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
+    RAM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d GB", $1/1073741824}')
+    PLATFORM="$CHIP ($RAM)"
+else
+    PLATFORM=$(uname -ms)
+fi
 DATE=$(date +%Y-%m-%d)
 
 # --- Run all benchmarks ---

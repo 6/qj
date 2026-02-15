@@ -943,9 +943,32 @@ fn main() {
     );
 
     let platform = {
-        let os = shell_output("uname", &["-s"]).to_lowercase();
-        let arch = shell_output("uname", &["-m"]);
-        format!("{os}-{arch}")
+        let os = shell_output("uname", &["-s"]);
+        if os.trim().eq_ignore_ascii_case("darwin") {
+            let chip = std::process::Command::new("sysctl")
+                .args(["-n", "machdep.cpu.brand_string"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "Apple Silicon".to_string());
+            let ram = std::process::Command::new("sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .map(|bytes| format!("{} GB", bytes / (1024 * 1024 * 1024)))
+                .unwrap_or_default();
+            if ram.is_empty() {
+                chip
+            } else {
+                format!("{chip} ({ram})")
+            }
+        } else {
+            let arch = shell_output("uname", &["-m"]);
+            format!("{}-{}", os.to_lowercase(), arch)
+        }
     };
     let date = shell_output("date", &["-u", "+%Y-%m-%d"]);
     eprintln!("Platform: {platform}");

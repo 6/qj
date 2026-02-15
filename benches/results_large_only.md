@@ -1,6 +1,6 @@
 # Large GH Archive Benchmark
 
-> Generated: 2026-02-15 on `Darwin arm64`
+> Generated: 2026-02-15 on `Apple M4 Pro (48 GB)`
 > 2 runs, no warmup via [hyperfine](https://github.com/sharkdp/hyperfine).
 
 ## Tier: ~1GB
