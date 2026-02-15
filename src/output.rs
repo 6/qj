@@ -31,16 +31,16 @@ pub struct ColorScheme {
 }
 
 impl ColorScheme {
-    /// jq's default color scheme.
+    /// jq's default color scheme (matches jq 1.7+ output).
     pub fn jq_default() -> Self {
         Self {
-            null: "\x1b[1;30m",
+            null: "\x1b[0;90m",
             bool_val: "\x1b[0;39m",
             number: "\x1b[0;39m",
             string: "\x1b[0;32m",
             array_bracket: "\x1b[1;39m",
             object_brace: "\x1b[1;39m",
-            object_key: "\x1b[34;1m",
+            object_key: "\x1b[1;34m",
             reset: "\x1b[0m",
         }
     }
@@ -115,61 +115,47 @@ pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) ->
 // ---------------------------------------------------------------------------
 
 /// Trait abstracting the whitespace/indentation differences between compact and
-/// pretty-printed JSON output. A single generic `write_value_inner<F>` handles
-/// the recursive walk; the two implementations control only formatting.
+/// pretty-printed JSON output.  Methods handle **only** whitespace (newlines,
+/// indentation, space after colon). Structural characters (`{`, `}`, `[`, `]`,
+/// `,`, `:`) are written by `write_value_inner` with color wrapping.
 ///
 /// Using a generic type parameter (not `dyn`) ensures monomorphization for
 /// zero runtime cost.
 trait JsonFormatter {
-    fn array_open<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
-    fn array_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
-    fn array_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
-    fn array_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
-    fn object_open<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
-    fn object_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
-    fn kv_sep<W: Write>(&self, w: &mut W) -> io::Result<()>;
-    fn object_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
-    fn object_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    /// Whitespace after `[`. Pretty: `\n`, Compact: nothing.
+    fn after_open<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    /// Whitespace + indent before the first element. Pretty: indent, Compact: nothing.
+    fn before_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    /// Whitespace after `,` between elements. Pretty: `\n` + indent, Compact: nothing.
+    fn after_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    /// Whitespace before `]`/`}`. Pretty: `\n` + indent, Compact: nothing.
+    fn before_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()>;
+    /// Whitespace after `:`. Pretty: ` `, Compact: nothing.
+    fn after_colon<W: Write>(&self, w: &mut W) -> io::Result<()>;
 }
 
 struct CompactFmt;
 
 impl JsonFormatter for CompactFmt {
     #[inline]
-    fn array_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b"[")
-    }
-    #[inline]
-    fn array_first<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
+    fn after_open<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
         Ok(())
     }
     #[inline]
-    fn array_sep<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b",")
-    }
-    #[inline]
-    fn array_close<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b"]")
-    }
-    #[inline]
-    fn object_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b"{")
-    }
-    #[inline]
-    fn object_first<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
+    fn before_first<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
         Ok(())
     }
     #[inline]
-    fn kv_sep<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(b":")
+    fn after_sep<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
+        Ok(())
     }
     #[inline]
-    fn object_sep<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b",")
+    fn before_close<W: Write>(&self, _w: &mut W, _depth: usize) -> io::Result<()> {
+        Ok(())
     }
     #[inline]
-    fn object_close<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b"}")
+    fn after_colon<W: Write>(&self, _w: &mut W) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -178,42 +164,41 @@ struct PrettyFmt<'a> {
 }
 
 impl<'a> JsonFormatter for PrettyFmt<'a> {
-    fn array_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b"[\n")
+    fn after_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
+        w.write_all(b"\n")
     }
-    fn array_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+    fn before_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
         write_indent(w, depth + 1, self.indent)
     }
-    fn array_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
-        w.write_all(b",\n")?;
-        write_indent(w, depth + 1, self.indent)
-    }
-    fn array_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+    fn after_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
         w.write_all(b"\n")?;
-        write_indent(w, depth, self.indent)?;
-        w.write_all(b"]")
-    }
-    fn object_open<W: Write>(&self, w: &mut W, _depth: usize) -> io::Result<()> {
-        w.write_all(b"{\n")
-    }
-    fn object_first<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
         write_indent(w, depth + 1, self.indent)
     }
-    fn kv_sep<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(b": ")
-    }
-    fn object_sep<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
-        w.write_all(b",\n")?;
-        write_indent(w, depth + 1, self.indent)
-    }
-    fn object_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
+    fn before_close<W: Write>(&self, w: &mut W, depth: usize) -> io::Result<()> {
         w.write_all(b"\n")?;
-        write_indent(w, depth, self.indent)?;
-        w.write_all(b"}")
+        write_indent(w, depth, self.indent)
+    }
+    fn after_colon<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(b" ")
+    }
+}
+
+/// Write a colored structural character (brace, bracket, comma, colon).
+/// When color is disabled, writes just the character with zero overhead.
+#[inline]
+fn write_colored<W: Write>(w: &mut W, ch: &[u8], color_code: &str, reset: &str) -> io::Result<()> {
+    if !color_code.is_empty() {
+        w.write_all(color_code.as_bytes())?;
+        w.write_all(ch)?;
+        w.write_all(reset.as_bytes())
+    } else {
+        w.write_all(ch)
     }
 }
 
 /// Unified recursive value writer, parameterized by formatter.
+/// Structural characters are written with color wrapping; the formatter
+/// handles only whitespace (newlines, indentation).
 fn write_value_inner<W: Write, F: JsonFormatter>(
     w: &mut W,
     value: &Value,
@@ -234,21 +219,11 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
             }
             Ok(())
         }
-        Value::Bool(true) => {
+        Value::Bool(b) => {
             if c {
                 w.write_all(color.bool_val.as_bytes())?;
             }
-            w.write_all(b"true")?;
-            if c {
-                w.write_all(color.reset.as_bytes())?;
-            }
-            Ok(())
-        }
-        Value::Bool(false) => {
-            if c {
-                w.write_all(color.bool_val.as_bytes())?;
-            }
-            w.write_all(b"false")?;
+            w.write_all(if *b { b"true" } else { b"false" })?;
             if c {
                 w.write_all(color.reset.as_bytes())?;
             }
@@ -286,64 +261,29 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
             Ok(())
         }
         Value::Array(arr) if arr.is_empty() => {
-            if c {
-                w.write_all(color.array_bracket.as_bytes())?;
-            }
-            w.write_all(b"[]")?;
-            if c {
-                w.write_all(color.reset.as_bytes())?;
-            }
-            Ok(())
+            write_colored(w, b"[]", color.array_bracket, color.reset)
         }
         Value::Array(arr) => {
-            if c {
-                w.write_all(color.array_bracket.as_bytes())?;
-            }
-            fmt.array_open(w, depth)?;
-            if c {
-                w.write_all(color.reset.as_bytes())?;
-            }
+            write_colored(w, b"[", color.array_bracket, color.reset)?;
+            fmt.after_open(w, depth)?;
             for (i, v) in arr.iter().enumerate() {
                 if i > 0 {
-                    if c {
-                        w.write_all(color.array_bracket.as_bytes())?;
-                    }
-                    fmt.array_sep(w, depth)?;
-                    if c {
-                        w.write_all(color.reset.as_bytes())?;
-                    }
+                    write_colored(w, b",", color.array_bracket, color.reset)?;
+                    fmt.after_sep(w, depth)?;
                 } else {
-                    fmt.array_first(w, depth)?;
+                    fmt.before_first(w, depth)?;
                 }
                 write_value_inner(w, v, fmt, depth + 1, sort_keys, color)?;
             }
-            if c {
-                w.write_all(color.array_bracket.as_bytes())?;
-            }
-            fmt.array_close(w, depth)?;
-            if c {
-                w.write_all(color.reset.as_bytes())?;
-            }
-            Ok(())
+            fmt.before_close(w, depth)?;
+            write_colored(w, b"]", color.array_bracket, color.reset)
         }
         Value::Object(obj) if obj.is_empty() => {
-            if c {
-                w.write_all(color.object_brace.as_bytes())?;
-            }
-            w.write_all(b"{}")?;
-            if c {
-                w.write_all(color.reset.as_bytes())?;
-            }
-            Ok(())
+            write_colored(w, b"{}", color.object_brace, color.reset)
         }
         Value::Object(obj) => {
-            if c {
-                w.write_all(color.object_brace.as_bytes())?;
-            }
-            fmt.object_open(w, depth)?;
-            if c {
-                w.write_all(color.reset.as_bytes())?;
-            }
+            write_colored(w, b"{", color.object_brace, color.reset)?;
+            fmt.after_open(w, depth)?;
             let sorted;
             let pairs: &[(String, Value)] = if sort_keys {
                 sorted = {
@@ -357,15 +297,10 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
             };
             for (i, (k, v)) in pairs.iter().enumerate() {
                 if i > 0 {
-                    if c {
-                        w.write_all(color.object_brace.as_bytes())?;
-                    }
-                    fmt.object_sep(w, depth)?;
-                    if c {
-                        w.write_all(color.reset.as_bytes())?;
-                    }
+                    write_colored(w, b",", color.object_brace, color.reset)?;
+                    fmt.after_sep(w, depth)?;
                 } else {
-                    fmt.object_first(w, depth)?;
+                    fmt.before_first(w, depth)?;
                 }
                 if c {
                     w.write_all(color.object_key.as_bytes())?;
@@ -374,17 +309,12 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
                 if c {
                     w.write_all(color.reset.as_bytes())?;
                 }
-                fmt.kv_sep(w)?;
+                write_colored(w, b":", color.object_brace, color.reset)?;
+                fmt.after_colon(w)?;
                 write_value_inner(w, v, fmt, depth + 1, sort_keys, color)?;
             }
-            if c {
-                w.write_all(color.object_brace.as_bytes())?;
-            }
-            fmt.object_close(w, depth)?;
-            if c {
-                w.write_all(color.reset.as_bytes())?;
-            }
-            Ok(())
+            fmt.before_close(w, depth)?;
+            write_colored(w, b"}", color.object_brace, color.reset)
         }
     }
 }
