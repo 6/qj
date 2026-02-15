@@ -1,4 +1,4 @@
-/// Conformance gap tests — 43 jq.test cases that jx currently fails.
+/// Conformance gap tests — 43 jq.test cases that qj currently fails.
 ///
 /// Auto-generated from jq.test failure analysis. Each test documents
 /// a specific gap with category and fix suggestion. Run individual tests
@@ -11,23 +11,23 @@
 /// As each gap is fixed, remove the test (it will be covered by jq_conformance).
 mod common;
 
-/// Run jx with a filter and input, return stdout lines.
+/// Run qj with a filter and input, return stdout lines.
 fn run_jx(filter: &str, input: &str) -> Vec<String> {
-    let jx = common::Tool {
-        name: "jx".to_string(),
-        path: env!("CARGO_BIN_EXE_jx").to_string(),
+    let qj = common::Tool {
+        name: "qj".to_string(),
+        path: env!("CARGO_BIN_EXE_qj").to_string(),
     };
-    match common::run_tool(&jx, filter, input, &["-c", "--"]) {
+    match common::run_tool(&qj, filter, input, &["-c", "--"]) {
         Some(output) => output
             .lines()
             .filter(|l| !l.is_empty())
             .map(String::from)
             .collect(),
-        None => vec!["<jx failed to run>".to_string()],
+        None => vec!["<qj failed to run>".to_string()],
     }
 }
 
-/// Check if jx output matches expected (JSON-aware comparison).
+/// Check if qj output matches expected (JSON-aware comparison).
 fn assert_gap(filter: &str, input: &str, expected: &[&str]) {
     let actual = run_jx(filter, input);
     let actual_refs: Vec<&str> = actual.iter().map(|s| s.as_str()).collect();
@@ -413,7 +413,7 @@ fn gap_module_system_line1955_import_test_bind_order_as_chec() {
 // Category: Big number / arbitrary precision (have_decnum)
 // 12 test(s)
 //
-// Fix: jx uses i64/f64; jq with decnum uses arbitrary precision. Most of these tests check `have_decnum` conditionals. Consider implementing the non-decnum branch or skipping.
+// Fix: qj uses i64/f64; jq with decnum uses arbitrary precision. Most of these tests check `have_decnum` conditionals. Consider implementing the non-decnum branch or skipping.
 // ======================================================================
 
 /// jq.test line 661: `9E999999999, 9999999999E999999990, 1E-999999999, 0.000000001E-999999990`

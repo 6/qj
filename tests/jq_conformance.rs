@@ -1,7 +1,7 @@
 /// jq conformance test runner.
 ///
 /// Parses the official jq test suite (`tests/jq_compat/jq.test` from jqlang/jq)
-/// and runs each test case against jx. Reports pass/fail percentage.
+/// and runs each test case against qj. Reports pass/fail percentage.
 ///
 /// This test always passes — it's a measurement tool, not a gate.
 /// Run with `--nocapture` to see the summary:
@@ -88,11 +88,11 @@ fn parse_jq_test_file(content: &str) -> Vec<TestCase> {
 }
 
 fn run_test_case(case: &TestCase) -> TestResult {
-    let jx = common::Tool {
-        name: "jx".to_string(),
-        path: env!("CARGO_BIN_EXE_jx").to_string(),
+    let qj = common::Tool {
+        name: "qj".to_string(),
+        path: env!("CARGO_BIN_EXE_qj").to_string(),
     };
-    match common::run_tool(&jx, &case.filter, &case.input, &["-c", "--"]) {
+    match common::run_tool(&qj, &case.filter, &case.input, &["-c", "--"]) {
         Some(output) => {
             let actual_lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
             let expected_lines: Vec<&str> = case.expected.iter().map(|s| s.as_str()).collect();

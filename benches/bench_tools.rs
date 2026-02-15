@@ -10,7 +10,7 @@ use std::time::Duration;
 // --- CLI ---
 
 #[derive(Parser)]
-#[command(about = "Benchmark jx vs jq vs jaq vs gojq. Writes results to markdown.")]
+#[command(about = "Benchmark qj vs jq vs jaq vs gojq. Writes results to markdown.")]
 struct Args {
     /// Seconds to sleep between benchmark groups (mitigates thermal throttling)
     #[arg(long, default_value_t = 5)]
@@ -185,10 +185,10 @@ fn find_tool(name: &str) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-fn discover_tools(jx_path: &str) -> Vec<Tool> {
+fn discover_tools(qj_path: &str) -> Vec<Tool> {
     let mut tools = vec![Tool {
-        name: "jx".into(),
-        path: jx_path.into(),
+        name: "qj".into(),
+        path: qj_path.into(),
     }];
     match find_tool("jq") {
         Some(path) => tools.push(Tool {
@@ -447,7 +447,7 @@ fn generate_markdown(
     let mut header = String::from("| Filter | File |");
     let mut separator = String::from("|--------|------|");
     for tool in tools {
-        if tool.name == "jx" {
+        if tool.name == "qj" {
             write!(header, " **{}** |", tool.name).unwrap();
         } else {
             write!(header, " {} |", tool.name).unwrap();
@@ -469,7 +469,7 @@ fn generate_markdown(
                 let formatted = val
                     .map(|v| format_time(*v))
                     .unwrap_or_else(|| "-".to_string());
-                if tool.name == "jx" {
+                if tool.name == "qj" {
                     write!(row, " **{formatted}** |").unwrap();
                 } else {
                     write!(row, " {formatted} |").unwrap();
@@ -486,7 +486,7 @@ fn generate_markdown(
         writeln!(md).unwrap();
         writeln!(
             md,
-            "jx processes NDJSON in parallel across all cores using rayon."
+            "qj processes NDJSON in parallel across all cores using rayon."
         )
         .unwrap();
         writeln!(md).unwrap();
@@ -503,7 +503,7 @@ fn generate_markdown(
                     let formatted = val
                         .map(|v| format_time(*v))
                         .unwrap_or_else(|| "-".to_string());
-                    if tool.name == "jx" {
+                    if tool.name == "qj" {
                         write!(row, " **{formatted}** |").unwrap();
                     } else {
                         write!(row, " {formatted} |").unwrap();
@@ -543,7 +543,7 @@ fn generate_markdown(
             let tp = val
                 .map(|v| format_throughput(largest_bytes, *v))
                 .unwrap_or_else(|| "-".to_string());
-            if tool.name == "jx" {
+            if tool.name == "qj" {
                 write!(tp_header, " **{}** |", tool.name).unwrap();
                 write!(tp_row, " **{tp}** |").unwrap();
             } else {
@@ -568,7 +568,7 @@ fn generate_markdown(
         if tool.name == "jq" {
             continue;
         }
-        if tool.name == "jx" {
+        if tool.name == "qj" {
             write!(sum_header, " **{}** |", tool.name).unwrap();
         } else {
             write!(sum_header, " {} |", tool.name).unwrap();
@@ -598,7 +598,7 @@ fn generate_markdown(
         let formatted = geomean_ratio(&pairs)
             .map(|v| format!("{v:.1}x"))
             .unwrap_or_else(|| "-".to_string());
-        if tool.name == "jx" {
+        if tool.name == "qj" {
             write!(json_row, " **{formatted}** |").unwrap();
         } else {
             write!(json_row, " {formatted} |").unwrap();
@@ -627,7 +627,7 @@ fn generate_markdown(
             let formatted = geomean_ratio(&pairs)
                 .map(|v| format!("{v:.1}x"))
                 .unwrap_or_else(|| "-".to_string());
-            if tool.name == "jx" {
+            if tool.name == "qj" {
                 write!(ndjson_row, " **{formatted}** |").unwrap();
             } else {
                 write!(ndjson_row, " {formatted} |").unwrap();
@@ -648,13 +648,13 @@ fn generate_markdown(
 
 fn main() {
     let args = Args::parse();
-    let jx_path = "./target/release/jx";
+    let qj_path = "./target/release/qj";
     let data_dir = Path::new("benches/data");
     let results_dir = Path::new("benches/results");
 
     // --- Preflight checks ---
-    if !Path::new(jx_path).exists() {
-        eprintln!("Error: {jx_path} not found. Run: cargo build --release");
+    if !Path::new(qj_path).exists() {
+        eprintln!("Error: {qj_path} not found. Run: cargo build --release");
         std::process::exit(1);
     }
     if find_tool("hyperfine").is_none() {
@@ -663,7 +663,7 @@ fn main() {
     }
     fs::create_dir_all(results_dir).unwrap();
 
-    let tools = discover_tools(jx_path);
+    let tools = discover_tools(qj_path);
 
     eprintln!(
         "Settings: --cooldown {} --runs {} --output {}",
@@ -698,17 +698,17 @@ fn main() {
 
     // --- Correctness check ---
     eprintln!("=== Correctness check ===");
-    let jx = &tools[0];
+    let qj = &tools[0];
     let jq = &tools[1];
     let mut all_correct = true;
     for file in &json_files {
         let file_path = data_dir.join(file);
         for filter in JSON_FILTERS {
-            let jx_out = run_tool_output(jx, filter, &file_path);
+            let qj_out = run_tool_output(qj, filter, &file_path);
             let jq_out = run_tool_output(jq, filter, &file_path);
-            if jx_out != jq_out {
+            if qj_out != jq_out {
                 eprintln!("MISMATCH: {} on {file}", filter.name);
-                for (label, out) in [("jx", &jx_out), ("jq", &jq_out)] {
+                for (label, out) in [("qj", &qj_out), ("jq", &jq_out)] {
                     let preview: String = out.lines().take(3).collect::<Vec<_>>().join("\n");
                     eprintln!("  {label}: {preview}");
                 }

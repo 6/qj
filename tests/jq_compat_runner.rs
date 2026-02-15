@@ -1,7 +1,7 @@
 /// Cross-tool jq compatibility runner.
 ///
 /// Parses the official jq test suite (`tests/jq_compat/jq.test` from jqlang/jq)
-/// and runs each test case against jx, jq, jaq, and gojq (whichever are on
+/// and runs each test case against qj, jq, jaq, and gojq (whichever are on
 /// `$PATH`). Reports per-tool pass rates with a per-category breakdown.
 /// Results are written to `tests/jq_compat/results.md`.
 ///

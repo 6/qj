@@ -1,4 +1,4 @@
-# jx — A faster jq for large JSON and JSONL
+# qj — A faster jq for large JSON and JSONL
 
 A jq-compatible JSON processor that uses SIMD parsing (C++ simdjson via
 FFI), parallel NDJSON processing, and streaming architecture to be
@@ -40,7 +40,7 @@ performance problems:
    on multi-core machines with zero user configuration. simdjson's
    `iterate_many` already does 3.5 GB/s on NDJSON — we build on it.
 
-jx aims to beat everything on *parsing throughput* and *parallel
+qj aims to beat everything on *parsing throughput* and *parallel
 processing*, while matching jaq on *filter evaluation speed*. The
 performance story is SIMD parsing + parallelism, not a faster evaluator.
 
@@ -53,7 +53,7 @@ performance story is SIMD parsing + parallelism, not a faster evaluator.
 | jq 1.7 | 23-62 MB/s e2e | baseline | No | No | No | Yes (`--stream`)* | 100% | All |
 | jaq 2.3 | 93-187 MB/s e2e | 1.3-2x jq | No | No | No | No | ~90% | All |
 | gojq 0.12 | 47-122 MB/s e2e | 0.8-2.5x jq | No | No | No | No | ~85% | All |
-| **jx 0.1** | **7-9 GB/s parse** | **3-63x jq** | **Planned** | **Yes (NEON/AVX2)** | **Passthrough** | **Planned** | **~60%** | **macOS/Linux** |
+| **qj 0.1** | **7-9 GB/s parse** | **3-63x jq** | **Planned** | **Yes (NEON/AVX2)** | **Passthrough** | **Planned** | **~60%** | **macOS/Linux** |
 
 \* jq's `--stream` mode parses incrementally, emitting `[[path], value]`
 pairs without loading the full tree. It works for constant-memory
@@ -61,7 +61,7 @@ processing of large files, but requires a completely different programming
 model — you work with path arrays instead of normal jq filters (e.g.,
 `jq --stream 'select(.[0] == ["name"]) | .[1]'` instead of `jq '.name'`).
 It's also significantly slower than normal mode because every value gets
-wrapped in a path tuple. jx's streaming (Phase 4) uses normal jq filter
+wrapped in a path tuple. qj's streaming (Phase 4) uses normal jq filter
 syntax with automatic streaming behavior — that's the real differentiator.
 
 ---
@@ -133,7 +133,7 @@ Binary size impact is ~500KB.
 ## Architecture
 
 ```
-jx/
+qj/
 ├── src/
 │   ├── main.rs               # CLI (clap derive), orchestration
 │   ├── lib.rs                 # Module declarations
@@ -172,7 +172,7 @@ jx/
 
 ## Platform strategy — why cross-platform
 
-Unlike gg, jx's advantages are **not platform-specific**:
+Unlike gg, qj's advantages are **not platform-specific**:
 
 - SIMD parsing: simdjson auto-selects NEON (ARM), AVX2 (x86), or SSE4.2
   at runtime. Single binary, all platforms.
@@ -425,7 +425,7 @@ Results exceed expectations:
 
 ## Phase 1: Filter parser, evaluator, and output
 
-**Goal:** `jx '.field' file.json` works end-to-end, producing identical
+**Goal:** `qj '.field' file.json` works end-to-end, producing identical
 output to jq. Throughput ≥5x jq on large files.
 
 ### Phase 0 lessons applied
@@ -448,7 +448,7 @@ Phase 0 revealed several things that change the Phase 1 approach:
 3. **End-to-end benchmarks from day one.** Phase 0 numbers compare
    in-process parse throughput vs external tool end-to-end, which inflates
    the ratios. Phase 1 must include honest end-to-end benchmarks:
-   `jx '.name' file > /dev/null` vs `jq '.name' file > /dev/null`.
+   `qj '.name' file > /dev/null` vs `jq '.name' file > /dev/null`.
    The real advantage will be ~10-30x vs jq (not 264x), and that's the
    number we should report.
 
@@ -548,7 +548,7 @@ ordered `write_all`. Avoids contention on stdout.
 output. Add Tier 0 passthrough as a follow-up optimization once the
 basic pipeline works.
 
-**Success criterion:** `jx '.field' file.json` produces identical output
+**Success criterion:** `qj '.field' file.json` produces identical output
 to `jq '.field' file.json` for all Tier 1 filters. End-to-end throughput
 ≥5x jq, ≥2x jaq on large files (measured with real output, not
 parse-only).
@@ -585,7 +585,7 @@ Where we're at parity with jaq:
 
 ### Phase 1 results (Apple Silicon M-series, 2025-02)
 
-**Status: COMPLETE — `jx '.field' file.json` works end-to-end.**
+**Status: COMPLETE — `qj '.field' file.json` works end-to-end.**
 
 All Phase 1 slices implemented: Value type, output formatter (Tier 1
 direct-to-buffer with itoa/ryu, Tier 2 pretty-print), simdjson DOM bridge
@@ -631,16 +631,16 @@ significant portion of Tier 3:
 Measured with hyperfine (warmup 3, shell=none). jq 1.7.1, jaq 2.3.0,
 gojq 0.12.18 via Homebrew. Apple Silicon.
 
-| Benchmark | jx | jq | jaq | jx vs jq | jx vs jaq |
+| Benchmark | qj | jq | jaq | qj vs jq | qj vs jaq |
 |-----------|-----|-----|------|----------|-----------|
 | `.statuses[0].user.screen_name` twitter.json (631KB) | 4.0ms | 8.9ms | 4.9ms | **2.25x** | 1.25x |
 | `-c '.'` canada.json (2.2MB) | 10.4ms | 40.7ms | 13.2ms | **3.9x** | 1.27x |
 | `-c '.performances \| keys \| length'` citm_catalog.json (1.7MB) | 5.3ms | 18.7ms | 6.8ms | **3.5x** | 1.29x |
 
 Output verified byte-identical to jq on all test files:
-- `diff <(jx -c '.' twitter.json) <(jq -c '.' twitter.json)` → match
-- `diff <(jx -c '.statuses[] | .user.screen_name' twitter.json) <(jq -c ...)` → match
-- `diff <(jx -c '.statuses[] | select(.retweet_count > 0) | {user: .user.screen_name, retweets: .retweet_count}' twitter.json) <(jq -c ...)` → match
+- `diff <(qj -c '.' twitter.json) <(jq -c '.' twitter.json)` → match
+- `diff <(qj -c '.statuses[] | .user.screen_name' twitter.json) <(jq -c ...)` → match
+- `diff <(qj -c '.statuses[] | select(.retweet_count > 0) | {user: .user.screen_name, retweets: .retweet_count}' twitter.json) <(jq -c ...)` → match
 
 #### Assessment vs success criteria
 
@@ -682,7 +682,7 @@ The throughput targets are not met yet. Analysis:
 | `src/filter/lexer.rs` | Tokenizer (47 token types) |
 | `src/filter/parser.rs` | Recursive descent parser |
 | `src/filter/eval.rs` | Generator-based evaluator, 30+ builtins |
-| `src/simdjson/bridge.cpp` | Extended with `jx_dom_to_flat()` (flat token buffer) |
+| `src/simdjson/bridge.cpp` | Extended with `qj_dom_to_flat()` (flat token buffer) |
 | `src/simdjson/bridge.rs` | Extended with `dom_parse_to_value()` |
 | `src/main.rs` | CLI (clap derive), stdin/file input, filter → eval → output |
 | `tests/e2e.rs` | 42 end-to-end tests |
@@ -697,12 +697,12 @@ simdjson parse advantage is invisible because **parsing is <1ms
 regardless of parser at this size**. The time goes to:
 
 - Process startup: ~2-3ms (both tools)
-- DOM→Value tree construction + cloning during eval: ~3-4ms (jx-specific overhead)
+- DOM→Value tree construction + cloning during eval: ~3-4ms (qj-specific overhead)
 - Output serialization: ~2-3ms (both tools, fundamentally same speed)
 
 We *think* the bottleneck is DOM→Value construction + output
 serialization, but we haven't validated this on large files — which
-is jx's actual value proposition. **Revised approach:** benchmark large
+is qj's actual value proposition. **Revised approach:** benchmark large
 files first, profile to understand where time actually goes, then
 implement passthrough if the data justifies it.
 
@@ -710,7 +710,7 @@ implement passthrough if the data justifies it.
 
 **Status: COMPLETE.**
 
-Generated ~49MB test files, benchmarked all tools, profiled jx internals.
+Generated ~49MB test files, benchmarked all tools, profiled qj internals.
 Also fixed double-allocation in file reading (`read_padded_file()` in
 `bridge.rs` — single alloc, no copy). Added `--debug-timing` flag for
 profiling breakdown.
@@ -719,7 +719,7 @@ profiling breakdown.
 
 Small file — twitter.json (631KB):
 
-| Filter | jx | jq | jaq | gojq | jx vs jq | jx vs jaq |
+| Filter | qj | jq | jaq | gojq | qj vs jq | qj vs jaq |
 |--------|----|----|-----|------|----------|-----------|
 | `-c '.'` | 4.1ms | 16.5ms | 5.8ms | 8.2ms | **4.0x** | **1.4x** |
 | `-c '.statuses'` | 4.2ms | 16.7ms | 5.7ms | 8.2ms | **4.0x** | **1.4x** |
@@ -728,7 +728,7 @@ Small file — twitter.json (631KB):
 
 Large file — large_twitter.json (49MB):
 
-| Filter | jx | jq | jaq | gojq | jx vs jq | jx vs jaq |
+| Filter | qj | jq | jaq | gojq | qj vs jq | qj vs jaq |
 |--------|----|----|-----|------|----------|-----------|
 | `-c '.'` | 260ms | 1178ms | 259ms | 453ms | **4.5x** | **1.0x** |
 | `-c '.statuses'` | 261ms | 1173ms | 258ms | 448ms | **4.5x** | **1.0x** |
@@ -749,10 +749,10 @@ Large file — large_twitter.json (49MB):
 1. Parse + output = **79% of total time** on identity compact. Passthrough
    (skip Value construction + output serialization) would eliminate most
    of this. **Decision: proceed with passthrough (Step 2).**
-2. On large files, jaq is neck-and-neck with jx on identity/field compact
+2. On large files, jaq is neck-and-neck with qj on identity/field compact
    (~259ms vs ~260ms). jaq pulls ahead on iterate+field (172ms vs 256ms)
    — likely because jaq's evaluator avoids cloning Values.
-3. jx is consistently 4-4.5x faster than jq on identity/field compact
+3. qj is consistently 4-4.5x faster than jq on identity/field compact
    (both small and large), but only 1.6-2x on iterate+field.
 4. The 7-9 GB/s simdjson advantage is hidden behind DOM→Value construction
    (114ms) and output serialization (56ms). With passthrough, identity
@@ -796,12 +796,12 @@ IntoIterator, `Rc::new()` for construction).
 
 | Tool | Before Rc | After Rc |
 |------|-----------|----------|
-| jx | 256ms | **157ms** |
+| qj | 256ms | **157ms** |
 | jaq | 172ms | 169ms |
 | jq | 398ms | 390ms |
-| jx vs jaq | **0.67x** (jaq wins) | **1.08x** (jx wins) |
+| qj vs jaq | **0.67x** (jaq wins) | **1.08x** (qj wins) |
 
-**Key outcome:** jx now beats jaq on iterate+field — was 1.5x slower,
+**Key outcome:** qj now beats jaq on iterate+field — was 1.5x slower,
 now 1.08x faster. Eval dropped from 33ms to 5ms (6.6x improvement).
 Total improved from 256ms to 157ms (1.6x).
 
@@ -816,8 +816,8 @@ filter is `Filter::Identity` and the output mode is compact, write the
 minified bytes + newline and skip the entire Value pipeline.
 
 **Implementation:**
-- `bridge.cpp`: Added `jx_minify()` (wraps `simdjson::minify()`) and
-  `jx_minify_free()`.
+- `bridge.cpp`: Added `qj_minify()` (wraps `simdjson::minify()`) and
+  `qj_minify_free()`.
 - `bridge.rs`: Added FFI declarations + safe `pub fn minify()` wrapper.
 - `filter/mod.rs`: Added `PassthroughPath` enum + `passthrough_path()`
   to detect eligible filters (currently only `Filter::Identity`).
@@ -838,9 +838,9 @@ minified bytes + newline and skip the entire Value pipeline.
 
 **Benchmark results** (Apple Silicon, hyperfine --warmup 3, 49MB file):
 
-| Tool | Time | jx speedup |
+| Tool | Time | qj speedup |
 |------|------|------------|
-| jx `-c .` | **18.2ms** | — |
+| qj `-c .` | **18.2ms** | — |
 | jaq `-c .` | 253ms | **13.9x** |
 | jq `-c .` | 1,157ms | **63.5x** |
 
@@ -872,11 +872,11 @@ C++ FFI function that DOM parses, navigates to the target field via
 This bypasses Value construction, eval, and Rust output serialization.
 
 **Implementation:**
-- `bridge.cpp`: Added `jx_dom_find_field_raw()` — DOM parse + nested
+- `bridge.cpp`: Added `qj_dom_find_field_raw()` — DOM parse + nested
   field navigation + `to_string()` serialization. Handles missing fields
   (returns `"null"`) and non-object inputs (returns `"null"`).
 - `bridge.rs`: Added FFI declaration + safe `pub fn dom_find_field_raw()`
-  wrapper. Reuses `jx_minify_free()` for deallocation.
+  wrapper. Reuses `qj_minify_free()` for deallocation.
 - `filter/mod.rs`: Extended `PassthroughPath` with `Field(Vec<String>)`.
   Added `collect_field_chain()` to detect `.a.b.c` pipe chains.
 - `main.rs`: Added field match arm in passthrough pre-check for both
@@ -894,17 +894,17 @@ This bypasses Value construction, eval, and Rust output serialization.
 
 **Benchmark results** (Apple Silicon, hyperfine --warmup 3, 49MB file):
 
-| Tool | Time | jx speedup |
+| Tool | Time | qj speedup |
 |------|------|------------|
-| jx `-c .statuses` | **74ms** | — |
+| qj `-c .statuses` | **74ms** | — |
 | jaq `-c .statuses` | 246ms | **3.3x** |
 | jq `-c .statuses` | 1,132ms | **15.3x** |
 
 Small file (twitter.json, 631KB):
 
-| Tool | Time | jx speedup |
+| Tool | Time | qj speedup |
 |------|------|------------|
-| jx `-c .statuses` | **2.4ms** | — |
+| qj `-c .statuses` | **2.4ms** | — |
 | jaq `-c .statuses` | 6.4ms | **2.7x** |
 | jq `-c .statuses` | 16.7ms | **6.9x** |
 
@@ -912,9 +912,9 @@ Small file (twitter.json, 631KB):
 
 | | Before | After | Improvement |
 |---|--------|-------|-------------|
-| jx | 261ms | **74ms** | **3.5x** |
-| jx vs jaq | 1.0x (tied) | **3.3x** |
-| jx vs jq | 4.5x | **15.3x** |
+| qj | 261ms | **74ms** | **3.5x** |
+| qj vs jaq | 1.0x (tied) | **3.3x** |
+| qj vs jq | 4.5x | **15.3x** |
 
 **Verification:** Output byte-identical to `jq -c .statuses` on both
 twitter.json and large_twitter.json.
@@ -927,7 +927,7 @@ improvement would require On-Demand parsing or a sub-tree minify approach.
 
 **Updated performance table** (49MB large_twitter.json):
 
-| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+| Filter | qj | jq | jaq | qj vs jq | qj vs jaq |
 |--------|----|----|-----|----------|-----------|
 | `-c '.'` | **18ms** | 1,157ms | 253ms | 63x | 14x |
 | `-c '.statuses'` | **74ms** | 1,132ms | 246ms | 15x | 3.3x |
@@ -943,10 +943,10 @@ and Rust output serialization.
 
 **Implementation:**
 - `bridge.cpp`: Factored out `navigate_fields()` shared helper (dedup
-  from `jx_dom_find_field_raw`). Added `json_escape()` for key
-  serialization. New `jx_dom_field_length()` (array/object→size,
+  from `qj_dom_find_field_raw`). Added `json_escape()` for key
+  serialization. New `qj_dom_field_length()` (array/object→size,
   string→byte length, null→0, other→fallback signal) and
-  `jx_dom_field_keys()` (object→sorted keys, array→indices, other→fallback).
+  `qj_dom_field_keys()` (object→sorted keys, array→indices, other→fallback).
 - `bridge.rs`: FFI declarations + safe `dom_field_length()` /
   `dom_field_keys()` wrappers returning `Result<Option<Vec<u8>>>`.
   `None` = unsupported type (caller falls back to normal pipeline).
@@ -973,7 +973,7 @@ and Rust output serialization.
 
 **Benchmark results** (Apple Silicon, hyperfine --warmup 3, 49MB file):
 
-| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+| Filter | qj | jq | jaq | qj vs jq | qj vs jaq |
 |--------|----|----|-----|----------|-----------|
 | `.statuses \| length` | **33ms** | 398ms | 167ms | **12.2x** | **5.1x** |
 | `-c '.statuses \| keys'` | **31ms** | 393ms | 165ms | **12.6x** | **5.3x** |
@@ -981,7 +981,7 @@ and Rust output serialization.
 
 Small file (twitter.json, 631KB):
 
-| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+| Filter | qj | jq | jaq | qj vs jq | qj vs jaq |
 |--------|----|----|-----|----------|-----------|
 | `.statuses \| length` | **2.0ms** | 9.3ms | 5.3ms | **4.6x** | **2.6x** |
 
@@ -989,16 +989,16 @@ Small file (twitter.json, 631KB):
 
 | | Before (Step 1) | After (Step 3c) | Improvement |
 |---|-----------------|-----------------|-------------|
-| jx | 208ms | **33ms** | **6.3x** |
-| jx vs jaq | 0.79x (jaq wins) | **5.1x** |
-| jx vs jq | 1.9x | **12.2x** |
+| qj | 208ms | **33ms** | **6.3x** |
+| qj vs jaq | 0.79x (jaq wins) | **5.1x** |
+| qj vs jq | 1.9x | **12.2x** |
 
 **Verification:** Output byte-identical to jq for `.statuses | length`
 and `.statuses | keys` on both twitter.json and large_twitter.json.
 
 **Updated cumulative performance table** (49MB large_twitter.json):
 
-| Filter | jx | jq | jaq | jx vs jq | jx vs jaq |
+| Filter | qj | jq | jaq | qj vs jq | qj vs jaq |
 |--------|----|----|-----|----------|-----------|
 | `-c '.'` | **18ms** | 1,157ms | 253ms | 63x | 14x |
 | `-c '.statuses'` | **74ms** | 1,132ms | 246ms | 15x | 3.3x |
@@ -1008,11 +1008,11 @@ and `.statuses | keys` on both twitter.json and large_twitter.json.
 ### Step 4: NDJSON end-to-end benchmarks + parallel NDJSON
 
 The 82MB NDJSON file from Phase 0 (`1m.ndjson`) already exists but
-hasn't been benchmarked end-to-end. This is jx's strongest positioning
+hasn't been benchmarked end-to-end. This is qj's strongest positioning
 — SIMD parse + parallelism on independent lines.
 
 **Phase 1: benchmark single-threaded NDJSON.** Add 1m.ndjson to
-`benches/run_bench.sh`. Measure jx vs jq vs jaq vs gojq. This gives
+`benches/run_bench.sh`. Measure qj vs jq vs jaq vs gojq. This gives
 the single-threaded baseline before parallelism.
 
 **Phase 2: parallel NDJSON.** Design from Phase 2 section holds:
@@ -1030,7 +1030,7 @@ path for performance — do this when the speed story is solid.
 | Priority | Feature | Why it matters |
 |----------|---------|----------------|
 | High | `--slurp` / `-s` | Very common flag, blocks entire categories of usage |
-| High | `--arg name val` / `--argjson` | CLI variable injection — any script using `$TOKEN` etc. can't use jx without this |
+| High | `--arg name val` / `--argjson` | CLI variable injection — any script using `$TOKEN` etc. can't use qj without this |
 | High | `.[2:5]` (array slicing) | Common, simple to implement (index works, range doesn't) |
 | Medium | `. as $x \| ...` (variable binding) | Required for complex jq idioms, fewer users |
 | Medium | `reduce .[] as $x (init; update)` | Aggregation — needs variable binding first |
@@ -1058,7 +1058,7 @@ for anything requiring random access.
 
 ## Phase 2: Parallel NDJSON
 
-**Goal:** `cat huge.jsonl | jx '.field'` uses all cores and achieves
+**Goal:** `cat huge.jsonl | qj '.field'` uses all cores and achieves
 near-linear speedup.
 
 ### 2a. NDJSON detection
@@ -1119,7 +1119,7 @@ For piped input (not seekable), we can't mmap. Instead:
 This allows streaming — output appears as input arrives, with ~1MB
 latency for chunk accumulation.
 
-**Success criterion:** `jx '.field' 1gb.jsonl` is ≥5x faster than
+**Success criterion:** `qj '.field' 1gb.jsonl` is ≥5x faster than
 `jq '.field' 1gb.jsonl` on an 8+ core machine. ≥30x faster with
 10 cores + SIMD combined.
 
@@ -1145,7 +1145,7 @@ processing for filters containing `Rc`-based array/object literals.
 
 | Tool | Wall time | User time | Notes |
 |------|-----------|-----------|-------|
-| jx   | 120ms     | 1,327ms   | Multi-core (rayon) |
+| qj   | 120ms     | 1,327ms   | Multi-core (rayon) |
 | jq   | 1,230ms   | 1,210ms   | Single-threaded |
 | jaq  | 670ms     | 650ms     | Single-threaded |
 
@@ -1172,7 +1172,7 @@ confirms rayon is using multiple cores effectively.
 ## Phase 3: Tier 2+3 filter support
 
 **Goal:** Cover the "weekly ten" and "monthly rest" filters. At this
-point jx is usable for most real-world tasks.
+point qj is usable for most real-world tasks.
 
 **Status: MOSTLY COMPLETE.** Phase 1 already implemented 14 of the 15
 Tier 2 filters and many Tier 3 filters. See Phase 1 results for the
@@ -1207,7 +1207,7 @@ Also already done from Tier 3: `to_entries`, `from_entries`, `sort`,
 
 High priority (unblock real-world scripts):
 1. **`--slurp` / `-s`** — Very common CLI flag, blocks entire categories of usage
-2. **`--arg` / `--argjson`** — CLI variable injection — scripts using `$TOKEN` etc. can't use jx without this
+2. **`--arg` / `--argjson`** — CLI variable injection — scripts using `$TOKEN` etc. can't use qj without this
 3. **Array slicing** — `.[2:5]`, `.[:-1]` — common, simple to implement
 
 Medium priority (complex jq idioms):
@@ -1241,7 +1241,7 @@ Low priority:
 ### Conformance testing
 
 Build a test harness that:
-1. Runs every filter expression through both `jx` and `jq`
+1. Runs every filter expression through both `qj` and `jq`
 2. Compares output byte-for-byte
 3. Tests against a corpus of real-world JSON (GitHub API responses,
    npm package.json, AWS CloudTrail logs, Kubernetes manifests)
@@ -1255,7 +1255,7 @@ jq. Performance regression ≤5% vs Phase 1 for Tier 1 filters.
 
 ## Phase 4: Streaming large single-file JSON
 
-**Goal:** `jx '.items[]' 5gb_array.json` works without loading 5GB
+**Goal:** `qj '.items[]' 5gb_array.json` works without loading 5GB
 into memory.
 
 ### The problem
@@ -1307,7 +1307,7 @@ we need to identify top-level elements of `.items`, then for each,
 identify elements of `.tags`. The structural scanner needs to track
 nesting depth.
 
-**Success criterion:** `jx '.[]' 1gb_array.json` completes in <10s
+**Success criterion:** `qj '.[]' 1gb_array.json` completes in <10s
 with <100MB RSS. `jq '.[]' 1gb_array.json` uses >5GB RSS.
 
 ---
@@ -1415,7 +1415,7 @@ Original estimates vs actuals:
 These account for output formatting overhead and measured iterate_many
 throughput (~2,800 MB/s per thread, not ~8,000).
 
-| Workload | jq | jx (1 thread) | jx (10 threads) | Speedup |
+| Workload | jq | qj (1 thread) | qj (10 threads) | Speedup |
 |----------|-----|---------------|-----------------|---------|
 | `'.field' 100mb.jsonl` | ~1.5s | ~0.1s | ~0.02s | **75x** |
 | `'.field' 1gb.jsonl` | ~15s | ~1s | ~0.15s | **100x** |
@@ -1424,12 +1424,12 @@ throughput (~2,800 MB/s per thread, not ~8,000).
 
 Note: jq end-to-end is much slower than "parse throughput" estimates
 because it includes output formatting (pretty-print identity = read +
-parse + serialize + write). The single-threaded jx advantage is ~10-15x
+parse + serialize + write). The single-threaded qj advantage is ~10-15x
 for end-to-end workloads. Parallelism on NDJSON adds another ~8x.
 
 ### Filter evaluation (Phase 1)
 
-| Benchmark | jq | jaq | jx target |
+| Benchmark | jq | jaq | qj target |
 |-----------|-----|------|-----------|
 | Startup (empty filter) | ~5ms | ~1ms | ≤1ms |
 | Simple field access | baseline | ~2x jq | ~2x jq (match jaq) |
@@ -1441,7 +1441,7 @@ both use native integers, both can use efficient memory management. jaq
 has had years of optimization; claiming we'd beat it on eval is not
 credible. The real win is in parsing and parallelism, not the evaluator.
 
-### Honest performance comparison: jx vs jaq vs jq (revised)
+### Honest performance comparison: qj vs jaq vs jq (revised)
 
 | Scenario | vs jq | vs jaq | Why |
 |----------|-------|--------|-----|
@@ -1472,7 +1472,7 @@ And one architectural advantage:
    memory (jq's `--stream` exists but requires a different programming model)
 
 **What we're NOT claiming:** Faster filter evaluation than jaq. On
-eval-dominated workloads (complex filters, small inputs), jx and jaq
+eval-dominated workloads (complex filters, small inputs), qj and jaq
 are roughly equivalent. The performance story is parsing + parallelism.
 
 **Primary audience:** Developers processing large JSON. Log pipelines,
@@ -1481,11 +1481,11 @@ NDJSON datasets, large API dumps. Specifically: anyone who has added
 more than a second for jq to finish.
 
 **Competitive positioning vs jaq:** jaq is "jq but correct and clean."
-jx is "jq but fast on large data." Different niches. jaq is better for
+qj is "jq but fast on large data." Different niches. jaq is better for
 people who want a drop-in jq replacement with maximum compatibility.
-jx is better for people processing >10MB of JSON at a time. They
-complement rather than compete — though if jx matches jaq on eval speed
-AND adds SIMD parsing + parallelism, the "why not just use jx" argument
+qj is better for people processing >10MB of JSON at a time. They
+complement rather than compete — though if qj matches jaq on eval speed
+AND adds SIMD parsing + parallelism, the "why not just use qj" argument
 gets strong for large-data workflows.
 
 ---
@@ -1530,7 +1530,7 @@ The filter compiler can detect this statically.
 At 5 GB/s parsing throughput, the bottleneck shifts to JSON serialization
 for output. Pretty-printing with color is much slower than parsing.
 
-**Mitigation:** Implement fast-path output for common cases. For `jx -c`
+**Mitigation:** Implement fast-path output for common cases. For `qj -c`
 (compact output), the input bytes can often be copied directly to output
 without re-serialization (if the filter is identity or simple field
 access). For pretty-print, use SIMD-accelerated string escaping.
@@ -1538,11 +1538,11 @@ access). For pretty-print, use SIMD-accelerated string escaping.
 ### Risk: People just use jaq
 
 jaq already exists, is well-maintained, and handles most use cases well
-enough. jx's niche (large files, parallelism) may be too narrow.
+enough. qj's niche (large files, parallelism) may be too narrow.
 
 **Mitigation:** The combination of SIMD On-Demand parsing + parallel
 NDJSON + streaming large files is unique — no other jq-like tool does
-all three. If jx also matches jaq's eval speed, the only advantage jaq
+all three. If qj also matches jaq's eval speed, the only advantage jaq
 retains is higher jq compatibility (~90% vs ~80%) and no C++ build
 dependency. Focus marketing on concrete benchmarks: "process 1GB of
 JSONL in 50ms" is a number that gets attention.
@@ -1575,7 +1575,7 @@ install in under 30 seconds, adoption stalls. Needs:
 - Homebrew tap with formula (compile from source via `cc` crate)
 - GitHub Releases with prebuilt binaries for macOS ARM, macOS x86,
   Linux x86, Linux ARM
-- `cargo install jx` support (already works, but slow — C++ compile)
+- `cargo install qj` support (already works, but slow — C++ compile)
 
 ### First impressions and compatibility
 
@@ -1585,7 +1585,7 @@ adoption risk. Requirements:
 
 - **≥80% jq compatibility before release.** At minimum: `--slurp`,
   `--arg`/`--argjson`, array slicing, variable binding, `reduce`.
-- **Clear error messages for unsupported features.** "jx does not yet
+- **Clear error messages for unsupported features.** "qj does not yet
   support `def`. See https://github.com/.../issues/..." is much better
   than a cryptic parse error.
 - **Document incompatibilities explicitly** rather than pretending to be
@@ -1595,21 +1595,21 @@ adoption risk. Requirements:
 ### The "just use jaq" question
 
 This will be the first question from anyone who knows the space. Have a
-clear, honest answer: jx wins on large data (SIMD parsing + automatic
+clear, honest answer: qj wins on large data (SIMD parsing + automatic
 parallelism), jaq wins on compatibility (~90% vs ~80%). They're
-complementary, not competing. jx is for people processing >10MB of
+complementary, not competing. qj is for people processing >10MB of
 JSON; jaq is for people who want maximum jq compatibility.
 
-If jx reaches ~85% compat AND has parallel NDJSON, the argument shifts:
-"why not just use jx" becomes strong for anyone with large-data
-workloads, and jx is no worse than jaq for small-data use.
+If qj reaches ~85% compat AND has parallel NDJSON, the argument shifts:
+"why not just use qj" becomes strong for anyone with large-data
+workloads, and qj is no worse than jaq for small-data use.
 
 ### Real-world demo
 
 Microbenchmarks alone aren't convincing. Need at least one concrete
 real-world story alongside the numbers:
-- "1GB CloudTrail log: jq takes 2 minutes, jx takes 2 seconds"
-- "NDJSON pipeline: replaced `parallel -j8 | jq` with `jx`, same
+- "1GB CloudTrail log: jq takes 2 minutes, qj takes 2 seconds"
+- "NDJSON pipeline: replaced `parallel -j8 | jq` with `qj`, same
   result, zero configuration"
 - Show a real log processing or data pipeline task, not synthetic data
 
@@ -1628,7 +1628,7 @@ complex 50-line jq programs.
 ### Maintenance burden
 
 jq's language surface area is large. The risk is building 80% compat,
-launching, then facing a steady stream of "jx doesn't support X" issues
+launching, then facing a steady stream of "qj doesn't support X" issues
 that slowly consume all development time.
 
 **Mitigation:** Be explicit about scope. Core filters are maintained;
@@ -1640,10 +1640,10 @@ documented as out of scope. Focus ongoing effort on performance
 
 ## Small-file performance optimization
 
-jx already beats jaq ~2x on small files (2ms vs 5ms on 631KB
+qj already beats jaq ~2x on small files (2ms vs 5ms on 631KB
 twitter.json). These optimizations target widening that to 3-4x, which
-matters for the "why not just use jx for everything" argument — making
-jx dominant at all file sizes, not just large ones.
+matters for the "why not just use qj for everything" argument — making
+qj dominant at all file sizes, not just large ones.
 
 ### Where time goes (631KB twitter.json, ~3ms total)
 
@@ -1725,5 +1725,5 @@ complex but addresses the single most common non-passthrough pattern.
 Items 3-5 are diminishing returns and should only be pursued if
 profiling shows they matter after 1-2 are implemented.
 
-**None of these block launch.** jx is already faster than jaq on small
+**None of these block launch.** qj is already faster than jaq on small
 files. These are post-launch optimizations that widen the gap.

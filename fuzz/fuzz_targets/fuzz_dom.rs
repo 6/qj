@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use jx::simdjson::{dom_parse_to_value, pad_buffer};
+use qj::simdjson::{dom_parse_to_value, pad_buffer};
 
 // Feed arbitrary bytes to the DOM parser → flat token buffer → Value tree.
 // Exercises the C++ flatten_element + Rust decode_value path.

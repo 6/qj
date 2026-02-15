@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
-#[command(name = "jx", about = "A faster jq", version)]
+#[command(name = "qj", about = "A faster jq", version)]
 struct Cli {
     /// jq filter expression (not needed with --from-file/-f)
     filter: Option<String>,
@@ -138,31 +138,31 @@ fn main() -> Result<()> {
     } else {
         let filter_str = cli.filter.clone().ok_or_else(|| {
             anyhow::anyhow!(
-                "no filter provided\nUsage: jx [OPTIONS] FILTER [FILES...]\n       jx -f FILTER_FILE [FILES...]"
+                "no filter provided\nUsage: qj [OPTIONS] FILTER [FILES...]\n       qj -f FILTER_FILE [FILES...]"
             )
         })?;
         (filter_str, cli.files.clone())
     };
 
-    let filter = jx::filter::parse(&filter_str)
+    let filter = qj::filter::parse(&filter_str)
         .with_context(|| format!("failed to parse filter: {filter_str}"))?;
 
     // Build environment from --arg / --argjson
     // Variable names in the AST include the '$' prefix (e.g., "$name"),
     // so we prepend '$' when binding.
-    let mut env = jx::filter::Env::empty();
+    let mut env = qj::filter::Env::empty();
     for pair in cli.args.chunks(2) {
         if pair.len() == 2 {
             env = env.bind_var(
                 format!("${}", pair[0]),
-                jx::value::Value::String(pair[1].clone()),
+                qj::value::Value::String(pair[1].clone()),
             );
         }
     }
     for pair in cli.argjson.chunks(2) {
         if pair.len() == 2 {
-            let padded = jx::simdjson::pad_buffer(pair[1].as_bytes());
-            let val = jx::simdjson::dom_parse_to_value(&padded, pair[1].len())
+            let padded = qj::simdjson::pad_buffer(pair[1].as_bytes());
+            let val = qj::simdjson::dom_parse_to_value(&padded, pair[1].len())
                 .with_context(|| format!("invalid JSON for --argjson {}: {}", pair[0], pair[1]))?;
             env = env.bind_var(format!("${}", pair[0]), val);
         }
@@ -171,7 +171,7 @@ fn main() -> Result<()> {
         if pair.len() == 2 {
             let content = std::fs::read_to_string(&pair[1])
                 .with_context(|| format!("failed to read --rawfile {}: {}", pair[0], pair[1]))?;
-            env = env.bind_var(format!("${}", pair[0]), jx::value::Value::String(content));
+            env = env.bind_var(format!("${}", pair[0]), qj::value::Value::String(content));
         }
     }
     for pair in cli.slurpfile.chunks(2) {
@@ -179,44 +179,44 @@ fn main() -> Result<()> {
             let buf = std::fs::read(&pair[1])
                 .with_context(|| format!("failed to read --slurpfile {}: {}", pair[0], pair[1]))?;
             let mut values = Vec::new();
-            jx::input::collect_values_from_buf(&buf, false, &mut values)
+            qj::input::collect_values_from_buf(&buf, false, &mut values)
                 .with_context(|| format!("failed to parse --slurpfile {}: {}", pair[0], pair[1]))?;
             env = env.bind_var(
                 format!("${}", pair[0]),
-                jx::value::Value::Array(Rc::new(values)),
+                qj::value::Value::Array(Rc::new(values)),
             );
         }
     }
 
     // Build $ARGS: {positional: [...], named: {...}}
     {
-        let pos_values: Vec<jx::value::Value> = if positional_json {
+        let pos_values: Vec<qj::value::Value> = if positional_json {
             positional_args
                 .iter()
                 .map(|s| {
-                    let padded = jx::simdjson::pad_buffer(s.as_bytes());
-                    jx::simdjson::dom_parse_to_value(&padded, s.len())
+                    let padded = qj::simdjson::pad_buffer(s.as_bytes());
+                    qj::simdjson::dom_parse_to_value(&padded, s.len())
                         .with_context(|| format!("invalid JSON for --jsonargs: {s}"))
                 })
                 .collect::<Result<Vec<_>>>()?
         } else {
             positional_args
                 .iter()
-                .map(|s| jx::value::Value::String(s.clone()))
+                .map(|s| qj::value::Value::String(s.clone()))
                 .collect()
         };
 
-        let named_pairs: Vec<(String, jx::value::Value)> = {
+        let named_pairs: Vec<(String, qj::value::Value)> = {
             let mut pairs = Vec::new();
             for pair in cli.args.chunks(2) {
                 if pair.len() == 2 {
-                    pairs.push((pair[0].clone(), jx::value::Value::String(pair[1].clone())));
+                    pairs.push((pair[0].clone(), qj::value::Value::String(pair[1].clone())));
                 }
             }
             for pair in cli.argjson.chunks(2) {
                 if pair.len() == 2 {
-                    let padded = jx::simdjson::pad_buffer(pair[1].as_bytes());
-                    if let Ok(val) = jx::simdjson::dom_parse_to_value(&padded, pair[1].len()) {
+                    let padded = qj::simdjson::pad_buffer(pair[1].as_bytes());
+                    if let Ok(val) = qj::simdjson::dom_parse_to_value(&padded, pair[1].len()) {
                         pairs.push((pair[0].clone(), val));
                     }
                 }
@@ -224,14 +224,14 @@ fn main() -> Result<()> {
             pairs
         };
 
-        let args_obj = jx::value::Value::Object(Rc::new(vec![
+        let args_obj = qj::value::Value::Object(Rc::new(vec![
             (
                 "positional".to_string(),
-                jx::value::Value::Array(Rc::new(pos_values)),
+                qj::value::Value::Array(Rc::new(pos_values)),
             ),
             (
                 "named".to_string(),
-                jx::value::Value::Object(Rc::new(named_pairs)),
+                qj::value::Value::Object(Rc::new(named_pairs)),
             ),
         ]));
         env = env.bind_var("$ARGS".to_string(), args_obj);
@@ -252,17 +252,17 @@ fn main() -> Result<()> {
         io::stdout().is_terminal()
     };
     let color_scheme = if use_color {
-        jx::output::ColorScheme::jq_default()
+        qj::output::ColorScheme::jq_default()
     } else {
-        jx::output::ColorScheme::none()
+        qj::output::ColorScheme::none()
     };
 
     let stdout = io::stdout().lock();
     let mut out = BufWriter::with_capacity(128 * 1024, stdout);
 
     let config = if cli.raw || cli.raw_output0 {
-        jx::output::OutputConfig {
-            mode: jx::output::OutputMode::Raw,
+        qj::output::OutputConfig {
+            mode: qj::output::OutputMode::Raw,
             indent: String::new(),
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
@@ -272,8 +272,8 @@ fn main() -> Result<()> {
             unbuffered: cli.unbuffered,
         }
     } else if cli.compact {
-        jx::output::OutputConfig {
-            mode: jx::output::OutputMode::Compact,
+        qj::output::OutputConfig {
+            mode: qj::output::OutputMode::Compact,
             indent: String::new(),
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
@@ -283,8 +283,8 @@ fn main() -> Result<()> {
             unbuffered: cli.unbuffered,
         }
     } else {
-        jx::output::OutputConfig {
-            mode: jx::output::OutputMode::Pretty,
+        qj::output::OutputConfig {
+            mode: qj::output::OutputMode::Pretty,
             indent: if cli.tab {
                 "\t".to_string()
             } else {
@@ -311,7 +311,7 @@ fn main() -> Result<()> {
     {
         None
     } else {
-        jx::filter::passthrough_path(&filter).filter(|p| !p.requires_compact() || cli.compact)
+        qj::filter::passthrough_path(&filter).filter(|p| !p.requires_compact() || cli.compact)
     };
 
     let uses_input = filter.uses_input_builtins();
@@ -329,13 +329,13 @@ fn main() -> Result<()> {
                         let content = std::fs::read_to_string(path)
                             .with_context(|| format!("failed to read file: {path}"))?;
                         for line in content.lines() {
-                            values.push(jx::value::Value::String(line.to_string()));
+                            values.push(qj::value::Value::String(line.to_string()));
                         }
                     } else {
                         let (padded, json_len) =
-                            jx::simdjson::read_padded_file(std::path::Path::new(path))
+                            qj::simdjson::read_padded_file(std::path::Path::new(path))
                                 .with_context(|| format!("failed to read file: {path}"))?;
-                        jx::input::collect_values_from_buf(
+                        qj::input::collect_values_from_buf(
                             &padded[..json_len],
                             cli.jsonl,
                             &mut values,
@@ -350,17 +350,17 @@ fn main() -> Result<()> {
                 if cli.raw_input {
                     let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
                     for line in text.lines() {
-                        values.push(jx::value::Value::String(line.to_string()));
+                        values.push(qj::value::Value::String(line.to_string()));
                     }
                 } else {
-                    jx::input::strip_bom(&mut buf);
-                    jx::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+                    qj::input::strip_bom(&mut buf);
+                    qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
                 }
             }
             use std::collections::VecDeque;
-            jx::filter::eval::set_input_queue(VecDeque::from(values));
+            qj::filter::eval::set_input_queue(VecDeque::from(values));
         }
-        let input = jx::value::Value::Null;
+        let input = qj::value::Value::Null;
         eval_and_output(
             &filter,
             &input,
@@ -395,10 +395,10 @@ fn main() -> Result<()> {
                 let content = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read file: {path}"))?;
                 for line in content.lines() {
-                    all_lines.push(jx::value::Value::String(line.to_string()));
+                    all_lines.push(qj::value::Value::String(line.to_string()));
                 }
             }
-            let input = jx::value::Value::Array(Rc::new(all_lines));
+            let input = qj::value::Value::Array(Rc::new(all_lines));
             eval_and_output(
                 &filter,
                 &input,
@@ -432,16 +432,16 @@ fn main() -> Result<()> {
             io::stdin()
                 .read_to_end(&mut buf)
                 .context("failed to read stdin")?;
-            jx::input::strip_bom(&mut buf);
-            jx::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+            qj::input::strip_bom(&mut buf);
+            qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
         } else {
             for path in &input_files {
-                let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+                let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
                     .with_context(|| format!("failed to read file: {path}"))?;
-                jx::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
+                qj::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
             }
         }
-        let input = jx::value::Value::Array(Rc::new(values));
+        let input = qj::value::Value::Array(Rc::new(values));
         eval_and_output(
             &filter,
             &input,
@@ -457,19 +457,19 @@ fn main() -> Result<()> {
         io::stdin()
             .read_to_end(&mut buf)
             .context("failed to read stdin")?;
-        jx::input::strip_bom(&mut buf);
-        if !uses_input && (cli.jsonl || jx::parallel::ndjson::is_ndjson(&buf)) {
-            let (output, ho) = jx::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
+        qj::input::strip_bom(&mut buf);
+        if !uses_input && (cli.jsonl || qj::parallel::ndjson::is_ndjson(&buf)) {
+            let (output, ho) = qj::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
                 .context("failed to process NDJSON from stdin")?;
             out.write_all(&output)?;
             had_output |= ho;
         } else if uses_input {
             // Collect all values; first becomes input, rest go to queue
             let mut values = Vec::new();
-            jx::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+            qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
             let mut queue: std::collections::VecDeque<_> = values.into();
-            let input = queue.pop_front().unwrap_or(jx::value::Value::Null);
-            jx::filter::eval::set_input_queue(queue);
+            let input = queue.pop_front().unwrap_or(qj::value::Value::Null);
+            qj::filter::eval::set_input_queue(queue);
             eval_and_output(
                 &filter,
                 &input,
@@ -481,7 +481,7 @@ fn main() -> Result<()> {
             );
         } else {
             let json_len = buf.len();
-            let padded = jx::simdjson::pad_buffer(&buf);
+            let padded = qj::simdjson::pad_buffer(&buf);
             let mut handled = false;
             if let Some(pt) = &passthrough {
                 handled = try_passthrough(&padded, json_len, pt, &mut out, &mut had_output)
@@ -506,13 +506,13 @@ fn main() -> Result<()> {
             // Collect all values from all files; first becomes input, rest go to queue
             let mut values = Vec::new();
             for path in &input_files {
-                let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+                let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
                     .with_context(|| format!("failed to read file: {path}"))?;
-                jx::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
+                qj::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
             }
             let mut queue: std::collections::VecDeque<_> = values.into();
-            let input = queue.pop_front().unwrap_or(jx::value::Value::Null);
-            jx::filter::eval::set_input_queue(queue);
+            let input = queue.pop_front().unwrap_or(qj::value::Value::Null);
+            qj::filter::eval::set_input_queue(queue);
             eval_and_output(
                 &filter,
                 &input,
@@ -558,49 +558,49 @@ fn main() -> Result<()> {
 /// After evaluation, checks for uncaught runtime errors and reports them
 /// to stderr (like jq's exit-code-5 behavior).
 fn eval_and_output(
-    filter: &jx::filter::Filter,
-    input: &jx::value::Value,
-    env: &jx::filter::Env,
+    filter: &qj::filter::Filter,
+    input: &qj::value::Value,
+    env: &qj::filter::Env,
     out: &mut impl Write,
-    config: &jx::output::OutputConfig,
+    config: &qj::output::OutputConfig,
     had_output: &mut bool,
     had_error: &mut bool,
 ) {
     let mut nul_error = false;
     let mut write_failed = false;
-    jx::filter::eval::eval_filter_with_env(filter, input, env, &mut |v| {
+    qj::filter::eval::eval_filter_with_env(filter, input, env, &mut |v| {
         if nul_error || write_failed {
             return;
         }
         // Check for embedded NUL in --raw-output0 mode
         if config.null_separator
-            && let jx::value::Value::String(s) = &v
+            && let qj::value::Value::String(s) = &v
             && s.contains('\0')
         {
             nul_error = true;
             return;
         }
         *had_output = true;
-        if jx::output::write_value(out, &v, config).is_err() {
+        if qj::output::write_value(out, &v, config).is_err() {
             write_failed = true;
         }
     });
     if nul_error {
         *had_error = true;
-        eprintln!("jx: error: Cannot dump a string containing NUL with --raw-output0 option");
+        eprintln!("qj: error: Cannot dump a string containing NUL with --raw-output0 option");
     }
     // Check for uncaught runtime errors
-    if let Some(err) = jx::filter::eval::take_last_error() {
+    if let Some(err) = qj::filter::eval::take_last_error() {
         *had_error = true;
         let msg = format_error(&err);
-        eprintln!("jx: error: {msg}");
+        eprintln!("qj: error: {msg}");
     }
 }
 
 /// Format an error value for display on stderr.
-fn format_error(err: &jx::value::Value) -> String {
+fn format_error(err: &qj::value::Value) -> String {
     match err {
-        jx::value::Value::String(s) => s.clone(),
+        qj::value::Value::String(s) => s.clone(),
         other => other.short_desc(),
     }
 }
@@ -610,21 +610,21 @@ fn format_error(err: &jx::value::Value) -> String {
 fn try_passthrough(
     padded: &[u8],
     json_len: usize,
-    passthrough: &jx::filter::PassthroughPath,
+    passthrough: &qj::filter::PassthroughPath,
     out: &mut impl Write,
     had_output: &mut bool,
 ) -> Result<bool> {
     match passthrough {
-        jx::filter::PassthroughPath::Identity => {
-            let minified = jx::simdjson::minify(padded, json_len)?;
+        qj::filter::PassthroughPath::Identity => {
+            let minified = qj::simdjson::minify(padded, json_len)?;
             out.write_all(&minified)?;
             out.write_all(b"\n")?;
             *had_output = true;
             Ok(true)
         }
-        jx::filter::PassthroughPath::FieldLength(fields) => {
+        qj::filter::PassthroughPath::FieldLength(fields) => {
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-            match jx::simdjson::dom_field_length(padded, json_len, &field_refs)? {
+            match qj::simdjson::dom_field_length(padded, json_len, &field_refs)? {
                 Some(result) => {
                     out.write_all(&result)?;
                     out.write_all(b"\n")?;
@@ -634,9 +634,9 @@ fn try_passthrough(
                 None => Ok(false),
             }
         }
-        jx::filter::PassthroughPath::FieldKeys(fields) => {
+        qj::filter::PassthroughPath::FieldKeys(fields) => {
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-            match jx::simdjson::dom_field_keys(padded, json_len, &field_refs)? {
+            match qj::simdjson::dom_field_keys(padded, json_len, &field_refs)? {
                 Some(result) => {
                     out.write_all(&result)?;
                     out.write_all(b"\n")?;
@@ -651,11 +651,11 @@ fn try_passthrough(
 
 /// Bundled processing context to avoid too-many-arguments in process_file.
 struct ProcessCtx<'a> {
-    passthrough: &'a Option<jx::filter::PassthroughPath>,
+    passthrough: &'a Option<qj::filter::PassthroughPath>,
     force_jsonl: bool,
-    filter: &'a jx::filter::Filter,
-    env: &'a jx::filter::Env,
-    config: &'a jx::output::OutputConfig,
+    filter: &'a qj::filter::Filter,
+    env: &'a qj::filter::Env,
+    config: &'a qj::output::OutputConfig,
     debug_timing: bool,
 }
 
@@ -669,15 +669,15 @@ fn process_file(
     had_error: &mut bool,
 ) -> Result<()> {
     let t0 = Instant::now();
-    let (padded, json_len) = jx::simdjson::read_padded_file(std::path::Path::new(path))
+    let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
         .with_context(|| format!("failed to read file: {path}"))?;
     let t_read = t0.elapsed();
 
     // NDJSON fast path (skip when debug-timing so we get the full pipeline breakdown)
     if !ctx.debug_timing
-        && (ctx.force_jsonl || jx::parallel::ndjson::is_ndjson(&padded[..json_len]))
+        && (ctx.force_jsonl || qj::parallel::ndjson::is_ndjson(&padded[..json_len]))
     {
-        let (output, ho) = jx::parallel::ndjson::process_ndjson(
+        let (output, ho) = qj::parallel::ndjson::process_ndjson(
             &padded[..json_len],
             ctx.filter,
             ctx.config,
@@ -700,9 +700,9 @@ fn process_file(
                 let total = t_read + t_op;
                 let mb = json_len as f64 / (1024.0 * 1024.0);
                 let label = match pt {
-                    jx::filter::PassthroughPath::Identity => "minify",
-                    jx::filter::PassthroughPath::FieldLength(_) => "length",
-                    jx::filter::PassthroughPath::FieldKeys(_) => "keys",
+                    qj::filter::PassthroughPath::Identity => "minify",
+                    qj::filter::PassthroughPath::FieldLength(_) => "length",
+                    qj::filter::PassthroughPath::FieldKeys(_) => "keys",
                 };
                 eprintln!("--- debug-timing ({label} passthrough): {path} ({mb:.1} MB) ---");
                 print_timing_line("read", t_read, total);
@@ -721,27 +721,27 @@ fn process_file(
     if ctx.debug_timing {
         let t1 = Instant::now();
         let input =
-            jx::simdjson::dom_parse_to_value(&padded, json_len).context("failed to parse JSON")?;
+            qj::simdjson::dom_parse_to_value(&padded, json_len).context("failed to parse JSON")?;
         let t_parse = t1.elapsed();
 
         let t2 = Instant::now();
         let mut values = Vec::new();
-        jx::filter::eval::eval_filter(ctx.filter, &input, &mut |v| {
+        qj::filter::eval::eval_filter(ctx.filter, &input, &mut |v| {
             values.push(v);
         });
         let t_eval = t2.elapsed();
 
         // Check for uncaught runtime errors from the debug-timing eval path
-        if let Some(err) = jx::filter::eval::take_last_error() {
+        if let Some(err) = qj::filter::eval::take_last_error() {
             *had_error = true;
             let msg = format_error(&err);
-            eprintln!("jx: error: {msg}");
+            eprintln!("qj: error: {msg}");
         }
 
         let t3 = Instant::now();
         for v in &values {
             *had_output = true;
-            if jx::output::write_value(out, v, ctx.config).is_err() {
+            if qj::output::write_value(out, v, ctx.config).is_err() {
                 break;
             }
         }
@@ -775,23 +775,23 @@ fn process_file(
 fn process_raw_input(
     text: &str,
     slurp: bool,
-    filter: &jx::filter::Filter,
-    env: &jx::filter::Env,
+    filter: &qj::filter::Filter,
+    env: &qj::filter::Env,
     out: &mut impl Write,
-    config: &jx::output::OutputConfig,
+    config: &qj::output::OutputConfig,
     had_output: &mut bool,
     had_error: &mut bool,
 ) -> Result<()> {
     if slurp {
-        let arr: Vec<jx::value::Value> = text
+        let arr: Vec<qj::value::Value> = text
             .lines()
-            .map(|l| jx::value::Value::String(l.to_string()))
+            .map(|l| qj::value::Value::String(l.to_string()))
             .collect();
-        let input = jx::value::Value::Array(Rc::new(arr));
+        let input = qj::value::Value::Array(Rc::new(arr));
         eval_and_output(filter, &input, env, out, config, had_output, had_error);
     } else {
         for line in text.lines() {
-            let input = jx::value::Value::String(line.to_string());
+            let input = qj::value::Value::String(line.to_string());
             eval_and_output(filter, &input, env, out, config, had_output, had_error);
         }
     }
@@ -802,15 +802,15 @@ fn process_raw_input(
 fn process_padded(
     padded: &[u8],
     json_len: usize,
-    filter: &jx::filter::Filter,
-    env: &jx::filter::Env,
+    filter: &qj::filter::Filter,
+    env: &qj::filter::Env,
     out: &mut impl Write,
-    config: &jx::output::OutputConfig,
+    config: &qj::output::OutputConfig,
     had_output: &mut bool,
     had_error: &mut bool,
 ) -> Result<()> {
     let input =
-        jx::simdjson::dom_parse_to_value(padded, json_len).context("failed to parse JSON")?;
+        qj::simdjson::dom_parse_to_value(padded, json_len).context("failed to parse JSON")?;
     eval_and_output(filter, &input, env, out, config, had_output, had_error);
     Ok(())
 }

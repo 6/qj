@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use jx::simdjson::{iterate_many_count, iterate_many_extract_field, pad_buffer};
+use qj::simdjson::{iterate_many_count, iterate_many_extract_field, pad_buffer};
 
 // Feed arbitrary bytes to iterate_many (NDJSON batch parser).
 // Tests both count and field extraction paths.

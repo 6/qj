@@ -8,9 +8,9 @@
   - https://raw.githubusercontent.com/simdjson/simdjson/v4.2.4/singleheader/simdjson.h
   - https://raw.githubusercontent.com/simdjson/simdjson/v4.2.4/singleheader/simdjson.cpp
 
-- **`bridge.cpp`** — Our C-linkage FFI bridge wrapping simdjson's On-Demand API in `extern "C"` functions callable from Rust. This file is part of jx.
+- **`bridge.cpp`** — Our C-linkage FFI bridge wrapping simdjson's On-Demand API in `extern "C"` functions callable from Rust. This file is part of qj.
 
-- **`bridge.rs`** — Safe Rust wrapper over the FFI functions. This file is part of jx.
+- **`bridge.rs`** — Safe Rust wrapper over the FFI functions. This file is part of qj.
 
 ## Updating simdjson
 

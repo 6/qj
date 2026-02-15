@@ -1,4 +1,4 @@
-# jx — Next Steps
+# qj — Next Steps
 
 What to focus on next, in priority order. See [PLAN.md](PLAN.md) for
 full design and history.
@@ -15,14 +15,14 @@ compatibility at **93.7%** (155/166 features fully passing). Passthrough
 paths handle "simple query on big file" at
 12-63x jq, 3-14x jaq. Parallel NDJSON processing at ~10x jq, ~5.6x jaq.
 
-| Filter (49MB file) | jx | jq | jaq | vs jq | vs jaq |
+| Filter (49MB file) | qj | jq | jaq | vs jq | vs jaq |
 |---------------------|----|----|-----|-------|--------|
 | `-c '.'` | 18ms | 1,157ms | 253ms | 63x | 14x |
 | `-c '.statuses'` | 74ms | 1,132ms | 246ms | 15x | 3.3x |
 | `.statuses \| length` | 33ms | 398ms | 167ms | 12x | 5.1x |
 | `.statuses \| keys` | 31ms | 393ms | 165ms | 13x | 5.3x |
 
-| Filter (1M NDJSON) | jx | jq | jaq | vs jq | vs jaq |
+| Filter (1M NDJSON) | qj | jq | jaq | vs jq | vs jaq |
 |---------------------|----|----|-----|-------|--------|
 | `.name` | 120ms | 1,230ms | 670ms | 10x | 5.6x |
 
@@ -30,7 +30,7 @@ Non-passthrough eval is competitive with jaq (~1x) and ~2-4x jq.
 
 **jq conformance by category:**
 
-| Category | jx | jq | jaq | gojq |
+| Category | qj | jq | jaq | gojq |
 |---|---|---|---|---|
 | Conditionals | 37/44 (84%) | 44/44 | 40/44 | 41/44 |
 | Builtin functions | 34/42 (81%) | 42/42 | 37/42 | 39/42 |

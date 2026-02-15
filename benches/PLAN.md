@@ -1,6 +1,6 @@
-# Benchmarking Strategy for jx
+# Benchmarking Strategy for qj
 
-jx claims "10-50x faster on large inputs." This document defines how we
+qj claims "10-50x faster on large inputs." This document defines how we
 measure, track, and present that — with enough rigor to survive scrutiny
 but without over-engineering for a young CLI tool.
 
@@ -8,13 +8,13 @@ but without over-engineering for a young CLI tool.
 
 ## 1. Philosophy
 
-### Be honest about where jx loses
+### Be honest about where qj loses
 
 ripgrep's benchmarks (BurntSushi) are the gold standard: they include
 scenarios where ripgrep is slower than grep, explain WHY architecturally,
-and publish raw data. jx should do the same. When jaq or gojq wins on a
+and publish raw data. qj should do the same. When jaq or gojq wins on a
 filter, show it and explain the tradeoff (e.g., "jaq's evaluator is
-faster on complex filters; jx wins on parse-dominated workloads").
+faster on complex filters; qj wins on parse-dominated workloads").
 
 ### Be explicit about what's being measured
 
@@ -34,8 +34,8 @@ Running 10+ hyperfine invocations back-to-back compounds the effect.
 Mitigations:
 - **Cooldown between groups:** `sleep $COOLDOWN` (default 10s) between
   hyperfine invocations. Configurable via environment variable. *(done)*
-- **Tool ordering:** Run jx last in each group. Conservative approach —
-  thermal throttling penalizes jx (understates its advantage) rather
+- **Tool ordering:** Run qj last in each group. Conservative approach —
+  thermal throttling penalizes qj (understates its advantage) rather
   than competitors. *(not yet implemented)*
 - **CI runners are less affected** — server-grade cooling, but shared
   runners have their own variance (~10-30%).
@@ -47,7 +47,7 @@ reproducible with a single script. We don't need a SaaS benchmarking
 platform. The progression is:
 1. **Done:** Shell scripts + hyperfine + auto-generated `BENCHMARKS.md`
 2. **Next:** CI automation via `benchmark.yml` that commits `BENCHMARKS.md`
-3. **Later:** Comprehensive cross-platform matrix (only if jx gets traction)
+3. **Later:** Comprehensive cross-platform matrix (only if qj gets traction)
 
 ---
 
@@ -86,14 +86,14 @@ structure:
 | 4. Iterate + field | `.statuses[]\|.user.name` | Eval-heavy, many output values |
 | 5. Select + construct | `.statuses[]\|select(.retweet_count>0)\|{user:.user.screen_name,n:.retweet_count}` | Complex eval, object construction |
 
-**Why these tiers matter:** jx's advantage is largest at tiers 1-3 (SIMD
+**Why these tiers matter:** qj's advantage is largest at tiers 1-3 (SIMD
 parsing dominates). At tiers 4-5, jaq's evaluator may be faster. Showing
 both tells an honest story.
 
 ### Tools compared
 
 All four are already used in `benches/run_bench.sh`:
-- **jx** (this project)
+- **qj** (this project)
 - **jq** 1.7+ (reference implementation)
 - **jaq** 2.x (fastest Rust alternative)
 - **gojq** 0.12+ (Go alternative)
@@ -106,8 +106,8 @@ All four are already used in `benches/run_bench.sh`:
 
 | Script | Purpose |
 |--------|---------|
-| `benches/run_bench.sh` | Hyperfine: jx vs jq vs jaq vs gojq on twitter.json + large_twitter.json |
-| `benches/compare_tools.sh` | Older baseline script (jq vs jaq only, no jx) |
+| `benches/run_bench.sh` | Hyperfine: qj vs jq vs jaq vs gojq on twitter.json + large_twitter.json |
+| `benches/compare_tools.sh` | Older baseline script (jq vs jaq only, no qj) |
 | `benches/download_testdata.sh` | Downloads twitter.json, citm_catalog.json, canada.json |
 | `benches/gen_large.sh` | Generates large_twitter.json (~49MB) + large.jsonl (~50MB) |
 | `benches/generate_ndjson.sh` | Generates 100k.ndjson + 1m.ndjson via gen_ndjson binary |
@@ -118,13 +118,13 @@ All four are already used in `benches/run_bench.sh`:
 
 Replaces `benches/run_bench.sh` as the primary benchmark script:
 
-1. **Correctness validation:** Compares jx vs jq output for every
+1. **Correctness validation:** Compares qj vs jq output for every
    filter+file combo before timing
 2. **JSON export:** `hyperfine --export-json` for every run, saved to
    `benches/results/`
 3. **Platform tagging:** Captures `uname -ms` and date in output
 4. **Full tier coverage:** All 5 filter tiers on both small + large files
-5. **Writes `BENCHMARKS.md`:** Markdown table with bold jx column,
+5. **Writes `BENCHMARKS.md`:** Markdown table with bold qj column,
    auto-generated from hyperfine results
 6. **Cooldown:** `sleep $COOLDOWN` (default 10s) between hyperfine
    invocations to mitigate thermal buildup (see "Account for thermal
@@ -297,7 +297,7 @@ git log -p BENCHMARKS.md
 This shows exactly what changed and when. Each CI run that changes
 performance numbers produces a commit with the diff visible inline.
 
-For a project at this stage, this is sufficient. If jx gets enough
+For a project at this stage, this is sufficient. If qj gets enough
 contributors that regressions become frequent, upgrade to
 `benchmark-action/github-action-benchmark` with gh-pages charts later.
 
@@ -317,7 +317,7 @@ contributors that regressions become frequent, upgrade to
 
 ## darwin-arm64
 
-| Filter | File | jx | jq | jaq | gojq |
+| Filter | File | qj | jq | jaq | gojq |
 |--------|------|----|----|-----|------|
 | -c '.' | twitter.json | 1.2ms | 45ms | 8ms | 12ms |
 | -c '.' | large_twitter.json | 18ms | 1.1s | 180ms | 320ms |
@@ -338,7 +338,7 @@ commits.
 
 Include a short "Understanding the numbers" section at the top of
 `BENCHMARKS.md`:
-- "jx is fastest on parse-dominated workloads (tiers 1-3) thanks to SIMD"
+- "qj is fastest on parse-dominated workloads (tiers 1-3) thanks to SIMD"
 - "On complex filters (tier 5), jaq's evaluator can be faster"
 - "NDJSON parallel processing (when implemented) will show the biggest gains"
 - "All benchmarks: warm cache, output to /dev/null, single-threaded"
@@ -361,7 +361,7 @@ Include a short "Understanding the numbers" section at the top of
 
 ## 8. Implementation Order
 
-1. ~~**Create `benches/bench.sh`**~~ — **Done.** Correctness checks, 5 filter tiers, writes `BENCHMARKS.md`, bold jx column.
+1. ~~**Create `benches/bench.sh`**~~ — **Done.** Correctness checks, 5 filter tiers, writes `BENCHMARKS.md`, bold qj column.
 2. ~~**Add `benches/results/` to `.gitignore`**~~ — **Done.**
 3. ~~**Create `.github/workflows/checks.yml`**~~ — **Done.** Build + test on ubuntu-24.04 + macos-26, mise-action, rust-cache.
 4. ~~**Create `.github/workflows/benchmark.yml`**~~ — **Done.** Full benchmark suite with cross-platform matrix, merges results, commits `BENCHMARKS.md`.

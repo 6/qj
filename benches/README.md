@@ -6,7 +6,7 @@
 
 ## Methodology
 
-`bench.sh` uses [hyperfine](https://github.com/sharkdeveloper/hyperfine) to measure end-to-end wall-clock time (process spawn + read + parse + filter + format + write to /dev/null) across jx, jq, jaq, and gojq on a mix of small and large JSON/JSONL files.
+`bench.sh` uses [hyperfine](https://github.com/sharkdeveloper/hyperfine) to measure end-to-end wall-clock time (process spawn + read + parse + filter + format + write to /dev/null) across qj, jq, jaq, and gojq on a mix of small and large JSON/JSONL files.
 
 ## Reproducing
 
@@ -48,14 +48,14 @@ bash benches/build_cpp_bench.sh
 ### Profiling a single run
 
 ```bash
-./target/release/jx --debug-timing -c '.' benches/data/large_twitter.json > /dev/null
+./target/release/qj --debug-timing -c '.' benches/data/large_twitter.json > /dev/null
 ```
 
 ### Ad-hoc comparison
 
 ```bash
 hyperfine --warmup 3 \
-  './target/release/jx ".field" test.json' \
+  './target/release/qj ".field" test.json' \
   'jq ".field" test.json' \
   'jaq ".field" test.json'
 ```

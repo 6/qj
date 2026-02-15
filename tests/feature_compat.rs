@@ -1,7 +1,7 @@
 /// Feature compatibility test runner.
 ///
 /// Parses `tests/jq_compat/features.toml` and runs each test case against
-/// jx, jq, jaq, and gojq (whichever are on `$PATH`). Reports a per-feature
+/// qj, jq, jaq, and gojq (whichever are on `$PATH`). Reports a per-feature
 /// Y/~/N matrix and overall compatibility scores.
 ///
 /// This test always passes — it's a measurement tool, not a gate.
@@ -122,7 +122,7 @@ fn run_all(verbose: bool) {
     let mut results: Vec<Vec<Vec<bool>>> = Vec::new();
 
     println!("Running tests...");
-    let is_jx = |tool: &common::Tool| tool.name == "jx";
+    let is_jx = |tool: &common::Tool| tool.name == "qj";
 
     for tool in &tools {
         let mut tool_results: Vec<Vec<bool>> = Vec::new();
@@ -199,8 +199,8 @@ fn run_all(verbose: bool) {
     let mut header = "| Feature | Tests |".to_string();
     let mut sep = "|---------|------:|".to_string();
     for tool in &tools {
-        if tool.name == "jx" {
-            header.push_str(" **jx** |");
+        if tool.name == "qj" {
+            header.push_str(" **qj** |");
         } else {
             header.push_str(&format!(" {} |", tool.name));
         }
@@ -284,7 +284,7 @@ fn run_all(verbose: bool) {
 
         if is_jx(tool) {
             md.push_str(&format!(
-                "| **jx** | **{y_count}** | **{partial_count}** | **{n_count}** | **{score:.1}%** |\n"
+                "| **qj** | **{y_count}** | **{partial_count}** | **{n_count}** | **{score:.1}%** |\n"
             ));
         } else {
             md.push_str(&format!(

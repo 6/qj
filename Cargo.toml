@@ -1,9 +1,9 @@
 [package]
-name = "jx"
+name = "qj"
 version = "0.1.0"
 edition = "2024"
 autobenches = false
-description = "A faster jq — jq-compatible JSON processor using SIMD and parallel NDJSON"
+description = "A faster jq — jq-compatible JSON processor using SIMD and parallel NDJSON. Quick JSON."
 license = "MIT"
 keywords = ["json", "jq", "simd", "jsonl", "cli"]
 categories = ["command-line-utilities", "text-processing"]

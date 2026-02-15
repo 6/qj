@@ -13,11 +13,11 @@ pub struct Tool {
     pub path: String,
 }
 
-/// Discover jx (built by cargo) plus jq, jaq, gojq if on `$PATH`.
+/// Discover qj (built by cargo) plus jq, jaq, gojq if on `$PATH`.
 pub fn discover_tools() -> Vec<Tool> {
     let mut tools = vec![Tool {
-        name: "jx".to_string(),
-        path: env!("CARGO_BIN_EXE_jx").to_string(),
+        name: "qj".to_string(),
+        path: env!("CARGO_BIN_EXE_qj").to_string(),
     }];
     for name in ["jq", "jaq", "gojq"] {
         if let Ok(output) = Command::new("which").arg(name).output() {
@@ -66,7 +66,7 @@ pub fn run_tool(tool: &Tool, filter: &str, input: &str, extra_args: &[&str]) -> 
 // Result caching for external tools (jq, jaq, gojq)
 // ---------------------------------------------------------------------------
 
-/// Cached results for external tools. jx is never cached.
+/// Cached results for external tools. qj is never cached.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ToolCache {
     /// Hash of (test file content + mise.toml). Stale if this doesn't match.
@@ -125,7 +125,7 @@ pub fn save_cache(runner_name: &str, cache: &ToolCache) {
 /// bloating the cache file (some jq.test cases produce multi-GB output).
 const MAX_CACHED_OUTPUT: usize = 1_000_000;
 
-/// Run a tool with caching. jx always runs fresh; external tools use cached
+/// Run a tool with caching. qj always runs fresh; external tools use cached
 /// results when available, falling back to subprocess execution on cache miss.
 pub fn run_tool_cached(
     tool: &Tool,
@@ -134,7 +134,7 @@ pub fn run_tool_cached(
     extra_args: &[&str],
     cache: &mut ToolCache,
 ) -> Option<String> {
-    if tool.name == "jx" {
+    if tool.name == "qj" {
         return run_tool(tool, filter, input, extra_args);
     }
 

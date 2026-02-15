@@ -1,4 +1,4 @@
-use jx::simdjson;
+use qj::simdjson;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -208,7 +208,7 @@ fn bench_external_tool(label: &str, tool: &str, filter: &str, file: &Path, file_
 }
 
 fn main() {
-    println!("=== jx parse throughput benchmark ===\n");
+    println!("=== qj parse throughput benchmark ===\n");
 
     let jq_path = find_tool("jq");
     let jaq_path = find_tool("jaq");

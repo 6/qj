@@ -2,8 +2,8 @@
 use std::io::Write;
 use std::process::Command;
 
-fn jx_stdin(args: &[&str], input: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+fn qj_stdin(args: &[&str], input: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_qj"))
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -18,19 +18,19 @@ fn jx_stdin(args: &[&str], input: &str) -> String {
                 .unwrap();
             child.wait_with_output()
         })
-        .expect("failed to run jx");
+        .expect("failed to run qj");
 
     assert!(
         output.status.success(),
-        "jx {:?} exited with {}: stderr={}",
+        "qj {:?} exited with {}: stderr={}",
         args,
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).expect("jx output was not valid UTF-8")
+    String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
 }
 
-fn jx_file(args: &[&str], content: &str) -> String {
+fn qj_file(args: &[&str], content: &str) -> String {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("input.jsonl");
     std::fs::write(&path, content).unwrap();
@@ -38,7 +38,7 @@ fn jx_file(args: &[&str], content: &str) -> String {
     let full_args: Vec<&str> = args.to_vec();
     let path_str = path.to_str().unwrap().to_string();
     // We need to own the string for the lifetime
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jx"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
     for arg in &full_args {
         cmd.arg(arg);
     }
@@ -48,17 +48,17 @@ fn jx_file(args: &[&str], content: &str) -> String {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
-        .expect("failed to run jx");
+        .expect("failed to run qj");
 
     assert!(
         output.status.success(),
-        "jx {:?} {} exited with {}: stderr={}",
+        "qj {:?} {} exited with {}: stderr={}",
         args,
         path_str,
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).expect("jx output was not valid UTF-8")
+    String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
 }
 
 // --- Basic NDJSON processing ---
@@ -69,7 +69,7 @@ fn ndjson_field_extraction() {
 {"name":"bob","age":25}
 {"name":"charlie","age":35}
 "#;
-    let out = jx_stdin(&["-c", ".name"], input);
+    let out = qj_stdin(&["-c", ".name"], input);
     assert_eq!(out, "\"alice\"\n\"bob\"\n\"charlie\"\n");
 }
 
@@ -78,7 +78,7 @@ fn ndjson_identity() {
     let input = r#"{"a":1}
 {"b":2}
 "#;
-    let out = jx_stdin(&["-c", "."], input);
+    let out = qj_stdin(&["-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
 }
 
@@ -88,7 +88,7 @@ fn ndjson_complex_filter() {
 {"name":"bob","score":40}
 {"name":"charlie","score":85}
 "#;
-    let out = jx_stdin(&["-c", "select(.score > 50) | .name"], input);
+    let out = qj_stdin(&["-c", "select(.score > 50) | .name"], input);
     assert_eq!(out, "\"alice\"\n\"charlie\"\n");
 }
 
@@ -97,7 +97,7 @@ fn ndjson_pipe_builtin() {
     let input = r#"{"items":[1,2,3]}
 {"items":[4,5]}
 "#;
-    let out = jx_stdin(&["-c", ".items | length"], input);
+    let out = qj_stdin(&["-c", ".items | length"], input);
     assert_eq!(out, "3\n2\n");
 }
 
@@ -106,7 +106,7 @@ fn ndjson_object_construct() {
     let input = r#"{"first":"alice","last":"smith"}
 {"first":"bob","last":"jones"}
 "#;
-    let out = jx_stdin(&["-c", "{name: .first}"], input);
+    let out = qj_stdin(&["-c", "{name: .first}"], input);
     assert_eq!(out, "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n");
 }
 
@@ -115,21 +115,21 @@ fn ndjson_object_construct() {
 #[test]
 fn ndjson_empty_lines() {
     let input = "{\"a\":1}\n\n{\"b\":2}\n\n";
-    let out = jx_stdin(&["-c", "."], input);
+    let out = qj_stdin(&["-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
 }
 
 #[test]
 fn ndjson_trailing_newline() {
     let input = "{\"a\":1}\n{\"b\":2}\n";
-    let out = jx_stdin(&["-c", "."], input);
+    let out = qj_stdin(&["-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
 }
 
 #[test]
 fn ndjson_no_trailing_newline() {
     let input = "{\"a\":1}\n{\"b\":2}";
-    let out = jx_stdin(&["-c", "."], input);
+    let out = qj_stdin(&["-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
 }
 
@@ -137,7 +137,7 @@ fn ndjson_no_trailing_newline() {
 fn ndjson_single_line_not_detected() {
     // Single JSON object should NOT be treated as NDJSON
     let input = r#"{"a":1}"#;
-    let out = jx_stdin(&["-c", "."], input);
+    let out = qj_stdin(&["-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n");
 }
 
@@ -148,7 +148,7 @@ fn jsonl_flag_forces_ndjson() {
     let input = r#"{"a":1}
 {"b":2}
 "#;
-    let out = jx_stdin(&["--jsonl", "-c", "."], input);
+    let out = qj_stdin(&["--jsonl", "-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
 }
 
@@ -159,7 +159,7 @@ fn ndjson_file_field_extraction() {
     let input = r#"{"name":"alice"}
 {"name":"bob"}
 "#;
-    let out = jx_file(&["-c", ".name"], input);
+    let out = qj_file(&["-c", ".name"], input);
     assert_eq!(out, "\"alice\"\n\"bob\"\n");
 }
 
@@ -168,7 +168,7 @@ fn ndjson_file_identity() {
     let input = r#"{"a":1}
 {"b":2}
 "#;
-    let out = jx_file(&["-c", "."], input);
+    let out = qj_file(&["-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
 }
 
@@ -177,7 +177,7 @@ fn ndjson_file_with_jsonl_flag() {
     let input = r#"{"x":1}
 {"x":2}
 "#;
-    let out = jx_file(&["--jsonl", "-c", ".x"], input);
+    let out = qj_file(&["--jsonl", "-c", ".x"], input);
     assert_eq!(out, "1\n2\n");
 }
 
@@ -191,15 +191,15 @@ fn ndjson_output_order_preserved() {
     for i in 0..100 {
         input.push_str(&format!("{{\"i\":{i}}}\n"));
     }
-    let out = jx_stdin(&["-c", ".i"], &input);
+    let out = qj_stdin(&["-c", ".i"], &input);
     let expected: String = (0..100).map(|i| format!("{i}\n")).collect();
     assert_eq!(out, expected);
 }
 
 // --- Error handling ---
 
-fn jx_stdin_lossy(args: &[&str], input: &str) -> (String, String, bool) {
-    let output = Command::new(env!("CARGO_BIN_EXE_jx"))
+fn qj_stdin_lossy(args: &[&str], input: &str) -> (String, String, bool) {
+    let output = Command::new(env!("CARGO_BIN_EXE_qj"))
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -214,7 +214,7 @@ fn jx_stdin_lossy(args: &[&str], input: &str) -> (String, String, bool) {
                 .unwrap();
             child.wait_with_output()
         })
-        .expect("failed to run jx");
+        .expect("failed to run qj");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -225,7 +225,7 @@ fn jx_stdin_lossy(args: &[&str], input: &str) -> (String, String, bool) {
 fn ndjson_malformed_line_mixed() {
     // Mix of valid and invalid JSON lines
     let input = "{\"a\":1}\nnot json\n{\"b\":2}\n";
-    let (stdout, _stderr, _success) = jx_stdin_lossy(&["-c", "."], input);
+    let (stdout, _stderr, _success) = qj_stdin_lossy(&["-c", "."], input);
     // Valid lines should still produce output
     assert!(stdout.contains("{\"a\":1}"));
     assert!(stdout.contains("{\"b\":2}"));
@@ -235,7 +235,7 @@ fn ndjson_malformed_line_mixed() {
 fn ndjson_whitespace_only_lines() {
     // Lines with only whitespace between valid JSON
     let input = "{\"a\":1}\n   \n\t\n{\"b\":2}\n";
-    let out = jx_stdin(&["-c", "."], input);
+    let out = qj_stdin(&["-c", "."], input);
     assert_eq!(out, "{\"a\":1}\n{\"b\":2}\n");
 }
 
@@ -246,7 +246,7 @@ fn ndjson_large_line_count_ordering() {
     for i in 0..10_000 {
         input.push_str(&format!("{{\"i\":{i}}}\n"));
     }
-    let out = jx_stdin(&["-c", ".i"], &input);
+    let out = qj_stdin(&["-c", ".i"], &input);
     let expected: String = (0..10_000).map(|i| format!("{i}\n")).collect();
     assert_eq!(out, expected);
 }
@@ -256,7 +256,7 @@ fn ndjson_large_line_count_ordering() {
 #[test]
 fn ndjson_arrays() {
     let input = "[1,2,3]\n[4,5,6]\n";
-    let out = jx_stdin(&["-c", ".[0]"], input);
+    let out = qj_stdin(&["-c", ".[0]"], input);
     assert_eq!(out, "1\n4\n");
 }
 
@@ -267,7 +267,7 @@ fn ndjson_raw_output() {
     let input = r#"{"name":"alice"}
 {"name":"bob"}
 "#;
-    let out = jx_stdin(&["-r", ".name"], input);
+    let out = qj_stdin(&["-r", ".name"], input);
     assert_eq!(out, "alice\nbob\n");
 }
 
@@ -278,7 +278,7 @@ fn ndjson_pretty_output() {
     let input = r#"{"a":1}
 {"b":2}
 "#;
-    let out = jx_stdin(&["."], input);
+    let out = qj_stdin(&["."], input);
     assert_eq!(out, "{\n  \"a\": 1\n}\n{\n  \"b\": 2\n}\n");
 }
 
@@ -289,6 +289,6 @@ fn ndjson_iterate() {
     let input = r#"{"a":1,"b":2}
 {"c":3}
 "#;
-    let out = jx_stdin(&["-c", ".[]"], input);
+    let out = qj_stdin(&["-c", ".[]"], input);
     assert_eq!(out, "1\n2\n3\n");
 }

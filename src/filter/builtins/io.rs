@@ -264,7 +264,7 @@ pub(super) fn eval_io(
             super::super::eval::LAST_ERROR.with(|e| *e.borrow_mut() = Some(err_val));
         }
         "have_decnum" | "have_literal_numbers" => {
-            // jx uses i64/f64, not arbitrary precision decimals
+            // qj uses i64/f64, not arbitrary precision decimals
             output(Value::Bool(false));
         }
         "env" | "$ENV" => {
