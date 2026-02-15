@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use memchr::memchr_iter;
 use rayon::prelude::*;
+use regex::Regex;
 
 use std::collections::HashSet;
 
@@ -58,6 +59,26 @@ enum NdjsonFastPath {
         literal_bytes: Vec<u8>,
         entries: Vec<Vec<String>>,
     },
+    /// `select(.field | test/startswith/endswith/contains("arg"))` — string predicate
+    SelectStringPred {
+        fields: Vec<String>,
+        pred: StringPred,
+    },
+    /// `select(.field | test/startswith/endswith/contains("arg")) | .out_field` — string pred + extract
+    SelectStringPredField {
+        pred_fields: Vec<String>,
+        pred: StringPred,
+        out_fields: Vec<String>,
+    },
+}
+
+/// String predicate for select fast path.
+#[derive(Debug)]
+enum StringPred {
+    Test(Regex),
+    StartsWith(String),
+    EndsWith(String),
+    Contains(String),
 }
 
 /// Target size for parallel chunks.
@@ -217,6 +238,9 @@ fn detect_fast_path(filter: &Filter) -> NdjsonFastPath {
         return fp;
     }
     if let Some(fp) = detect_select_fast_path(filter) {
+        return fp;
+    }
+    if let Some(fp) = detect_select_string_pred_fast_path(filter) {
         return fp;
     }
     if let Some(fp) = detect_multi_field_fast_path(filter) {
@@ -626,6 +650,39 @@ fn process_line(
                 dom_parser.as_mut().unwrap(),
             )?;
         }
+        NdjsonFastPath::SelectStringPred { fields, pred } => {
+            process_line_select_string_pred(
+                trimmed,
+                fields,
+                pred,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
+            )?;
+        }
+        NdjsonFastPath::SelectStringPredField {
+            pred_fields,
+            pred,
+            out_fields,
+        } => {
+            process_line_select_string_pred_field(
+                trimmed,
+                pred_fields,
+                pred,
+                out_fields,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
+            )?;
+        }
         NdjsonFastPath::None => {
             // Normal path: parse → Value → eval → output
             let padded = prepare_padded(trimmed, scratch);
@@ -867,6 +924,189 @@ fn process_line_select_eq(
         Some(true) => {
             *had_output = true;
             output_buf.extend_from_slice(trimmed);
+            write_line_terminator(output_buf, config);
+        }
+        Some(false) => {}
+        None => {
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Fast-path detection: select(.field | test/startswith/endswith/contains("arg"))
+// ---------------------------------------------------------------------------
+
+/// Try to decompose `Pipe(field_chain, Builtin(name, [Literal(String(arg))]))` into
+/// (field_chain, StringPred).
+fn try_field_string_pred(filter: &Filter) -> Option<(Vec<String>, StringPred)> {
+    let (lhs, rhs) = match filter {
+        Filter::Pipe(lhs, rhs) => (lhs.as_ref(), rhs.as_ref()),
+        _ => return None,
+    };
+    let mut fields = Vec::new();
+    if !crate::filter::collect_field_chain(lhs, &mut fields) || fields.is_empty() {
+        return None;
+    }
+    let (name, args) = match rhs {
+        Filter::Builtin(name, args) => (name.as_str(), args),
+        _ => return None,
+    };
+    // Only support 1-arg forms (no flags argument for test)
+    if args.len() != 1 {
+        return None;
+    }
+    let arg_str = match &args[0] {
+        Filter::Literal(crate::value::Value::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let pred = match name {
+        "test" => {
+            let re = Regex::new(&arg_str).ok()?;
+            StringPred::Test(re)
+        }
+        "startswith" => StringPred::StartsWith(arg_str),
+        "endswith" => StringPred::EndsWith(arg_str),
+        "contains" => StringPred::Contains(arg_str),
+        _ => return None,
+    };
+    Some((fields, pred))
+}
+
+fn detect_select_string_pred_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
+    // Check for `select(.field | pred("arg")) | .out_field` first (composite)
+    if let Filter::Pipe(lhs, rhs) = filter
+        && let Filter::Select(inner) = lhs.as_ref()
+        && let Some((fields, pred)) = try_field_string_pred(inner.as_ref())
+    {
+        // RHS: try field chain
+        let mut out_fields = Vec::new();
+        if crate::filter::collect_field_chain(rhs, &mut out_fields) && !out_fields.is_empty() {
+            return Some(NdjsonFastPath::SelectStringPredField {
+                pred_fields: fields,
+                pred,
+                out_fields,
+            });
+        }
+    }
+    // Bare `select(.field | pred("arg"))`
+    let inner = match filter {
+        Filter::Select(inner) => inner.as_ref(),
+        _ => return None,
+    };
+    let (fields, pred) = try_field_string_pred(inner)?;
+    Some(NdjsonFastPath::SelectStringPred { fields, pred })
+}
+
+/// Evaluate a string predicate against raw JSON bytes of a field.
+///
+/// Returns `Some(true)` if the predicate matches, `Some(false)` if it doesn't,
+/// `None` if we need to fall back to the full eval path.
+fn evaluate_string_predicate(raw: &[u8], pred: &StringPred) -> Option<bool> {
+    // Must be a JSON string (starts with " and ends with ")
+    if raw.len() < 2 || raw[0] != b'"' || raw[raw.len() - 1] != b'"' {
+        return None; // not a string — fall back
+    }
+    let inner = &raw[1..raw.len() - 1];
+    // If no escapes, we can compare inner bytes directly against the predicate arg
+    if !inner.contains(&b'\\') {
+        let s = std::str::from_utf8(inner).ok()?;
+        return Some(match pred {
+            StringPred::Test(re) => re.is_match(s),
+            StringPred::StartsWith(arg) => s.starts_with(arg.as_str()),
+            StringPred::EndsWith(arg) => s.ends_with(arg.as_str()),
+            StringPred::Contains(arg) => s.contains(arg.as_str()),
+        });
+    }
+    // Has escapes — unescape and then compare
+    let mut unescaped = Vec::with_capacity(inner.len());
+    unescape_json_string(inner, &mut unescaped);
+    let s = std::str::from_utf8(&unescaped).ok()?;
+    Some(match pred {
+        StringPred::Test(re) => re.is_match(s),
+        StringPred::StartsWith(arg) => s.starts_with(arg.as_str()),
+        StringPred::EndsWith(arg) => s.ends_with(arg.as_str()),
+        StringPred::Contains(arg) => s.contains(arg.as_str()),
+    })
+}
+
+/// Process a line with the `select(.field | test/startswith/endswith/contains("arg"))` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_string_pred(
+    trimmed: &[u8],
+    fields: &[String],
+    pred: &StringPred,
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+    let raw = dp
+        .find_field_raw(padded, trimmed.len(), &field_refs)
+        .context("failed to extract field from NDJSON line")?;
+
+    match evaluate_string_predicate(&raw, pred) {
+        Some(true) => {
+            *had_output = true;
+            output_buf.extend_from_slice(trimmed);
+            write_line_terminator(output_buf, config);
+        }
+        Some(false) => {}
+        None => {
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Process a line with the `select(.field | pred("arg")) | .out_field` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_string_pred_field(
+    trimmed: &[u8],
+    pred_fields: &[String],
+    pred: &StringPred,
+    out_fields: &[String],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let pred_refs: Vec<&str> = pred_fields.iter().map(|s| s.as_str()).collect();
+    let raw_pred = dp
+        .find_field_raw(padded, trimmed.len(), &pred_refs)
+        .context("failed to extract predicate field from NDJSON line")?;
+
+    match evaluate_string_predicate(&raw_pred, pred) {
+        Some(true) => {
+            let padded = prepare_padded(trimmed, scratch);
+            let out_refs: Vec<&str> = out_fields.iter().map(|s| s.as_str()).collect();
+            let raw_out = dp
+                .find_field_raw(padded, trimmed.len(), &out_refs)
+                .context("failed to extract output field from NDJSON line")?;
+            *had_output = true;
+            emit_raw_field(output_buf, &raw_out, config);
             write_line_terminator(output_buf, config);
         }
         Some(false) => {}
@@ -2886,5 +3126,333 @@ mod tests {
         let env = crate::filter::Env::empty();
         let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "[1,2]\n");
+    }
+
+    // --- String predicate fast-path detection tests ---
+
+    #[test]
+    fn fast_path_detects_select_test() {
+        let filter = crate::filter::parse(r#"select(.msg | test("error"))"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectStringPred { fields, pred } => {
+                assert_eq!(fields, vec!["msg"]);
+                assert!(matches!(pred, StringPred::Test(_)));
+            }
+            other => panic!("expected SelectStringPred, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_startswith() {
+        let filter = crate::filter::parse(r#"select(.url | startswith("/api"))"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectStringPred { fields, pred } => {
+                assert_eq!(fields, vec!["url"]);
+                assert!(matches!(pred, StringPred::StartsWith(s) if s == "/api"));
+            }
+            other => panic!("expected SelectStringPred, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_endswith() {
+        let filter = crate::filter::parse(r#"select(.name | endswith(".json"))"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectStringPred { fields, pred } => {
+                assert_eq!(fields, vec!["name"]);
+                assert!(matches!(pred, StringPred::EndsWith(s) if s == ".json"));
+            }
+            other => panic!("expected SelectStringPred, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_contains() {
+        let filter = crate::filter::parse(r#"select(.desc | contains("alice"))"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectStringPred { fields, pred } => {
+                assert_eq!(fields, vec!["desc"]);
+                assert!(matches!(pred, StringPred::Contains(s) if s == "alice"));
+            }
+            other => panic!("expected SelectStringPred, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_select_test_extract() {
+        let filter = crate::filter::parse(r#"select(.msg | test("error")) | .code"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectStringPredField {
+                pred_fields,
+                pred,
+                out_fields,
+            } => {
+                assert_eq!(pred_fields, vec!["msg"]);
+                assert!(matches!(pred, StringPred::Test(_)));
+                assert_eq!(out_fields, vec!["code"]);
+            }
+            other => panic!("expected SelectStringPredField, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_select_test_not_two_args() {
+        // test with flags (2 args) not supported by fast path
+        let filter = crate::filter::parse(r#"select(.msg | test("error"; "i"))"#).unwrap();
+        assert!(!matches!(
+            detect_fast_path(&filter),
+            NdjsonFastPath::SelectStringPred { .. }
+        ));
+    }
+
+    #[test]
+    fn fast_path_select_test_nested_field() {
+        let filter = crate::filter::parse(r#"select(.actor.login | startswith("bot"))"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::SelectStringPred { fields, .. } => {
+                assert_eq!(fields, vec!["actor", "login"]);
+            }
+            other => panic!("expected SelectStringPred, got {:?}", other),
+        }
+    }
+
+    // --- String predicate fast-path processing tests ---
+
+    #[test]
+    fn fast_path_select_test_matching() {
+        let data = b"{\"msg\":\"error: disk full\",\"id\":1}\n{\"msg\":\"ok\",\"id\":2}\n";
+        let filter = crate::filter::parse(r#"select(.msg | test("error"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"msg\":\"error: disk full\",\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_startswith_matching() {
+        let data = b"{\"url\":\"/api/users\",\"id\":1}\n{\"url\":\"/web/home\",\"id\":2}\n";
+        let filter = crate::filter::parse(r#"select(.url | startswith("/api"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"url\":\"/api/users\",\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_endswith_matching() {
+        let data = b"{\"file\":\"data.json\",\"id\":1}\n{\"file\":\"data.csv\",\"id\":2}\n";
+        let filter = crate::filter::parse(r#"select(.file | endswith(".json"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"file\":\"data.json\",\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_contains_matching() {
+        let data = b"{\"desc\":\"hello alice\",\"id\":1}\n{\"desc\":\"hello bob\",\"id\":2}\n";
+        let filter = crate::filter::parse(r#"select(.desc | contains("alice"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"desc\":\"hello alice\",\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_test_no_match() {
+        let data = b"{\"msg\":\"ok\"}\n{\"msg\":\"success\"}\n";
+        let filter = crate::filter::parse(r#"select(.msg | test("error"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(!had_output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn fast_path_select_test_regex_pattern() {
+        // Use regex features like anchors and quantifiers
+        let data = b"{\"code\":\"ERR-001\"}\n{\"code\":\"OK-200\"}\n{\"code\":\"ERR-42\"}\n";
+        let filter = crate::filter::parse(r#"select(.code | test("^ERR-\\d+$"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"code\":\"ERR-001\"}\n{\"code\":\"ERR-42\"}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_test_non_string_fallback() {
+        // Field is a number, not a string — should fall back to full eval
+        let data = b"{\"n\":42}\n{\"n\":\"hello\"}\n";
+        let filter = crate::filter::parse(r#"select(.n | test("hello"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":\"hello\"}\n");
+    }
+
+    #[test]
+    fn fast_path_select_test_escaped_string() {
+        // String with escapes — should still work via unescape path
+        let data = b"{\"msg\":\"line1\\nline2\",\"id\":1}\n{\"msg\":\"ok\",\"id\":2}\n";
+        let filter = crate::filter::parse(r#"select(.msg | test("line1"))"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"msg\":\"line1\\nline2\",\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn fast_path_select_test_extract_field() {
+        let data = b"{\"msg\":\"error: disk full\",\"code\":500}\n{\"msg\":\"ok\",\"code\":200}\n";
+        let filter = crate::filter::parse(r#"select(.msg | test("error")) | .code"#).unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "500\n");
+    }
+
+    // --- evaluate_string_predicate unit tests ---
+
+    #[test]
+    fn string_pred_test_match() {
+        let re = Regex::new("error").unwrap();
+        let pred = StringPred::Test(re);
+        assert_eq!(
+            evaluate_string_predicate(b"\"error: disk full\"", &pred),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn string_pred_test_no_match() {
+        let re = Regex::new("error").unwrap();
+        let pred = StringPred::Test(re);
+        assert_eq!(evaluate_string_predicate(b"\"ok\"", &pred), Some(false));
+    }
+
+    #[test]
+    fn string_pred_startswith_match() {
+        let pred = StringPred::StartsWith("/api".to_string());
+        assert_eq!(
+            evaluate_string_predicate(b"\"/api/users\"", &pred),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn string_pred_startswith_no_match() {
+        let pred = StringPred::StartsWith("/api".to_string());
+        assert_eq!(
+            evaluate_string_predicate(b"\"/web/home\"", &pred),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn string_pred_endswith_match() {
+        let pred = StringPred::EndsWith(".json".to_string());
+        assert_eq!(
+            evaluate_string_predicate(b"\"data.json\"", &pred),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn string_pred_endswith_no_match() {
+        let pred = StringPred::EndsWith(".json".to_string());
+        assert_eq!(
+            evaluate_string_predicate(b"\"data.csv\"", &pred),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn string_pred_contains_match() {
+        let pred = StringPred::Contains("alice".to_string());
+        assert_eq!(
+            evaluate_string_predicate(b"\"hello alice!\"", &pred),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn string_pred_contains_no_match() {
+        let pred = StringPred::Contains("alice".to_string());
+        assert_eq!(
+            evaluate_string_predicate(b"\"hello bob\"", &pred),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn string_pred_non_string_returns_none() {
+        let re = Regex::new("x").unwrap();
+        let pred = StringPred::Test(re);
+        assert_eq!(evaluate_string_predicate(b"42", &pred), None);
+        assert_eq!(evaluate_string_predicate(b"null", &pred), None);
+        assert_eq!(evaluate_string_predicate(b"true", &pred), None);
+    }
+
+    #[test]
+    fn string_pred_escaped_string() {
+        let pred = StringPred::Contains("line1".to_string());
+        // String with \n escape: "line1\nline2"
+        assert_eq!(
+            evaluate_string_predicate(b"\"line1\\nline2\"", &pred),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn string_pred_empty_string() {
+        let pred = StringPred::StartsWith("".to_string());
+        assert_eq!(evaluate_string_predicate(b"\"hello\"", &pred), Some(true));
     }
 }

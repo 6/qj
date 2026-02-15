@@ -1007,6 +1007,135 @@ fn ndjson_multi_field_arr_large() {
     assert_eq!(lines[999], "[999,9990]");
 }
 
+// --- String predicate select ---
+
+#[test]
+fn ndjson_select_test_basic() {
+    let input = r#"{"msg":"error: disk full","id":1}
+{"msg":"ok","id":2}
+{"msg":"error: timeout","id":3}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.msg | test("error"))"#], input);
+    assert_eq!(
+        out,
+        "{\"msg\":\"error: disk full\",\"id\":1}\n{\"msg\":\"error: timeout\",\"id\":3}\n"
+    );
+}
+
+#[test]
+fn ndjson_select_startswith() {
+    let input = r#"{"url":"/api/users","id":1}
+{"url":"/web/home","id":2}
+{"url":"/api/items","id":3}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.url | startswith("/api"))"#], input);
+    assert_eq!(
+        out,
+        "{\"url\":\"/api/users\",\"id\":1}\n{\"url\":\"/api/items\",\"id\":3}\n"
+    );
+}
+
+#[test]
+fn ndjson_select_endswith() {
+    let input = r#"{"file":"data.json","id":1}
+{"file":"data.csv","id":2}
+{"file":"config.json","id":3}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.file | endswith(".json"))"#], input);
+    assert_eq!(
+        out,
+        "{\"file\":\"data.json\",\"id\":1}\n{\"file\":\"config.json\",\"id\":3}\n"
+    );
+}
+
+#[test]
+fn ndjson_select_contains_string() {
+    let input = r#"{"desc":"hello alice","id":1}
+{"desc":"hello bob","id":2}
+{"desc":"alice says hi","id":3}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.desc | contains("alice"))"#], input);
+    assert_eq!(
+        out,
+        "{\"desc\":\"hello alice\",\"id\":1}\n{\"desc\":\"alice says hi\",\"id\":3}\n"
+    );
+}
+
+#[test]
+fn ndjson_select_test_regex() {
+    let input = r#"{"code":"ERR-001"}
+{"code":"OK-200"}
+{"code":"ERR-42"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.code | test("^ERR-\\d+$"))"#], input);
+    assert_eq!(out, "{\"code\":\"ERR-001\"}\n{\"code\":\"ERR-42\"}\n");
+}
+
+#[test]
+fn ndjson_select_test_extract_field() {
+    let input = r#"{"msg":"error: disk full","code":500}
+{"msg":"ok","code":200}
+{"msg":"error: timeout","code":504}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.msg | test("error")) | .code"#], input);
+    assert_eq!(out, "500\n504\n");
+}
+
+#[test]
+fn ndjson_select_startswith_extract() {
+    let input = r#"{"url":"/api/users","method":"GET"}
+{"url":"/web/home","method":"GET"}
+"#;
+    let out = qj_stdin(
+        &["-c", r#"select(.url | startswith("/api")) | .method"#],
+        input,
+    );
+    assert_eq!(out, "\"GET\"\n");
+}
+
+#[test]
+fn ndjson_select_test_no_match() {
+    let input = r#"{"msg":"ok"}
+{"msg":"success"}
+"#;
+    let out = qj_stdin(&["-c", r#"select(.msg | test("error"))"#], input);
+    assert_eq!(out, "");
+}
+
+#[test]
+fn ndjson_select_test_escaped_string() {
+    let input = "{\"msg\":\"line1\\nline2\",\"id\":1}\n{\"msg\":\"ok\",\"id\":2}\n";
+    let out = qj_stdin(&["-c", r#"select(.msg | contains("line1"))"#], input);
+    assert_eq!(out, "{\"msg\":\"line1\\nline2\",\"id\":1}\n");
+}
+
+#[test]
+fn ndjson_select_contains_nested_field() {
+    let input = r#"{"actor":{"login":"bot-alice"},"id":1}
+{"actor":{"login":"human-bob"},"id":2}
+"#;
+    let out = qj_stdin(
+        &["-c", r#"select(.actor.login | startswith("bot"))"#],
+        input,
+    );
+    assert_eq!(out, "{\"actor\":{\"login\":\"bot-alice\"},\"id\":1}\n");
+}
+
+#[test]
+fn ndjson_select_test_large() {
+    let mut input = String::new();
+    for i in 0..2000 {
+        if i % 100 == 0 {
+            input.push_str(&format!("{{\"msg\":\"error-{i}\",\"n\":{i}}}\n"));
+        } else {
+            input.push_str(&format!("{{\"msg\":\"ok-{i}\",\"n\":{i}}}\n"));
+        }
+    }
+    let out = qj_stdin(&["-c", r#"select(.msg | test("^error"))"#], &input);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 20);
+}
+
 // --- Iterate ---
 
 #[test]

@@ -11,11 +11,13 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | 2 | mmap for file I/O | DONE | **~23% faster** on 1.1GB NDJSON, ~1% on 49MB |
 | 3 | Field-chain fast path | DONE | **~40% faster** `.field` on 1.1GB NDJSON |
 | 4 | `select` fast path | DONE | **~50% faster** `select(.type=="PushEvent")` on 1.1GB NDJSON |
-| 5 | Multi-field fast path | REVERTED | N×FFI round-trips regress for ≥3 fields |
+| 5 | Multi-field fast path | REVERTED→DONE | Batch C++ extraction: **-54%** 3-field obj, **-38%** 2-field arr |
 | 6 | `select` + extract fast path | DONE | **~35-42% faster** `select(.f==lit) \| .field` / `{...}` / `[...]` on 1.1GB NDJSON |
 | 7 | `length`/`keys` NDJSON fast path | DONE | **~45% faster** `length`/`keys` on 1.1GB NDJSON |
-| 8 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
-| 9 | Per-thread output buffers | TODO | Avoid final concatenation step |
+| 8 | `select` ordering operators | DONE | `>`, `<`, `>=`, `<=` for numeric and string comparisons |
+| 9 | DOM parser reuse | DONE | **~40% faster** — reuse parser across lines: 259ms→155ms on 3-field obj |
+| 10 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
+| 11 | Per-thread output buffers | TODO | Avoid final concatenation step |
 | — | Rc\<str\> for Value strings | REVERTED | Neutral — Rc indirection offsets clone savings |
 | — | Arena allocation (bumpalo) | SKIPPED | Very high complexity, uncertain payoff |
 
@@ -122,25 +124,28 @@ strategy.
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs` (`CmpOp` already had needed derives)
 
-### 5. Multi-field extraction fast path (REVERTED)
+### 5. Multi-field extraction fast path (REVERTED → DONE with batch C++ extraction)
 
 **Pattern:** `{type, actor: .actor.login}`, `{id, name, email}`, `[.field1, .field2]`
 
-**Approach:** Extract multiple fields via repeated `dom_find_field_raw()` calls, then construct the output JSON directly as bytes — no Value tree.
-
-**Result:** Implemented and benchmarked. N separate `dom_find_field_raw()` calls per line each re-parse the entire JSON through simdjson FFI. For ≥3 fields, the FFI round-trip overhead (allocation, copy, free per call) exceeds the cost of building the Value tree once. System time jumped from ~190ms to ~1800ms on 1.1GB NDJSON.
-
-**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson):**
+**First attempt (REVERTED):** N separate `dom_find_field_raw()` calls per line each re-parse the entire JSON through simdjson FFI. For ≥3 fields, the FFI round-trip overhead exceeded the cost of building the Value tree once.
 
 | Query | Fast path | Normal path | Delta |
 |-------|-----------|-------------|-------|
 | `{type, repo: .repo.name, actor: .actor.login}` (3 fields) | 635ms | 470ms | **+35% REGRESSION** |
-| `[.type, .repo.name, .actor.login]` (3 fields) | 634ms | 458ms | **+38% REGRESSION** |
-| `{type, id: .id}` (2 fields) | 440ms | 449ms | ~0% (noise) |
 
-**Verdict:** Reverted. A batch C++ extraction function that parses once and extracts N fields would be needed to make this profitable. Break-even is ~2 fields; regression grows with field count.
+**Second attempt (DONE):** New batch C++ function `jx_dom_find_fields_raw` — parse once in C++, extract N field chains, return a single length-prefixed buffer. Eliminates N FFI round-trips. Added `jx_dom_find_fields_raw_reuse` variant for reusable DOM parser.
 
-**Note:** The `try_multi_field_obj()` and `try_multi_field_arr()` detection helpers are retained in the codebase — they're used by the select+extract fast path (#6) where selectivity makes multi-field extraction worthwhile.
+**Change:** `src/simdjson/bridge.cpp` — new `jx_dom_find_fields_raw` function that navigates multiple field chains per single DOM parse. `src/simdjson/bridge.rs` — Rust wrapper `dom_find_fields_raw()`. `src/parallel/ndjson.rs` — re-enabled `MultiFieldObj`, `MultiFieldArr`, `SelectEqObj`, `SelectEqArr` fast paths using batch extraction.
+
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, with DOM parser reuse):**
+
+| Query | Without fast path | With fast path | Delta |
+|-------|------------------|---------------|-------|
+| `select(.type=="PushEvent") \| {type, id, actor: .actor.login}` (3 fields) | 454ms | 155ms | **-66%** |
+| `select(.type=="PushEvent") \| [.type, .actor.login]` (2 fields) | 472ms | 131ms | **-72%** |
+
+**Verdict:** Batch extraction + DOM parser reuse makes multi-field fast paths profitable. The key insight: parse once in C++, extract N fields, return one buffer — no per-field FFI overhead.
 
 ### 6. `select` + extract fast path (DONE)
 
@@ -187,11 +192,48 @@ strategy.
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs`
 
+### 8. `select` with ordering operators (DONE)
+
+**Pattern:** `select(.score > 90)`, `select(.ts >= 1234567890)`, `select(.name < "M")`
+
+**Approach:** Extended the existing `SelectEq` fast path to support `>`, `<`, `>=`, `<=` operators. The detection functions (`detect_select_fast_path`, `detect_select_extract_fast_path`) previously rejected non-Eq/Ne operators — removed that restriction. Added `evaluate_select_predicate()` helper that handles all `CmpOp` variants:
+- Eq/Ne: existing byte comparison with `bytes_mismatch_is_definitive` safety check
+- Ordering ops: parse both sides as numbers (`parse_json_number`) and compare numerically, or compare unescaped string byte contents (UTF-8 preserves codepoint order for non-escaped strings)
+- Falls back to full eval for ambiguous cases (escaped strings, type mismatches)
+
+Propagated to all select variants: `SelectEq`, `SelectEqField`, `SelectEqObj`, `SelectEqArr`.
+
+**Change:** `src/parallel/ndjson.rs` — removed Eq/Ne restriction in detection, added `evaluate_select_predicate()` + `parse_json_number()` helpers, refactored all 4 select processing functions. Added comprehensive unit tests for all ordering operators and predicate evaluation.
+
+**Files:** `src/parallel/ndjson.rs`, `tests/ndjson.rs`, `tests/e2e.rs`
+
+### 9. DOM parser reuse across NDJSON lines (DONE)
+
+**What:** Reusable `JxDomParser` handle that persists simdjson's `dom::parser` across lines within each chunk. Previously every fast-path FFI call constructed a fresh `dom::parser` on the stack — simdjson's `dom::parser` pre-allocates internal buffers, so creating one per line wasted that allocation.
+
+**Approach:**
+1. **C++ (`bridge.cpp`):** New `JxDomParser` struct holding a `dom::parser`. Added `_reuse` variants of all hot functions: `jx_dom_find_field_raw_reuse`, `jx_dom_find_fields_raw_reuse`, `jx_dom_field_length_reuse`, `jx_dom_field_keys_reuse`.
+2. **Rust (`bridge.rs`):** `DomParser` wrapper type with `new()`, `Drop`, and methods mirroring the free functions. `Send` but not `Sync` (one parser per thread).
+3. **NDJSON (`ndjson.rs`):** Create `DomParser` once per chunk in `process_chunk`. Thread through `process_line` to all fast-path processing functions. One parser per Rayon thread, reused across all lines.
+
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson):**
+
+| Query | Before (per-line parser) | After (reused parser) | Delta |
+|-------|-------------------------|----------------------|-------|
+| `select(.type=="PushEvent") \| {type, id, actor: .actor.login}` | 259ms | 155ms | **-40%** |
+| `select(.type=="PushEvent") \| .actor.login` | — | 131ms | — |
+| `.type` | — | 111ms | — |
+| `length` | — | 107ms | — |
+
+**Verdict:** ~40% wall-time improvement. The savings come from avoiding repeated internal buffer allocation in simdjson's DOM parser. Biggest impact on queries that make multiple FFI calls per line (multi-field extraction).
+
+**Files:** `src/simdjson/bridge.cpp`, `src/simdjson/ffi.rs`, `src/simdjson/bridge.rs`, `src/simdjson/mod.rs`, `src/parallel/ndjson.rs`, `tests/simdjson_ffi.rs`
+
 ---
 
 ## Tier 2: Medium Impact
 
-### 8. Streaming NDJSON
+### 10. Streaming NDJSON
 
 **Current:** Entire file loaded into memory (via mmap or heap) before processing. 10GB file = 10GB virtual address space.
 
@@ -203,7 +245,7 @@ strategy.
 
 **Files:** `src/parallel/ndjson.rs`, `src/main.rs`
 
-### 9. Per-thread output buffers with ordered flush
+### 11. Per-thread output buffers with ordered flush
 
 **Current:** Each Rayon chunk produces `Vec<u8>`, all collected into `Vec<Vec<u8>>`, then concatenated and written.
 
@@ -219,7 +261,7 @@ strategy.
 
 ## Tier 3: Speculative / Low Impact
 
-### 10. simdjson parse_many for NDJSON
+### 12. simdjson parse_many for NDJSON
 
 **Current:** Rust splits at newlines via `memchr`, parses each line individually.
 
@@ -227,15 +269,15 @@ strategy.
 
 **Caveat:** parse_many is single-threaded internally. Would need chunking on top. And memchr is already extremely fast for newline splitting. Unclear if this helps.
 
-### 11. Lift 4GB single-document limit
+### 13. Lift 4GB single-document limit
 
 For large arrays: treat `[\n{...}\n{...}\n]` as streaming docs. High complexity, rare use case.
 
-### 12. NEON-specific output formatting
+### 14. NEON-specific output formatting
 
 SIMD scan for chars needing escaping. Bulk-copy safe runs. Small impact since output is rarely the bottleneck.
 
-### 13. Arena allocation (bumpalo)
+### 15. Arena allocation (bumpalo)
 
 Per-document bump arena for Value tree construction. Theoretically cache-friendly and fast deallocation. In practice, the Rc\<str\> experiment showed allocation pressure isn't the dominant cost — fast-path avoidance of the Value tree entirely is a strictly better approach. Would be a massive refactor (lifetime parameter on Value, propagates everywhere). Not worth the complexity given the fast-path strategy.
 

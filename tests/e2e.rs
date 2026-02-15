@@ -4082,3 +4082,77 @@ fn ndjson_jq_compat_select_gt_mixed_types() {
         "{\"v\":10}\n{\"v\":3}\n{\"v\":\"hello\"}\n{\"v\":null}\n",
     );
 }
+
+// --- String predicate select (test/startswith/endswith/contains) ---
+
+#[test]
+fn ndjson_jq_compat_select_test() {
+    assert_jq_compat_ndjson(
+        r#"select(.msg | test("error"))"#,
+        "{\"msg\":\"error: disk full\"}\n{\"msg\":\"ok\"}\n{\"msg\":\"error: timeout\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_startswith() {
+    assert_jq_compat_ndjson(
+        r#"select(.url | startswith("/api"))"#,
+        "{\"url\":\"/api/users\"}\n{\"url\":\"/web/home\"}\n{\"url\":\"/api/items\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_endswith() {
+    assert_jq_compat_ndjson(
+        r#"select(.file | endswith(".json"))"#,
+        "{\"file\":\"data.json\"}\n{\"file\":\"data.csv\"}\n{\"file\":\"config.json\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_contains_string() {
+    assert_jq_compat_ndjson(
+        r#"select(.desc | contains("alice"))"#,
+        "{\"desc\":\"hello alice\"}\n{\"desc\":\"hello bob\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_test_regex() {
+    assert_jq_compat_ndjson(
+        r#"select(.code | test("^ERR-\\d+$"))"#,
+        "{\"code\":\"ERR-001\"}\n{\"code\":\"OK-200\"}\n{\"code\":\"ERR-42\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_test_extract() {
+    assert_jq_compat_ndjson(
+        r#"select(.msg | test("error")) | .code"#,
+        "{\"msg\":\"error: disk full\",\"code\":500}\n{\"msg\":\"ok\",\"code\":200}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_startswith_nested() {
+    assert_jq_compat_ndjson(
+        r#"select(.actor.login | startswith("bot"))"#,
+        "{\"actor\":{\"login\":\"bot-alice\"}}\n{\"actor\":{\"login\":\"human-bob\"}}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_test_no_match() {
+    assert_jq_compat_ndjson(
+        r#"select(.msg | test("error"))"#,
+        "{\"msg\":\"ok\"}\n{\"msg\":\"success\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_endswith_extract() {
+    assert_jq_compat_ndjson(
+        r#"select(.file | endswith(".json")) | .file"#,
+        "{\"file\":\"data.json\"}\n{\"file\":\"data.csv\"}\n",
+    );
+}
