@@ -566,10 +566,26 @@ fn eval_and_output(
     had_output: &mut bool,
     had_error: &mut bool,
 ) {
+    let mut nul_error = false;
     jx::filter::eval::eval_filter_with_env(filter, input, env, &mut |v| {
+        if nul_error {
+            return; // Stop outputting after NUL error (matches jq)
+        }
+        // Check for embedded NUL in --raw-output0 mode
+        if config.null_separator
+            && let jx::value::Value::String(s) = &v
+            && s.contains('\0')
+        {
+            nul_error = true;
+            return;
+        }
         *had_output = true;
         jx::output::write_value(out, &v, config).ok();
     });
+    if nul_error {
+        *had_error = true;
+        eprintln!("jx: error: Cannot dump a string containing NUL with --raw-output0 option");
+    }
     // Check for uncaught runtime errors
     if let Some(err) = jx::filter::eval::take_last_error() {
         *had_error = true;

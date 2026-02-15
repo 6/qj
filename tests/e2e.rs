@@ -3638,6 +3638,36 @@ fn raw_output0_jq_compat() {
     );
 }
 
+#[test]
+fn raw_output0_embedded_nul_error() {
+    // Strings containing NUL bytes should cause exit code 5 with --raw-output0
+    let input = r#"{"a":"x\u0000y"}"#;
+    let (code, stdout, stderr) = jx_exit(&["--raw-output0", ".a"], input);
+    assert_eq!(code, 5);
+    assert!(stdout.is_empty(), "should produce no stdout output");
+    assert!(
+        stderr.contains("Cannot dump a string containing NUL with --raw-output0 option"),
+        "stderr should contain NUL error message, got: {stderr}"
+    );
+}
+
+#[test]
+fn raw_output0_embedded_nul_partial_output() {
+    // Values before the NUL-containing string should still be output
+    let input = r#"["ok","x\u0000y","fine"]"#;
+    let (code, stdout, stderr) = jx_exit(&["--raw-output0", ".[]"], input);
+    assert_eq!(code, 5);
+    assert_eq!(stdout.as_bytes(), b"ok\0", "should output 'ok' then stop");
+    assert!(stderr.contains("NUL"));
+}
+
+#[test]
+fn raw_output0_no_nul_in_string_ok() {
+    // Normal strings (no embedded NUL) should work fine
+    let (code, _, _) = jx_exit(&["--raw-output0", "."], r#""hello world""#);
+    assert_eq!(code, 0);
+}
+
 // ---------------------------------------------------------------------------
 // --ascii-output / -a
 // ---------------------------------------------------------------------------
