@@ -100,9 +100,10 @@ cargo run --release --bin bench_tools                               # defaults: 
 cargo run --release --bin bench_tools -- --runs 3 --cooldown 2      # faster run for quick checks
 ```
 
-### GH Archive (real-world ~1.1GB)
+### GH Archive (real-world ~1.1GB / ~6.2GB)
 ```
-bash benches/download_gharchive.sh   # gharchive.ndjson (~1.1GB), gharchive.json (~1.1GB)
+bash benches/download_gharchive.sh           # gharchive.ndjson (~1.1GB), gharchive.json (~1.1GB)
+bash benches/download_gharchive.sh --large   # gharchive_large.ndjson (~6.2GB), gharchive_large.json (~6.2GB)
 ```
 Use `QJ_GHARCHIVE_HOURS=2` for quick testing with fewer hours of data.
 

@@ -14,7 +14,9 @@ bash "$SCRIPT_DIR/gen_large.sh"            # large_twitter.json, large.jsonl
 echo
 bash "$SCRIPT_DIR/generate_ndjson.sh"      # 100k.ndjson, 1m.ndjson
 echo
-bash "$SCRIPT_DIR/download_gharchive.sh"   # gharchive.ndjson, gharchive.json
+bash "$SCRIPT_DIR/download_gharchive.sh"          # gharchive.ndjson, gharchive.json
+echo
+bash "$SCRIPT_DIR/download_gharchive.sh" --large  # gharchive_large.ndjson, gharchive_large.json
 echo
 
 echo "=== All benchmark data ready ==="

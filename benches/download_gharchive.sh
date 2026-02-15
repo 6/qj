@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 # Download GH Archive hourly dumps and produce NDJSON + JSON array files.
-# Source: https://www.gharchive.org/ (2024-01-15, a Monday)
+# Source: https://www.gharchive.org/
 #
-# Outputs:
-#   benches/data/gharchive.ndjson  (~1.1GB NDJSON, one event per line)
-#   benches/data/gharchive.json    (~1.1GB JSON array [event,event,...])
+# Default (no flags):
+#   2024-01-15, 2 hours -> gharchive.ndjson (~1.1GB), gharchive.json (~1.1GB)
 #
-# Set QJ_GHARCHIVE_HOURS to download fewer hours (default: 24).
+# --large:
+#   2026-02-01, 24 hours -> gharchive_large.ndjson (~6.2GB), gharchive_large.json (~6.2GB)
+#
+# Set QJ_GHARCHIVE_HOURS to override the hour count.
 #   QJ_GHARCHIVE_HOURS=2 bash benches/download_gharchive.sh
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)/data"
 mkdir -p "$DIR"
 
-HOURS="${QJ_GHARCHIVE_HOURS:-2}"
-DATE="2024-01-15"
-NDJSON="$DIR/gharchive.ndjson"
-JSON="$DIR/gharchive.json"
-TMPDIR="$DIR/.gharchive_tmp"
+if [ "${1:-}" = "--large" ]; then
+    HOURS="${QJ_GHARCHIVE_HOURS:-24}"
+    DATE="2026-02-01"
+    SUFFIX="_large"
+else
+    HOURS="${QJ_GHARCHIVE_HOURS:-2}"
+    DATE="2024-01-15"
+    SUFFIX=""
+fi
+
+NDJSON="$DIR/gharchive${SUFFIX}.ndjson"
+JSON="$DIR/gharchive${SUFFIX}.json"
+TMPDIR="$DIR/.gharchive${SUFFIX}_tmp"
 
 # --- Skip if files already exist with >1MB ---
 if [ -f "$NDJSON" ] && [ "$(wc -c < "$NDJSON" | tr -d ' ')" -gt 1000000 ] \

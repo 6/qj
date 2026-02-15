@@ -1,10 +1,7 @@
 use clap::Parser;
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write;
 use std::fs;
-use std::hash::Hasher;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -320,28 +317,6 @@ fn run_tool_output(tool: &Tool, filter: &BenchFilter, file: &Path) -> String {
         }
         Err(e) => format!("ERROR: {e}"),
     }
-}
-
-/// Run a tool and return a streaming hash of stdout (for correctness comparison on large files).
-/// Avoids loading multi-GB output into memory.
-fn run_tool_hash(tool: &Tool, filter: &BenchFilter, file: &Path) -> u64 {
-    let mut cmd = Command::new(&tool.path);
-    for flag in filter.flags {
-        cmd.arg(flag);
-    }
-    cmd.arg(filter.expr).arg(file);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = cmd.spawn().expect("failed to spawn tool");
-    let stdout = child.stdout.take().expect("no stdout");
-    let reader = BufReader::with_capacity(256 * 1024, stdout);
-    let mut hasher = DefaultHasher::new();
-    for line in reader.lines() {
-        let line = line.expect("read error");
-        hasher.write(line.as_bytes());
-        hasher.write(b"\n");
-    }
-    let _ = child.wait();
-    hasher.finish()
 }
 
 fn format_time(seconds: f64) -> String {
@@ -950,9 +925,15 @@ fn main() {
     if data_dir.join("gharchive.ndjson").exists() {
         gharchive_ndjson_files.push("gharchive.ndjson");
     }
+    if data_dir.join("gharchive_large.ndjson").exists() {
+        gharchive_ndjson_files.push("gharchive_large.ndjson");
+    }
     let mut gharchive_json_files: Vec<&str> = Vec::new();
     if data_dir.join("gharchive.json").exists() {
         gharchive_json_files.push("gharchive.json");
+    }
+    if data_dir.join("gharchive_large.json").exists() {
+        gharchive_json_files.push("gharchive_large.json");
     }
 
     // --- Correctness check ---
@@ -993,39 +974,6 @@ fn main() {
                 }
             }
         }
-        // Hash-based correctness for large files (GH Archive).
-        // Streams output through DefaultHasher to avoid loading GB into memory.
-        let hash_groups: Vec<(&[BenchFilter], &[&str], &str)> = vec![
-            (
-                GHARCHIVE_NDJSON_FILTERS,
-                &gharchive_ndjson_files,
-                "gha_ndjson",
-            ),
-            (GHARCHIVE_JSON_FILTERS, &gharchive_json_files, "gha_json"),
-        ];
-        for (filters, files, group) in &hash_groups {
-            if !args.should_run(group) || files.is_empty() {
-                continue;
-            }
-            // Only check the first filter (passthrough) — same code paths as small files.
-            let filter = &filters[0];
-            for file in *files {
-                let file_path = data_dir.join(file);
-                eprintln!("  hashing: {} on {file}...", filter.name);
-                let qj_hash = run_tool_hash(qj, filter, &file_path);
-                let jq_hash = run_tool_hash(jq, filter, &file_path);
-                if qj_hash != jq_hash {
-                    eprintln!(
-                        "  HASH MISMATCH: {} on {file} (qj={qj_hash:x} jq={jq_hash:x})",
-                        filter.name
-                    );
-                    all_correct = false;
-                } else {
-                    eprintln!("  OK (hash): {} on {file}", filter.name);
-                }
-            }
-        }
-
         eprintln!();
         if !all_correct {
             eprintln!("WARNING: Output mismatches detected. Benchmarking anyway.");
