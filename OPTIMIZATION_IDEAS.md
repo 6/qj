@@ -11,7 +11,7 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | 2 | mmap for file I/O | DONE | **~23% faster** on 1.1GB NDJSON, ~1% on 49MB |
 | 3 | Field-chain fast path | DONE | **~40% faster** `.field` on 1.1GB NDJSON |
 | 4 | `select` fast path | DONE | **~50% faster** `select(.type=="PushEvent")` on 1.1GB NDJSON |
-| 5 | Multi-field fast path | DONE | `{a: .x, b: .y}` without Value tree |
+| 5 | Multi-field fast path | REVERTED | N×FFI round-trips regress for ≥3 fields |
 | 6 | `select` + extract fast path | DONE | **~35-42% faster** `select(.f==lit) \| .field` / `{...}` / `[...]` on 1.1GB NDJSON |
 | 7 | `length`/`keys` NDJSON fast path | DONE | **~45% faster** `length`/`keys` on 1.1GB NDJSON |
 | 8 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
@@ -122,29 +122,48 @@ strategy.
 
 **Files:** `src/parallel/ndjson.rs`, `src/filter/mod.rs` (`CmpOp` already had needed derives)
 
-### 5. Multi-field extraction fast path (DONE)
+### 5. Multi-field extraction fast path (REVERTED)
 
 **Pattern:** `{type, actor: .actor.login}`, `{id, name, email}`, `[.field1, .field2]`
 
 **Approach:** Extract multiple fields via repeated `dom_find_field_raw()` calls, then construct the output JSON directly as bytes — no Value tree.
-1. Detect `Filter::ObjectConstruct` where all values are field chains (or shorthand like `{type}` = `{type: .type}`)
-2. Per line: extract each field as raw bytes, write `{"type":RAW,"actor":RAW}\n` directly to output buffer
-3. Similarly for `ArrayConstruct` with field-chain elements: write `[RAW,RAW]\n`
 
-**Change:** `src/parallel/ndjson.rs` — added `MultiFieldObj` and `MultiFieldArr` variants to `NdjsonFastPath`, `detect_multi_field_fast_path()`, `try_multi_field_obj()`, `try_multi_field_arr()`, `process_line_multi_field_obj()`, `process_line_multi_field_arr()`. Pre-serializes object keys at detection time via `json_key_bytes()`.
+**Result:** Implemented and benchmarked. N separate `dom_find_field_raw()` calls per line each re-parse the entire JSON through simdjson FFI. For ≥3 fields, the FFI round-trip overhead (allocation, copy, free per call) exceeds the cost of building the Value tree once. System time jumped from ~190ms to ~1800ms on 1.1GB NDJSON.
 
-**Files:** `src/parallel/ndjson.rs`, `tests/ndjson.rs`, `tests/e2e.rs`
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson):**
+
+| Query | Fast path | Normal path | Delta |
+|-------|-----------|-------------|-------|
+| `{type, repo: .repo.name, actor: .actor.login}` (3 fields) | 635ms | 470ms | **+35% REGRESSION** |
+| `[.type, .repo.name, .actor.login]` (3 fields) | 634ms | 458ms | **+38% REGRESSION** |
+| `{type, id: .id}` (2 fields) | 440ms | 449ms | ~0% (noise) |
+
+**Verdict:** Reverted. A batch C++ extraction function that parses once and extracts N fields would be needed to make this profitable. Break-even is ~2 fields; regression grows with field count.
+
+**Note:** The `try_multi_field_obj()` and `try_multi_field_arr()` detection helpers are retained in the codebase — they're used by the select+extract fast path (#6) where selectivity makes multi-field extraction worthwhile.
 
 ### 6. `select` + extract fast path (DONE)
 
 **Pattern:** `select(.type == "PushEvent") | .actor.login`, `select(.type == "PushEvent") | {type, actor: .actor.login}`, `select(.type == "PushEvent") | [.type, .id]`
 
-**Approach:** Combine select fast path (#4) with field-chain (#3) or multi-field object/array construction (#5).
+**Approach:** Combine select fast path (#4) with field-chain (#3) or multi-field object/array construction.
 1. Detect `Filter::Pipe(Select(Compare(...)), rhs)` where rhs is a field chain, ObjectConstruct, or ArrayConstruct
 2. Per line: check predicate via raw byte comparison, if match extract field(s), else skip entirely
 3. Three variants: `SelectEqField` (single field output), `SelectEqObj` (object construction), `SelectEqArr` (array construction)
 
+**Why:** The select predicate filters out most lines (typically 80-95%), so only matching lines pay the multi-field extraction cost. This makes the N×FFI overhead acceptable — unlike bare multi-field (#5) where every line pays.
+
 **Change:** `src/parallel/ndjson.rs` — added `SelectEqField`, `SelectEqObj`, `SelectEqArr` variants to `NdjsonFastPath`. Detection via `detect_select_extract_fast_path()` which reuses `try_field_literal()` for the predicate and `collect_field_chain`/`try_multi_field_obj`/`try_multi_field_arr` for the output side. Detection order: select+extract checked before bare select to avoid partial matches.
+
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, sequential runs, 5s cooldown):**
+
+| Query | Without fast path | With fast path | Delta |
+|-------|------------------|---------------|-------|
+| `select(.type=="PushEvent") \| .actor.login` | 444ms | 272ms | **-39%** |
+| `select(.type=="PushEvent") \| {type, actor: .actor.login}` | 497ms | 290ms | **-42%** |
+| `select(.type=="PushEvent") \| [.type, .actor.login]` | 443ms | 289ms | **-35%** |
+
+**Verdict:** ~35-42% wall-time improvement across all select+extract variants. The predicate filters ~80% of lines, so matching lines pay N field extractions while non-matching lines are skipped after one field check.
 
 **Files:** `src/parallel/ndjson.rs`, `tests/ndjson.rs`, `tests/e2e.rs`
 

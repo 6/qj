@@ -3934,39 +3934,6 @@ fn ndjson_jq_compat_select_eq_field_float_fallback() {
     );
 }
 
-// --- multi-field object construction jq compat ---
-
-#[test]
-fn ndjson_jq_compat_multi_field_obj() {
-    assert_jq_compat_ndjson(
-        "{type: .type, id: .id}",
-        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n",
-    );
-}
-
-#[test]
-fn ndjson_jq_compat_multi_field_obj_shorthand() {
-    assert_jq_compat_ndjson(
-        "{type, name}",
-        "{\"type\":\"PushEvent\",\"name\":\"alice\"}\n{\"type\":\"WatchEvent\",\"name\":\"bob\"}\n",
-    );
-}
-
-#[test]
-fn ndjson_jq_compat_multi_field_obj_missing() {
-    assert_jq_compat_ndjson(
-        "{name, age: .age}",
-        "{\"name\":\"alice\"}\n{\"name\":\"bob\",\"age\":30}\n",
-    );
-}
-
-// --- multi-field array construction jq compat ---
-
-#[test]
-fn ndjson_jq_compat_multi_field_arr() {
-    assert_jq_compat_ndjson("[.a, .b]", "{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n");
-}
-
 // --- select + object/array construction jq compat ---
 
 #[test]
