@@ -389,6 +389,218 @@ pub fn dom_find_fields_raw(
 }
 
 // ---------------------------------------------------------------------------
+// Reusable DOM parser — avoids per-call parser construction in NDJSON loops.
+// ---------------------------------------------------------------------------
+
+/// A reusable simdjson DOM parser handle.
+///
+/// Creating a `DomParser` allocates internal simdjson buffers once.
+/// Subsequent parse calls reuse those buffers, avoiding per-line allocation.
+/// Each thread should have its own `DomParser` (not `Sync`).
+pub struct DomParser {
+    ptr: *mut JxDomParser,
+}
+
+unsafe impl Send for DomParser {}
+
+impl DomParser {
+    pub fn new() -> Result<Self> {
+        let ptr = unsafe { jx_dom_parser_new() };
+        if ptr.is_null() {
+            bail!("failed to create DOM parser");
+        }
+        Ok(Self { ptr })
+    }
+
+    /// Extract a single field chain as raw JSON bytes.
+    pub fn find_field_raw(
+        &mut self,
+        buf: &[u8],
+        json_len: usize,
+        fields: &[&str],
+    ) -> Result<Vec<u8>> {
+        assert!(
+            buf.len() >= json_len + padding(),
+            "buffer must include SIMDJSON_PADDING extra bytes"
+        );
+        let ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast::<c_char>()).collect();
+        let lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+
+        let mut out_ptr: *mut c_char = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        check(unsafe {
+            jx_dom_find_field_raw_reuse(
+                self.ptr,
+                buf.as_ptr().cast(),
+                json_len,
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                fields.len(),
+                &mut out_ptr,
+                &mut out_len,
+            )
+        })?;
+
+        let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+        unsafe { jx_minify_free(out_ptr) };
+        Ok(result)
+    }
+
+    /// Batch extract N field chains as raw JSON bytes.
+    pub fn find_fields_raw(
+        &mut self,
+        buf: &[u8],
+        json_len: usize,
+        field_chains: &[&[&str]],
+    ) -> Result<Vec<Vec<u8>>> {
+        assert!(
+            buf.len() >= json_len + padding(),
+            "buffer must include SIMDJSON_PADDING extra bytes"
+        );
+        if field_chains.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let chain_ptrs: Vec<Vec<*const c_char>> = field_chains
+            .iter()
+            .map(|chain| chain.iter().map(|f| f.as_ptr().cast::<c_char>()).collect())
+            .collect();
+        let chain_lens: Vec<Vec<usize>> = field_chains
+            .iter()
+            .map(|chain| chain.iter().map(|f| f.len()).collect())
+            .collect();
+
+        let chain_ptr_ptrs: Vec<*const *const c_char> =
+            chain_ptrs.iter().map(|v| v.as_ptr()).collect();
+        let chain_len_ptrs: Vec<*const usize> = chain_lens.iter().map(|v| v.as_ptr()).collect();
+        let chain_counts: Vec<usize> = field_chains.iter().map(|c| c.len()).collect();
+
+        let mut out_ptr: *mut c_char = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        check(unsafe {
+            jx_dom_find_fields_raw_reuse(
+                self.ptr,
+                buf.as_ptr().cast(),
+                json_len,
+                chain_ptr_ptrs.as_ptr(),
+                chain_len_ptrs.as_ptr(),
+                chain_counts.as_ptr(),
+                field_chains.len(),
+                &mut out_ptr,
+                &mut out_len,
+            )
+        })?;
+
+        // Unpack length-prefixed buffer
+        let packed = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) };
+        let mut results = Vec::with_capacity(field_chains.len());
+        let mut offset = 0;
+        for _ in 0..field_chains.len() {
+            if offset + 4 > packed.len() {
+                bail!("truncated batch field extraction result");
+            }
+            let slen = u32::from_ne_bytes(packed[offset..offset + 4].try_into().unwrap()) as usize;
+            offset += 4;
+            if offset + slen > packed.len() {
+                bail!("truncated batch field extraction result");
+            }
+            results.push(packed[offset..offset + slen].to_vec());
+            offset += slen;
+        }
+        unsafe { jx_minify_free(out_ptr) };
+        Ok(results)
+    }
+
+    /// Compute length of a field chain result.
+    pub fn field_length(
+        &mut self,
+        buf: &[u8],
+        json_len: usize,
+        fields: &[&str],
+    ) -> Result<Option<Vec<u8>>> {
+        assert!(
+            buf.len() >= json_len + padding(),
+            "buffer must include SIMDJSON_PADDING extra bytes"
+        );
+        let ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast::<c_char>()).collect();
+        let lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+
+        let mut out_ptr: *mut c_char = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let rc = unsafe {
+            jx_dom_field_length_reuse(
+                self.ptr,
+                buf.as_ptr().cast(),
+                json_len,
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                fields.len(),
+                &mut out_ptr,
+                &mut out_len,
+            )
+        };
+
+        if rc == -2 {
+            return Ok(None); // needs full Value fallback
+        }
+        check(rc)?;
+
+        let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+        unsafe { jx_minify_free(out_ptr) };
+        Ok(Some(result))
+    }
+
+    /// Compute keys of a field chain result.
+    pub fn field_keys(
+        &mut self,
+        buf: &[u8],
+        json_len: usize,
+        fields: &[&str],
+    ) -> Result<Option<Vec<u8>>> {
+        assert!(
+            buf.len() >= json_len + padding(),
+            "buffer must include SIMDJSON_PADDING extra bytes"
+        );
+        let ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast::<c_char>()).collect();
+        let lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+
+        let mut out_ptr: *mut c_char = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let rc = unsafe {
+            jx_dom_field_keys_reuse(
+                self.ptr,
+                buf.as_ptr().cast(),
+                json_len,
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                fields.len(),
+                &mut out_ptr,
+                &mut out_len,
+            )
+        };
+
+        if rc == -2 {
+            return Ok(None);
+        }
+        check(rc)?;
+
+        let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+        unsafe { jx_minify_free(out_ptr) };
+        Ok(Some(result))
+    }
+}
+
+impl Drop for DomParser {
+    fn drop(&mut self) {
+        unsafe { jx_dom_parser_free(self.ptr) };
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -890,5 +1102,82 @@ mod tests {
             std::str::from_utf8(&out).unwrap(),
             r#"["key\"with\\escape"]"#
         );
+    }
+
+    // --- DomParser reuse ---
+
+    #[test]
+    fn dom_parser_new_and_drop() {
+        let _dp = DomParser::new().unwrap();
+        // Drop runs automatically — just ensure no panic/crash.
+    }
+
+    #[test]
+    fn dom_parser_find_field_raw() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"name":"alice","age":30}"#;
+        let buf = pad_buffer(json);
+        let out = dp.find_field_raw(&buf, json.len(), &["name"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#""alice""#);
+    }
+
+    #[test]
+    fn dom_parser_find_fields_raw() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"a":1,"b":"two","c":[3]}"#;
+        let buf = pad_buffer(json);
+        let chains: &[&[&str]] = &[&["a"], &["b"], &["c"]];
+        let results = dp.find_fields_raw(&buf, json.len(), chains).unwrap();
+        assert_eq!(results[0], b"1");
+        assert_eq!(results[1], b"\"two\"");
+        assert_eq!(results[2], b"[3]");
+    }
+
+    #[test]
+    fn dom_parser_field_length() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"items":[10,20,30]}"#;
+        let buf = pad_buffer(json);
+        let out = dp
+            .field_length(&buf, json.len(), &["items"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "3");
+    }
+
+    #[test]
+    fn dom_parser_field_keys() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"data":{"x":1,"y":2}}"#;
+        let buf = pad_buffer(json);
+        let out = dp.field_keys(&buf, json.len(), &["data"]).unwrap().unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["x","y"]"#);
+    }
+
+    #[test]
+    fn dom_parser_reuse_many_documents() {
+        let mut dp = DomParser::new().unwrap();
+        for i in 0..200 {
+            let json = format!(r#"{{"val":{i}}}"#);
+            let buf = pad_buffer(json.as_bytes());
+            let out = dp.find_field_raw(&buf, json.len(), &["val"]).unwrap();
+            assert_eq!(std::str::from_utf8(&out).unwrap(), i.to_string());
+        }
+    }
+
+    #[test]
+    fn dom_parser_field_length_unsupported() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"n":42}"#;
+        let buf = pad_buffer(json);
+        assert!(dp.field_length(&buf, json.len(), &["n"]).unwrap().is_none());
+    }
+
+    #[test]
+    fn dom_parser_field_keys_unsupported() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"n":42}"#;
+        let buf = pad_buffer(json);
+        assert!(dp.field_keys(&buf, json.len(), &["n"]).unwrap().is_none());
     }
 }

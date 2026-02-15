@@ -745,4 +745,184 @@ int jx_dom_find_fields_raw(
     } catch (...) { return -1; }
 }
 
+// ---------------------------------------------------------------------------
+// Reusable DOM parser — avoids per-call parser construction.
+// ---------------------------------------------------------------------------
+
+struct JxDomParser {
+    dom::parser parser;
+};
+
+JxDomParser* jx_dom_parser_new() {
+    try {
+        return new JxDomParser();
+    } catch (...) { return nullptr; }
+}
+
+void jx_dom_parser_free(JxDomParser* p) {
+    delete p;
+}
+
+int jx_dom_find_field_raw_reuse(
+    JxDomParser* p,
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::element result;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->parser, result);
+        if (nav == 2) return -1;
+        if (nav == 1) {
+            const char* null_str = "null";
+            *out_ptr = new char[4];
+            std::memcpy(*out_ptr, null_str, 4);
+            *out_len = 4;
+            return 0;
+        }
+        std::string s = simdjson::to_string(result);
+        *out_len = s.size();
+        *out_ptr = new char[s.size()];
+        std::memcpy(*out_ptr, s.data(), s.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
+int jx_dom_find_fields_raw_reuse(
+    JxDomParser* p,
+    const char* buf, size_t len,
+    const char* const* const* chains,
+    const size_t* const* chain_lens,
+    const size_t* chain_counts,
+    size_t num_chains,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::element doc;
+        auto err = p->parser.parse(buf, len).get(doc);
+        if (err) return -1;
+
+        std::string packed;
+        packed.reserve(num_chains * 32);
+        for (size_t i = 0; i < num_chains; i++) {
+            dom::element cur = doc;
+            bool found = true;
+            for (size_t j = 0; j < chain_counts[i]; j++) {
+                std::string_view key(chains[i][j], chain_lens[i][j]);
+                if (cur.type() != dom::element_type::OBJECT) { found = false; break; }
+                auto field_err = cur.at_key(key).get(cur);
+                if (field_err) { found = false; break; }
+            }
+            std::string s;
+            if (found) { s = simdjson::to_string(cur); } else { s = "null"; }
+            uint32_t slen = static_cast<uint32_t>(s.size());
+            packed.append(reinterpret_cast<const char*>(&slen), 4);
+            packed.append(s);
+        }
+        *out_len = packed.size();
+        *out_ptr = new char[packed.size()];
+        std::memcpy(*out_ptr, packed.data(), packed.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
+int jx_dom_field_length_reuse(
+    JxDomParser* p,
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::element result;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->parser, result);
+        if (nav == 2) return -1;
+        if (nav == 1) {
+            // null → length not applicable, signal to Rust to fall back
+            return -2;
+        }
+        std::string s;
+        switch (result.type()) {
+            case dom::element_type::OBJECT: {
+                dom::object obj;
+                if (result.get(obj)) return -2;
+                size_t count = 0;
+                for (auto kv : obj) { (void)kv; count++; }
+                s = std::to_string(count);
+                break;
+            }
+            case dom::element_type::ARRAY: {
+                dom::array arr;
+                if (result.get(arr)) return -2;
+                size_t count = 0;
+                for (auto el : arr) { (void)el; count++; }
+                s = std::to_string(count);
+                break;
+            }
+            case dom::element_type::STRING: {
+                // signal to Rust: string length needs full Value
+                return -2;
+            }
+            default:
+                return -2;
+        }
+        *out_len = s.size();
+        *out_ptr = new char[s.size()];
+        std::memcpy(*out_ptr, s.data(), s.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
+int jx_dom_field_keys_reuse(
+    JxDomParser* p,
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::element result;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->parser, result);
+        if (nav == 2) return -1;
+        if (nav == 1) return -2;
+
+        std::string s;
+        switch (result.type()) {
+            case dom::element_type::OBJECT: {
+                dom::object obj;
+                if (result.get(obj)) return -2;
+                std::vector<std::string_view> keys;
+                for (auto kv : obj) {
+                    keys.push_back(kv.key);
+                }
+                std::sort(keys.begin(), keys.end());
+                s = "[";
+                for (size_t i = 0; i < keys.size(); i++) {
+                    if (i > 0) s += ",";
+                    json_escape(keys[i], s);
+                }
+                s += "]";
+                break;
+            }
+            case dom::element_type::ARRAY: {
+                dom::array arr;
+                if (result.get(arr)) return -2;
+                size_t count = 0;
+                for (auto el : arr) { (void)el; count++; }
+                s = "[";
+                for (size_t i = 0; i < count; i++) {
+                    if (i > 0) s += ",";
+                    s += std::to_string(i);
+                }
+                s += "]";
+                break;
+            }
+            default:
+                return -2;
+        }
+        *out_len = s.size();
+        *out_ptr = new char[s.size()];
+        std::memcpy(*out_ptr, s.data(), s.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
 } // extern "C"

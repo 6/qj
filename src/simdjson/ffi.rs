@@ -9,6 +9,11 @@ pub(super) struct JxParser {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+pub(super) struct JxDomParser {
+    _opaque: [u8; 0],
+}
+
 unsafe extern "C" {
     pub(super) fn jx_parser_new() -> *mut JxParser;
     pub(super) fn jx_parser_free(p: *mut JxParser);
@@ -95,6 +100,56 @@ unsafe extern "C" {
         chain_lens: *const *const usize,
         chain_counts: *const usize,
         num_chains: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
+    // --- Reusable DOM parser ---
+
+    pub(super) fn jx_dom_parser_new() -> *mut JxDomParser;
+    pub(super) fn jx_dom_parser_free(p: *mut JxDomParser);
+
+    pub(super) fn jx_dom_find_field_raw_reuse(
+        p: *mut JxDomParser,
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
+    pub(super) fn jx_dom_find_fields_raw_reuse(
+        p: *mut JxDomParser,
+        buf: *const c_char,
+        len: usize,
+        chains: *const *const *const c_char,
+        chain_lens: *const *const usize,
+        chain_counts: *const usize,
+        num_chains: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
+    pub(super) fn jx_dom_field_length_reuse(
+        p: *mut JxDomParser,
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
+    pub(super) fn jx_dom_field_keys_reuse(
+        p: *mut JxDomParser,
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
         out_ptr: *mut *mut c_char,
         out_len: *mut usize,
     ) -> i32;

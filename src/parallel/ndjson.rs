@@ -277,6 +277,12 @@ fn process_chunk(
     let mut had_output = false;
     // Reusable scratch buffer for simdjson padding — avoids per-line allocation.
     let mut scratch = Vec::new();
+    // Reusable DOM parser — avoids per-line parser construction in fast paths.
+    let mut dom_parser = if matches!(fast_path, NdjsonFastPath::None) {
+        None
+    } else {
+        Some(simdjson::DomParser::new()?)
+    };
 
     let mut start = 0;
     for nl_pos in memchr_iter(b'\n', chunk) {
@@ -291,6 +297,7 @@ fn process_chunk(
             &mut output_buf,
             &mut had_output,
             &mut scratch,
+            &mut dom_parser,
         )?;
     }
 
@@ -305,6 +312,7 @@ fn process_chunk(
             &mut output_buf,
             &mut had_output,
             &mut scratch,
+            &mut dom_parser,
         )?;
     }
 
@@ -463,6 +471,7 @@ fn process_line(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dom_parser: &mut Option<simdjson::DomParser>,
 ) -> Result<()> {
     // Trim trailing whitespace
     let end = line
@@ -479,7 +488,9 @@ fn process_line(
         NdjsonFastPath::FieldChain(fields) => {
             let padded = prepare_padded(trimmed, scratch);
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-            let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+            let dp = dom_parser.as_mut().unwrap();
+            let raw = dp
+                .find_field_raw(padded, trimmed.len(), &field_refs)
                 .context("failed to extract field from NDJSON line")?;
             *had_output = true;
             emit_raw_field(output_buf, &raw, config);
@@ -501,16 +512,33 @@ fn process_line(
                 output_buf,
                 had_output,
                 scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::Length(fields) => {
             process_line_length(
-                trimmed, fields, filter, config, env, output_buf, had_output, scratch,
+                trimmed,
+                fields,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::Keys(fields) => {
             process_line_keys(
-                trimmed, fields, filter, config, env, output_buf, had_output, scratch,
+                trimmed,
+                fields,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::SelectEqField {
@@ -531,16 +559,29 @@ fn process_line(
                 output_buf,
                 had_output,
                 scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::MultiFieldObj { entries } => {
             process_line_multi_field_obj(
-                trimmed, entries, config, output_buf, had_output, scratch,
+                trimmed,
+                entries,
+                config,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::MultiFieldArr { entries } => {
             process_line_multi_field_arr(
-                trimmed, entries, config, output_buf, had_output, scratch,
+                trimmed,
+                entries,
+                config,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::SelectEqObj {
@@ -561,6 +602,7 @@ fn process_line(
                 output_buf,
                 had_output,
                 scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::SelectEqArr {
@@ -581,6 +623,7 @@ fn process_line(
                 output_buf,
                 had_output,
                 scratch,
+                dom_parser.as_mut().unwrap(),
             )?;
         }
         NdjsonFastPath::None => {
@@ -812,10 +855,12 @@ fn process_line_select_eq(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-    let raw = simdjson::dom_find_field_raw(padded, trimmed.len(), &field_refs)
+    let raw = dp
+        .find_field_raw(padded, trimmed.len(), &field_refs)
         .context("failed to extract field from NDJSON line")?;
 
     match evaluate_select_predicate(&raw, literal_bytes, op) {
@@ -1002,10 +1047,11 @@ fn process_line_length(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-    match simdjson::dom_field_length(padded, trimmed.len(), &field_refs)? {
+    match dp.field_length(padded, trimmed.len(), &field_refs)? {
         Some(result) => {
             *had_output = true;
             output_buf.extend_from_slice(&result);
@@ -1036,10 +1082,11 @@ fn process_line_keys(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-    match simdjson::dom_field_keys(padded, trimmed.len(), &field_refs)? {
+    match dp.field_keys(padded, trimmed.len(), &field_refs)? {
         Some(result) => {
             *had_output = true;
             output_buf.extend_from_slice(&result);
@@ -1077,17 +1124,20 @@ fn process_line_select_eq_field(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let pred_refs: Vec<&str> = pred_fields.iter().map(|s| s.as_str()).collect();
-    let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
+    let raw_pred = dp
+        .find_field_raw(padded, trimmed.len(), &pred_refs)
         .context("failed to extract predicate field from NDJSON line")?;
 
     match evaluate_select_predicate(&raw_pred, literal_bytes, op) {
         Some(true) => {
             let padded = prepare_padded(trimmed, scratch);
             let out_refs: Vec<&str> = out_fields.iter().map(|s| s.as_str()).collect();
-            let raw_out = simdjson::dom_find_field_raw(padded, trimmed.len(), &out_refs)
+            let raw_out = dp
+                .find_field_raw(padded, trimmed.len(), &out_refs)
                 .context("failed to extract output field from NDJSON line")?;
             *had_output = true;
             emit_raw_field(output_buf, &raw_out, config);
@@ -1119,6 +1169,7 @@ fn process_line_multi_field_obj(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let field_chains: Vec<Vec<&str>> = entries
@@ -1126,7 +1177,8 @@ fn process_line_multi_field_obj(
         .map(|(_, fields)| fields.iter().map(|s| s.as_str()).collect())
         .collect();
     let chain_refs: Vec<&[&str]> = field_chains.iter().map(|v| v.as_slice()).collect();
-    let raw_values = simdjson::dom_find_fields_raw(padded, trimmed.len(), &chain_refs)
+    let raw_values = dp
+        .find_fields_raw(padded, trimmed.len(), &chain_refs)
         .context("failed to batch-extract fields for object construction")?;
 
     output_buf.push(b'{');
@@ -1152,6 +1204,7 @@ fn process_line_multi_field_arr(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let field_chains: Vec<Vec<&str>> = entries
@@ -1159,7 +1212,8 @@ fn process_line_multi_field_arr(
         .map(|fields| fields.iter().map(|s| s.as_str()).collect())
         .collect();
     let chain_refs: Vec<&[&str]> = field_chains.iter().map(|v| v.as_slice()).collect();
-    let raw_values = simdjson::dom_find_fields_raw(padded, trimmed.len(), &chain_refs)
+    let raw_values = dp
+        .find_fields_raw(padded, trimmed.len(), &chain_refs)
         .context("failed to batch-extract fields for array construction")?;
 
     output_buf.push(b'[');
@@ -1189,10 +1243,12 @@ fn process_line_select_eq_obj(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let pred_refs: Vec<&str> = pred_fields.iter().map(|s| s.as_str()).collect();
-    let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
+    let raw_pred = dp
+        .find_field_raw(padded, trimmed.len(), &pred_refs)
         .context("failed to extract predicate field from NDJSON line")?;
 
     let should_output = match evaluate_select_predicate(&raw_pred, literal_bytes, op) {
@@ -1216,7 +1272,8 @@ fn process_line_select_eq_obj(
             .map(|(_, fields)| fields.iter().map(|s| s.as_str()).collect())
             .collect();
         let chain_refs: Vec<&[&str]> = field_chains.iter().map(|v| v.as_slice()).collect();
-        let raw_values = simdjson::dom_find_fields_raw(padded, trimmed.len(), &chain_refs)
+        let raw_values = dp
+            .find_fields_raw(padded, trimmed.len(), &chain_refs)
             .context("failed to batch-extract fields for select+obj")?;
 
         output_buf.push(b'{');
@@ -1249,10 +1306,12 @@ fn process_line_select_eq_arr(
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
     scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let pred_refs: Vec<&str> = pred_fields.iter().map(|s| s.as_str()).collect();
-    let raw_pred = simdjson::dom_find_field_raw(padded, trimmed.len(), &pred_refs)
+    let raw_pred = dp
+        .find_field_raw(padded, trimmed.len(), &pred_refs)
         .context("failed to extract predicate field from NDJSON line")?;
 
     let should_output = match evaluate_select_predicate(&raw_pred, literal_bytes, op) {
@@ -1276,7 +1335,8 @@ fn process_line_select_eq_arr(
             .map(|fields| fields.iter().map(|s| s.as_str()).collect())
             .collect();
         let chain_refs: Vec<&[&str]> = field_chains.iter().map(|v| v.as_slice()).collect();
-        let raw_values = simdjson::dom_find_fields_raw(padded, trimmed.len(), &chain_refs)
+        let raw_values = dp
+            .find_fields_raw(padded, trimmed.len(), &chain_refs)
             .context("failed to batch-extract fields for select+arr")?;
 
         output_buf.push(b'[');

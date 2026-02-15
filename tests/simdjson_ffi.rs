@@ -234,6 +234,117 @@ fn batch_extract_single_chain() {
     assert_eq!(results[0], b"\"alice\"");
 }
 
+// --- Reusable DOM parser (DomParser) ---
+
+#[test]
+fn dom_parser_reuse_find_field_raw() {
+    use qj::simdjson::DomParser;
+    let mut dp = DomParser::new().unwrap();
+    for i in 0..100 {
+        let json = format!(r#"{{"n": {i}}}"#);
+        let buf = pad_buffer(json.as_bytes());
+        let out = dp.find_field_raw(&buf, json.len(), &["n"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), i.to_string());
+    }
+}
+
+#[test]
+fn dom_parser_reuse_find_fields_raw() {
+    use qj::simdjson::DomParser;
+    let mut dp = DomParser::new().unwrap();
+    let json = br#"{"type":"PushEvent","id":1,"actor":{"login":"alice"}}"#;
+    let buf = pad_buffer(json);
+    let chains: &[&[&str]] = &[&["type"], &["id"], &["actor", "login"]];
+
+    // Call twice to confirm reuse works
+    for _ in 0..2 {
+        let results = dp.find_fields_raw(&buf, json.len(), chains).unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], b"\"PushEvent\"");
+        assert_eq!(results[1], b"1");
+        assert_eq!(results[2], b"\"alice\"");
+    }
+}
+
+#[test]
+fn dom_parser_reuse_field_length() {
+    use qj::simdjson::DomParser;
+    let mut dp = DomParser::new().unwrap();
+    let json = br#"{"items":[1,2,3]}"#;
+    let buf = pad_buffer(json);
+    let out = dp
+        .field_length(&buf, json.len(), &["items"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::str::from_utf8(&out).unwrap(), "3");
+
+    // Reuse with different input
+    let json2 = br#"{"data":{"a":1,"b":2,"c":3,"d":4}}"#;
+    let buf2 = pad_buffer(json2);
+    let out2 = dp
+        .field_length(&buf2, json2.len(), &["data"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::str::from_utf8(&out2).unwrap(), "4");
+}
+
+#[test]
+fn dom_parser_reuse_field_keys() {
+    use qj::simdjson::DomParser;
+    let mut dp = DomParser::new().unwrap();
+    let json = br#"{"data":{"b":2,"a":1}}"#;
+    let buf = pad_buffer(json);
+    let out = dp.field_keys(&buf, json.len(), &["data"]).unwrap().unwrap();
+    assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["a","b"]"#);
+
+    // Reuse with different input
+    let json2 = br#"{"items":["x","y"]}"#;
+    let buf2 = pad_buffer(json2);
+    let out2 = dp
+        .field_keys(&buf2, json2.len(), &["items"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::str::from_utf8(&out2).unwrap(), "[0,1]");
+}
+
+#[test]
+fn dom_parser_reuse_across_varied_sizes() {
+    use qj::simdjson::DomParser;
+    let mut dp = DomParser::new().unwrap();
+
+    // Small document
+    let small = br#"{"x":1}"#;
+    let buf_small = pad_buffer(small);
+    let out = dp.find_field_raw(&buf_small, small.len(), &["x"]).unwrap();
+    assert_eq!(&out, b"1");
+
+    // Large document (many fields)
+    let mut fields = Vec::new();
+    for i in 0..100 {
+        fields.push(format!(r#""f{i}":{i}"#));
+    }
+    let large = format!("{{{}}}", fields.join(","));
+    let buf_large = pad_buffer(large.as_bytes());
+    let out = dp
+        .find_field_raw(&buf_large, large.len(), &["f50"])
+        .unwrap();
+    assert_eq!(&out, b"50");
+
+    // Back to small document
+    let out = dp.find_field_raw(&buf_small, small.len(), &["x"]).unwrap();
+    assert_eq!(&out, b"1");
+}
+
+#[test]
+fn dom_parser_reuse_missing_field() {
+    use qj::simdjson::DomParser;
+    let mut dp = DomParser::new().unwrap();
+    let json = br#"{"name":"alice"}"#;
+    let buf = pad_buffer(json);
+    let out = dp.find_field_raw(&buf, json.len(), &["missing"]).unwrap();
+    assert_eq!(&out, b"null");
+}
+
 /// Regression test for fuzz-found crash: malformed NDJSON `{z}:` caused a
 /// SIGSEGV inside simdjson's on-demand iterate_many when find_field was called
 /// on an object with matching braces but invalid interior content.
