@@ -21,6 +21,18 @@ struct Cli {
     #[arg(short = 'r', long = "raw-output")]
     raw: bool,
 
+    /// Raw output with NUL separator instead of newline (implies -r)
+    #[arg(long = "raw-output0")]
+    raw_output0: bool,
+
+    /// Escape non-ASCII characters to \uXXXX sequences
+    #[arg(short = 'a', long = "ascii-output")]
+    ascii_output: bool,
+
+    /// Flush stdout after each output value
+    #[arg(long = "unbuffered")]
+    unbuffered: bool,
+
     /// Use tab for indentation
     #[arg(long)]
     tab: bool,
@@ -248,13 +260,16 @@ fn main() -> Result<()> {
     let stdout = io::stdout().lock();
     let mut out = BufWriter::with_capacity(128 * 1024, stdout);
 
-    let config = if cli.raw {
+    let config = if cli.raw || cli.raw_output0 {
         jx::output::OutputConfig {
             mode: jx::output::OutputMode::Raw,
             indent: String::new(),
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
             color: color_scheme,
+            null_separator: cli.raw_output0,
+            ascii_output: cli.ascii_output,
+            unbuffered: cli.unbuffered,
         }
     } else if cli.compact {
         jx::output::OutputConfig {
@@ -263,6 +278,9 @@ fn main() -> Result<()> {
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
             color: color_scheme,
+            null_separator: false,
+            ascii_output: cli.ascii_output,
+            unbuffered: cli.unbuffered,
         }
     } else {
         jx::output::OutputConfig {
@@ -275,13 +293,21 @@ fn main() -> Result<()> {
             sort_keys: cli.sort_keys,
             join_output: cli.join_output,
             color: color_scheme,
+            null_separator: false,
+            ascii_output: cli.ascii_output,
+            unbuffered: cli.unbuffered,
         }
     };
 
     // Detect passthrough-eligible patterns. Disable when semantic-changing
     // flags are active (slurp, raw_input, sort_keys, join_output) or when
     // color is enabled (passthrough bypasses the output formatter).
-    let passthrough = if cli.slurp || cli.raw_input || cli.sort_keys || cli.join_output || use_color
+    let passthrough = if cli.slurp
+        || cli.raw_input
+        || cli.sort_keys
+        || cli.join_output
+        || use_color
+        || cli.ascii_output
     {
         None
     } else {

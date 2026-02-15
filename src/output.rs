@@ -76,6 +76,12 @@ pub struct OutputConfig {
     pub join_output: bool,
     /// Color scheme for output.
     pub color: ColorScheme,
+    /// Use NUL (`\0`) instead of newline as separator for string values (`--raw-output0`).
+    pub null_separator: bool,
+    /// Escape non-ASCII characters to `\uXXXX` sequences (`--ascii-output`).
+    pub ascii_output: bool,
+    /// Flush stdout after each output value (`--unbuffered`).
+    pub unbuffered: bool,
 }
 
 impl Default for OutputConfig {
@@ -86,6 +92,9 @@ impl Default for OutputConfig {
             sort_keys: false,
             join_output: false,
             color: ColorScheme::none(),
+            null_separator: false,
+            ascii_output: false,
+            unbuffered: false,
         }
     }
 }
@@ -97,15 +106,44 @@ pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) ->
             let fmt = PrettyFmt {
                 indent: &config.indent,
             };
-            write_value_inner(w, value, &fmt, 0, config.sort_keys, &config.color)?;
+            write_value_inner(
+                w,
+                value,
+                &fmt,
+                0,
+                config.sort_keys,
+                &config.color,
+                config.ascii_output,
+            )?;
         }
         OutputMode::Compact => {
-            write_value_inner(w, value, &CompactFmt, 0, config.sort_keys, &config.color)?;
+            write_value_inner(
+                w,
+                value,
+                &CompactFmt,
+                0,
+                config.sort_keys,
+                &config.color,
+                config.ascii_output,
+            )?;
         }
-        OutputMode::Raw => write_raw(w, value, config.sort_keys, &config.color)?,
+        OutputMode::Raw => write_raw(
+            w,
+            value,
+            config.sort_keys,
+            &config.color,
+            config.ascii_output,
+        )?,
     }
     if !config.join_output {
-        w.write_all(b"\n")?;
+        if config.null_separator {
+            w.write_all(b"\0")?;
+        } else {
+            w.write_all(b"\n")?;
+        }
+    }
+    if config.unbuffered {
+        w.flush()?;
     }
     Ok(())
 }
@@ -206,6 +244,7 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
     depth: usize,
     sort_keys: bool,
     color: &ColorScheme,
+    ascii_output: bool,
 ) -> io::Result<()> {
     let c = color.is_enabled();
     match value {
@@ -254,7 +293,11 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
             if c {
                 w.write_all(color.string.as_bytes())?;
             }
-            write_json_string(w, s)?;
+            if ascii_output {
+                write_json_string_ascii(w, s)?;
+            } else {
+                write_json_string(w, s)?;
+            }
             if c {
                 w.write_all(color.reset.as_bytes())?;
             }
@@ -273,7 +316,7 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
                 } else {
                     fmt.before_first(w, depth)?;
                 }
-                write_value_inner(w, v, fmt, depth + 1, sort_keys, color)?;
+                write_value_inner(w, v, fmt, depth + 1, sort_keys, color, ascii_output)?;
             }
             fmt.before_close(w, depth)?;
             write_colored(w, b"]", color.array_bracket, color.reset)
@@ -305,13 +348,17 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
                 if c {
                     w.write_all(color.object_key.as_bytes())?;
                 }
-                write_json_string(w, k)?;
+                if ascii_output {
+                    write_json_string_ascii(w, k)?;
+                } else {
+                    write_json_string(w, k)?;
+                }
                 if c {
                     w.write_all(color.reset.as_bytes())?;
                 }
                 write_colored(w, b":", color.object_brace, color.reset)?;
                 fmt.after_colon(w)?;
-                write_value_inner(w, v, fmt, depth + 1, sort_keys, color)?;
+                write_value_inner(w, v, fmt, depth + 1, sort_keys, color, ascii_output)?;
             }
             fmt.before_close(w, depth)?;
             write_colored(w, b"}", color.object_brace, color.reset)
@@ -324,7 +371,15 @@ fn write_value_inner<W: Write, F: JsonFormatter>(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn write_compact<W: Write>(w: &mut W, value: &Value, sort_keys: bool) -> io::Result<()> {
-    write_value_inner(w, value, &CompactFmt, 0, sort_keys, &ColorScheme::none())
+    write_value_inner(
+        w,
+        value,
+        &CompactFmt,
+        0,
+        sort_keys,
+        &ColorScheme::none(),
+        false,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -336,12 +391,15 @@ fn write_raw<W: Write>(
     value: &Value,
     sort_keys: bool,
     color: &ColorScheme,
+    ascii_output: bool,
 ) -> io::Result<()> {
     match value {
-        // Raw mode: strings are output without quotes
-        Value::String(s) => w.write_all(s.as_bytes()),
+        // Raw mode: strings are output without quotes.
+        // With --ascii-output, jq outputs the full JSON-encoded string (with quotes),
+        // so we fall through to the compact path which handles ascii escaping.
+        Value::String(s) if !ascii_output => w.write_all(s.as_bytes()),
         // Everything else is the same as compact (with color)
-        _ => write_value_inner(w, value, &CompactFmt, 0, sort_keys, color),
+        _ => write_value_inner(w, value, &CompactFmt, 0, sort_keys, color, ascii_output),
     }
 }
 
@@ -392,6 +450,34 @@ fn write_json_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
     // Flush remaining
     if start < bytes.len() {
         w.write_all(&bytes[start..])?;
+    }
+    w.write_all(b"\"")
+}
+
+/// Write a JSON-escaped string with non-ASCII characters escaped to `\uXXXX` sequences.
+/// Supplementary plane characters (U+10000+) are encoded as surrogate pairs.
+fn write_json_string_ascii<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
+    w.write_all(b"\"")?;
+    for ch in s.chars() {
+        match ch {
+            '"' => w.write_all(b"\\\"")?,
+            '\\' => w.write_all(b"\\\\")?,
+            '\n' => w.write_all(b"\\n")?,
+            '\r' => w.write_all(b"\\r")?,
+            '\t' => w.write_all(b"\\t")?,
+            '\x08' => w.write_all(b"\\b")?,
+            '\x0c' => w.write_all(b"\\f")?,
+            c if (c as u32) < 0x20 => write!(w, "\\u{:04x}", c as u32)?,
+            c if c.is_ascii() => w.write_all(&[c as u8])?,
+            c if (c as u32) <= 0xFFFF => write!(w, "\\u{:04x}", c as u32)?,
+            c => {
+                // Surrogate pair for supplementary plane
+                let n = c as u32 - 0x10000;
+                let hi = 0xD800 + (n >> 10);
+                let lo = 0xDC00 + (n & 0x3FF);
+                write!(w, "\\u{:04x}\\u{:04x}", hi, lo)?;
+            }
+        }
     }
     w.write_all(b"\"")
 }

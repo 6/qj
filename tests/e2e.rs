@@ -1405,6 +1405,31 @@ fn run_jq_compact(filter: &str, input: &str) -> Option<String> {
     Some(String::from_utf8(output.stdout).ok()?)
 }
 
+/// Run jq with custom args and return stdout, or None if jq fails.
+fn run_jq(args: &[&str], input: &str) -> Option<String> {
+    let output = Command::new("jq")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8(output.stdout).ok()?)
+}
+
 /// Assert that jx and jq produce identical output for a given filter+input.
 fn assert_jq_compat(filter: &str, input: &str) {
     if !jq_available() {
@@ -3539,4 +3564,168 @@ fn args_empty_default() {
     let (code, stdout, _) = jx_exit(&["-nc", "$ARGS"], "");
     assert_eq!(code, 0);
     assert_eq!(stdout.trim(), r#"{"positional":[],"named":{}}"#);
+}
+
+// ---------------------------------------------------------------------------
+// --raw-output0
+// ---------------------------------------------------------------------------
+
+#[test]
+fn raw_output0_nul_separator_for_strings() {
+    let (code, stdout, _) = jx_exit(&["--raw-output0", ".[]"], r#"["hello","world"]"#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.as_bytes(), b"hello\0world\0");
+}
+
+#[test]
+fn raw_output0_nul_separator_for_all_types() {
+    // jq uses NUL as separator for ALL output values, not just strings
+    let (code, stdout, _) = jx_exit(&["--raw-output0", ".[]"], r#"["hello",42,"world"]"#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.as_bytes(), b"hello\x0042\x00world\x00");
+}
+
+#[test]
+fn raw_output0_implies_raw_mode() {
+    // --raw-output0 implies -r: strings should be unquoted
+    let (code, stdout, _) = jx_exit(&["--raw-output0", "."], r#""hello""#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.as_bytes(), b"hello\0");
+}
+
+#[test]
+fn raw_output0_non_string_gets_nul() {
+    let (code, stdout, _) = jx_exit(&["--raw-output0", "."], "42");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.as_bytes(), b"42\0");
+}
+
+#[test]
+fn raw_output0_jq_compat() {
+    if !jq_available() {
+        return;
+    }
+    let input = r#"["a","b","c"]"#;
+    let jx_out = {
+        let (code, stdout, _) = jx_exit(&["--raw-output0", ".[]"], input);
+        assert_eq!(code, 0);
+        stdout
+    };
+    let jq_out = {
+        let output = Command::new("jq")
+            .args(["--raw-output0", ".[]"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(input.as_bytes())
+                    .unwrap();
+                child.wait_with_output()
+            })
+            .expect("failed to run jq");
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    assert_eq!(
+        jx_out.as_bytes(),
+        jq_out.as_bytes(),
+        "jx vs jq --raw-output0 mismatch"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --ascii-output / -a
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ascii_output_escapes_non_ascii() {
+    let (code, stdout, _) = jx_exit(&["-ac", "."], r#""café""#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#""caf\u00e9""#);
+}
+
+#[test]
+fn ascii_output_surrogate_pairs() {
+    // Emoji (U+1F30D) should be encoded as surrogate pair
+    let (code, stdout, _) = jx_exit(&["-ac", "."], "\"\\ud83c\\udf0d\"");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#""\ud83c\udf0d"#.to_owned() + "\"");
+}
+
+#[test]
+fn ascii_output_escapes_keys() {
+    let (code, stdout, _) = jx_exit(&["-ac", "."], r#"{"café":"latte"}"#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#"{"caf\u00e9":"latte"}"#);
+}
+
+#[test]
+fn ascii_output_with_raw_mode() {
+    // jq with -ra outputs JSON-encoded string (with quotes) when -a is active
+    let (code, stdout, _) = jx_exit(&["-ra", "."], r#""café""#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#""caf\u00e9""#);
+}
+
+#[test]
+fn ascii_output_pretty() {
+    let (code, stdout, _) = jx_exit(&["-a", "."], r#"{"café":"latté"}"#);
+    assert_eq!(code, 0);
+    assert!(stdout.contains(r#""caf\u00e9""#));
+    assert!(stdout.contains(r#""latt\u00e9""#));
+}
+
+#[test]
+fn ascii_output_ascii_passthrough() {
+    // Pure ASCII strings should be unchanged
+    let (code, stdout, _) = jx_exit(&["-ac", "."], r#""hello world""#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), r#""hello world""#);
+}
+
+#[test]
+fn ascii_output_jq_compat() {
+    if !jq_available() {
+        return;
+    }
+    // Test various non-ASCII strings against jq
+    for input in &[r#""café""#, r#""日本語""#, r#"{"ñ":"ü"}"#] {
+        let jx_out = {
+            let (code, stdout, _) = jx_exit(&["-ac", "."], input);
+            assert_eq!(code, 0);
+            stdout
+        };
+        let jq_out =
+            run_jq(&["-ac", "."], input).unwrap_or_else(|| panic!("jq failed on input={input:?}"));
+        assert_eq!(
+            jx_out.trim(),
+            jq_out.trim(),
+            "jx vs jq -ac mismatch: input={input:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// --unbuffered
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unbuffered_output_correctness() {
+    // --unbuffered should produce the same output as without it
+    let normal = jx_compact(".", r#"{"a":1}"#);
+    let (code, stdout, _) = jx_exit(&["-c", "--unbuffered", "."], r#"{"a":1}"#);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), normal.trim());
+}
+
+#[test]
+fn unbuffered_with_multiple_values() {
+    let (code, stdout, _) = jx_exit(&["-c", "--unbuffered", ".[]"], "[1,2,3]");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "1\n2\n3");
 }
