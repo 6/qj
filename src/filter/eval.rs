@@ -6,7 +6,7 @@ use crate::filter::{ArithOp, AssignOp, BoolOp, Env, Filter, ObjKey, Pattern, Pat
 use crate::value::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const MAX_EVAL_DEPTH: usize = 256;
 
@@ -322,7 +322,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                 output: &mut dyn FnMut(Value),
             ) {
                 if idx == pairs.len() {
-                    output(Value::Object(Rc::new(current.clone())));
+                    output(Value::Object(Arc::new(current.clone())));
                     return;
                 }
                 let (key, val_filter) = &pairs[idx];
@@ -363,7 +363,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             // (let the error propagate to try/catch)
             let has_error = LAST_ERROR.with(|e| e.borrow().is_some());
             if !has_error {
-                output(Value::Array(Rc::new(arr)));
+                output(Value::Array(Arc::new(arr)));
             }
         }
 
@@ -593,9 +593,9 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     let s = resolve_slice_index(start_val.as_ref(), 0, len);
                     let e = resolve_slice_index(end_val.as_ref(), len, len);
                     if s < e {
-                        output(Value::Array(Rc::new(arr[s as usize..e as usize].to_vec())));
+                        output(Value::Array(Arc::new(arr[s as usize..e as usize].to_vec())));
                     } else {
-                        output(Value::Array(Rc::new(vec![])));
+                        output(Value::Array(Arc::new(vec![])));
                     }
                 }
                 Value::String(s) => {
@@ -626,7 +626,7 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
         Filter::Var(name) => {
             if name == "$__loc__" {
                 // $__loc__ returns {"file":"<top-level>","line":1}
-                let loc = Value::Object(Rc::new(vec![
+                let loc = Value::Object(Arc::new(vec![
                     ("file".to_string(), Value::String("<top-level>".to_string())),
                     ("line".to_string(), Value::Int(1)),
                 ]));
@@ -821,9 +821,9 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                         let s = resolve_slice_index(start_val.as_ref(), 0, len);
                         let e = resolve_slice_index(end_val.as_ref(), len, len);
                         if s < e {
-                            output(Value::Array(Rc::new(arr[s as usize..e as usize].to_vec())));
+                            output(Value::Array(Arc::new(arr[s as usize..e as usize].to_vec())));
                         } else {
-                            output(Value::Array(Rc::new(vec![])));
+                            output(Value::Array(Arc::new(vec![])));
                         }
                     }
                     Value::String(s) => {
@@ -1082,11 +1082,11 @@ fn update_recursive(
                         return None; // propagate error
                     }
                 }
-                Some(Value::Object(Rc::new(result)))
+                Some(Value::Object(Arc::new(result)))
             }
             Value::Null => {
                 if let Some(new_v) = updater(&Value::Null) {
-                    Some(Value::Object(Rc::new(vec![(name.clone(), new_v)])))
+                    Some(Value::Object(Arc::new(vec![(name.clone(), new_v)])))
                 } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
                     None // propagate error
                 } else {
@@ -1105,7 +1105,7 @@ fn update_recursive(
                     }
                     // None → element deleted
                 }
-                Some(Value::Array(Rc::new(result)))
+                Some(Value::Array(Arc::new(result)))
             }
             Value::Object(obj) => {
                 let mut result = Vec::with_capacity(obj.len());
@@ -1114,7 +1114,7 @@ fn update_recursive(
                         result.push((k.clone(), new_v));
                     }
                 }
-                Some(Value::Object(Rc::new(result)))
+                Some(Value::Object(Arc::new(result)))
             }
             _ => Some(input.clone()),
         },
@@ -1172,7 +1172,7 @@ fn update_recursive(
                         }
                     }
 
-                    Some(Value::Array(Rc::new(result)))
+                    Some(Value::Array(Arc::new(result)))
                 }
                 Value::Object(obj) => {
                     let mut result: Vec<(String, Value)> = obj.as_ref().clone();
@@ -1193,7 +1193,7 @@ fn update_recursive(
 
                     result.retain(|(k, _)| !keys_to_delete.contains(k));
 
-                    Some(Value::Object(Rc::new(result)))
+                    Some(Value::Object(Arc::new(result)))
                 }
                 Value::Null => {
                     if let Some(idx_val) = indices.first() {
@@ -1221,11 +1221,11 @@ fn update_recursive(
                                 } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
                                     return None;
                                 }
-                                Some(Value::Array(Rc::new(arr)))
+                                Some(Value::Array(Arc::new(arr)))
                             }
                             Value::String(k) => {
                                 if let Some(new_v) = updater(&Value::Null) {
-                                    Some(Value::Object(Rc::new(vec![(k.clone(), new_v)])))
+                                    Some(Value::Object(Arc::new(vec![(k.clone(), new_v)])))
                                 } else if LAST_ERROR.with(|e| e.borrow().is_some()) {
                                     None
                                 } else {
@@ -1291,7 +1291,7 @@ fn update_recursive(
                     let s = s as usize;
                     let e = e as usize;
                     if let Some(new_val) =
-                        updater(&Value::Array(Rc::new(arr[s..e.min(arr.len())].to_vec())))
+                        updater(&Value::Array(Arc::new(arr[s..e.min(arr.len())].to_vec())))
                     {
                         let mut result = Vec::new();
                         result.extend_from_slice(&arr[..s]);
@@ -1303,7 +1303,7 @@ fn update_recursive(
                         if e < arr.len() {
                             result.extend_from_slice(&arr[e..]);
                         }
-                        Some(Value::Array(Rc::new(result)))
+                        Some(Value::Array(Arc::new(result)))
                     } else {
                         // Deletion: remove the slice
                         let mut result = Vec::new();
@@ -1311,7 +1311,7 @@ fn update_recursive(
                         if e < arr.len() {
                             result.extend_from_slice(&arr[e..]);
                         }
-                        Some(Value::Array(Rc::new(result)))
+                        Some(Value::Array(Arc::new(result)))
                     }
                 }
                 _ => Some(input.clone()),
@@ -1451,7 +1451,7 @@ mod tests {
     }
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        Value::Object(Rc::new(
+        Value::Object(Arc::new(
             pairs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
@@ -1488,7 +1488,7 @@ mod tests {
 
     #[test]
     fn eval_iterate_array() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_all(&parse(".[]"), &input),
             vec![Value::Int(1), Value::Int(2), Value::Int(3)]
@@ -1504,7 +1504,7 @@ mod tests {
 
     #[test]
     fn eval_pipe() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             obj(&[("name", Value::String("alice".into()))]),
             obj(&[("name", Value::String("bob".into()))]),
         ]));
@@ -1516,7 +1516,7 @@ mod tests {
 
     #[test]
     fn eval_select() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             obj(&[("x", Value::Int(1))]),
             obj(&[("x", Value::Int(5))]),
             obj(&[("x", Value::Int(3))]),
@@ -1537,20 +1537,20 @@ mod tests {
 
     #[test]
     fn eval_array_construct() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             obj(&[("x", Value::Int(1))]),
             obj(&[("x", Value::Int(2))]),
         ]));
         let result = eval_one(&parse("[.[] | .x]"), &input);
         assert_eq!(
             result,
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]))
         );
     }
 
     #[test]
     fn eval_index() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(10),
             Value::Int(20),
             Value::Int(30),
@@ -1560,7 +1560,7 @@ mod tests {
 
     #[test]
     fn eval_negative_index() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(10),
             Value::Int(20),
             Value::Int(30),
@@ -1598,7 +1598,7 @@ mod tests {
         assert_eq!(
             eval_one(
                 &parse("length"),
-                &Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+                &Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]))
             ),
             Value::Int(2)
         );
@@ -1613,7 +1613,7 @@ mod tests {
         let input = obj(&[("b", Value::Int(2)), ("a", Value::Int(1))]);
         assert_eq!(
             eval_one(&parse("keys"), &input),
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::String("a".into()),
                 Value::String("b".into())
             ]))
@@ -1650,10 +1650,10 @@ mod tests {
 
     #[test]
     fn eval_map() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_one(&parse("map(. + 10)"), &input),
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::Int(11),
                 Value::Int(12),
                 Value::Int(13)
@@ -1663,7 +1663,7 @@ mod tests {
 
     #[test]
     fn eval_add() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(eval_one(&parse("add"), &input), Value::Int(6));
     }
 
@@ -1676,10 +1676,10 @@ mod tests {
 
     #[test]
     fn eval_sort() {
-        let input = Value::Array(Rc::new(vec![Value::Int(3), Value::Int(1), Value::Int(2)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(3), Value::Int(1), Value::Int(2)]));
         assert_eq!(
             eval_one(&parse("sort"), &input),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
         );
     }
 
@@ -1708,7 +1708,7 @@ mod tests {
 
     #[test]
     fn eval_sort_mixed_types() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(3),
             Value::String("a".into()),
             Value::Null,
@@ -1719,7 +1719,7 @@ mod tests {
         let result = eval_one(&parse("sort"), &input);
         assert_eq!(
             result,
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::Null,
                 Value::Bool(false),
                 Value::Bool(true),
@@ -1748,16 +1748,16 @@ mod tests {
 
     #[test]
     fn eval_values_order_arrays() {
-        let a = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
-        let b = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)]));
+        let a = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]));
+        let b = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(3)]));
         assert_eq!(values_order(&a, &b), Some(std::cmp::Ordering::Less));
-        let c = Value::Array(Rc::new(vec![Value::Int(1)]));
+        let c = Value::Array(Arc::new(vec![Value::Int(1)]));
         assert_eq!(values_order(&c, &a), Some(std::cmp::Ordering::Less));
     }
 
     #[test]
     fn eval_unique_sorts() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(3),
             Value::Int(1),
             Value::Int(2),
@@ -1766,7 +1766,7 @@ mod tests {
         ]));
         assert_eq!(
             eval_one(&parse("unique"), &input),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
         );
     }
 
@@ -1976,7 +1976,7 @@ mod tests {
     fn eval_split_empty() {
         assert_eq!(
             eval_one(&parse("split(\"\")"), &Value::String("abc".into())),
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::String("a".into()),
                 Value::String("b".into()),
                 Value::String("c".into()),
@@ -1996,7 +1996,7 @@ mod tests {
     fn eval_explode() {
         assert_eq!(
             eval_one(&parse("explode"), &Value::String("abc".into())),
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::Int(97),
                 Value::Int(98),
                 Value::Int(99)
@@ -2006,7 +2006,7 @@ mod tests {
 
     #[test]
     fn eval_implode() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(97),
             Value::Int(98),
             Value::Int(99),
@@ -2019,7 +2019,7 @@ mod tests {
 
     #[test]
     fn eval_tojson() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]));
         assert_eq!(
             eval_one(&parse("tojson"), &input),
             Value::String("[1,2]".into())
@@ -2076,7 +2076,7 @@ mod tests {
     fn eval_indices_builtin() {
         assert_eq!(
             eval_one(&parse("indices(\"o\")"), &Value::String("foobar".into())),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]))
         );
     }
 
@@ -2118,7 +2118,7 @@ mod tests {
     fn eval_string_divide() {
         assert_eq!(
             eval_one(&parse("\"a,b,c\" / \",\""), &Value::Null),
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::String("a".into()),
                 Value::String("b".into()),
                 Value::String("c".into()),
@@ -2130,7 +2130,7 @@ mod tests {
 
     #[test]
     fn eval_from_entries_capitalized() {
-        let input = Value::Array(Rc::new(vec![Value::Object(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![Value::Object(Arc::new(vec![
             ("Key".into(), Value::String("x".into())),
             ("Value".into(), Value::Int(42)),
         ]))]));
@@ -2153,7 +2153,7 @@ mod tests {
 
     #[test]
     fn eval_index_generator() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(10),
             Value::Int(20),
             Value::Int(30),
@@ -2166,11 +2166,11 @@ mod tests {
 
     #[test]
     fn eval_array_subtraction() {
-        let a = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
-        let b = Value::Array(Rc::new(vec![Value::Int(2)]));
+        let a = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let b = Value::Array(Arc::new(vec![Value::Int(2)]));
         assert_eq!(
             arith_values(&a, &ArithOp::Sub, &b),
-            Ok(Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])))
+            Ok(Value::Array(Arc::new(vec![Value::Int(1), Value::Int(3)])))
         );
     }
 
@@ -2247,15 +2247,15 @@ mod tests {
 
     #[test]
     fn eval_transpose() {
-        let input = Value::Array(Rc::new(vec![
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
-            Value::Array(Rc::new(vec![Value::Int(3), Value::Int(4)])),
+        let input = Value::Array(Arc::new(vec![
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)])),
+            Value::Array(Arc::new(vec![Value::Int(3), Value::Int(4)])),
         ]));
         assert_eq!(
             eval_one(&parse("transpose"), &input),
-            Value::Array(Rc::new(vec![
-                Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])),
-                Value::Array(Rc::new(vec![Value::Int(2), Value::Int(4)])),
+            Value::Array(Arc::new(vec![
+                Value::Array(Arc::new(vec![Value::Int(1), Value::Int(3)])),
+                Value::Array(Arc::new(vec![Value::Int(2), Value::Int(4)])),
             ]))
         );
     }
@@ -2263,16 +2263,16 @@ mod tests {
     #[test]
     fn eval_transpose_uneven() {
         // [[1],[2,3]] → [[1,2],[null,3]]
-        let input = Value::Array(Rc::new(vec![
-            Value::Array(Rc::new(vec![Value::Int(1)])),
-            Value::Array(Rc::new(vec![Value::Int(2), Value::Int(3)])),
+        let input = Value::Array(Arc::new(vec![
+            Value::Array(Arc::new(vec![Value::Int(1)])),
+            Value::Array(Arc::new(vec![Value::Int(2), Value::Int(3)])),
         ]));
         let result = eval_one(&parse("transpose"), &input);
         assert_eq!(
             result,
-            Value::Array(Rc::new(vec![
-                Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
-                Value::Array(Rc::new(vec![Value::Null, Value::Int(3)])),
+            Value::Array(Arc::new(vec![
+                Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)])),
+                Value::Array(Arc::new(vec![Value::Null, Value::Int(3)])),
             ]))
         );
     }
@@ -2308,7 +2308,7 @@ mod tests {
         let results = eval_all(&parse("[1 | while(. < 8; . * 2)]"), &input);
         assert_eq!(
             results,
-            vec![Value::Array(Rc::new(vec![
+            vec![Value::Array(Arc::new(vec![
                 Value::Int(1),
                 Value::Int(2),
                 Value::Int(4),
@@ -2372,7 +2372,7 @@ mod tests {
 
     #[test]
     fn eval_bsearch_found() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(1),
             Value::Int(2),
             Value::Int(3),
@@ -2384,7 +2384,7 @@ mod tests {
 
     #[test]
     fn eval_bsearch_not_found() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3), Value::Int(5)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(3), Value::Int(5)]));
         // 2 would go at index 1, so returns -(1)-1 = -2
         assert_eq!(eval_one(&parse("bsearch(2)"), &input), Value::Int(-2));
     }
@@ -2452,7 +2452,7 @@ mod tests {
         use crate::filter::StringPart;
         let filter = Filter::StringInterp(vec![
             StringPart::Lit("items: ".to_string()),
-            StringPart::Expr(Filter::Literal(Value::Array(Rc::new(vec![
+            StringPart::Expr(Filter::Literal(Value::Array(Arc::new(vec![
                 Value::Int(1),
                 Value::Int(2),
             ])))),
@@ -2466,7 +2466,7 @@ mod tests {
         use crate::filter::StringPart;
         let filter = Filter::StringInterp(vec![
             StringPart::Lit("obj: ".to_string()),
-            StringPart::Expr(Filter::Literal(Value::Object(Rc::new(vec![(
+            StringPart::Expr(Filter::Literal(Value::Object(Arc::new(vec![(
                 "a".to_string(),
                 Value::Int(1),
             )])))),
@@ -2532,14 +2532,14 @@ mod tests {
     fn eval_var_multiple_outputs() {
         // Generator in binding produces multiple outputs
         let f = parse(".[] as $x | $x * $x");
-        let input = Value::Array(Rc::new(vec![Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(2), Value::Int(3)]));
         assert_eq!(eval_all(&f, &input), vec![Value::Int(4), Value::Int(9)]);
     }
 
     #[test]
     fn eval_var_in_arith() {
         let f = parse(".a as $x | .b as $y | $x + $y");
-        let input = Value::Object(Rc::new(vec![
+        let input = Value::Object(Arc::new(vec![
             ("a".into(), Value::Int(10)),
             ("b".into(), Value::Int(20)),
         ]));
@@ -2567,7 +2567,7 @@ mod tests {
     #[test]
     fn eval_slice_array() {
         let f = parse(".[1:3]");
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(10),
             Value::Int(20),
             Value::Int(30),
@@ -2575,34 +2575,34 @@ mod tests {
         ]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![Value::Int(20), Value::Int(30)]))
+            Value::Array(Arc::new(vec![Value::Int(20), Value::Int(30)]))
         );
     }
 
     #[test]
     fn eval_slice_array_no_start() {
         let f = parse(".[:2]");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]))
         );
     }
 
     #[test]
     fn eval_slice_array_no_end() {
         let f = parse(".[1:]");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![Value::Int(2), Value::Int(3)]))
+            Value::Array(Arc::new(vec![Value::Int(2), Value::Int(3)]))
         );
     }
 
     #[test]
     fn eval_slice_array_negative() {
         let f = parse(".[-2:]");
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(1),
             Value::Int(2),
             Value::Int(3),
@@ -2610,24 +2610,24 @@ mod tests {
         ]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![Value::Int(3), Value::Int(4)]))
+            Value::Array(Arc::new(vec![Value::Int(3), Value::Int(4)]))
         );
     }
 
     #[test]
     fn eval_slice_array_empty_range() {
         let f = parse(".[3:1]");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
-        assert_eq!(eval_one(&f, &input), Value::Array(Rc::new(vec![])));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(eval_one(&f, &input), Value::Array(Arc::new(vec![])));
     }
 
     #[test]
     fn eval_slice_array_out_of_bounds() {
         let f = parse(".[0:100]");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]))
         );
     }
 
@@ -2690,7 +2690,7 @@ mod tests {
     #[test]
     fn eval_try_keyword_success() {
         let f = parse("try .a");
-        let input = Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]));
+        let input = Value::Object(Arc::new(vec![("a".into(), Value::Int(1))]));
         assert_eq!(eval_one(&f, &input), Value::Int(1));
     }
 
@@ -2725,24 +2725,24 @@ mod tests {
     #[test]
     fn eval_reduce_sum() {
         let f = parse("reduce .[] as $x (0; . + $x)");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(eval_one(&f, &input), Value::Int(6));
     }
 
     #[test]
     fn eval_reduce_empty() {
         let f = parse("reduce .[] as $x (0; . + $x)");
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(eval_one(&f, &input), Value::Int(0));
     }
 
     #[test]
     fn eval_reduce_build_array() {
         let f = parse("reduce .[] as $x ([]; . + [$x * 2])");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![Value::Int(2), Value::Int(4), Value::Int(6)]))
+            Value::Array(Arc::new(vec![Value::Int(2), Value::Int(4), Value::Int(6)]))
         );
     }
 
@@ -2751,20 +2751,20 @@ mod tests {
     #[test]
     fn eval_foreach_running_sum() {
         let f = parse("[foreach .[] as $x (0; . + $x)]");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3), Value::Int(6)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(3), Value::Int(6)]))
         );
     }
 
     #[test]
     fn eval_foreach_with_extract() {
         let f = parse("[foreach .[] as $x (0; . + $x; . * 10)]");
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::Int(10),
                 Value::Int(30),
                 Value::Int(60)
@@ -2775,8 +2775,8 @@ mod tests {
     #[test]
     fn eval_foreach_empty() {
         let f = parse("[foreach .[] as $x (0; . + $x)]");
-        let input = Value::Array(Rc::new(vec![]));
-        assert_eq!(eval_one(&f, &input), Value::Array(Rc::new(vec![])));
+        let input = Value::Array(Arc::new(vec![]));
+        assert_eq!(eval_one(&f, &input), Value::Array(Arc::new(vec![])));
     }
 
     // --- Phase 2: walk ---
@@ -2784,15 +2784,15 @@ mod tests {
     #[test]
     fn eval_walk_numbers() {
         let f = parse("walk(if type == \"number\" then . + 1 else . end)");
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(1),
-            Value::Array(Rc::new(vec![Value::Int(2)])),
+            Value::Array(Arc::new(vec![Value::Int(2)])),
         ]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::Int(2),
-                Value::Array(Rc::new(vec![Value::Int(3)])),
+                Value::Array(Arc::new(vec![Value::Int(3)])),
             ]))
         );
     }
@@ -2806,10 +2806,10 @@ mod tests {
     #[test]
     fn eval_walk_object() {
         let f = parse(r#"walk(if type == "string" then "X" else . end)"#);
-        let input = Value::Object(Rc::new(vec![("a".into(), Value::String("hello".into()))]));
+        let input = Value::Object(Arc::new(vec![("a".into(), Value::String("hello".into()))]));
         assert_eq!(
             eval_one(&f, &input),
-            Value::Object(Rc::new(vec![("a".into(), Value::String("X".into()))]))
+            Value::Object(Arc::new(vec![("a".into(), Value::String("X".into()))]))
         );
     }
 
@@ -3010,7 +3010,7 @@ mod tests {
     #[test]
     fn implode_negative_codepoint_replaced() {
         // Negative i64 → out of range → replacement char U+FFFD (jq behavior)
-        let input = Value::Array(Rc::new(vec![Value::Int(-1)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(-1)]));
         assert_eq!(
             eval_one(&parse("implode"), &input),
             Value::String("\u{FFFD}".into())
@@ -3019,7 +3019,7 @@ mod tests {
 
     #[test]
     fn implode_valid_codepoints() {
-        let input = Value::Array(Rc::new(vec![Value::Int(65), Value::Int(66)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(65), Value::Int(66)]));
         assert_eq!(
             eval_one(&parse("implode"), &input),
             Value::String("AB".into())
@@ -3092,7 +3092,7 @@ mod tests {
         let result = eval_one(&parse(r#"split("")"#), &input);
         assert_eq!(
             result,
-            Value::Array(Rc::new(vec![
+            Value::Array(Arc::new(vec![
                 Value::String("a".into()),
                 Value::String("b".into()),
                 Value::String("c".into()),
@@ -3106,13 +3106,13 @@ mod tests {
         let result = eval_one(&parse(r#"split("xyz")"#), &input);
         assert_eq!(
             result,
-            Value::Array(Rc::new(vec![Value::String("hello".into())]))
+            Value::Array(Arc::new(vec![Value::String("hello".into())]))
         );
     }
 
     #[test]
     fn join_empty_array() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         let result = eval_one(&parse(r#"join(",")"#), &input);
         assert_eq!(result, Value::String("".into()));
     }
@@ -3164,19 +3164,19 @@ mod tests {
 
     #[test]
     fn add_empty_array() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(eval_one(&parse("add"), &input), Value::Null);
     }
 
     #[test]
     fn add_single_element() {
-        let input = Value::Array(Rc::new(vec![Value::Int(5)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(5)]));
         assert_eq!(eval_one(&parse("add"), &input), Value::Int(5));
     }
 
     #[test]
     fn add_strings() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::String("a".into()),
             Value::String("b".into()),
         ]));
@@ -3185,51 +3185,51 @@ mod tests {
 
     #[test]
     fn flatten_already_flat() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]));
         assert_eq!(
             eval_one(&parse("flatten"), &input),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]))
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]))
         );
     }
 
     #[test]
     fn flatten_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("flatten"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
     #[test]
     fn flatten_depth_zero() {
         // flatten(0) should not flatten at all
-        let inner = Value::Array(Rc::new(vec![Value::Int(1)]));
-        let input = Value::Array(Rc::new(vec![inner.clone()]));
+        let inner = Value::Array(Arc::new(vec![Value::Int(1)]));
+        let input = Value::Array(Arc::new(vec![inner.clone()]));
         assert_eq!(
             eval_one(&parse("flatten(0)"), &input),
-            Value::Array(Rc::new(vec![inner]))
+            Value::Array(Arc::new(vec![inner]))
         );
     }
 
     #[test]
     fn first_empty_array() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert!(eval_all(&parse("first"), &input).is_empty());
     }
 
     #[test]
     fn last_empty_array() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert!(eval_all(&parse("last"), &input).is_empty());
     }
 
     #[test]
     fn reverse_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("reverse"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
@@ -3244,66 +3244,66 @@ mod tests {
 
     #[test]
     fn sort_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("sort"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
     #[test]
     fn unique_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("unique"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
     #[test]
     fn group_by_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("group_by(.)"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
     #[test]
     fn min_by_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(eval_one(&parse("min_by(.)"), &input), Value::Null);
     }
 
     #[test]
     fn max_by_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(eval_one(&parse("max_by(.)"), &input), Value::Null);
     }
 
     #[test]
     fn transpose_ragged() {
         // [[1,2],[3]] → [[1,3],[2,null]]
-        let input = Value::Array(Rc::new(vec![
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
-            Value::Array(Rc::new(vec![Value::Int(3)])),
+        let input = Value::Array(Arc::new(vec![
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)])),
+            Value::Array(Arc::new(vec![Value::Int(3)])),
         ]));
         let result = eval_one(&parse("transpose"), &input);
         assert_eq!(
             result,
-            Value::Array(Rc::new(vec![
-                Value::Array(Rc::new(vec![Value::Int(1), Value::Int(3)])),
-                Value::Array(Rc::new(vec![Value::Int(2), Value::Null])),
+            Value::Array(Arc::new(vec![
+                Value::Array(Arc::new(vec![Value::Int(1), Value::Int(3)])),
+                Value::Array(Arc::new(vec![Value::Int(2), Value::Null])),
             ]))
         );
     }
 
     #[test]
     fn transpose_empty() {
-        let input = Value::Array(Rc::new(vec![]));
+        let input = Value::Array(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("transpose"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
@@ -3311,7 +3311,7 @@ mod tests {
 
     #[test]
     fn getpath_missing() {
-        let input = Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]));
+        let input = Value::Object(Arc::new(vec![("a".into(), Value::Int(1))]));
         assert_eq!(eval_one(&parse(r#"getpath(["b"])"#), &input), Value::Null);
     }
 
@@ -3359,13 +3359,13 @@ mod tests {
         let result = eval_one(&parse("fromjson"), &input);
         assert_eq!(
             result,
-            Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]))
+            Value::Object(Arc::new(vec![("a".into(), Value::Int(1))]))
         );
     }
 
     #[test]
     fn tojson_roundtrip() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Bool(true)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Bool(true)]));
         let json_str = eval_one(&parse("tojson"), &input);
         let roundtrip = eval_one(&parse("fromjson"), &json_str);
         assert_eq!(roundtrip, input);
@@ -3375,7 +3375,7 @@ mod tests {
 
     #[test]
     fn contains_partial_object() {
-        let input = Value::Object(Rc::new(vec![
+        let input = Value::Object(Arc::new(vec![
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Int(2)),
         ]));
@@ -3387,7 +3387,7 @@ mod tests {
 
     #[test]
     fn contains_missing_key() {
-        let input = Value::Object(Rc::new(vec![("a".into(), Value::Int(1))]));
+        let input = Value::Object(Arc::new(vec![("a".into(), Value::Int(1))]));
         assert_eq!(
             eval_one(&parse(r#"contains({"x":1})"#), &input),
             Value::Bool(false)
@@ -3436,11 +3436,11 @@ mod tests {
             Value::String("string".into())
         );
         assert_eq!(
-            eval_one(&parse("type"), &Value::Array(Rc::new(vec![]))),
+            eval_one(&parse("type"), &Value::Array(Arc::new(vec![]))),
             Value::String("array".into())
         );
         assert_eq!(
-            eval_one(&parse("type"), &Value::Object(Rc::new(vec![]))),
+            eval_one(&parse("type"), &Value::Object(Arc::new(vec![]))),
             Value::String("object".into())
         );
     }
@@ -3455,12 +3455,12 @@ mod tests {
         assert_eq!(
             eval_one(
                 &parse("length"),
-                &Value::Array(Rc::new(vec![Value::Int(1)]))
+                &Value::Array(Arc::new(vec![Value::Int(1)]))
             ),
             Value::Int(1)
         );
         assert_eq!(
-            eval_one(&parse("length"), &Value::Object(Rc::new(vec![]))),
+            eval_one(&parse("length"), &Value::Object(Arc::new(vec![]))),
             Value::Int(0)
         );
         // length of number = abs value
@@ -3471,31 +3471,31 @@ mod tests {
 
     #[test]
     fn keys_empty_object() {
-        let input = Value::Object(Rc::new(vec![]));
+        let input = Value::Object(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("keys"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
     #[test]
     fn values_empty_object() {
-        let input = Value::Object(Rc::new(vec![]));
+        let input = Value::Object(Arc::new(vec![]));
         assert_eq!(
             eval_one(&parse("[.[]]"), &input),
-            Value::Array(Rc::new(vec![]))
+            Value::Array(Arc::new(vec![]))
         );
     }
 
     #[test]
     fn keys_array() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::String("a".into()),
             Value::String("b".into()),
         ]));
         assert_eq!(
             eval_one(&parse("keys"), &input),
-            Value::Array(Rc::new(vec![Value::Int(0), Value::Int(1)]))
+            Value::Array(Arc::new(vec![Value::Int(0), Value::Int(1)]))
         );
     }
 
@@ -3503,7 +3503,7 @@ mod tests {
 
     #[test]
     fn array_index_negative() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(10),
             Value::Int(20),
             Value::Int(30),
@@ -3514,7 +3514,7 @@ mod tests {
 
     #[test]
     fn array_index_out_of_bounds() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1)]));
         assert_eq!(eval_one(&parse(".[99]"), &input), Value::Null);
     }
 

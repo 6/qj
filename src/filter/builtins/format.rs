@@ -166,7 +166,7 @@ pub(super) fn eval_format(
 mod tests {
     use super::*;
     use crate::filter::Env;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     fn run_builtin(name: &str, input: &Value) -> Vec<Value> {
         let env = Env::empty();
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn format_csv_array() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(1),
             Value::String("two".into()),
             Value::Int(3),
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn format_json() {
-        let input = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        let input = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)]));
         let out = run_builtin("@json", &input);
         assert_eq!(out, vec![Value::String("[1,2]".into())]);
     }

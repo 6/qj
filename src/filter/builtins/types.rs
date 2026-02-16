@@ -1,6 +1,6 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::eval::eval;
 use super::super::value_ops::value_contains;
@@ -126,13 +126,13 @@ pub(super) fn eval_types(
                 let entries: Vec<Value> = obj
                     .iter()
                     .map(|(k, v)| {
-                        Value::Object(Rc::new(vec![
+                        Value::Object(Arc::new(vec![
                             ("key".into(), Value::String(k.clone())),
                             ("value".into(), v.clone()),
                         ]))
                     })
                     .collect();
-                output(Value::Array(Rc::new(entries)));
+                output(Value::Array(Arc::new(entries)));
             }
         }
         "from_entries" => {
@@ -157,7 +157,7 @@ pub(super) fn eval_types(
                         obj.push((key, val));
                     }
                 }
-                output(Value::Object(Rc::new(obj)));
+                output(Value::Object(Arc::new(obj)));
             }
         }
         _ => {}

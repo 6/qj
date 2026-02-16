@@ -168,9 +168,8 @@ pub fn split_chunks(buf: &[u8], target_size: usize) -> Vec<&[u8]> {
 /// Process an NDJSON buffer, returning `(output_bytes, had_output)`.
 ///
 /// Automatically parallelizes across cores for data larger than one chunk.
-/// Falls back to sequential processing for small data, filters containing
-/// non-thread-safe literals, or when a non-empty env is provided (Env uses
-/// Rc which is not Send).
+/// Falls back to sequential processing for small data or when the filter
+/// references variables from a non-empty Env (Env uses Rc, not Send).
 pub fn process_ndjson(
     data: &[u8],
     filter: &Filter,
@@ -197,9 +196,8 @@ pub fn process_ndjson(
         return process_chunk(data, filter, config, &fast_path, env);
     }
 
-    // SAFETY: filter_is_parallel_safe() verified no Rc-containing literals,
-    // so all data in the filter is immutable and thread-safe. eval() only
-    // creates thread-local Values.
+    // SAFETY: Value uses Arc (not Rc), so all filter literals are thread-safe.
+    // Each thread creates its own Values and Env; no cross-thread sharing.
     let shared = SharedFilter::new(filter);
 
     let results: Result<Vec<(Vec<u8>, bool)>> = chunks
@@ -258,17 +256,13 @@ fn detect_fast_path(filter: &Filter) -> NdjsonFastPath {
 
 /// Pointer-based wrapper to share `&Filter` across rayon threads.
 ///
-/// Uses a raw pointer internally so `&Filter` (which is !Send because of Rc
-/// in Value) never appears in the closure's captured types.
+/// Uses a raw pointer internally to bypass the `!Send` bound from Env's
+/// internal Rc. The filter tree itself is safe to share since Value uses Arc.
 ///
 /// # Safety
 ///
-/// Only safe when `filter_is_parallel_safe()` returns `true`, meaning the
-/// filter tree contains no `Rc`-based `Value::Array` or `Value::Object`
-/// literals. In that case, sharing the filter is safe because:
-/// - The filter is only read during `eval()`
-/// - Each thread creates its own `Value`s; no cross-thread sharing
-/// - Scalar literal clones (`Int`, `Bool`, `String`, etc.) are thread-safe
+/// Safe because the filter is only read during evaluation and each thread
+/// creates its own Values and Env.
 struct SharedFilter {
     ptr: *const Filter,
 }
@@ -689,7 +683,6 @@ fn process_line(
             let padded = prepare_padded(trimmed, scratch);
             let flat_buf = simdjson::dom_parse_to_flat_buf(padded, trimmed.len())
                 .context("failed to parse NDJSON line")?;
-
             crate::flat_eval::eval_flat(filter, flat_buf.root(), env, &mut |v| {
                 *had_output = true;
                 output::write_value(output_buf, &v, config).ok();

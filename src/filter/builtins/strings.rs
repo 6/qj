@@ -1,6 +1,6 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::eval::eval;
 use super::super::value_ops::values_equal;
@@ -171,7 +171,7 @@ pub(super) fn eval_strings(
                             .map(|part| Value::String(part.into()))
                             .collect()
                     };
-                    output(Value::Array(Rc::new(parts)));
+                    output(Value::Array(Arc::new(parts)));
                 }
             } else if !args.is_empty() && !matches!(input, Value::String(_)) {
                 set_error(format!(
@@ -302,7 +302,7 @@ pub(super) fn eval_strings(
                                 start = abs_byte + next_char_len;
                             }
                         }
-                        output(Value::Array(Rc::new(positions)));
+                        output(Value::Array(Arc::new(positions)));
                     }
                     (Value::Array(arr), Value::Array(needle_arr)) => {
                         // Subsequence search for array needles
@@ -319,7 +319,7 @@ pub(super) fn eval_strings(
                                 }
                             }
                         }
-                        output(Value::Array(Rc::new(positions)));
+                        output(Value::Array(Arc::new(positions)));
                     }
                     (Value::Array(arr), _) => {
                         let positions: Vec<Value> = arr
@@ -328,16 +328,16 @@ pub(super) fn eval_strings(
                             .filter(|(_, v)| values_equal(v, &needle))
                             .map(|(i, _)| Value::Int(i as i64))
                             .collect();
-                        output(Value::Array(Rc::new(positions)));
+                        output(Value::Array(Arc::new(positions)));
                     }
-                    _ => output(Value::Array(Rc::new(Vec::new()))),
+                    _ => output(Value::Array(Arc::new(Vec::new()))),
                 });
             }
         }
         "explode" => {
             if let Value::String(s) = input {
                 let codepoints: Vec<Value> = s.chars().map(|c| Value::Int(c as i64)).collect();
-                output(Value::Array(Rc::new(codepoints)));
+                output(Value::Array(Arc::new(codepoints)));
             } else {
                 set_error(format!(
                     "{} ({}) cannot be exploded",

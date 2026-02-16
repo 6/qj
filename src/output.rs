@@ -513,7 +513,7 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     fn compact(v: &Value) -> String {
         let config = OutputConfig {
@@ -605,18 +605,18 @@ mod tests {
 
     #[test]
     fn compact_array() {
-        let v = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let v = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         assert_eq!(compact(&v), "[1,2,3]");
     }
 
     #[test]
     fn compact_empty_array() {
-        assert_eq!(compact(&Value::Array(Rc::new(vec![]))), "[]");
+        assert_eq!(compact(&Value::Array(Arc::new(vec![]))), "[]");
     }
 
     #[test]
     fn compact_object() {
-        let v = Value::Object(Rc::new(vec![
+        let v = Value::Object(Arc::new(vec![
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Bool(true)),
         ]));
@@ -625,12 +625,12 @@ mod tests {
 
     #[test]
     fn compact_empty_object() {
-        assert_eq!(compact(&Value::Object(Rc::new(vec![]))), "{}");
+        assert_eq!(compact(&Value::Object(Arc::new(vec![]))), "{}");
     }
 
     #[test]
     fn pretty_object() {
-        let v = Value::Object(Rc::new(vec![
+        let v = Value::Object(Arc::new(vec![
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Int(2)),
         ]));
@@ -639,9 +639,9 @@ mod tests {
 
     #[test]
     fn pretty_nested() {
-        let v = Value::Object(Rc::new(vec![(
+        let v = Value::Object(Arc::new(vec![(
             "arr".into(),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)])),
         )]));
         assert_eq!(pretty(&v), "{\n  \"arr\": [\n    1,\n    2\n  ]\n}");
     }
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn sort_keys_object() {
-        let v = Value::Object(Rc::new(vec![
+        let v = Value::Object(Arc::new(vec![
             ("b".into(), Value::Int(2)),
             ("a".into(), Value::Int(1)),
         ]));
@@ -712,10 +712,10 @@ mod tests {
 
     #[test]
     fn sort_keys_nested() {
-        let v = Value::Object(Rc::new(vec![
+        let v = Value::Object(Arc::new(vec![
             (
                 "z".into(),
-                Value::Object(Rc::new(vec![
+                Value::Object(Arc::new(vec![
                     ("b".into(), Value::Int(2)),
                     ("a".into(), Value::Int(1)),
                 ])),

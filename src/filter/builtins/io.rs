@@ -1,6 +1,6 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::eval::eval;
 
@@ -210,7 +210,7 @@ pub(super) fn eval_io(
                 .iter()
                 .map(|(name, arity)| Value::String(format!("{name}/{arity}")))
                 .collect();
-            output(Value::Array(Rc::new(arr)));
+            output(Value::Array(Arc::new(arr)));
         }
         "input" => {
             let val = super::super::eval::INPUT_QUEUE.with(|q| q.borrow_mut().pop_front());
@@ -271,7 +271,7 @@ pub(super) fn eval_io(
             let vars: Vec<(String, Value)> = std::env::vars()
                 .map(|(k, v)| (k, Value::String(v)))
                 .collect();
-            output(Value::Object(Rc::new(vars)));
+            output(Value::Object(Arc::new(vars)));
         }
         _ => {}
     }

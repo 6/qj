@@ -1,6 +1,6 @@
 use crate::filter::{ArithOp, Env, Filter};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::eval::{LAST_ERROR, eval};
 use super::super::value_ops::{arith_values, recurse, to_f64, values_equal, values_order};
@@ -30,11 +30,11 @@ pub(super) fn eval_arrays(
                         }
                     });
                 }
-                output(Value::Array(Rc::new(keys)));
+                output(Value::Array(Arc::new(keys)));
             }
             Value::Array(arr) => {
                 let keys: Vec<Value> = (0..arr.len() as i64).map(Value::Int).collect();
-                output(Value::Array(Rc::new(keys)));
+                output(Value::Array(Arc::new(keys)));
             }
             _ => {}
         },
@@ -50,7 +50,7 @@ pub(super) fn eval_arrays(
                 for item in arr.iter() {
                     eval(f, item, env, &mut |v| result.push(v));
                 }
-                output(Value::Array(Rc::new(result)));
+                output(Value::Array(Arc::new(result)));
             }
         }
         "select" => {
@@ -188,7 +188,7 @@ pub(super) fn eval_arrays(
             if let Value::Array(arr) = input {
                 let mut sorted: Vec<Value> = arr.as_ref().clone();
                 sorted.sort_by(|a, b| values_order(a, b).unwrap_or(std::cmp::Ordering::Equal));
-                output(Value::Array(Rc::new(sorted)));
+                output(Value::Array(Arc::new(sorted)));
             }
         }
         "sort_by" => {
@@ -211,7 +211,7 @@ pub(super) fn eval_arrays(
                     }
                     a.len().cmp(&b.len())
                 });
-                output(Value::Array(Rc::new(
+                output(Value::Array(Arc::new(
                     pairs.into_iter().map(|(_, v)| v).collect(),
                 )));
             }
@@ -237,16 +237,16 @@ pub(super) fn eval_arrays(
                         current_group.push(val);
                     } else {
                         if !current_group.is_empty() {
-                            groups.push(Value::Array(Rc::new(std::mem::take(&mut current_group))));
+                            groups.push(Value::Array(Arc::new(std::mem::take(&mut current_group))));
                         }
                         current_key = Some(key);
                         current_group.push(val);
                     }
                 }
                 if !current_group.is_empty() {
-                    groups.push(Value::Array(Rc::new(current_group)));
+                    groups.push(Value::Array(Arc::new(current_group)));
                 }
-                output(Value::Array(Rc::new(groups)));
+                output(Value::Array(Arc::new(groups)));
             }
         }
         "unique" => {
@@ -254,7 +254,7 @@ pub(super) fn eval_arrays(
                 let mut sorted: Vec<Value> = arr.as_ref().clone();
                 sorted.sort_by(|a, b| values_order(a, b).unwrap_or(std::cmp::Ordering::Equal));
                 sorted.dedup_by(|a, b| values_equal(a, b));
-                output(Value::Array(Rc::new(sorted)));
+                output(Value::Array(Arc::new(sorted)));
             }
         }
         "unique_by" => {
@@ -269,7 +269,7 @@ pub(super) fn eval_arrays(
                         result.push(item.clone());
                     }
                 }
-                output(Value::Array(Rc::new(result)));
+                output(Value::Array(Arc::new(result)));
             }
         }
         "flatten" => {
@@ -288,12 +288,12 @@ pub(super) fn eval_arrays(
                         };
                         let mut result = Vec::new();
                         flatten_array(arr, depth, &mut result);
-                        output(Value::Array(Rc::new(result)));
+                        output(Value::Array(Arc::new(result)));
                     });
                 } else {
                     let mut result = Vec::new();
                     flatten_array(arr, i64::MAX, &mut result);
-                    output(Value::Array(Rc::new(result)));
+                    output(Value::Array(Arc::new(result)));
                 }
             }
         }
@@ -329,7 +329,7 @@ pub(super) fn eval_arrays(
             if let Value::Array(arr) = input {
                 let mut result: Vec<Value> = arr.as_ref().clone();
                 result.reverse();
-                output(Value::Array(Rc::new(result)));
+                output(Value::Array(Arc::new(result)));
             } else if let Value::String(s) = input {
                 output(Value::String(s.chars().rev().collect()));
             }
@@ -439,8 +439,8 @@ pub(super) fn eval_arrays(
                 // Sort in reverse order so deletions don't shift indices
                 paths.sort_by(|a, b| {
                     super::super::value_ops::values_order(
-                        &Value::Array(Rc::new(b.clone())),
-                        &Value::Array(Rc::new(a.clone())),
+                        &Value::Array(Arc::new(b.clone())),
+                        &Value::Array(Arc::new(a.clone())),
                     )
                     .unwrap_or(std::cmp::Ordering::Equal)
                 });
@@ -480,9 +480,9 @@ pub(super) fn eval_arrays(
                             }
                         })
                         .collect();
-                    result.push(Value::Array(Rc::new(col)));
+                    result.push(Value::Array(Arc::new(col)));
                 }
-                output(Value::Array(Rc::new(result)));
+                output(Value::Array(Arc::new(result)));
             }
         }
         "map_values" => {
@@ -495,14 +495,14 @@ pub(super) fn eval_arrays(
                             eval(f, v, env, &mut |nv| new_val = nv);
                             result.push((k.clone(), new_val));
                         }
-                        output(Value::Object(Rc::new(result)));
+                        output(Value::Object(Arc::new(result)));
                     }
                     Value::Array(arr) => {
                         let mut result = Vec::with_capacity(arr.len());
                         for v in arr.iter() {
                             eval(f, v, env, &mut |nv| result.push(nv));
                         }
-                        output(Value::Array(Rc::new(result)));
+                        output(Value::Array(Arc::new(result)));
                     }
                     _ => output(input.clone()),
                 }
@@ -656,7 +656,7 @@ pub(super) fn eval_arrays(
                                 }
                                 // No output → element removed (e.g., select filtered it)
                             }
-                            let reconstructed = Value::Array(Rc::new(new_arr));
+                            let reconstructed = Value::Array(Arc::new(new_arr));
                             eval(f, &reconstructed, env, output);
                         }
                         Value::Object(obj) => {
@@ -674,7 +674,7 @@ pub(super) fn eval_arrays(
                                 }
                                 // No output → key removed (e.g., select filtered it)
                             }
-                            let reconstructed = Value::Object(Rc::new(new_obj));
+                            let reconstructed = Value::Object(Arc::new(new_obj));
                             eval(f, &reconstructed, env, output);
                         }
                         _ => {
@@ -751,13 +751,13 @@ pub(super) fn eval_arrays(
                 let entries: Vec<Value> = obj
                     .iter()
                     .map(|(k, v)| {
-                        Value::Object(Rc::new(vec![
+                        Value::Object(Arc::new(vec![
                             ("key".into(), Value::String(k.clone())),
                             ("value".into(), v.clone()),
                         ]))
                     })
                     .collect();
-                let entries_val = Value::Array(Rc::new(entries));
+                let entries_val = Value::Array(Arc::new(entries));
                 let mut mapped = Vec::new();
                 if let Value::Array(arr) = &entries_val {
                     for item in arr.iter() {
@@ -784,7 +784,7 @@ pub(super) fn eval_arrays(
                         result_obj.push((key, val));
                     }
                 }
-                output(Value::Object(Rc::new(result_obj)));
+                output(Value::Object(Arc::new(result_obj)));
             }
         }
         "combinations" => {
@@ -810,7 +810,7 @@ pub(super) fn eval_arrays(
                             .enumerate()
                             .map(|(i, &j)| arrays[i][j].clone())
                             .collect();
-                        output(Value::Array(Rc::new(combo)));
+                        output(Value::Array(Arc::new(combo)));
                         let mut carry = true;
                         for k in (0..indices.len()).rev() {
                             if carry {
@@ -840,7 +840,7 @@ pub(super) fn eval_arrays(
                             .enumerate()
                             .map(|(i, &j)| arrays[i][j].clone())
                             .collect();
-                        output(Value::Array(Rc::new(combo)));
+                        output(Value::Array(Arc::new(combo)));
                         let mut carry = true;
                         for k in (0..indices.len()).rev() {
                             if carry {
@@ -904,7 +904,7 @@ pub(super) fn eval_arrays(
                         result.push((key_str, item.clone()));
                     });
                 });
-                output(Value::Object(Rc::new(result)));
+                output(Value::Object(Arc::new(result)));
             }
             // INDEX(idx_expr) — .[] as input
             1 => {
@@ -925,7 +925,7 @@ pub(super) fn eval_arrays(
                         });
                     }
                 }
-                output(Value::Object(Rc::new(result)));
+                output(Value::Object(Arc::new(result)));
             }
             _ => {}
         },
@@ -958,11 +958,11 @@ pub(super) fn eval_arrays(
                             } else {
                                 Value::Null
                             };
-                            results.push(Value::Array(Rc::new(vec![item.clone(), lookup])));
+                            results.push(Value::Array(Arc::new(vec![item.clone(), lookup])));
                         });
                     }
                 }
-                output(Value::Array(Rc::new(results)));
+                output(Value::Array(Arc::new(results)));
             }
         }
         _ => {}

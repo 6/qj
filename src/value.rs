@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// JSON value representation.
 ///
@@ -6,8 +6,10 @@ use std::rc::Rc;
 /// on large IDs. `Object` uses `Vec<(String, Value)>` to preserve key
 /// insertion order (matching jq behavior).
 ///
-/// Array and Object use `Rc<Vec<...>>` so that cloning during filter
+/// Array and Object use `Arc<Vec<...>>` so that cloning during filter
 /// evaluation is O(1) reference-count bump instead of deep copy.
+/// Arc (vs Rc) enables sharing filter literals across rayon threads
+/// in the NDJSON parallel path with negligible overhead.
 #[derive(Debug, Clone)]
 pub enum Value {
     Null,
@@ -18,8 +20,8 @@ pub enum Value {
     /// `None` for computed values (arithmetic, filter literals).
     Double(f64, Option<Box<str>>),
     String(String),
-    Array(Rc<Vec<Value>>),
-    Object(Rc<Vec<(String, Value)>>),
+    Array(Arc<Vec<Value>>),
+    Object(Arc<Vec<(String, Value)>>),
 }
 
 /// PartialEq ignores the raw-text field on Double — two Doubles with the
@@ -110,9 +112,9 @@ impl From<serde_json::Value> for Value {
             }
             serde_json::Value::String(s) => Value::String(s),
             serde_json::Value::Array(a) => {
-                Value::Array(Rc::new(a.into_iter().map(Value::from).collect()))
+                Value::Array(Arc::new(a.into_iter().map(Value::from).collect()))
             }
-            serde_json::Value::Object(o) => Value::Object(Rc::new(
+            serde_json::Value::Object(o) => Value::Object(Arc::new(
                 o.into_iter().map(|(k, v)| (k, Value::from(v))).collect(),
             )),
         }
@@ -130,8 +132,8 @@ mod tests {
         assert_eq!(Value::Int(42).type_name(), "number");
         assert_eq!(Value::Double(3.14, None).type_name(), "number");
         assert_eq!(Value::String("hi".into()).type_name(), "string");
-        assert_eq!(Value::Array(Rc::new(vec![])).type_name(), "array");
-        assert_eq!(Value::Object(Rc::new(vec![])).type_name(), "object");
+        assert_eq!(Value::Array(Arc::new(vec![])).type_name(), "array");
+        assert_eq!(Value::Object(Arc::new(vec![])).type_name(), "object");
     }
 
     #[test]
@@ -142,7 +144,7 @@ mod tests {
         assert!(Value::Int(0).is_truthy());
         assert!(Value::Double(0.0, None).is_truthy());
         assert!(Value::String("".into()).is_truthy());
-        assert!(Value::Array(Rc::new(vec![])).is_truthy());
-        assert!(Value::Object(Rc::new(vec![])).is_truthy());
+        assert!(Value::Array(Arc::new(vec![])).is_truthy());
+        assert!(Value::Object(Arc::new(vec![])).is_truthy());
     }
 }

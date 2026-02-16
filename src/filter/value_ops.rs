@@ -2,7 +2,7 @@
 /// and pure value-manipulation functions used by both eval.rs and builtins.
 use crate::filter::{ArithOp, CmpOp, Env, Filter};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::eval::eval;
 
@@ -146,7 +146,7 @@ pub(super) fn epoch_to_bdtime(secs: f64, utc: bool) -> Option<Value> {
     let wday = zdt.weekday().to_sunday_zero_offset() as i64;
     // yearday: 0-based day of year
     let yday = (zdt.day_of_year() as i64) - 1;
-    Some(Value::Array(std::rc::Rc::new(vec![
+    Some(Value::Array(Arc::new(vec![
         Value::Int(year),
         Value::Int(month),
         Value::Int(day),
@@ -244,7 +244,7 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
             } else {
                 result.push((k.clone(), set_path(&Value::Null, rest, new_val)?));
             }
-            Ok(Value::Object(Rc::new(result)))
+            Ok(Value::Object(Arc::new(result)))
         }
         (Value::Array(arr), Value::Int(i)) => {
             let mut result = arr.as_ref().clone();
@@ -257,11 +257,11 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
                 result.push(Value::Null);
             }
             result[idx] = set_path(&result[idx], rest, new_val)?;
-            Ok(Value::Array(Rc::new(result)))
+            Ok(Value::Array(Arc::new(result)))
         }
         (Value::Null, Value::String(k)) => {
             let inner = set_path(&Value::Null, rest, new_val)?;
-            Ok(Value::Object(Rc::new(vec![(k.clone(), inner)])))
+            Ok(Value::Object(Arc::new(vec![(k.clone(), inner)])))
         }
         (Value::Null, Value::Int(i)) => {
             if *i < 0 {
@@ -273,7 +273,7 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
             let idx = *i as usize;
             let mut arr = vec![Value::Null; idx + 1];
             arr[idx] = set_path(&Value::Null, rest, new_val)?;
-            Ok(Value::Array(Rc::new(arr)))
+            Ok(Value::Array(Arc::new(arr)))
         }
         // Type mismatch errors
         (Value::Object(_), Value::Int(_)) => Err("Cannot index object with number".to_string()),
@@ -298,7 +298,7 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
         match (value, &path[0]) {
             (Value::Object(obj), Value::String(k)) => {
                 let result: Vec<_> = obj.iter().filter(|(ek, _)| ek != k).cloned().collect();
-                return Value::Object(Rc::new(result));
+                return Value::Object(Arc::new(result));
             }
             (Value::Array(arr), Value::Int(i)) => {
                 let resolved = if *i < 0 { arr.len() as i64 + i } else { *i };
@@ -308,7 +308,7 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
                 let idx = resolved as usize;
                 let mut result = arr.as_ref().clone();
                 result.remove(idx);
-                return Value::Array(Rc::new(result));
+                return Value::Array(Arc::new(result));
             }
             _ => return value.clone(),
         }
@@ -321,7 +321,7 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
             if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
                 existing.1 = del_path(&existing.1, rest);
             }
-            Value::Object(Rc::new(result))
+            Value::Object(Arc::new(result))
         }
         (Value::Array(arr), Value::Int(i)) => {
             let idx = if *i < 0 {
@@ -333,7 +333,7 @@ pub(super) fn del_path(value: &Value, path: &[Value]) -> Value {
             if idx < result.len() {
                 result[idx] = del_path(&result[idx], rest);
             }
-            Value::Array(Rc::new(result))
+            Value::Array(Arc::new(result))
         }
         _ => value.clone(),
     }
@@ -378,7 +378,7 @@ pub(super) fn enum_paths(
                 }
             });
             if is_match {
-                output(Value::Array(Rc::new(current.clone())));
+                output(Value::Array(Arc::new(current.clone())));
             }
         }
         None => {
@@ -390,7 +390,7 @@ pub(super) fn enum_paths(
             for (i, v) in arr.iter().enumerate() {
                 current.push(Value::Int(i as i64));
                 if filter.is_none() {
-                    output(Value::Array(Rc::new(current.clone())));
+                    output(Value::Array(Arc::new(current.clone())));
                 }
                 enum_paths(v, current, output, filter);
                 current.pop();
@@ -400,7 +400,7 @@ pub(super) fn enum_paths(
             for (k, v) in obj.iter() {
                 current.push(Value::String(k.clone()));
                 if filter.is_none() {
-                    output(Value::Array(Rc::new(current.clone())));
+                    output(Value::Array(Arc::new(current.clone())));
                 }
                 enum_paths(v, current, output, filter);
                 current.pop();
@@ -431,7 +431,7 @@ pub(super) fn enum_leaf_paths(
             }
         }
         _ => {
-            output(Value::Array(Rc::new(current.clone())));
+            output(Value::Array(Arc::new(current.clone())));
         }
     }
 }
@@ -446,13 +446,13 @@ pub(super) fn path_of(
     match filter {
         Filter::Field(name) => {
             current.push(Value::String(name.clone()));
-            output(Value::Array(Rc::new(current.clone())));
+            output(Value::Array(Arc::new(current.clone())));
             current.pop();
         }
         Filter::Index(idx_f) => {
             eval(idx_f, input, &env, &mut |idx| {
                 current.push(idx);
-                output(Value::Array(Rc::new(current.clone())));
+                output(Value::Array(Arc::new(current.clone())));
                 current.pop();
             });
         }
@@ -494,7 +494,7 @@ pub(super) fn path_of(
                 let end = e.min(arr.len());
                 for i in start..end {
                     current.push(Value::Int(i as i64));
-                    output(Value::Array(Rc::new(current.clone())));
+                    output(Value::Array(Arc::new(current.clone())));
                     current.pop();
                 }
             }
@@ -503,14 +503,14 @@ pub(super) fn path_of(
             Value::Array(arr) => {
                 for i in 0..arr.len() {
                     current.push(Value::Int(i as i64));
-                    output(Value::Array(Rc::new(current.clone())));
+                    output(Value::Array(Arc::new(current.clone())));
                     current.pop();
                 }
             }
             Value::Object(obj) => {
                 for (k, _) in obj.iter() {
                     current.push(Value::String(k.clone()));
-                    output(Value::Array(Rc::new(current.clone())));
+                    output(Value::Array(Arc::new(current.clone())));
                     current.pop();
                 }
             }
@@ -534,7 +534,7 @@ pub(super) fn path_of(
             current.truncate(saved_len);
         }
         Filter::Identity => {
-            output(Value::Array(Rc::new(current.clone())));
+            output(Value::Array(Arc::new(current.clone())));
         }
         Filter::Select(cond) => {
             let mut is_match = false;
@@ -544,7 +544,7 @@ pub(super) fn path_of(
                 }
             });
             if is_match {
-                output(Value::Array(Rc::new(current.clone())));
+                output(Value::Array(Arc::new(current.clone())));
             }
         }
         Filter::Comma(items) => {
@@ -558,7 +558,7 @@ pub(super) fn path_of(
                 current: &mut Vec<Value>,
                 output: &mut dyn FnMut(Value),
             ) {
-                output(Value::Array(Rc::new(current.clone())));
+                output(Value::Array(Arc::new(current.clone())));
                 match value {
                     Value::Array(arr) => {
                         for (i, v) in arr.iter().enumerate() {
@@ -593,7 +593,7 @@ pub(super) fn path_of(
                 "first" => {
                     // first = .[0]
                     current.push(Value::Int(0));
-                    output(Value::Array(Rc::new(current.clone())));
+                    output(Value::Array(Arc::new(current.clone())));
                     current.pop();
                 }
                 "last" => {
@@ -602,7 +602,7 @@ pub(super) fn path_of(
                         && !arr.is_empty()
                     {
                         current.push(Value::Int(-1));
-                        output(Value::Array(Rc::new(current.clone())));
+                        output(Value::Array(Arc::new(current.clone())));
                         current.pop();
                     }
                 }
@@ -644,11 +644,11 @@ pub(super) fn values_equal(left: &Value, right: &Value) -> bool {
         (Value::Double(a, _), Value::Int(b)) => *a == (*b as f64),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Array(a), Value::Array(b)) => {
-            Rc::ptr_eq(a, b)
+            Arc::ptr_eq(a, b)
                 || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y)))
         }
         (Value::Object(a), Value::Object(b)) => {
-            Rc::ptr_eq(a, b)
+            Arc::ptr_eq(a, b)
                 || (a.len() == b.len()
                     && a.iter()
                         .zip(b.iter())
@@ -740,7 +740,7 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                 let mut result = Vec::with_capacity(a.len() + b.len());
                 result.extend_from_slice(a);
                 result.extend_from_slice(b);
-                Ok(Value::Array(Rc::new(result)))
+                Ok(Value::Array(Arc::new(result)))
             }
             (Value::Object(a), Value::Object(b)) => {
                 // Shallow merge: b's keys override a's
@@ -752,7 +752,7 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                         result.push((k.clone(), v.clone()));
                     }
                 }
-                Ok(Value::Object(Rc::new(result)))
+                Ok(Value::Object(Arc::new(result)))
             }
             (Value::Null, other) | (other, Value::Null) => Ok(other.clone()),
             _ => Err(format!(
@@ -774,7 +774,7 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                     .filter(|v| !b.iter().any(|bv| values_equal(v, bv)))
                     .cloned()
                     .collect();
-                Ok(Value::Array(Rc::new(result)))
+                Ok(Value::Array(Arc::new(result)))
             }
             _ => Err(format!(
                 "{} ({}) and {} ({}) cannot be subtracted",
@@ -870,7 +870,7 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
                     .split(sep.as_str())
                     .map(|part| Value::String(part.into()))
                     .collect();
-                Ok(Value::Array(Rc::new(parts)))
+                Ok(Value::Array(Arc::new(parts)))
             }
             _ => Err(format!(
                 "{} and {} cannot be divided",
@@ -911,7 +911,7 @@ pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<
     }
 }
 
-fn object_recursive_merge(a: &Rc<Vec<(String, Value)>>, b: &Rc<Vec<(String, Value)>>) -> Value {
+fn object_recursive_merge(a: &Arc<Vec<(String, Value)>>, b: &Arc<Vec<(String, Value)>>) -> Value {
     let mut result: Vec<(String, Value)> = a.as_ref().clone();
     for (k, bv) in b.iter() {
         if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
@@ -925,7 +925,7 @@ fn object_recursive_merge(a: &Rc<Vec<(String, Value)>>, b: &Rc<Vec<(String, Valu
             result.push((k.clone(), bv.clone()));
         }
     }
-    Value::Object(Rc::new(result))
+    Value::Object(Arc::new(result))
 }
 
 pub(super) fn recurse(value: &Value, output: &mut dyn FnMut(Value)) {
@@ -967,7 +967,7 @@ mod tests {
     use super::*;
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        Value::Object(Rc::new(
+        Value::Object(Arc::new(
             pairs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn test_del_path_array() {
-        let input = Value::Array(Rc::new(vec![
+        let input = Value::Array(Arc::new(vec![
             Value::Int(10),
             Value::Int(20),
             Value::Int(30),
@@ -1071,7 +1071,7 @@ mod tests {
         let result = del_path(&input, &[Value::Int(1)]);
         assert_eq!(
             result,
-            Value::Array(Rc::new(vec![Value::Int(10), Value::Int(30)]))
+            Value::Array(Arc::new(vec![Value::Int(10), Value::Int(30)]))
         );
     }
 
@@ -1136,13 +1136,13 @@ mod tests {
 
     #[test]
     fn test_object_recursive_merge_fn() {
-        let a = Rc::new(vec![(
+        let a = Arc::new(vec![(
             "x".to_string(),
-            Value::Object(Rc::new(vec![("y".to_string(), Value::Int(1))])),
+            Value::Object(Arc::new(vec![("y".to_string(), Value::Int(1))])),
         )]);
-        let b = Rc::new(vec![(
+        let b = Arc::new(vec![(
             "x".to_string(),
-            Value::Object(Rc::new(vec![("z".to_string(), Value::Int(2))])),
+            Value::Object(Arc::new(vec![("z".to_string(), Value::Int(2))])),
         )]);
         let result = object_recursive_merge(&a, &b);
         if let Value::Object(obj) = result {

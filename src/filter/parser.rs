@@ -17,7 +17,7 @@ use anyhow::{Result, bail};
 use super::lexer::{StringSegment, Token};
 use super::{ArithOp, AssignOp, BoolOp, CmpOp, Filter, ObjKey, Pattern, PatternKey, StringPart};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Maximum nesting depth for recursive descent parsing.
 /// Each parenthesized expression adds ~2 to depth (parse_pipe + parse_primary),
@@ -559,7 +559,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 if self.peek() == Some(&Token::RBrack) {
                     self.advance();
-                    return Ok(Filter::Literal(Value::Array(Rc::new(vec![]))));
+                    return Ok(Filter::Literal(Value::Array(Arc::new(vec![]))));
                 }
                 let expr = self.parse_expr()?;
                 self.expect(&Token::RBrack)?;

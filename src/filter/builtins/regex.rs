@@ -1,6 +1,6 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::eval::eval;
 
@@ -51,7 +51,7 @@ pub(super) fn eval_regex(
                             obj.push((name.to_string(), val));
                         }
                     }
-                    output(Value::Object(Rc::new(obj)));
+                    output(Value::Object(Arc::new(obj)));
                 }
             }
         }
@@ -68,7 +68,7 @@ pub(super) fn eval_regex(
                                         .unwrap_or(Value::Null)
                                 })
                                 .collect();
-                            output(Value::Array(Rc::new(arr)));
+                            output(Value::Array(Arc::new(arr)));
                         } else {
                             output(Value::String(caps[0].to_string()));
                         }
@@ -248,7 +248,7 @@ fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -
             continue;
         }
         let cap_val = if let Some(cm) = caps.get(i) {
-            Value::Object(Rc::new(vec![
+            Value::Object(Arc::new(vec![
                 ("offset".to_string(), Value::Int(cm.start() as i64)),
                 ("length".to_string(), Value::Int(cm.len() as i64)),
                 ("string".to_string(), Value::String(cm.as_str().to_string())),
@@ -259,7 +259,7 @@ fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -
                 ),
             ]))
         } else {
-            Value::Object(Rc::new(vec![
+            Value::Object(Arc::new(vec![
                 ("offset".to_string(), Value::Int(-1)),
                 ("length".to_string(), Value::Int(0)),
                 ("string".to_string(), Value::Null),
@@ -272,11 +272,11 @@ fn regex_match_object(re: &regex::Regex, caps: &regex::Captures, _input: &str) -
         };
         captures.push(cap_val);
     }
-    Value::Object(Rc::new(vec![
+    Value::Object(Arc::new(vec![
         ("offset".to_string(), Value::Int(m.start() as i64)),
         ("length".to_string(), Value::Int(m.len() as i64)),
         ("string".to_string(), Value::String(m.as_str().to_string())),
-        ("captures".to_string(), Value::Array(Rc::new(captures))),
+        ("captures".to_string(), Value::Array(Arc::new(captures))),
     ]))
 }
 

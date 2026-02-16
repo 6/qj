@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::io::{self, BufWriter, IsTerminal, Read, Write};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Detect P-core count on Apple Silicon via sysctlbyname(3), fall back to available_parallelism.
@@ -220,7 +220,7 @@ fn main() -> Result<()> {
                 .with_context(|| format!("failed to parse --slurpfile {}: {}", pair[0], pair[1]))?;
             env = env.bind_var(
                 format!("${}", pair[0]),
-                qj::value::Value::Array(Rc::new(values)),
+                qj::value::Value::Array(Arc::new(values)),
             );
         }
     }
@@ -261,14 +261,14 @@ fn main() -> Result<()> {
             pairs
         };
 
-        let args_obj = qj::value::Value::Object(Rc::new(vec![
+        let args_obj = qj::value::Value::Object(Arc::new(vec![
             (
                 "positional".to_string(),
-                qj::value::Value::Array(Rc::new(pos_values)),
+                qj::value::Value::Array(Arc::new(pos_values)),
             ),
             (
                 "named".to_string(),
-                qj::value::Value::Object(Rc::new(named_pairs)),
+                qj::value::Value::Object(Arc::new(named_pairs)),
             ),
         ]));
         env = env.bind_var("$ARGS".to_string(), args_obj);
@@ -435,7 +435,7 @@ fn main() -> Result<()> {
                     all_lines.push(qj::value::Value::String(line.to_string()));
                 }
             }
-            let input = qj::value::Value::Array(Rc::new(all_lines));
+            let input = qj::value::Value::Array(Arc::new(all_lines));
             eval_and_output(
                 &filter,
                 &input,
@@ -478,7 +478,7 @@ fn main() -> Result<()> {
                 qj::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
             }
         }
-        let input = qj::value::Value::Array(Rc::new(values));
+        let input = qj::value::Value::Array(Arc::new(values));
         eval_and_output(
             &filter,
             &input,
@@ -838,7 +838,7 @@ fn process_raw_input(
             .lines()
             .map(|l| qj::value::Value::String(l.to_string()))
             .collect();
-        let input = qj::value::Value::Array(Rc::new(arr));
+        let input = qj::value::Value::Array(Arc::new(arr));
         eval_and_output(filter, &input, env, out, config, had_output, had_error);
     } else {
         for line in text.lines() {

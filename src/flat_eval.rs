@@ -8,7 +8,7 @@
 use crate::filter::{Env, Filter, ObjKey};
 use crate::flat_value::FlatValue;
 use crate::value::Value;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Result of navigating a filter on a FlatValue.
 ///
@@ -106,7 +106,7 @@ fn eval_flat_obj_entries(
     output: &mut dyn FnMut(Value),
 ) {
     if entries.is_empty() {
-        output(Value::Object(Rc::new(partial.clone())));
+        output(Value::Object(Arc::new(partial.clone())));
         return;
     }
 
@@ -183,7 +183,7 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
         Filter::ArrayConstruct(inner) => {
             let mut arr = Vec::new();
             eval_flat(inner, flat, env, &mut |v| arr.push(v));
-            output(Value::Array(Rc::new(arr)));
+            output(Value::Array(Arc::new(arr)));
         }
 
         Filter::Iterate => {
@@ -263,12 +263,12 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                 let mut keys: Vec<String> =
                     flat.object_iter().map(|(k, _)| k.to_string()).collect();
                 keys.sort();
-                output(Value::Array(Rc::new(
+                output(Value::Array(Arc::new(
                     keys.into_iter().map(Value::String).collect(),
                 )));
             } else if flat.is_array() {
                 let len = flat.len().unwrap_or(0);
-                output(Value::Array(Rc::new(
+                output(Value::Array(Arc::new(
                     (0..len as i64).map(Value::Int).collect(),
                 )));
             } else {

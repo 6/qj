@@ -379,7 +379,7 @@ impl ExactSizeIterator for FlatObjectIter<'_> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     /// Encode a Value into the flat token format (for tests without FFI).
     fn encode_to_flat(value: &Value) -> Vec<u8> {
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn empty_array() {
-        let buf = encode_to_flat(&Value::Array(Rc::new(vec![])));
+        let buf = encode_to_flat(&Value::Array(Arc::new(vec![])));
         let fv = FlatValue::new(&buf, 0);
         assert!(fv.is_array());
         assert_eq!(fv.len(), Some(0));
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn array_get_index() {
-        let arr = Value::Array(Rc::new(vec![
+        let arr = Value::Array(Arc::new(vec![
             Value::Int(10),
             Value::String("two".into()),
             Value::Bool(true),
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn array_iteration() {
-        let arr = Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let arr = Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         let buf = encode_to_flat(&arr);
         let fv = FlatValue::new(&buf, 0);
 
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn empty_object() {
-        let buf = encode_to_flat(&Value::Object(Rc::new(vec![])));
+        let buf = encode_to_flat(&Value::Object(Arc::new(vec![])));
         let fv = FlatValue::new(&buf, 0);
         assert!(fv.is_object());
         assert_eq!(fv.len(), Some(0));
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn object_get_field() {
-        let obj = Value::Object(Rc::new(vec![
+        let obj = Value::Object(Arc::new(vec![
             ("name".into(), Value::String("alice".into())),
             ("age".into(), Value::Int(30)),
             ("active".into(), Value::Bool(true)),
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn object_iteration() {
-        let obj = Value::Object(Rc::new(vec![
+        let obj = Value::Object(Arc::new(vec![
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Int(2)),
         ]));
@@ -634,9 +634,9 @@ mod tests {
 
     #[test]
     fn nested_navigation() {
-        let obj = Value::Object(Rc::new(vec![(
+        let obj = Value::Object(Arc::new(vec![(
             "a".into(),
-            Value::Object(Rc::new(vec![("b".into(), Value::Int(42))])),
+            Value::Object(Arc::new(vec![("b".into(), Value::Int(42))])),
         )]));
         let buf = encode_to_flat(&obj);
         let fv = FlatValue::new(&buf, 0);
@@ -647,9 +647,9 @@ mod tests {
 
     #[test]
     fn deeply_nested_navigation() {
-        let inner = Value::Object(Rc::new(vec![("c".into(), Value::String("deep".into()))]));
-        let mid = Value::Object(Rc::new(vec![("b".into(), inner)]));
-        let outer = Value::Object(Rc::new(vec![("a".into(), mid)]));
+        let inner = Value::Object(Arc::new(vec![("c".into(), Value::String("deep".into()))]));
+        let mid = Value::Object(Arc::new(vec![("b".into(), inner)]));
+        let outer = Value::Object(Arc::new(vec![("a".into(), mid)]));
         let buf = encode_to_flat(&outer);
         let fv = FlatValue::new(&buf, 0);
 
@@ -702,12 +702,12 @@ mod tests {
     #[test]
     fn to_value_containers() {
         let values = vec![
-            Value::Array(Rc::new(vec![])),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
-            Value::Object(Rc::new(vec![])),
-            Value::Object(Rc::new(vec![
+            Value::Array(Arc::new(vec![])),
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)])),
+            Value::Object(Arc::new(vec![])),
+            Value::Object(Arc::new(vec![
                 ("x".into(), Value::Int(1)),
-                ("y".into(), Value::Array(Rc::new(vec![Value::Bool(true)]))),
+                ("y".into(), Value::Array(Arc::new(vec![Value::Bool(true)]))),
             ])),
         ];
         for v in values {
@@ -719,18 +719,18 @@ mod tests {
 
     #[test]
     fn to_value_complex_nested() {
-        let v = Value::Object(Rc::new(vec![
+        let v = Value::Object(Arc::new(vec![
             ("type".into(), Value::String("PushEvent".into())),
             (
                 "payload".into(),
-                Value::Object(Rc::new(vec![(
+                Value::Object(Arc::new(vec![(
                     "commits".into(),
-                    Value::Array(Rc::new(vec![
-                        Value::Object(Rc::new(vec![(
+                    Value::Array(Arc::new(vec![
+                        Value::Object(Arc::new(vec![(
                             "message".into(),
                             Value::String("fix bug".into()),
                         )])),
-                        Value::Object(Rc::new(vec![(
+                        Value::Object(Arc::new(vec![(
                             "message".into(),
                             Value::String("add test".into()),
                         )])),
@@ -739,7 +739,7 @@ mod tests {
             ),
             (
                 "actor".into(),
-                Value::Object(Rc::new(vec![(
+                Value::Object(Arc::new(vec![(
                     "login".into(),
                     Value::String("alice".into()),
                 )])),
@@ -762,8 +762,8 @@ mod tests {
             Value::Double(3.14, None),
             Value::Double(1.0, Some("1.00".into())),
             Value::String("hi".into()),
-            Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])),
-            Value::Object(Rc::new(vec![("k".into(), Value::Bool(false))])),
+            Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)])),
+            Value::Object(Arc::new(vec![("k".into(), Value::Bool(false))])),
         ];
 
         let mut buf = Vec::new();
@@ -806,11 +806,11 @@ mod tests {
         assert_eq!(FlatValue::new(&buf, 0).len(), Some(3));
 
         // array -> element count
-        let buf = encode_to_flat(&Value::Array(Rc::new(vec![Value::Int(1), Value::Int(2)])));
+        let buf = encode_to_flat(&Value::Array(Arc::new(vec![Value::Int(1), Value::Int(2)])));
         assert_eq!(FlatValue::new(&buf, 0).len(), Some(2));
 
         // object -> field count
-        let buf = encode_to_flat(&Value::Object(Rc::new(vec![
+        let buf = encode_to_flat(&Value::Object(Arc::new(vec![
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Int(2)),
             ("c".into(), Value::Int(3)),
@@ -843,11 +843,11 @@ mod tests {
             "string"
         );
         assert_eq!(
-            FlatValue::new(&encode_to_flat(&Value::Array(Rc::new(vec![]))), 0).type_name(),
+            FlatValue::new(&encode_to_flat(&Value::Array(Arc::new(vec![]))), 0).type_name(),
             "array"
         );
         assert_eq!(
-            FlatValue::new(&encode_to_flat(&Value::Object(Rc::new(vec![]))), 0).type_name(),
+            FlatValue::new(&encode_to_flat(&Value::Object(Arc::new(vec![]))), 0).type_name(),
             "object"
         );
     }
@@ -862,8 +862,8 @@ mod tests {
         assert!(FlatValue::new(&encode_to_flat(&Value::Int(0)), 0).is_truthy());
         assert!(FlatValue::new(&encode_to_flat(&Value::Double(0.0, None)), 0).is_truthy());
         assert!(FlatValue::new(&encode_to_flat(&Value::String(String::new())), 0).is_truthy());
-        assert!(FlatValue::new(&encode_to_flat(&Value::Array(Rc::new(vec![]))), 0).is_truthy());
-        assert!(FlatValue::new(&encode_to_flat(&Value::Object(Rc::new(vec![]))), 0).is_truthy());
+        assert!(FlatValue::new(&encode_to_flat(&Value::Array(Arc::new(vec![]))), 0).is_truthy());
+        assert!(FlatValue::new(&encode_to_flat(&Value::Object(Arc::new(vec![]))), 0).is_truthy());
     }
 
     // --- FFI round-trip ---

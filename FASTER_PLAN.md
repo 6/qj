@@ -274,3 +274,59 @@ $ hyperfine --warmup 1 --runs 3 \
 ```
 
 **Summary:** Floor raised from 2.8x to 4.8x on the worst-case evaluator-bound filter. Mixed filters improved from 16x to 23.5x. SIMD fast-path filters unaffected.
+
+### Step 2: Rc → Arc + parallelism fix (implemented)
+
+**Status:** Complete. All tests pass (673 unit + 467 e2e + 139 NDJSON + 28 FFI). Zero regressions.
+
+**The problem:** Profiling the FlatValue path (single-threaded) revealed:
+- **Parse (`dom_parse_to_flat_buf`):** 2888 ns/line — 81.6% of total
+- **Eval (`eval_flat`):** 596 ns/line — 16.9%
+- **Output (`write_value`):** 51 ns/line — 1.4%
+
+But more importantly: the worst-case filter `{type, commits: (.payload.commits // [] | length)}` contains `// []` — an empty array literal. `Value::Array` used `Rc<Vec<...>>` (not Send), so `is_parallel_safe()` returned false, forcing **single-threaded execution** of the entire 1.1GB file. The 4.8x speedup was purely from FlatValue's per-core efficiency, with zero parallelism.
+
+**The fix:** Replace `Rc` with `Arc` in `Value::Array` and `Value::Object`. Arc is Send+Sync, making all filter literals thread-safe. Atomic overhead is negligible (~5ns per ref-count op when uncontended).
+
+**What changed:**
+- **`src/value.rs`** — `Array(Rc<Vec<Value>>)` → `Array(Arc<Vec<Value>>)`, `Object(Rc<Vec<...>>)` → `Object(Arc<Vec<...>>)`
+- **16 files** — mechanical `use std::rc::Rc` → `use std::sync::Arc`, `Rc::new` → `Arc::new`, `Rc::ptr_eq` → `Arc::ptr_eq`
+- **`src/filter/mod.rs`** — `is_parallel_safe()` now always returns `true` (all Value variants are Send+Sync)
+- **`src/parallel/ndjson.rs`** — Updated comments; the `needs_env` check remains for Env (which still uses Rc internally)
+
+**Benchmark results** (gharchive.ndjson, 1131 MB, Apple M4 Pro, `--warmup 1 --runs 3`):
+
+**Evaluator-bound: 4.8x → 26.5x** (parallelism now enabled)
+```
+$ hyperfine --warmup 1 --runs 3 \
+  "./target/release/qj -c '{type, commits: (.payload.commits // [] | length)}' benches/data/gharchive.ndjson" \
+  "jq -c '{type, commits: (.payload.commits // [] | length)}' benches/data/gharchive.ndjson"
+
+  qj:  283.2 ms ±  13.3 ms   (was 1.558s single-threaded)
+  jq:  7.515 s ±  0.022 s
+  Speedup: 26.5x  (was 4.8x)
+```
+
+**Mixed SIMD+evaluator: 23.5x → 24.2x** (was already parallel, minor variance)
+```
+$ hyperfine --warmup 1 --runs 3 \
+  "./target/release/qj -c '{type, commits: [.payload.commits[]?.message]}' benches/data/gharchive.ndjson" \
+  "jq -c '{type, commits: [.payload.commits[]?.message]}' benches/data/gharchive.ndjson"
+
+  qj:  325.5 ms ±   6.7 ms
+  jq:  7.886 s ±  0.006 s
+  Speedup: 24.2x  (was 23.5x)
+```
+
+**SIMD fast path: ~101x** (unchanged)
+```
+$ hyperfine --warmup 1 --runs 3 \
+  "./target/release/qj '.actor.login' benches/data/gharchive.ndjson" \
+  "jq '.actor.login' benches/data/gharchive.ndjson"
+
+  qj:  71.8 ms ±   0.6 ms
+  jq:  7.245 s ±  0.010 s
+  Speedup: 101x
+```
+
+**Summary:** Floor raised from 4.8x to 26.5x. The evaluator-bound filter went from 1.558s (single-threaded) to 283ms (parallel). The original 2.8x floor has been raised to 26.5x — far exceeding the initial 4x target.
