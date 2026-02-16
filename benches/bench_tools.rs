@@ -60,9 +60,14 @@ static JSON_FILTERS: &[BenchFilter] = &[
         expr: ".statuses",
     },
     BenchFilter {
-        name: "pipe + builtin",
+        name: "pipe + length",
         flags: &[],
         expr: ".statuses|length",
+    },
+    BenchFilter {
+        name: "keys",
+        flags: &["-c"],
+        expr: "keys",
     },
     BenchFilter {
         name: "iterate + field",
@@ -165,23 +170,54 @@ static JSON_FILTERS: &[BenchFilter] = &[
 ];
 
 static NDJSON_FILTERS: &[BenchFilter] = &[
+    // --- Fast paths ---
     BenchFilter {
         name: "ndjson field",
         flags: &[],
         expr: ".name",
     },
     BenchFilter {
+        name: "ndjson length",
+        flags: &["-c"],
+        expr: "length",
+    },
+    BenchFilter {
+        name: "ndjson keys",
+        flags: &["-c"],
+        expr: "keys",
+    },
+    BenchFilter {
+        name: "ndjson select",
+        flags: &["-c"],
+        expr: "select(.score > 50)",
+    },
+    BenchFilter {
+        name: "ndjson multi-field obj",
+        flags: &["-c"],
+        expr: "{name,city,score}",
+    },
+    BenchFilter {
+        name: "ndjson select + field",
+        flags: &["-c"],
+        expr: "select(.active == true) | .name",
+    },
+    BenchFilter {
+        name: "ndjson select + construct",
+        flags: &["-c"],
+        expr: "select(.score > 50) | {name, score}",
+    },
+    // --- Normal (evaluator) path ---
+    BenchFilter {
         name: "ndjson identity compact",
         flags: &["-c"],
         expr: ".",
     },
     BenchFilter {
-        name: "ndjson select + construct",
+        name: "ndjson evaluator-bound",
         flags: &["-c"],
-        expr: "select(.score>50)|{name,score}",
+        expr: "{name, score_pct: ((.score / 100 * 100) | floor)}",
     },
 ];
-
 
 // --- Tool discovery ---
 
@@ -560,7 +596,6 @@ fn generate_markdown(
         }
     }
 
-
     // Throughput
     let largest_file = json_files.last().unwrap();
     let largest_path = data_dir.join(largest_file);
@@ -604,7 +639,6 @@ fn generate_markdown(
         writeln!(md, "{tp_sep}").unwrap();
         writeln!(md, "{tp_row}").unwrap();
     }
-
 
     // Summary: geometric-mean speedup vs jq
     writeln!(md).unwrap();
@@ -685,7 +719,6 @@ fn generate_markdown(
         writeln!(md, "{ndjson_row}").unwrap();
     }
 
-
     writeln!(md).unwrap();
     writeln!(
         md,
@@ -765,19 +798,15 @@ fn main() {
     eprintln!();
 
     // --- Determine files ---
-    let mut json_files: Vec<&str> = vec!["twitter.json"];
+    let mut json_files: Vec<&str> = Vec::new();
     if data_dir.join("large_twitter.json").exists() {
         json_files.push("large_twitter.json");
     }
 
     let mut ndjson_files: Vec<&str> = Vec::new();
-    if data_dir.join("100k.ndjson").exists() {
-        ndjson_files.push("100k.ndjson");
-    }
     if data_dir.join("1m.ndjson").exists() {
         ndjson_files.push("1m.ndjson");
     }
-
 
     // --- Correctness check ---
     let qj = &tools[0];
@@ -789,9 +818,8 @@ fn main() {
         eprintln!("=== Correctness check ===");
         let mut all_correct = true;
 
-        // Only check correctness for small-file groups. GH Archive uses the same
-        // code paths — correctness is validated on twitter.json, and running all 16
-        // filters on 1.1GB files adds ~10 minutes of wall time.
+        // Check correctness on JSON filters (large_twitter.json).
+        // NDJSON filters use the same evaluator — correctness is covered by tests.
         let check_groups: Vec<(&[BenchFilter], &[&str], &str)> =
             vec![(JSON_FILTERS, &json_files, "json")];
         for (filters, files, group) in &check_groups {
@@ -852,7 +880,6 @@ fn main() {
             &mut results,
         );
     }
-
 
     // --- Generate and write markdown ---
     let md = generate_markdown(

@@ -4,21 +4,25 @@ use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-/// Detect P-core count on Apple Silicon via sysctl, fall back to available_parallelism.
+/// Detect P-core count on Apple Silicon via sysctlbyname(3), fall back to available_parallelism.
 /// Only runs on aarch64 macOS — Intel Macs don't have P/E core distinction.
 fn default_thread_count() -> usize {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        use std::process::Command;
-        if let Ok(output) = Command::new("sysctl")
-            .arg("-n")
-            .arg("hw.perflevel0.logicalcpu")
-            .output()
-            && let Ok(s) = std::str::from_utf8(&output.stdout)
-            && let Ok(n) = s.trim().parse::<usize>()
-            && n > 0
-        {
-            return n;
+        let mut val: i32 = 0;
+        let mut size = std::mem::size_of::<i32>();
+        let name = b"hw.perflevel0.logicalcpu\0";
+        let ret = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr() as *const libc::c_char,
+                &mut val as *mut i32 as *mut libc::c_void,
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if ret == 0 && val > 0 {
+            return val as usize;
         }
     }
     std::thread::available_parallelism()

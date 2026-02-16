@@ -4,7 +4,7 @@
 #   ~5GB tier: gharchive_large.ndjson  (24h of 2026-02-01)
 #
 # Four workloads from parse-dominated to evaluator-dominated:
-#   field extract, length, select, reshape, select + construct
+#   field extract, length, keys, select, reshape, evaluator-bound
 #
 # Features:
 #   - Non-zero exit code detection (appends * to times, with footnote)
@@ -68,14 +68,15 @@ if [ ${#TIER_LABELS[@]} -eq 0 ]; then
 fi
 
 # --- Filters (fast-path spectrum → evaluator-bound) ---
-FILTER_NAMES=("field" "length" "select" "reshape" "select + construct")
-FILTER_FLAGS=("" "-c" "-c" "-c" "-c")
+FILTER_NAMES=("field" "length" "keys" "select" "reshape" "evaluator-bound")
+FILTER_FLAGS=("" "-c" "-c" "-c" "-c" "-c")
 FILTER_EXPRS=(
     '.actor.login'
     'length'
+    'keys'
     'select(.type == "PushEvent")'
     '{type, repo: .repo.name, actor: .actor.login}'
-    'select(.type == "PushEvent") | {login: .actor.login, commits: (.payload.commits // [] | length)}'
+    '{type, size: (.payload.size // 0)}'
 )
 
 # --- Run hyperfine for one filter across all tools ---
