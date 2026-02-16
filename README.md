@@ -37,11 +37,11 @@ GB-scale NDJSON (1.1 GB GitHub Archive, parallel processing):
 
 | Workload | qj | jq | Speedup |
 |----------|----|----|---------|
-| `-c '.'` (passthrough) | **772 ms** | 27.5 s | **36x** |
-| `length` | **101 ms** | 7.2 s | **71x** |
-| `select(.type == "PushEvent")` | **119 ms** | 12.8 s | **108x** |
-| `{type, repo: .repo.name, actor: .actor.login}` | **134 ms** | 7.9 s | **59x** |
-| `select(.type == "PushEvent") \| {actor, commits}` | **2.76 s** | 7.5 s | **2.7x** |
+| `.actor.login` | **79 ms** | 7.2 s | **91x** |
+| `length` | **116 ms** | 7.1 s | **61x** |
+| `select(.type == "PushEvent")` | **113 ms** | 12.8 s | **114x** |
+| `{type, repo: .repo.name, actor: .actor.login}` | **140 ms** | 7.8 s | **56x** |
+| `select(.type == "PushEvent") \| {login, commits}` | **2.72 s** | 7.5 s | **2.8x** |
 
 Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/results_large_only.md)). See also [tool comparison data](benches/results.md).
 

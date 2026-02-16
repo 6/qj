@@ -67,15 +67,15 @@ if [ ${#TIER_LABELS[@]} -eq 0 ]; then
     exit 1
 fi
 
-# --- Filters (parse-dominated → evaluator-dominated) ---
-FILTER_NAMES=("passthrough" "length" "select" "select + construct" "reshape")
-FILTER_FLAGS=("-c" "-c" "-c" "-c" "-c")
+# --- Filters (fast-path spectrum → evaluator-bound) ---
+FILTER_NAMES=("field" "length" "select" "reshape" "select + construct")
+FILTER_FLAGS=("" "-c" "-c" "-c" "-c")
 FILTER_EXPRS=(
-    "."
-    "length"
+    '.actor.login'
+    'length'
     'select(.type == "PushEvent")'
-    'select(.type == "PushEvent") | {actor: .actor.login, commits: (.payload.commits // [] | length)}'
     '{type, repo: .repo.name, actor: .actor.login}'
+    'select(.type == "PushEvent") | {login: .actor.login, commits: (.payload.commits // [] | length)}'
 )
 
 # --- Run hyperfine for one filter across all tools ---
@@ -259,50 +259,6 @@ HAS_FAILURES=0
             done
             echo "$row"
         done
-
-        echo ""
-
-        # --- Throughput ---
-        echo "### Throughput (\`-c '.'\`, single pass)"
-        echo ""
-        tp_header="| File |"
-        tp_sep="|------|"
-        for name in "${NAMES[@]}"; do
-            tp_header+=" $name |"
-            tp_sep+="------:|"
-        done
-        echo "$tp_header"
-        echo "$tp_sep"
-
-        json_file="$RESULTS_DIR/tier${tier_idx}_ndjson_0.json"
-        row="| $ndjson_basename |"
-        for t in "${!TOOLS[@]}"; do
-            result=$(parse_result "$json_file" "$t")
-            median=$(echo "$result" | cut -d, -f1)
-            failed=$(echo "$result" | cut -d, -f2)
-            tp=$(python3 -c "
-bytes=$ndjson_size; secs=$median
-if secs <= 0:
-    print('-')
-else:
-    mbps = bytes / secs / (1024*1024)
-    if mbps >= 1024:
-        print(f'{mbps/1024:.1f} GB/s')
-    else:
-        print(f'{mbps:.0f} MB/s')
-")
-            suffix=""
-            if [ "$failed" = "1" ]; then
-                suffix="*"
-                HAS_FAILURES=1
-            fi
-            if [ "${NAMES[$t]}" = "qj" ]; then
-                row+=" **${tp}${suffix}** |"
-            else
-                row+=" ${tp}${suffix} |"
-            fi
-        done
-        echo "$row"
 
         echo ""
     done
