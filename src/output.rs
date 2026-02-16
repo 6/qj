@@ -494,19 +494,56 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
     if f.is_infinite() {
         return w.write_all(b"null");
     }
+    // Normalize negative zero to positive zero (jq behavior)
+    let f = if f == 0.0 { 0.0 } else { f };
     // Use raw JSON text when available (literal preservation)
     if let Some(text) = raw {
         return w.write_all(text.as_bytes());
     }
-    // If the double is an exact integer in i64 range, output as integer.
-    // Use strict < for upper bound: i64::MAX (2^63-1) as f64 rounds up to
-    // 2^63 which doesn't fit in i64, so `f as i64` would saturate incorrectly.
-    if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 {
-        let mut buf = itoa::Buffer::new();
-        return w.write_all(buf.format(f as i64).as_bytes());
-    }
+    // For computed doubles (no raw text), use ryu for the shortest
+    // representation, then adjust formatting for integer-valued results
+    // to match jq behavior (no ".0" suffix, plain integers when possible).
     let mut buf = ryu::Buffer::new();
     let s = buf.format(f);
+    if f.fract() == 0.0 {
+        if let Some(e_pos) = s.find('e') {
+            let exp: i32 = s[e_pos + 1..].parse().unwrap_or(0);
+            if exp > 0 {
+                let mantissa = &s[..e_pos];
+                let frac_len = mantissa.find('.').map_or(0, |d| mantissa.len() - d - 1);
+                let zeros_needed = exp as usize - frac_len;
+                // jq expands to plain integer when trailing zeros <= 15.
+                // Beyond that, it uses scientific notation (e.g., "1e+20").
+                if zeros_needed <= 15 {
+                    let (int_part, frac_part) = match mantissa.find('.') {
+                        Some(d) => (&mantissa[..d], &mantissa[d + 1..]),
+                        None => (mantissa, ""),
+                    };
+                    w.write_all(int_part.as_bytes())?;
+                    w.write_all(frac_part.as_bytes())?;
+                    for _ in 0..zeros_needed {
+                        w.write_all(b"0")?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        // ryu output like "5.0" or "-100.0" — strip the ".0" suffix
+        if let Some(stripped) = s.strip_suffix(".0") {
+            return w.write_all(stripped.as_bytes());
+        }
+    }
+    // For scientific notation, add "+" to positive exponents to match jq
+    // (ryu: "1.5e10" → jq: "1.5e+10")
+    if let Some(e_pos) = s.find('e') {
+        w.write_all(&s.as_bytes()[..e_pos])?;
+        w.write_all(b"e")?;
+        let exp_str = &s[e_pos + 1..];
+        if !exp_str.starts_with('-') {
+            w.write_all(b"+")?;
+        }
+        return w.write_all(exp_str.as_bytes());
+    }
     w.write_all(s.as_bytes())
 }
 
@@ -679,19 +716,34 @@ mod tests {
         // 2^63 = 9223372036854775808.0 is one above i64::MAX — must NOT format as i64
         let val = Value::Double(9223372036854775808.0, None);
         let s = compact(&val);
-        // Should use ryu/scientific notation, not truncate to i64::MAX
+        // Must not truncate to i64::MAX
         assert_ne!(s, "9223372036854775807");
-        assert!(
-            s.contains('e') || s.contains('E') || s.parse::<f64>().unwrap() >= 9.2e18,
-            "unexpected format: {s}"
-        );
+        // Should format as plain integer (no scientific notation), matching jq
+        assert_eq!(s, "9223372036854776000");
     }
 
     #[test]
-    fn double_at_i64_min_formats_as_int() {
-        // i64::MIN = -2^63 is exactly representable in f64 and fits in i64
+    fn double_large_integer_plain_format() {
+        // Integer-valued doubles: expand to plain when trailing zeros <= 15,
+        // otherwise scientific notation with e+ (matching jq behavior).
+        assert_eq!(
+            compact(&Value::Double(5.564623688220226e21, None)),
+            "5564623688220226000000" // zeros_needed=6, expanded
+        );
+        assert_eq!(compact(&Value::Double(1e20, None)), "1e+20"); // zeros_needed=20, scientific
+        assert_eq!(compact(&Value::Double(-1e19, None)), "-1e+19"); // zeros_needed=19, scientific
+        // At the threshold boundary: 1e15 has exactly 15 trailing zeros → expanded
+        assert_eq!(compact(&Value::Double(1e15, None)), "1000000000000000");
+        // 1e16 has 16 trailing zeros → scientific
+        assert_eq!(compact(&Value::Double(1e16, None)), "1e+16");
+    }
+
+    #[test]
+    fn double_at_i64_min_formats_via_ryu() {
+        // i64::MIN = -2^63 as a Double (not Int) formats via ryu expansion,
+        // matching jq's output for computed doubles near the i64 boundary.
         let val = Value::Double(i64::MIN as f64, None);
-        assert_eq!(compact(&val), "-9223372036854775808");
+        assert_eq!(compact(&val), "-9223372036854776000");
     }
 
     #[test]

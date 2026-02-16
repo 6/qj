@@ -1379,13 +1379,46 @@ fn large_integer_i64_max() {
 
 #[test]
 fn integer_overflow_promotes_to_float() {
-    // i64::MAX + 1 should promote to f64, not wrap to negative
-    let result = qj_compact(". + 1", "9223372036854775807")
-        .trim()
-        .to_string();
-    let val: f64 = result.parse().expect("should be a valid number");
-    assert!(val > 0.0, "must not wrap to negative: {result}");
-    assert!(val > 9e18, "should be near 2^63: {result}");
+    // i64::MAX + 1 should promote to f64, not wrap to negative.
+    // Output must be a plain integer (no scientific notation), matching jq.
+    assert_jq_compat(". + 1", "9223372036854775807");
+}
+
+#[test]
+fn large_double_integer_format() {
+    // Computed integer-valued doubles beyond i64 range must format as plain
+    // integers (no scientific notation), matching jq.
+    assert_jq_compat(". * 1000", "9223372036854776");
+    assert_jq_compat(". + .", "9223372036854775807");
+}
+
+#[test]
+fn computed_double_format_round_powers() {
+    // Round powers of 10: jq uses scientific notation (e.g., "1e+20"),
+    // not expanded plain integers.
+    assert_jq_compat(". * 1e20", "1");
+    assert_jq_compat(". * 1e50", "1");
+    assert_jq_compat(". * 1e100", "1");
+}
+
+#[test]
+fn computed_double_format_negative_large() {
+    // Negative computed doubles beyond i64 range
+    assert_jq_compat(". * -1e20", "1");
+    assert_jq_compat(". * -1000", "9223372036854776");
+}
+
+#[test]
+fn computed_double_format_threshold_boundary() {
+    // jq expands to plain integer when trailing zeros <= 15,
+    // uses scientific notation (e+) above that.
+    // At the boundary: 1e15 has 15 trailing zeros → plain "1000000000000000"
+    assert_jq_compat(". * 1e15", "1");
+    // Just above: 1e16 has 16 trailing zeros → scientific "1e+16"
+    assert_jq_compat(". * 1e16", "1");
+    // Negative side of the threshold
+    assert_jq_compat(". * -1e15", "1");
+    assert_jq_compat(". * -1e16", "1");
 }
 
 #[test]
