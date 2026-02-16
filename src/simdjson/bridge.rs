@@ -104,13 +104,17 @@ impl Drop for FlatBuffer {
 ///
 /// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
 pub fn dom_parse_to_value_fast(buf: &[u8], json_len: usize) -> Result<Value> {
-    let flat_buf = dom_parse_to_flat_buf(buf, json_len)?;
+    let flat_buf = dom_parse_to_flat_buf_tape(buf, json_len)?;
     decode_value(flat_buf.as_bytes(), &mut 0)
 }
 
-/// Parse a JSON buffer via simdjson DOM API and return the raw flat token buffer.
+/// Parse a JSON buffer via simdjson On-Demand API and return the raw flat token buffer.
 ///
-/// Same as `dom_parse_to_value()` but skips the expensive decode step.
+/// Uses the On-Demand path which creates a fresh parser per call — suitable for
+/// per-line NDJSON processing where each call parses a small document.
+/// For single large documents, prefer `dom_parse_to_flat_buf_tape` which uses the
+/// faster DOM tape walk.
+///
 /// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
 pub fn dom_parse_to_flat_buf(buf: &[u8], json_len: usize) -> Result<FlatBuffer> {
     assert!(buf.len() >= json_len + padding());
@@ -119,6 +123,21 @@ pub fn dom_parse_to_flat_buf(buf: &[u8], json_len: usize) -> Result<FlatBuffer> 
     // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
     // (asserted above). flat_ptr/flat_len are valid stack references used as output
     // parameters. C++ heap-allocates the flat token buffer.
+    check(unsafe { jx_dom_to_flat(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len) })?;
+    Ok(FlatBuffer::from_raw(flat_ptr, flat_len))
+}
+
+/// Parse a JSON buffer via DOM tape walk and return the raw flat token buffer.
+///
+/// Uses the DOM tape walk path which is ~2x faster than On-Demand for large
+/// documents (pre-indexed tape, pre-unescaped strings). Best for single-document
+/// JSON processing where the function is called once per file.
+///
+/// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
+pub fn dom_parse_to_flat_buf_tape(buf: &[u8], json_len: usize) -> Result<FlatBuffer> {
+    assert!(buf.len() >= json_len + padding());
+    let mut flat_ptr: *mut u8 = std::ptr::null_mut();
+    let mut flat_len: usize = 0;
     check(unsafe {
         jx_dom_to_flat_via_tape(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len)
     })?;

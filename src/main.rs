@@ -1111,7 +1111,7 @@ fn process_padded(
     // Use flat evaluation (lazy, zero-copy) when the filter is safe for it.
     // Flat eval was designed for NDJSON and silently ignores type errors,
     // so we only use it when the filter won't produce errors that need reporting.
-    if let Ok(flat_buf) = qj::simdjson::dom_parse_to_flat_buf(padded, json_len) {
+    if let Ok(flat_buf) = qj::simdjson::dom_parse_to_flat_buf_tape(padded, json_len) {
         let mut nul_error = false;
         let mut write_failed = false;
         qj::flat_eval::eval_flat(filter, flat_buf.root(), env, &mut |v| {
