@@ -1,8 +1,9 @@
 # qj
 
-`qj` is Quick JSON, a `jq`-compatible processor.
+`qj` is Quick JSON, a `jq`-compatible processor. SIMD parsing and automatic parallelization across cores.
 
-**5-120x** faster on NDJSON (JSONL). **2-10x** faster on JSON.
+- **Single-threaded:** 4-30x faster on NDJSON, 2-10x on JSON.
+- **Parallel:** 20-120x faster on NDJSON.
 
 ## When to use qj instead of jq
 
