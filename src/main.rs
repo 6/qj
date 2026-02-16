@@ -741,7 +741,7 @@ fn try_passthrough(
             // Validate that this is a single JSON document before minifying.
             // simdjson's minify doesn't reject multi-doc input (e.g., {"a":1}{"b":2}),
             // so we must verify with a parse first to avoid incorrect passthrough.
-            if qj::simdjson::dom_parse_to_flat_buf_tape(padded, json_len).is_err() {
+            if qj::simdjson::dom_validate(padded, json_len).is_err() {
                 return Ok(false);
             }
             let minified = match qj::simdjson::minify(padded, json_len) {

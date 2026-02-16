@@ -419,7 +419,10 @@ fn ndjson_malformed_line_mixed() {
     // Like jq, parsing stops at the first invalid document.
     let input = "{\"a\":1}\nnot json\n{\"b\":2}\n";
     let (stdout, stderr, success) = qj_stdin_lossy(&["-c", "."], input);
-    assert!(stdout.contains("{\"a\":1}"), "first valid doc should appear in output");
+    assert!(
+        stdout.contains("{\"a\":1}"),
+        "first valid doc should appear in output"
+    );
     assert!(!success, "should exit with error due to invalid JSON");
     assert!(!stderr.is_empty(), "should report parse error on stderr");
 }

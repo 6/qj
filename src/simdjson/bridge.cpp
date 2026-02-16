@@ -630,6 +630,23 @@ void jx_flat_buffer_free(uint8_t* ptr) {
 }
 
 // ---------------------------------------------------------------------------
+// DOM validate — parse only, discard result. Used for passthrough validation
+// where we need to confirm input is a single valid JSON document before
+// minifying (minify doesn't reject multi-doc or invalid input).
+// ---------------------------------------------------------------------------
+
+int jx_dom_validate(const char* buf, size_t len) {
+    try {
+        dom::parser parser;
+        dom::element root;
+        auto err = parser.parse(buf, len).get(root);
+        return static_cast<int>(err);
+    } catch (...) {
+        return -1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Minify — compact JSON without DOM construction (~10 GB/s).
 // ---------------------------------------------------------------------------
 

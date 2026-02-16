@@ -71,6 +71,8 @@ unsafe extern "C" {
     ) -> i32;
     pub(super) fn jx_flat_buffer_free(ptr: *mut u8);
 
+    pub(super) fn jx_dom_validate(buf: *const c_char, len: usize) -> i32;
+
     pub(super) fn jx_minify(
         buf: *const c_char,
         len: usize,

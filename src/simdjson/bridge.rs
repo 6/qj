@@ -262,6 +262,27 @@ pub(crate) fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// DOM validate — parse only, discard result.
+// ---------------------------------------------------------------------------
+
+/// Validate that a buffer contains a single valid JSON document using simdjson's DOM parser.
+///
+/// This is much cheaper than `dom_parse_to_flat_buf_tape` because it only runs the DOM parse
+/// (stage 1 + stage 2) without walking the tape or building any output buffer.
+/// Used by the Identity passthrough to reject multi-doc or invalid input before minifying.
+///
+/// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
+pub fn dom_validate(buf: &[u8], json_len: usize) -> Result<()> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
+    // (asserted above). jx_dom_validate only reads the buffer and returns an error code.
+    check(unsafe { jx_dom_validate(buf.as_ptr().cast(), json_len) })
+}
+
+// ---------------------------------------------------------------------------
 // Minify — compact JSON via simdjson::minify(), no DOM construction.
 // ---------------------------------------------------------------------------
 
