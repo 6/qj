@@ -38,12 +38,12 @@ GB-scale NDJSON (1.1 GB GitHub Archive, parallel processing):
 
 | Workload | qj | jq | Speedup | Why |
 |----------|----|----|---------|-----|
-| `.actor.login` | **77 ms** | 7.2 s | **94x** | direct byte extraction |
-| `length` | **108 ms** | 7.2 s | **66x** | SIMD parse, trivial eval |
-| `keys` | **126 ms** | 7.7 s | **61x** | SIMD parse, trivial eval |
-| `select(.type == "PushEvent")` | **106 ms** | 13.5 s | **127x** | SIMD filter + extract |
-| `select(.type == "PushEvent") \| .payload.size` | **80 ms** | 7.3 s | **91x** | SIMD filter + extract |
-| `{type, repo: .repo.name, actor: .actor.login}` | **134 ms** | 8.1 s | **60x** | SIMD reshape |
+| `.actor.login` | **77 ms** | 7.2 s | **94x** | SIMD fast path |
+| `length` | **108 ms** | 7.2 s | **66x** | SIMD fast path |
+| `keys` | **126 ms** | 7.7 s | **61x** | SIMD fast path |
+| `select(.type == "PushEvent")` | **106 ms** | 13.5 s | **127x** | SIMD fast path |
+| `select(.type == "PushEvent") \| .payload.size` | **80 ms** | 7.3 s | **91x** | SIMD fast path |
+| `{type, repo: .repo.name, actor: .actor.login}` | **134 ms** | 8.1 s | **60x** | SIMD fast path |
 | `{type, commits: [.payload.commits[]?.message]}` | **494 ms** | 7.9 s | **16x** | mixed SIMD + evaluator |
 | `{type, commits: (.payload.commits // [] \| length)}` | **2.73 s** | 7.6 s | **2.8x** | evaluator-bound |
 
