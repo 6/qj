@@ -168,6 +168,12 @@ Always warm cache with `--warmup 1` (sufficient for file I/O cache; higher value
 hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.json' 'jaq ".field" test.json'
 ```
 
+### Environment variables
+- `QJ_WINDOW_SIZE=N` — NDJSON streaming window size in megabytes. Default is `num_cores × 2` MB
+  (floor 8 MB). Larger values use more memory but may help on machines with many cores.
+- `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
+- `QJ_NO_FAST_PATH=1` — Disable NDJSON fast paths (for A/B benchmarking).
+
 ### Important
 Never run benchmarks concurrently with tests or other CPU-intensive processes.
 Benchmarks require exclusive CPU access for reliable results.

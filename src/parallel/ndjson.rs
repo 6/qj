@@ -271,12 +271,32 @@ pub fn process_ndjson(
     Ok((out, had_output))
 }
 
-/// Default window size for streaming NDJSON processing (64 MiB).
-const WINDOW_SIZE: usize = 64 * 1024 * 1024;
+/// Minimum window size for streaming NDJSON processing (8 MiB).
+/// Low enough for memory-constrained devices (Raspberry Pi, small containers).
+const MIN_WINDOW_SIZE: usize = 8 * 1024 * 1024;
+
+/// Maximum window size (64 MiB). Prevents excessive memory on many-core
+/// machines (e.g. 128 cores → 256 MB uncapped). Cores may briefly idle
+/// at window boundaries but the next window starts immediately.
+const MAX_WINDOW_SIZE: usize = 64 * 1024 * 1024;
+
+/// Compute window size based on available parallelism.
+/// Targets 2x oversubscription (2 chunks per core) so Rayon always has
+/// work to schedule. Clamped to 8–64 MB range.
+/// Override with `QJ_WINDOW_SIZE` env var (in megabytes, e.g. `QJ_WINDOW_SIZE=128`).
+fn streaming_window_size() -> usize {
+    if let Some(val) = std::env::var_os("QJ_WINDOW_SIZE")
+        && let Some(mb) = val.to_str().and_then(|s| s.parse::<usize>().ok())
+    {
+        return (mb * 1024 * 1024).max(MIN_WINDOW_SIZE);
+    }
+    let num_threads = rayon::current_num_threads();
+    (num_threads * CHUNK_TARGET_SIZE * 2).clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE)
+}
 
 /// Process NDJSON from a reader in fixed-size windows, writing output per-window.
 ///
-/// Reads `WINDOW_SIZE` bytes at a time, processes each window's chunks in
+/// Reads `streaming_window_size()` bytes at a time, processes each window's chunks in
 /// parallel, and writes output directly to `out`. Lines spanning window
 /// boundaries are carried to the next window. Memory usage is O(window_size)
 /// instead of O(file_size).
@@ -303,12 +323,13 @@ pub fn process_ndjson_streaming<R: Read, W: Write>(
         NdjsonFastPath::None
     };
 
-    let mut buf = vec![0u8; WINDOW_SIZE];
+    let window_size = streaming_window_size();
+    let mut buf = vec![0u8; window_size];
     let mut carry_len: usize = 0;
     let mut had_output = false;
 
     loop {
-        // Read up to (WINDOW_SIZE - carry_len) bytes after the carry region.
+        // Read up to (window_size - carry_len) bytes after the carry region.
         let max_read = buf.len() - carry_len;
         let bytes_read = read_fully(reader, &mut buf[carry_len..carry_len + max_read])?;
 
