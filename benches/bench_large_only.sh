@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Benchmark qj/jq/jaq/gojq on large GH Archive NDJSON datasets at two tiers:
-#   ~1GB tier: gharchive.ndjson  (2h of 2024-01-15)
-#   ~5GB tier: gharchive_large.ndjson  (24h of 2026-02-01)
-#
-# Four workloads from parse-dominated to evaluator-dominated:
-#   field extract, length, keys, select, reshape, evaluator-bound
+# Benchmark qj/jq/jaq/gojq on GH Archive NDJSON (~1.1GB).
+# Eight workloads from fast-path to evaluator-bound.
 #
 # Features:
 #   - Non-zero exit code detection (appends * to times, with footnote)
@@ -44,39 +40,26 @@ echo ""
 
 mkdir -p "$RESULTS_DIR"
 
-# --- Tiers ---
-declare -a TIER_LABELS=()
-declare -a TIER_NDJSON=()
-
-# ~1GB tier
-if [ -f "$DATA/gharchive.ndjson" ]; then
-    TIER_LABELS+=("~1GB")
-    TIER_NDJSON+=("$DATA/gharchive.ndjson")
-fi
-
-# ~5GB tier
-if [ -f "$DATA/gharchive_large.ndjson" ]; then
-    TIER_LABELS+=("~5GB")
-    TIER_NDJSON+=("$DATA/gharchive_large.ndjson")
-fi
-
-if [ ${#TIER_LABELS[@]} -eq 0 ]; then
-    echo "Error: no GH Archive NDJSON files found. Run one of:"
-    echo "  bash benches/download_gharchive.sh          # ~1GB tier"
-    echo "  bash benches/download_gharchive.sh --large   # ~5GB tier"
+# --- Data file ---
+NDJSON="$DATA/gharchive.ndjson"
+if [ ! -f "$NDJSON" ]; then
+    echo "Error: $NDJSON not found. Run:"
+    echo "  bash benches/download_gharchive.sh"
     exit 1
 fi
 
 # --- Filters (fast-path spectrum → evaluator-bound) ---
-FILTER_NAMES=("field" "length" "keys" "select" "reshape" "evaluator-bound")
-FILTER_FLAGS=("" "-c" "-c" "-c" "-c" "-c")
+FILTER_NAMES=("field" "length" "keys" "select" "select+field" "reshape" "evaluator" "evaluator (complex)")
+FILTER_FLAGS=("" "-c" "-c" "-c" "-c" "-c" "-c" "-c")
 FILTER_EXPRS=(
     '.actor.login'
     'length'
     'keys'
     'select(.type == "PushEvent")'
+    'select(.type == "PushEvent") | .payload.size'
     '{type, repo: .repo.name, actor: .actor.login}'
-    '{type, size: (.payload.size // 0)}'
+    '{type, commits: [.payload.commits[]?.message]}'
+    '{type, commits: (.payload.commits // [] | length)}'
 )
 
 # --- Run hyperfine for one filter across all tools ---
@@ -154,115 +137,98 @@ fi
 DATE=$(date +%Y-%m-%d)
 
 # --- Run all benchmarks ---
-for tier_idx in "${!TIER_LABELS[@]}"; do
-    tier="${TIER_LABELS[$tier_idx]}"
-    ndjson="${TIER_NDJSON[$tier_idx]}"
+NDJSON_SIZE=$(wc -c < "$NDJSON" | tr -d ' ')
+NDJSON_MB=$(python3 -c "print(f'{$NDJSON_SIZE/1024/1024:.0f}')")
+NDJSON_BASENAME=$(basename "$NDJSON")
 
-    ndjson_size=$(wc -c < "$ndjson" | tr -d ' ')
-    ndjson_mb=$(python3 -c "print(f'{$ndjson_size/1024/1024:.0f}')")
-    ndjson_basename=$(basename "$ndjson")
-
-    echo "=== Tier $tier: NDJSON ($ndjson_basename, ${ndjson_mb}MB) ==="
-    echo ""
-    for i in "${!FILTER_NAMES[@]}"; do
-        echo "--- ${FILTER_NAMES[$i]} ---"
-        run_filter "tier${tier_idx}_ndjson" "$i" "${FILTER_FLAGS[$i]}" "${FILTER_EXPRS[$i]}" "$ndjson"
-    done
+echo "=== NDJSON ($NDJSON_BASENAME, ${NDJSON_MB}MB) ==="
+echo ""
+for i in "${!FILTER_NAMES[@]}"; do
+    echo "--- ${FILTER_NAMES[$i]} ---"
+    run_filter "ndjson" "$i" "${FILTER_FLAGS[$i]}" "${FILTER_EXPRS[$i]}" "$NDJSON"
 done
 
 # --- Generate markdown ---
 HAS_FAILURES=0
 
 {
-    echo "# Large GH Archive Benchmark"
+    echo "# GH Archive Benchmark"
     echo ""
     echo "> Generated: $DATE on \`$PLATFORM\`"
     echo "> 2 runs, no warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
     echo ""
+    echo "### NDJSON (${NDJSON_BASENAME}, ${NDJSON_MB}MB, parallel processing)"
+    echo ""
 
-    for tier_idx in "${!TIER_LABELS[@]}"; do
-        tier="${TIER_LABELS[$tier_idx]}"
-        ndjson="${TIER_NDJSON[$tier_idx]}"
-
-        ndjson_size=$(wc -c < "$ndjson" | tr -d ' ')
-        ndjson_mb=$(python3 -c "print(f'{$ndjson_size/1024/1024:.0f}')")
-        ndjson_basename=$(basename "$ndjson")
-
-        echo "## Tier: $tier"
-        echo ""
-        echo "### NDJSON (${ndjson_basename}, ${ndjson_mb}MB, parallel processing)"
-        echo ""
-
-        # Build header with vs jq columns
-        HEADER="| Filter |"
-        SEP="|--------|"
-        for name in "${NAMES[@]}"; do
-            if [ "$name" = "qj" ]; then
-                HEADER+=" **qj** |"
-            else
-                HEADER+=" $name |"
-            fi
+    # Build header with vs jq columns
+    HEADER="| Filter |"
+    SEP="|--------|"
+    for name in "${NAMES[@]}"; do
+        if [ "$name" = "qj" ]; then
+            HEADER+=" **qj** |"
+        else
+            HEADER+=" $name |"
+        fi
+        SEP+="------:|"
+        if [ "$name" != "jq" ]; then
+            HEADER+=" vs jq |"
             SEP+="------:|"
-            if [ "$name" != "jq" ]; then
-                HEADER+=" vs jq |"
-                SEP+="------:|"
-            fi
-        done
-        echo "$HEADER"
-        echo "$SEP"
-
-        # Find jq index
-        jq_idx=-1
-        for t in "${!NAMES[@]}"; do
-            if [ "${NAMES[$t]}" = "jq" ]; then
-                jq_idx=$t
-                break
-            fi
-        done
-
-        for i in "${!FILTER_NAMES[@]}"; do
-            flags="${FILTER_FLAGS[$i]}"
-            expr="${FILTER_EXPRS[$i]}"
-            display="$flags '$expr'"
-            row="| \`$display\` |"
-            json_file="$RESULTS_DIR/tier${tier_idx}_ndjson_${i}.json"
-
-            # Get jq median for speedup calculation
-            jq_median=0
-            if [ "$jq_idx" -ge 0 ]; then
-                jq_result=$(parse_result "$json_file" "$jq_idx")
-                jq_median=$(echo "$jq_result" | cut -d, -f1)
-            fi
-
-            for t in "${!TOOLS[@]}"; do
-                result=$(parse_result "$json_file" "$t")
-                median=$(echo "$result" | cut -d, -f1)
-                failed=$(echo "$result" | cut -d, -f2)
-                formatted=$(format_time "$median")
-                if [ "$failed" = "1" ]; then
-                    formatted="${formatted}*"
-                    HAS_FAILURES=1
-                fi
-                if [ "${NAMES[$t]}" = "qj" ]; then
-                    row+=" **$formatted** |"
-                else
-                    row+=" $formatted |"
-                fi
-                # Add vs jq column (skip for jq itself)
-                if [ "${NAMES[$t]}" != "jq" ]; then
-                    speedup=$(format_speedup "$jq_median" "$median")
-                    if [ "${NAMES[$t]}" = "qj" ]; then
-                        row+=" **$speedup** |"
-                    else
-                        row+=" $speedup |"
-                    fi
-                fi
-            done
-            echo "$row"
-        done
-
-        echo ""
+        fi
     done
+    echo "$HEADER"
+    echo "$SEP"
+
+    # Find jq index
+    jq_idx=-1
+    for t in "${!NAMES[@]}"; do
+        if [ "${NAMES[$t]}" = "jq" ]; then
+            jq_idx=$t
+            break
+        fi
+    done
+
+    for i in "${!FILTER_NAMES[@]}"; do
+        flags="${FILTER_FLAGS[$i]}"
+        expr="${FILTER_EXPRS[$i]}"
+        display="$flags '$expr'"
+        row="| \`$display\` |"
+        json_file="$RESULTS_DIR/ndjson_${i}.json"
+
+        # Get jq median for speedup calculation
+        jq_median=0
+        if [ "$jq_idx" -ge 0 ]; then
+            jq_result=$(parse_result "$json_file" "$jq_idx")
+            jq_median=$(echo "$jq_result" | cut -d, -f1)
+        fi
+
+        for t in "${!TOOLS[@]}"; do
+            result=$(parse_result "$json_file" "$t")
+            median=$(echo "$result" | cut -d, -f1)
+            failed=$(echo "$result" | cut -d, -f2)
+            formatted=$(format_time "$median")
+            if [ "$failed" = "1" ]; then
+                formatted="${formatted}*"
+                HAS_FAILURES=1
+            fi
+            if [ "${NAMES[$t]}" = "qj" ]; then
+                row+=" **$formatted** |"
+            else
+                row+=" $formatted |"
+            fi
+            # Add vs jq column (skip for jq itself)
+            if [ "${NAMES[$t]}" != "jq" ]; then
+                speedup=$(format_speedup "$jq_median" "$median")
+                if [ "${NAMES[$t]}" = "qj" ]; then
+                    row+=" **$speedup** |"
+                else
+                    row+=" $speedup |"
+                fi
+            fi
+        done
+        echo "$row"
+    done
+
+    echo ""
 
     # --- Footnotes ---
     if [ "$HAS_FAILURES" = "1" ]; then

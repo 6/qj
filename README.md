@@ -6,7 +6,7 @@ Quick JSON. A jq-compatible processor, 2-100x faster on large inputs.
 
 **Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Parse-heavy operations like `length` and `keys` are ~10x faster; evaluator-bound filters 2-4x.
 
-**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 102 ms vs jq's 12.7 s (124x). No `xargs` or `parallel` needed.
+**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 106 ms vs jq's 13.5 s (127x). No `xargs` or `parallel` needed.
 
 **When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
@@ -32,20 +32,22 @@ All benchmarks on M4 Pro MacBook Pro. See [benches/](benches/) for methodology.
 | `.statuses[] \| .user.name` | **152 ms** | 367 ms | 165 ms | 316 ms |
 | `walk(if type == "boolean" then not else . end)` | **374 ms** | 3.47 s | 2.10 s | 1.61 s |
 
-Field extraction and simple operations show the largest wins. Complex filter workloads where the evaluator dominates are closer to 2-3x over jq and roughly even with jaq.
+Filters on the SIMD fast path show 60-127x gains. Evaluator-bound expressions narrow to 2-16x.
 
 GB-scale NDJSON (1.1 GB GitHub Archive, parallel processing):
 
-| Workload | qj | jq | Speedup |
-|----------|----|----|---------|
-| `.actor.login` | **69 ms** | 7.2 s | **104x** |
-| `length` | **88 ms** | 7.0 s | **80x** |
-| `keys` | **109 ms** | 7.7 s | **71x** |
-| `select(.type == "PushEvent")` | **102 ms** | 12.7 s | **124x** |
-| `{type, repo: .repo.name, actor: .actor.login}` | **127 ms** | 7.8 s | **61x** |
-| `{type, size: (.payload.size // 0)}` | **443 ms** | 7.5 s | **17x** |
+| Workload | qj | jq | Speedup | Why |
+|----------|----|----|---------|-----|
+| `.actor.login` | **77 ms** | 7.2 s | **94x** | direct byte extraction |
+| `length` | **108 ms** | 7.2 s | **66x** | SIMD parse, trivial eval |
+| `keys` | **126 ms** | 7.7 s | **61x** | SIMD parse, trivial eval |
+| `select(.type == "PushEvent")` | **106 ms** | 13.5 s | **127x** | SIMD filter + extract |
+| `select(.type == "PushEvent") \| .payload.size` | **80 ms** | 7.3 s | **91x** | SIMD filter + extract |
+| `{type, repo: .repo.name, actor: .actor.login}` | **134 ms** | 8.1 s | **60x** | SIMD reshape |
+| `{type, commits: [.payload.commits[]?.message]}` | **494 ms** | 7.9 s | **16x** | mixed SIMD + evaluator |
+| `{type, commits: (.payload.commits // [] \| length)}` | **2.73 s** | 7.6 s | **2.8x** | evaluator-bound |
 
-Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/results_large_only.md)). See also [tool comparison data](benches/results.md).
+[Full results](benches/results_large_only.md) and [tool comparison data](benches/results.md).
 
 ## How it works
 
