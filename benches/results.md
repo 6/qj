@@ -8,36 +8,36 @@ Median of 3 runs via [hyperfine](https://github.com/sharkdp/hyperfine).
 
 | Filter | File | **qj** | qj (1T) | jq | jaq | gojq |
 |--------|------|------|------|------|------|------|
-| `-c '.'` | large_twitter.json | **21.3ms** | 20.9ms | 1.17s | 252.1ms | 465.9ms |
-| `-c '.statuses'` | large_twitter.json | **218.8ms** | 213.6ms | 1.16s | 249.5ms | 468.5ms |
-| `'.statuses|length'` | large_twitter.json | **39.5ms** | 35.7ms | 462.8ms | 155.6ms | 298.8ms |
-| `-c 'keys'` | large_twitter.json | **35.6ms** | 35.4ms | 368.9ms | 160.7ms | 307.9ms |
-| `'.statuses[]|.user.name'` | large_twitter.json | **113.5ms** | 108.2ms | 383.9ms | 168.3ms | 314.3ms |
-| `-c '.statuses[]|.user.name'` | large_twitter.json | **39.2ms** | 40.0ms | 382.7ms | 177.4ms | 321.6ms |
-| `-c '.statuses|map(.user)'` | large_twitter.json | **54.3ms** | 55.4ms | 658.5ms | 203.9ms | 368.5ms |
-| `-c '.statuses|map({user, text})'` | large_twitter.json | **60.9ms** | 59.3ms | 701.4ms | 213.0ms | 377.8ms |
-| `-c '.statuses|map(type)'` | large_twitter.json | **37.4ms** | 36.9ms | 374.5ms | 174.1ms | 306.7ms |
-| `-c '.statuses|map(length)'` | large_twitter.json | **36.4ms** | 36.7ms | 379.4ms | 163.6ms | 313.8ms |
-| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | large_twitter.json | **129.1ms** | 122.4ms | 401.3ms | 180.8ms | 326.1ms |
-| `'[.statuses[]|.retweet_count|floor]'` | large_twitter.json | **103.0ms** | 97.9ms | 372.9ms | 149.0ms | 301.0ms |
-| `'[.statuses[]|.user.screen_name|split("_")|join("-")]'` | large_twitter.json | **114.3ms** | 110.0ms | 394.8ms | 200.4ms | 311.5ms |
-| `'[.statuses[]|.user.screen_name]|unique|length'` | large_twitter.json | **182.7ms** | 161.8ms | 375.8ms | 164.8ms | 310.7ms |
-| `'[paths(scalars)]|length'` | large_twitter.json | **327.0ms** | 321.8ms | 1.39s | 1.37s | 1.58s |
-| `'.statuses[0]|map_values(tojson)'` | large_twitter.json | **179.9ms** | 167.1ms | 377.0ms | 160.9ms | 308.2ms |
-| `'reduce .statuses[] as $s (0; . + $s.retweet_count)'` | large_twitter.json | **161.4ms** | 157.2ms | 388.3ms | 166.7ms | 314.9ms |
-| `'.statuses[] | . as $s | {name: $s.user.screen_name, rts: $s.retweet_count}'` | large_twitter.json | **156.5ms** | 153.5ms | 416.9ms | 173.6ms | 315.4ms |
-| `'[.statuses[].user.screen_name][:5]'` | large_twitter.json | **161.8ms** | 160.0ms | 372.8ms | 159.8ms | 309.1ms |
-| `'[.statuses[] | try (1 / .retweet_count)]'` | large_twitter.json | **109.3ms** | 104.9ms | 373.1ms | 161.5ms | 306.3ms |
-| `'[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'` | large_twitter.json | **152.7ms** | 151.2ms | 377.2ms | 164.9ms | 313.3ms |
-| `-c 'walk(if type == "boolean" then not else . end)'` | large_twitter.json | **368.0ms** | 363.2ms | 3.55s | 2.13s | 1.63s |
-| `-c '.statuses[0].retweet_count |= . + 1'` | large_twitter.json | **216.9ms** | 225.4ms | 1.18s | 251.5ms | 474.9ms |
-| `-c '.statuses[] |= (.retweet_count += 1)'` | large_twitter.json | **232.8ms** | 225.8ms | 1.23s | 257.9ms | 504.5ms |
-| `-c '[.statuses[]|.user.screen_name|gsub("_"; "-")]'` | large_twitter.json | **117.6ms** | 114.0ms | 435.7ms | 203.7ms | 345.6ms |
-| `-c '[.statuses[]|"@\(.user.screen_name): \(.text[0:30])"]'` | large_twitter.json | **161.4ms** | 156.0ms | 399.1ms | 169.2ms | 327.2ms |
-| `-c '[.statuses[]|.user.screen_name|@base64]'` | large_twitter.json | **106.6ms** | 106.1ms | 389.2ms | 175.0ms | 339.7ms |
-| `'.statuses | group_by(.user.screen_name) | length'` | large_twitter.json | **191.3ms** | 187.2ms | 402.1ms | 232.4ms | 324.0ms |
-| `-c '.statuses | sort_by(.retweet_count) | .[-1].user.screen_name'` | large_twitter.json | **173.2ms** | 163.6ms | 393.9ms | 169.7ms | 313.9ms |
-| `-c 'def hi(rt): if rt > 10 then "viral" elif rt > 0 then "shared" else "none" end; [.statuses[] | hi(.retweet_count)]'` | large_twitter.json | **167.8ms** | 232.5ms | 385.4ms | 173.3ms | 312.8ms |
+| `-c '.'` | large_twitter.json | **21.2ms** | 20.6ms | 1.15s | 252.4ms | 463.6ms |
+| `-c '.statuses'` | large_twitter.json | **222.3ms** | 217.9ms | 1.16s | 255.0ms | 489.5ms |
+| `'.statuses|length'` | large_twitter.json | **36.4ms** | 37.0ms | 377.5ms | 159.3ms | 302.8ms |
+| `-c 'keys'` | large_twitter.json | **38.1ms** | 38.3ms | 375.3ms | 155.8ms | 303.1ms |
+| `'.statuses[]|.user.name'` | large_twitter.json | **107.0ms** | 107.3ms | 377.8ms | 170.7ms | 343.9ms |
+| `-c '.statuses[]|.user.name'` | large_twitter.json | **39.3ms** | 40.4ms | 389.0ms | 167.1ms | 317.3ms |
+| `-c '.statuses|map(.user)'` | large_twitter.json | **53.5ms** | 53.4ms | 659.3ms | 196.7ms | 357.9ms |
+| `-c '.statuses|map({user, text})'` | large_twitter.json | **56.4ms** | 57.7ms | 693.9ms | 209.8ms | 369.9ms |
+| `-c '.statuses|map(type)'` | large_twitter.json | **35.9ms** | 35.8ms | 370.5ms | 171.9ms | 307.1ms |
+| `-c '.statuses|map(length)'` | large_twitter.json | **35.3ms** | 37.3ms | 376.4ms | 158.3ms | 311.9ms |
+| `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | large_twitter.json | **121.0ms** | 120.7ms | 387.2ms | 176.4ms | 318.8ms |
+| `'[.statuses[]|.retweet_count|floor]'` | large_twitter.json | **110.0ms** | 108.0ms | 385.7ms | 159.7ms | 303.2ms |
+| `'[.statuses[]|.user.screen_name|split("_")|join("-")]'` | large_twitter.json | **110.4ms** | 113.8ms | 395.0ms | 194.7ms | 311.0ms |
+| `'[.statuses[]|.user.screen_name]|unique|length'` | large_twitter.json | **170.4ms** | 162.6ms | 387.7ms | 171.5ms | 313.6ms |
+| `'[paths(scalars)]|length'` | large_twitter.json | **320.2ms** | 323.6ms | 1.37s | 1.36s | 1.56s |
+| `'.statuses[0]|map_values(tojson)'` | large_twitter.json | **162.8ms** | 156.5ms | 372.5ms | 155.7ms | 305.8ms |
+| `'reduce .statuses[] as $s (0; . + $s.retweet_count)'` | large_twitter.json | **157.2ms** | 152.2ms | 372.7ms | 162.2ms | 305.6ms |
+| `'.statuses[] | . as $s | {name: $s.user.screen_name, rts: $s.retweet_count}'` | large_twitter.json | **159.2ms** | 158.0ms | 388.7ms | 179.7ms | 325.7ms |
+| `'[.statuses[].user.screen_name][:5]'` | large_twitter.json | **169.7ms** | 168.8ms | 385.3ms | 165.7ms | 312.8ms |
+| `'[.statuses[] | try (1 / .retweet_count)]'` | large_twitter.json | **118.7ms** | 112.5ms | 389.8ms | 166.5ms | 312.1ms |
+| `'[.statuses[] | if .retweet_count > 10 then "viral" elif .retweet_count > 0 then "shared" else "original" end]'` | large_twitter.json | **157.2ms** | 150.9ms | 378.2ms | 159.7ms | 307.7ms |
+| `-c 'walk(if type == "boolean" then not else . end)'` | large_twitter.json | **355.7ms** | 352.1ms | 4.86s | 2.15s | 1.74s |
+| `-c '.statuses[0].retweet_count |= . + 1'` | large_twitter.json | **227.0ms** | 266.6ms | 1.19s | 294.1ms | 467.3ms |
+| `-c '.statuses[] |= (.retweet_count += 1)'` | large_twitter.json | **218.3ms** | 217.5ms | 1.20s | 257.6ms | 490.9ms |
+| `-c '[.statuses[]|.user.screen_name|gsub("_"; "-")]'` | large_twitter.json | **108.4ms** | 106.0ms | 426.2ms | 200.6ms | 324.1ms |
+| `-c '[.statuses[]|"@\(.user.screen_name): \(.text[0:30])"]'` | large_twitter.json | **156.3ms** | 159.4ms | 394.5ms | 183.5ms | 329.4ms |
+| `-c '[.statuses[]|.user.screen_name|@base64]'` | large_twitter.json | **104.9ms** | 101.8ms | 376.6ms | 165.0ms | 309.3ms |
+| `'.statuses | group_by(.user.screen_name) | length'` | large_twitter.json | **184.9ms** | 183.4ms | 408.3ms | 189.9ms | 317.6ms |
+| `-c '.statuses | sort_by(.retweet_count) | .[-1].user.screen_name'` | large_twitter.json | **187.5ms** | 179.4ms | 395.2ms | 171.8ms | 315.6ms |
+| `-c 'def hi(rt): if rt > 10 then "viral" elif rt > 0 then "shared" else "none" end; [.statuses[] | hi(.retweet_count)]'` | large_twitter.json | **161.5ms** | 162.5ms | 385.9ms | 168.0ms | 319.4ms |
 
 ### Throughput
 
@@ -45,12 +45,12 @@ Peak parse throughput (`-c '.'` on large_twitter.json, 49MB):
 
 | **qj** | qj (1T) | jq | jaq | gojq |
 |------|------|------|------|------|
-| **2.2 GB/s** | 2.3 GB/s | 42 MB/s | 194 MB/s | 105 MB/s |
+| **2.3 GB/s** | 2.3 GB/s | 42 MB/s | 194 MB/s | 106 MB/s |
 
 ### Summary (times faster than jq)
 
 | Category | **qj** | qj (1T) | jaq | gojq |
 |----------|------|------|------|------|
-| JSON (large_twitter.json) | **4.7x** | 4.8x | 2.5x | 1.4x |
+| JSON (large_twitter.json) | **4.8x** | 4.8x | 2.5x | 1.4x |
 
 Geometric mean of per-filter speedups (median time). Higher is better.
