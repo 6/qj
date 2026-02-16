@@ -197,6 +197,22 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
 
         Filter::Literal(v) => NavResult::Values(vec![v.clone()]),
 
+        Filter::Def {
+            name,
+            params,
+            body,
+            rest,
+        } => {
+            let func = crate::filter::UserFunc {
+                params: params.clone(),
+                body: (**body).clone(),
+                closure_env: env.clone(),
+                is_def: true,
+            };
+            let new_env = env.bind_func(name.clone(), params.len(), func);
+            eval_flat_nav(rest, flat, &new_env)
+        }
+
         // For anything else: materialize and delegate
         _ => {
             let value = flat.to_value();
@@ -548,6 +564,44 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
         Filter::Not(inner) => {
             eval_flat(inner, flat, env, &mut |v| {
                 output(Value::Bool(!v.is_truthy()));
+            });
+        }
+
+        Filter::Def {
+            name,
+            params,
+            body,
+            rest,
+        } => {
+            let func = crate::filter::UserFunc {
+                params: params.clone(),
+                body: (**body).clone(),
+                closure_env: env.clone(),
+                is_def: true,
+            };
+            let new_env = env.bind_func(name.clone(), params.len(), func);
+            eval_flat(rest, flat, &new_env, output);
+        }
+
+        Filter::IfThenElse(cond, then_branch, else_branch) => {
+            let value = flat.to_value();
+            crate::filter::eval::eval_filter_with_env(cond, &value, env, &mut |cond_val| {
+                if cond_val.is_truthy() {
+                    crate::filter::eval::eval_filter_with_env(then_branch, &value, env, output);
+                } else if let Some(else_br) = else_branch {
+                    crate::filter::eval::eval_filter_with_env(else_br, &value, env, output);
+                } else {
+                    output(value.clone());
+                }
+            });
+        }
+
+        Filter::Bind(expr, pattern, body) => {
+            let value = flat.to_value();
+            crate::filter::eval::eval_filter_with_env(expr, &value, env, &mut |val| {
+                if let Some(new_env) = crate::filter::eval::match_pattern(pattern, &val, env) {
+                    crate::filter::eval::eval_filter_with_env(body, &value, &new_env, output);
+                }
             });
         }
 

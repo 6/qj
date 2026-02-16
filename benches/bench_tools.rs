@@ -186,6 +186,16 @@ static JSON_FILTERS: &[BenchFilter] = &[
         flags: &["-c"],
         expr: r#"[.statuses[]|.user.screen_name|@base64]"#,
     },
+    BenchFilter {
+        name: "group_by",
+        flags: &[],
+        expr: ".statuses | group_by(.user.screen_name) | length",
+    },
+    BenchFilter {
+        name: "sort_by",
+        flags: &["-c"],
+        expr: ".statuses | sort_by(.retweet_count) | .[-1].user.screen_name",
+    },
     // User-defined functions
     BenchFilter {
         name: "def (user func)",
