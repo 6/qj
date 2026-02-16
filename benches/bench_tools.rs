@@ -21,7 +21,7 @@ struct Args {
     runs: u32,
 
     /// Output markdown file path
-    #[arg(long, default_value = "benches/results.md")]
+    #[arg(long, default_value = "benches/results_json.md")]
     output: PathBuf,
 
     /// Run only these benchmark groups (json).
@@ -518,7 +518,7 @@ fn generate_markdown(
     .unwrap();
     writeln!(md).unwrap();
 
-    // Build header from available tools
+    // Build header from available tools (qj variants get a "vs jq" column)
     let mut header = String::from("| Filter | File |");
     let mut separator = String::from("|--------|------|");
     for tool in tools {
@@ -527,7 +527,11 @@ fn generate_markdown(
         } else {
             write!(header, " {} |", tool.name).unwrap();
         }
-        write!(separator, "------|").unwrap();
+        write!(separator, "------:|").unwrap();
+        if tool.name.starts_with("qj") {
+            header.push_str(" vs jq |");
+            write!(separator, "------:|").unwrap();
+        }
     }
 
     writeln!(md, "{header}").unwrap();
@@ -540,6 +544,7 @@ fn generate_markdown(
             let filter_key = format!("json_{i}");
             let display = filter_display(filter);
             let mut row = format!("| `{display}` | {file} |");
+            let jq_val = results.get(&result_key(&filter_key, file, "jq"));
             for tool in tools {
                 let val = results.get(&result_key(&filter_key, file, &tool.name));
                 if val.is_some_and(|v| v.1) {
@@ -550,6 +555,20 @@ fn generate_markdown(
                     write!(row, " **{formatted}** |").unwrap();
                 } else {
                     write!(row, " {formatted} |").unwrap();
+                }
+                // Add vs jq column for qj variants
+                if tool.name.starts_with("qj") {
+                    let speedup = match (jq_val, val) {
+                        (Some(&(jq_t, _)), Some(&(tool_t, _))) if jq_t > 0.0 && tool_t > 0.0 => {
+                            format!("{:.1}x", jq_t / tool_t)
+                        }
+                        _ => "-".to_string(),
+                    };
+                    if tool.name == "qj" {
+                        write!(row, " **{speedup}** |").unwrap();
+                    } else {
+                        write!(row, " {speedup} |").unwrap();
+                    }
                 }
             }
             writeln!(md, "{row}").unwrap();
@@ -580,6 +599,7 @@ fn generate_markdown(
         let mut tp_header = String::from("|");
         let mut tp_sep = String::from("|");
         let mut tp_row = String::from("|");
+        let jq_identity = results.get(&result_key("json_0", largest_file, "jq"));
         for tool in tools {
             let val = results.get(&result_key("json_0", largest_file, &tool.name));
             if val.is_some_and(|v| v.1) {
@@ -594,6 +614,21 @@ fn generate_markdown(
                 write!(tp_row, " {tp} |").unwrap();
             }
             write!(tp_sep, "------|").unwrap();
+            if tool.name.starts_with("qj") {
+                tp_header.push_str(" vs jq |");
+                write!(tp_sep, "------|").unwrap();
+                let speedup = match (jq_identity, val) {
+                    (Some(&(jq_t, _)), Some(&(tool_t, _))) if jq_t > 0.0 && tool_t > 0.0 => {
+                        format!("{:.1}x", jq_t / tool_t)
+                    }
+                    _ => "-".to_string(),
+                };
+                if tool.name == "qj" {
+                    write!(tp_row, " **{speedup}** |").unwrap();
+                } else {
+                    write!(tp_row, " {speedup} |").unwrap();
+                }
+            }
         }
         writeln!(md, "{tp_header}").unwrap();
         writeln!(md, "{tp_sep}").unwrap();
