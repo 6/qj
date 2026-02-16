@@ -415,7 +415,7 @@ fn write_indent<W: Write>(w: &mut W, depth: usize, indent: &str) -> io::Result<(
 }
 
 /// Write a JSON-escaped string (with surrounding quotes).
-fn write_json_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
+pub fn write_json_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
     w.write_all(b"\"")?;
     let bytes = s.as_bytes();
     let mut start = 0;

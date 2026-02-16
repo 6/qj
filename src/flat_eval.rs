@@ -239,6 +239,52 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
     }
 }
 
+/// Serialize a FlatValue directly to compact JSON without materializing to Value.
+/// This avoids all intermediate Value tree allocation.
+fn write_compact_flat(w: &mut Vec<u8>, flat: FlatValue<'_>) {
+    if flat.is_null() {
+        w.extend_from_slice(b"null");
+    } else if let Some(b) = flat.as_bool() {
+        w.extend_from_slice(if b { b"true" } else { b"false" });
+    } else if let Some(i) = flat.as_int() {
+        let mut buf = itoa::Buffer::new();
+        w.extend_from_slice(buf.format(i).as_bytes());
+    } else if let Some((f, raw)) = flat.as_f64() {
+        if let Some(text) = raw {
+            w.extend_from_slice(text.as_bytes());
+        } else {
+            let mut buf = ryu::Buffer::new();
+            w.extend_from_slice(buf.format_finite(f).as_bytes());
+        }
+    } else if let Some(s) = flat.as_str() {
+        let _ = crate::output::write_json_string(w, s);
+    } else if flat.is_array() {
+        w.push(b'[');
+        let mut first = true;
+        for elem in flat.array_iter() {
+            if !first {
+                w.push(b',');
+            }
+            first = false;
+            write_compact_flat(w, elem);
+        }
+        w.push(b']');
+    } else if flat.is_object() {
+        w.push(b'{');
+        let mut first = true;
+        for (k, v) in flat.object_iter() {
+            if !first {
+                w.push(b',');
+            }
+            first = false;
+            let _ = crate::output::write_json_string(w, k);
+            w.push(b':');
+            write_compact_flat(w, v);
+        }
+        w.push(b'}');
+    }
+}
+
 /// Recursive helper for ObjectConstruct: produces Cartesian product of
 /// generator outputs across all entries.
 fn eval_flat_obj_entries(
@@ -510,6 +556,12 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                 let value = flat.to_value();
                 crate::filter::eval::eval_filter_with_env(filter, &value, env, output);
             }
+        }
+
+        Filter::Builtin(name, args) if name == "tojson" && args.is_empty() => {
+            let mut buf = Vec::new();
+            write_compact_flat(&mut buf, flat);
+            output(Value::String(String::from_utf8(buf).unwrap_or_default()));
         }
 
         Filter::Comma(filters) => {
@@ -1166,5 +1218,327 @@ mod tests {
             r#"{type, count: (.items | length), label: "test"}"#,
             br#"{"type":"event","items":[1,2,3],"extra":"ignored"}"#,
         );
+    }
+
+    // --- Compare ---
+
+    #[test]
+    fn compare_gt() {
+        assert_equiv(".a > 0", br#"{"a":5}"#);
+        assert_equiv(".a > 0", br#"{"a":0}"#);
+        assert_equiv(".a > 0", br#"{"a":-1}"#);
+    }
+
+    #[test]
+    fn compare_lt() {
+        assert_equiv(".a < 10", br#"{"a":5}"#);
+        assert_equiv(".a < 10", br#"{"a":10}"#);
+        assert_equiv(".a < 10", br#"{"a":15}"#);
+    }
+
+    #[test]
+    fn compare_eq() {
+        assert_equiv(r#".name == "alice""#, br#"{"name":"alice"}"#);
+        assert_equiv(r#".name == "alice""#, br#"{"name":"bob"}"#);
+    }
+
+    #[test]
+    fn compare_ne() {
+        assert_equiv(".a != .b", br#"{"a":1,"b":2}"#);
+        assert_equiv(".a != .b", br#"{"a":1,"b":1}"#);
+    }
+
+    #[test]
+    fn compare_ge_le() {
+        assert_equiv(".x >= 5", br#"{"x":5}"#);
+        assert_equiv(".x >= 5", br#"{"x":4}"#);
+        assert_equiv(".x <= 5", br#"{"x":5}"#);
+        assert_equiv(".x <= 5", br#"{"x":6}"#);
+    }
+
+    #[test]
+    fn compare_null() {
+        assert_equiv(".missing > 0", br#"{"a":1}"#);
+    }
+
+    #[test]
+    fn compare_cross_type() {
+        assert_equiv(".a > .b", br#"{"a":1,"b":"hello"}"#);
+    }
+
+    // --- BoolOp ---
+
+    #[test]
+    fn bool_and() {
+        assert_equiv(".a > 0 and .b > 0", br#"{"a":1,"b":2}"#);
+        assert_equiv(".a > 0 and .b > 0", br#"{"a":0,"b":2}"#);
+        assert_equiv(".a > 0 and .b > 0", br#"{"a":1,"b":0}"#);
+    }
+
+    #[test]
+    fn bool_or() {
+        assert_equiv(".a > 0 or .b > 0", br#"{"a":0,"b":0}"#);
+        assert_equiv(".a > 0 or .b > 0", br#"{"a":1,"b":0}"#);
+        assert_equiv(".a > 0 or .b > 0", br#"{"a":0,"b":1}"#);
+    }
+
+    #[test]
+    fn bool_short_circuit() {
+        // And: short-circuits when left is false
+        assert_equiv("false and true", b"null");
+        // Or: short-circuits when left is true
+        assert_equiv("true or false", b"null");
+    }
+
+    // --- Arith ---
+
+    #[test]
+    fn arith_add() {
+        assert_equiv(".a + .b", br#"{"a":10,"b":20}"#);
+    }
+
+    #[test]
+    fn arith_sub() {
+        assert_equiv(".a - .b", br#"{"a":10,"b":3}"#);
+    }
+
+    #[test]
+    fn arith_mul_div_mod() {
+        assert_equiv(".a * .b", br#"{"a":6,"b":7}"#);
+        assert_equiv(".a / .b", br#"{"a":10,"b":3}"#);
+        assert_equiv(".a % .b", br#"{"a":10,"b":3}"#);
+    }
+
+    #[test]
+    fn arith_string_concat() {
+        assert_equiv(r#".a + .b"#, br#"{"a":"hello","b":" world"}"#);
+    }
+
+    #[test]
+    fn arith_in_condition() {
+        assert_equiv(".a + .b > 10", br#"{"a":6,"b":7}"#);
+        assert_equiv(".a + .b > 10", br#"{"a":3,"b":4}"#);
+    }
+
+    // --- Neg ---
+
+    #[test]
+    fn neg_int() {
+        assert_equiv("-.a", br#"{"a":42}"#);
+        assert_equiv("-.a", br#"{"a":-5}"#);
+    }
+
+    #[test]
+    fn neg_float() {
+        assert_equiv("-.a", br#"{"a":3.14}"#);
+    }
+
+    // --- Select with flat Compare (Select in eval_flat_nav) ---
+
+    #[test]
+    fn select_compare_in_pipe() {
+        // This tests Select in eval_flat_nav returning Flat(flat)
+        assert_equiv(
+            ".[] | select(.x > 0) | .name",
+            br#"[{"x":1,"name":"a"},{"x":0,"name":"b"},{"x":5,"name":"c"}]"#,
+        );
+    }
+
+    #[test]
+    fn select_and_construct() {
+        assert_equiv(
+            r#".[] | select(.x > 0) | {name, x}"#,
+            br#"[{"x":1,"name":"a","extra":true},{"x":0,"name":"b","extra":false}]"#,
+        );
+    }
+
+    #[test]
+    fn select_complex_condition() {
+        assert_equiv(
+            r#".[] | select(.x > 0 and .name != "skip")"#,
+            br#"[{"x":1,"name":"a"},{"x":2,"name":"skip"},{"x":0,"name":"c"}]"#,
+        );
+    }
+
+    #[test]
+    fn select_all_filtered() {
+        assert_equiv(".[] | select(.x > 100)", br#"[{"x":1},{"x":2},{"x":3}]"#);
+    }
+
+    // --- tojson ---
+
+    #[test]
+    fn tojson_string() {
+        assert_equiv("tojson", br#""hello""#);
+    }
+
+    #[test]
+    fn tojson_int() {
+        assert_equiv("tojson", b"42");
+    }
+
+    #[test]
+    fn tojson_null() {
+        assert_equiv("tojson", b"null");
+    }
+
+    #[test]
+    fn tojson_bool() {
+        assert_equiv("tojson", b"true");
+        assert_equiv("tojson", b"false");
+    }
+
+    #[test]
+    fn tojson_array() {
+        assert_equiv("tojson", b"[1,2,3]");
+    }
+
+    #[test]
+    fn tojson_object() {
+        assert_equiv("tojson", br#"{"a":1,"b":"two"}"#);
+    }
+
+    #[test]
+    fn tojson_nested() {
+        assert_equiv("tojson", br#"{"a":{"b":[1,true,null]}}"#);
+    }
+
+    #[test]
+    fn tojson_escaped_string() {
+        assert_equiv("tojson", br#""hello \"world\"""#);
+    }
+
+    #[test]
+    fn tojson_per_field() {
+        assert_equiv("map_values(tojson)", br#"{"a":1,"b":"two","c":null}"#);
+    }
+
+    #[test]
+    fn tojson_in_pipe() {
+        assert_equiv(".a | tojson", br#"{"a":{"x":1,"y":[2,3]}}"#);
+    }
+
+    // --- Def handler ---
+
+    #[test]
+    fn def_simple() {
+        assert_equiv("def f: .a; f", br#"{"a":42,"b":99}"#);
+    }
+
+    #[test]
+    fn def_with_args() {
+        assert_equiv(
+            r#"def hi(x): if x > 0 then "yes" else "no" end; hi(.a)"#,
+            br#"{"a":5}"#,
+        );
+    }
+
+    #[test]
+    fn def_with_iterate() {
+        assert_equiv("def double: . * 2; [.[] | double]", b"[1,2,3]");
+    }
+
+    // --- IfThenElse handler ---
+
+    #[test]
+    fn if_then_else() {
+        assert_equiv(r#"if .x > 0 then "pos" else "non-pos" end"#, br#"{"x":5}"#);
+        assert_equiv(r#"if .x > 0 then "pos" else "non-pos" end"#, br#"{"x":-1}"#);
+    }
+
+    #[test]
+    fn if_then_no_else() {
+        assert_equiv("if .x > 0 then .x end", br#"{"x":5}"#);
+    }
+
+    #[test]
+    fn elif_chain() {
+        assert_equiv(
+            r#"if .x > 10 then "big" elif .x > 0 then "small" else "zero" end"#,
+            br#"{"x":15}"#,
+        );
+        assert_equiv(
+            r#"if .x > 10 then "big" elif .x > 0 then "small" else "zero" end"#,
+            br#"{"x":5}"#,
+        );
+        assert_equiv(
+            r#"if .x > 10 then "big" elif .x > 0 then "small" else "zero" end"#,
+            br#"{"x":0}"#,
+        );
+    }
+
+    // --- Bind handler ---
+
+    #[test]
+    fn bind_simple() {
+        assert_equiv(". as $s | $s.a + $s.b", br#"{"a":10,"b":20}"#);
+    }
+
+    #[test]
+    fn bind_in_iterate() {
+        assert_equiv(
+            ".[] | . as $s | {name: $s.name, double: ($s.x * 2)}",
+            br#"[{"name":"a","x":1},{"name":"b","x":2}]"#,
+        );
+    }
+
+    // --- write_compact_flat ---
+
+    #[test]
+    fn write_compact_flat_scalars() {
+        let cases: &[(&[u8], &str)] = &[
+            (b"null", "null"),
+            (b"true", "true"),
+            (b"false", "false"),
+            (b"42", "42"),
+            (b"-7", "-7"),
+            (b"3.14", "3.14"),
+            (br#""hello""#, r#""hello""#),
+        ];
+        for (json, expected) in cases {
+            let buf = pad_buffer(json);
+            let flat_buf = dom_parse_to_flat_buf(&buf, json.len()).unwrap();
+            let mut out = Vec::new();
+            write_compact_flat(&mut out, flat_buf.root());
+            assert_eq!(
+                std::str::from_utf8(&out).unwrap(),
+                *expected,
+                "write_compact_flat mismatch for {:?}",
+                std::str::from_utf8(json).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn write_compact_flat_containers() {
+        let cases: &[(&[u8], &str)] = &[
+            (b"[1,2,3]", "[1,2,3]"),
+            (b"[]", "[]"),
+            (br#"{"a":1,"b":2}"#, r#"{"a":1,"b":2}"#),
+            (br#"{}"#, "{}"),
+            (br#"{"a":[1,{"b":true}]}"#, r#"{"a":[1,{"b":true}]}"#),
+        ];
+        for (json, expected) in cases {
+            let buf = pad_buffer(json);
+            let flat_buf = dom_parse_to_flat_buf(&buf, json.len()).unwrap();
+            let mut out = Vec::new();
+            write_compact_flat(&mut out, flat_buf.root());
+            assert_eq!(
+                std::str::from_utf8(&out).unwrap(),
+                *expected,
+                "write_compact_flat mismatch for {:?}",
+                std::str::from_utf8(json).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn write_compact_flat_escaped_string() {
+        let json = br#""hello\nworld""#;
+        let buf = pad_buffer(json);
+        let flat_buf = dom_parse_to_flat_buf(&buf, json.len()).unwrap();
+        let mut out = Vec::new();
+        write_compact_flat(&mut out, flat_buf.root());
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#""hello\nworld""#);
     }
 }

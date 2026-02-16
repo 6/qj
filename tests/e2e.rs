@@ -4594,3 +4594,166 @@ fn ndjson_jq_compat_select_endswith_extract() {
         "{\"file\":\"data.json\"}\n{\"file\":\"data.csv\"}\n",
     );
 }
+
+// --- Flat eval: Compare / BoolOp / Arith / Neg ---
+
+#[test]
+fn jq_compat_compare_gt() {
+    assert_jq_compat(".a > 0", r#"{"a":5}"#);
+    assert_jq_compat(".a > 0", r#"{"a":0}"#);
+    assert_jq_compat(".a > 0", r#"{"a":-1}"#);
+}
+
+#[test]
+fn jq_compat_compare_eq_string() {
+    assert_jq_compat(r#".name == "alice""#, r#"{"name":"alice"}"#);
+    assert_jq_compat(r#".name == "alice""#, r#"{"name":"bob"}"#);
+}
+
+#[test]
+fn jq_compat_compare_null_field() {
+    assert_jq_compat(".missing > 0", r#"{"a":1}"#);
+    assert_jq_compat(".missing == null", r#"{"a":1}"#);
+}
+
+#[test]
+fn jq_compat_bool_and_or() {
+    assert_jq_compat(".a > 0 and .b > 0", r#"{"a":1,"b":2}"#);
+    assert_jq_compat(".a > 0 and .b > 0", r#"{"a":0,"b":2}"#);
+    assert_jq_compat(".a > 0 or .b > 0", r#"{"a":0,"b":0}"#);
+    assert_jq_compat(".a > 0 or .b > 0", r#"{"a":1,"b":0}"#);
+}
+
+#[test]
+fn jq_compat_arith_basic() {
+    assert_jq_compat(".a + .b", r#"{"a":10,"b":20}"#);
+    assert_jq_compat(".a - .b", r#"{"a":10,"b":3}"#);
+    assert_jq_compat(".a * .b", r#"{"a":6,"b":7}"#);
+    assert_jq_compat(".a / .b", r#"{"a":10,"b":4}"#);
+    assert_jq_compat(".a % .b", r#"{"a":10,"b":3}"#);
+}
+
+#[test]
+fn jq_compat_arith_string_concat() {
+    assert_jq_compat(r#".a + .b"#, r#"{"a":"hello","b":" world"}"#);
+}
+
+#[test]
+fn jq_compat_neg() {
+    assert_jq_compat(".a | -(.) ", r#"{"a":42}"#);
+    assert_jq_compat(".a | -(.) ", r#"{"a":-5}"#);
+    assert_jq_compat(".a | -(.) ", r#"{"a":3.14}"#);
+}
+
+// --- Flat eval: Select with Compare in pipe ---
+
+#[test]
+fn jq_compat_select_compare_pipe() {
+    assert_jq_compat(
+        r#"[.[] | select(.x > 0) | .name]"#,
+        r#"[{"x":1,"name":"a"},{"x":0,"name":"b"},{"x":5,"name":"c"}]"#,
+    );
+}
+
+#[test]
+fn jq_compat_select_and_construct() {
+    assert_jq_compat(
+        r#"[.[] | select(.x > 0) | {name, x}]"#,
+        r#"[{"x":1,"name":"a","extra":true},{"x":0,"name":"b","extra":false}]"#,
+    );
+}
+
+#[test]
+fn jq_compat_select_complex_condition() {
+    assert_jq_compat(
+        r#"[.[] | select(.x > 0 and .name != "skip")]"#,
+        r#"[{"x":1,"name":"a"},{"x":2,"name":"skip"},{"x":0,"name":"c"}]"#,
+    );
+}
+
+// --- Flat eval: tojson ---
+
+#[test]
+fn jq_compat_tojson_scalars() {
+    assert_jq_compat("tojson", "42");
+    assert_jq_compat("tojson", "true");
+    assert_jq_compat("tojson", "false");
+    assert_jq_compat("tojson", "null");
+    assert_jq_compat("tojson", r#""hello""#);
+}
+
+#[test]
+fn jq_compat_tojson_containers() {
+    assert_jq_compat("tojson", "[1,2,3]");
+    assert_jq_compat("tojson", r#"{"a":1,"b":"two"}"#);
+    assert_jq_compat("tojson", r#"{"a":{"b":[1,true,null]}}"#);
+}
+
+#[test]
+fn jq_compat_tojson_map_values() {
+    assert_jq_compat("map_values(tojson)", r#"{"a":1,"b":"two","c":null}"#);
+}
+
+#[test]
+fn jq_compat_tojson_in_pipe() {
+    assert_jq_compat(".a | tojson", r#"{"a":{"x":1,"y":[2,3]}}"#);
+}
+
+// --- Flat eval: Def / IfThenElse / Bind ---
+
+#[test]
+fn jq_compat_def_simple() {
+    assert_jq_compat("def f: .a; f", r#"{"a":42,"b":99}"#);
+}
+
+#[test]
+fn jq_compat_def_with_args() {
+    assert_jq_compat(
+        r#"def hi(x): if x > 0 then "yes" else "no" end; hi(.a)"#,
+        r#"{"a":5}"#,
+    );
+    assert_jq_compat(
+        r#"def hi(x): if x > 0 then "yes" else "no" end; hi(.a)"#,
+        r#"{"a":0}"#,
+    );
+}
+
+#[test]
+fn jq_compat_def_with_iterate() {
+    assert_jq_compat("def double: . * 2; [.[] | double]", "[1,2,3]");
+}
+
+#[test]
+fn jq_compat_if_then_else() {
+    assert_jq_compat(r#"if .x > 0 then "pos" else "non-pos" end"#, r#"{"x":5}"#);
+    assert_jq_compat(r#"if .x > 0 then "pos" else "non-pos" end"#, r#"{"x":-1}"#);
+}
+
+#[test]
+fn jq_compat_elif_object() {
+    assert_jq_compat(
+        r#"if .x > 10 then "big" elif .x > 0 then "small" else "zero" end"#,
+        r#"{"x":15}"#,
+    );
+    assert_jq_compat(
+        r#"if .x > 10 then "big" elif .x > 0 then "small" else "zero" end"#,
+        r#"{"x":5}"#,
+    );
+    assert_jq_compat(
+        r#"if .x > 10 then "big" elif .x > 0 then "small" else "zero" end"#,
+        r#"{"x":0}"#,
+    );
+}
+
+#[test]
+fn jq_compat_bind_simple() {
+    assert_jq_compat(". as $s | $s.a + $s.b", r#"{"a":10,"b":20}"#);
+}
+
+#[test]
+fn jq_compat_bind_in_iterate() {
+    assert_jq_compat(
+        "[.[] | . as $s | {name: $s.name, double: ($s.x * 2)}]",
+        r#"[{"name":"a","x":1},{"name":"b","x":2}]"#,
+    );
+}
