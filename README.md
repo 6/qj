@@ -1,12 +1,12 @@
 # qj
 
-Quick JSON. A jq-compatible processor, 2-20x faster on large inputs.
+Quick JSON. A jq-compatible processor, 3-100x faster on large inputs.
 
 ## When to use qj instead of jq
 
 **Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 33 ms vs jq's 395 ms (12x). Field extraction and `keys` are 5-15x faster than jq.
 
-**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1M lines: `qj '.name'` takes 117 ms vs jq's 1.3 s (11x) and jaq's 715 ms (6x). No `xargs` or `parallel` needed.
+**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 119 ms vs jq's 12.8 s (108x). No `xargs` or `parallel` needed.
 
 **When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
@@ -35,21 +35,22 @@ Field extraction and simple operations show the largest wins. Complex filter wor
 
 GB-scale NDJSON (1.1 GB GitHub Archive, parallel processing):
 
-| Workload | qj | jq | Speedup |
-|----------|----|----|---------|
-| `length` | 491ms | 7.06s | **14x** |
-| `select(.type == "PushEvent")` | 783ms | 13.6s | **17x** |
-| `{type, repo: .repo.name, actor: .actor.login}` | 505ms | 7.84s | **16x** |
-| `select(.type == "PushEvent") \| {actor, commits}` | 2.84s | 7.57s | **2.7x** |
+| Workload | qj | jq | jaq | gojq |
+|----------|----|----|-----|------|
+| `-c '.'` (passthrough) | **772 ms** | 27.5 s | 5.0 s | 9.9 s |
+| `length` | **101 ms** | 7.2 s | 2.7 s | 6.7 s |
+| `select(.type == "PushEvent")` | **119 ms** | 12.8 s | 3.5 s | 7.8 s |
+| `{type, repo: .repo.name, actor: .actor.login}` | **134 ms** | 7.9 s | 3.3 s | 6.9 s |
+| `select(.type == "PushEvent") \| {actor, commits}` | **2.76 s** | 7.5 s | 3.1 s | 6.9 s |
 
-Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/results_large_only.md)). See also [tool comparison data](benches/results.md).
+Throughput: **1.4 GB/s** (vs jq 41 MB/s, jaq 225 MB/s, gojq 114 MB/s). Scales linearly: 4.8 GB NDJSON shows the same ratios ([full results](benches/results_large_only.md)). See also [tool comparison data](benches/results.md).
 
 ## How it works
 
 - **SIMD parsing.** C++ simdjson (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
 - **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. On Apple Silicon, uses only performance cores to avoid E-core contention.
 - **Zero-copy I/O.** mmap — no heap allocation or memcpy for the input file.
-- **On-demand extraction.** Common patterns like `.field` and `.field.nested.path` extract raw bytes directly from simdjson's DOM, bypassing Rust value tree construction entirely.
+- **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
 
 ## Compatibility
 
