@@ -127,11 +127,12 @@ bash benches/build_cpp_bench.sh
 ### End-to-end tool comparison (qj vs jq vs jaq vs gojq)
 ```
 bash benches/setup_bench_data.sh    # all test data (includes ~1GB GH Archive download)
-cargo run --release --bin bench_tools                               # defaults: 5 runs, 5s cooldown
-cargo run --release --bin bench_tools -- --runs 3 --cooldown 2      # faster run for quick checks
+cargo run --release --bin bench_tools -- --type json                    # JSON (large_twitter.json)
+cargo run --release --bin bench_tools -- --type ndjson                  # NDJSON (gharchive.ndjson)
+cargo run --release --bin bench_tools -- --type json --runs 3 --cooldown 2  # quick JSON run
 ```
 
-### GH Archive (real-world ~1.1GB / ~6.2GB)
+### GH Archive data (for NDJSON benchmarks)
 ```
 bash benches/download_gharchive.sh           # gharchive.ndjson (~1.1GB), gharchive.json (~1.1GB)
 bash benches/download_gharchive.sh --large   # gharchive_large.ndjson (~6.2GB), gharchive_large.json (~6.2GB)

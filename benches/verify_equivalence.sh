@@ -29,7 +29,7 @@ if [ ! -f "$NDJSON" ]; then
     exit 1
 fi
 
-# Same filters as bench_large_only.sh
+# Same filters as bench_tools.rs NDJSON_FILTERS
 FILTER_NAMES=("field" "length" "keys" "select" "select+field" "reshape" "evaluator" "evaluator (complex)")
 FILTER_FLAGS=("" "-c" "-c" "-c" "-c" "-c" "-c" "-c")
 FILTER_EXPRS=(

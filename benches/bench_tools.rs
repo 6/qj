@@ -12,6 +12,10 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(about = "Benchmark qj vs jq vs jaq vs gojq. Writes results to markdown.")]
 struct Args {
+    /// Benchmark type: "json" (single-file) or "ndjson" (GH Archive parallel)
+    #[arg(long = "type")]
+    benchmark_type: String,
+
     /// Seconds to sleep between benchmark groups (mitigates thermal throttling)
     #[arg(long, default_value_t = 5)]
     cooldown: u64,
@@ -20,11 +24,11 @@ struct Args {
     #[arg(long, default_value_t = 3)]
     runs: u32,
 
-    /// Output markdown file path
-    #[arg(long, default_value = "benches/results_json.md")]
-    output: PathBuf,
+    /// Output markdown file path (default: derived from --type)
+    #[arg(long)]
+    output: Option<PathBuf>,
 
-    /// Run only these benchmark groups (json).
+    /// Run only these benchmark groups.
     /// Can be repeated. Omit to run all.
     #[arg(long)]
     only: Vec<String>,
@@ -37,6 +41,17 @@ struct Args {
 impl Args {
     fn should_run(&self, group: &str) -> bool {
         self.only.is_empty() || self.only.iter().any(|g| g == group)
+    }
+
+    fn output_path(&self) -> PathBuf {
+        if let Some(ref p) = self.output {
+            p.clone()
+        } else {
+            match self.benchmark_type.as_str() {
+                "ndjson" => PathBuf::from("benches/results_large_only.md"),
+                _ => PathBuf::from("benches/results_json.md"),
+            }
+        }
     }
 }
 
@@ -201,6 +216,59 @@ static JSON_FILTERS: &[BenchFilter] = &[
         name: "def (user func)",
         flags: &["-c"],
         expr: r#"def hi(rt): if rt > 10 then "viral" elif rt > 0 then "shared" else "none" end; [.statuses[] | hi(.retweet_count)]"#,
+    },
+];
+
+static NDJSON_FILTERS: &[BenchFilter] = &[
+    BenchFilter {
+        name: "field",
+        flags: &[],
+        expr: ".actor.login",
+    },
+    BenchFilter {
+        name: "length",
+        flags: &["-c"],
+        expr: "length",
+    },
+    BenchFilter {
+        name: "keys",
+        flags: &["-c"],
+        expr: "keys",
+    },
+    BenchFilter {
+        name: "type",
+        flags: &["-c"],
+        expr: "type",
+    },
+    BenchFilter {
+        name: "has",
+        flags: &["-c"],
+        expr: r#"has("actor")"#,
+    },
+    BenchFilter {
+        name: "select",
+        flags: &["-c"],
+        expr: r#"select(.type == "PushEvent")"#,
+    },
+    BenchFilter {
+        name: "select+field",
+        flags: &["-c"],
+        expr: r#"select(.type == "PushEvent") | .payload.size"#,
+    },
+    BenchFilter {
+        name: "reshape",
+        flags: &["-c"],
+        expr: "{type, repo: .repo.name, actor: .actor.login}",
+    },
+    BenchFilter {
+        name: "evaluator",
+        flags: &["-c"],
+        expr: "{type, commits: [.payload.commits[]?.message]}",
+    },
+    BenchFilter {
+        name: "evaluator (complex)",
+        flags: &["-c"],
+        expr: "{type, commits: (.payload.commits // [] | length)}",
     },
 ];
 
@@ -388,6 +456,10 @@ fn filter_display(filter: &BenchFilter) -> String {
     }
 }
 
+fn is_macos() -> bool {
+    std::env::consts::OS == "macos"
+}
+
 // --- Result storage ---
 
 /// (median_seconds, had_nonzero_exit_code)
@@ -411,6 +483,8 @@ fn run_benchmarks(
     results_dir: &Path,
     args: &Args,
     results: &mut Results,
+    use_caffeinate: bool,
+    ignore_failure: bool,
 ) {
     for file in files {
         let file_path = data_dir.join(file);
@@ -420,13 +494,17 @@ fn run_benchmarks(
 
         for (i, filter) in filters.iter().enumerate() {
             let filter_key = format!("{key_prefix}_{i}");
-            let file_stem = file.strip_suffix(".json").unwrap_or(file);
+            let file_stem = file
+                .strip_suffix(".json")
+                .unwrap_or(file.strip_suffix(".ndjson").unwrap_or(file));
             let json_file = results_dir.join(format!("{key_prefix}-run-{i}-{file_stem}.json"));
 
             let mut cmds = Vec::new();
             let mut cmd_tools: Vec<&str> = Vec::new();
-            for tool in tools {
-                if tool_supports_filter(tool, filter, &file_path) {
+
+            if ignore_failure {
+                // NDJSON: run all tools (--ignore-failure handles errors)
+                for tool in tools {
                     cmds.push(build_cmd(
                         tool,
                         filter.flags,
@@ -434,8 +512,21 @@ fn run_benchmarks(
                         file_path.to_str().unwrap(),
                     ));
                     cmd_tools.push(&tool.name);
-                } else {
-                    eprintln!("  Skip {} for '{}' (unsupported)", tool.name, filter.name);
+                }
+            } else {
+                // JSON: check support first
+                for tool in tools {
+                    if tool_supports_filter(tool, filter, &file_path) {
+                        cmds.push(build_cmd(
+                            tool,
+                            filter.flags,
+                            filter.expr,
+                            file_path.to_str().unwrap(),
+                        ));
+                        cmd_tools.push(&tool.name);
+                    } else {
+                        eprintln!("  Skip {} for '{}' (unsupported)", tool.name, filter.name);
+                    }
                 }
             }
 
@@ -449,14 +540,26 @@ fn run_benchmarks(
             }
 
             eprintln!("--- {} ---", filter.name);
-            let mut hyperfine = Command::new("hyperfine");
+
+            // Build hyperfine command, optionally wrapped with caffeinate on macOS
+            let (program, mut prefix_args) = if use_caffeinate && is_macos() {
+                ("caffeinate", vec!["-dims", "hyperfine"])
+            } else {
+                ("hyperfine", vec![])
+            };
+            prefix_args.extend(["--warmup", "1", "--runs"]);
+
+            let mut hyperfine = Command::new(program);
+            for arg in &prefix_args {
+                hyperfine.arg(arg);
+            }
             hyperfine
-                .arg("--warmup")
-                .arg("1")
-                .arg("--runs")
                 .arg(args.runs.to_string())
                 .arg("--export-json")
                 .arg(&json_file);
+            if ignore_failure {
+                hyperfine.arg("--ignore-failure");
+            }
             for cmd in &cmds {
                 hyperfine.arg(cmd);
             }
@@ -484,10 +587,10 @@ fn run_benchmarks(
     }
 }
 
-// --- Markdown generation ---
+// --- Markdown generation: JSON ---
 
 #[allow(clippy::too_many_arguments)]
-fn generate_markdown(
+fn generate_json_markdown(
     tools: &[Tool],
     json_files: &[&str],
     results: &Results,
@@ -501,7 +604,7 @@ fn generate_markdown(
     writeln!(md).unwrap();
     writeln!(
         md,
-        "> Auto-generated by `cargo run --release --bin bench_tools`. Do not edit manually."
+        "> Auto-generated by `cargo run --release --bin bench_tools -- --type json`. Do not edit manually."
     )
     .unwrap();
     writeln!(md, "> Last updated: {date} on `{platform}`").unwrap();
@@ -703,11 +806,116 @@ fn generate_markdown(
     md
 }
 
+// --- Markdown generation: NDJSON ---
+
+fn generate_ndjson_markdown(
+    tools: &[Tool],
+    ndjson_file: &str,
+    results: &Results,
+    data_dir: &Path,
+    runs: u32,
+    platform: &str,
+    date: &str,
+) -> String {
+    let mut md = String::new();
+    let file_path = data_dir.join(ndjson_file);
+    let file_bytes = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+    let file_mb = file_bytes / (1024 * 1024);
+
+    writeln!(md, "# GH Archive Benchmark").unwrap();
+    writeln!(md).unwrap();
+    writeln!(md, "> Generated: {date} on `{platform}`").unwrap();
+    writeln!(
+        md,
+        "> {runs} runs, 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+    writeln!(
+        md,
+        "### NDJSON ({ndjson_file}, {file_mb}MB, parallel processing)"
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+
+    // Build header
+    let mut header = String::from("| Filter |");
+    let mut separator = String::from("|--------|");
+    for tool in tools {
+        if tool.name == "qj" {
+            write!(header, " **{}** |", tool.name).unwrap();
+        } else {
+            write!(header, " {} |", tool.name).unwrap();
+        }
+        write!(separator, "------:|").unwrap();
+        if tool.name.starts_with("qj") {
+            header.push_str(" vs jq |");
+            write!(separator, "------:|").unwrap();
+        }
+    }
+    writeln!(md, "{header}").unwrap();
+    writeln!(md, "{separator}").unwrap();
+
+    let mut has_failures = false;
+    for (i, filter) in NDJSON_FILTERS.iter().enumerate() {
+        let filter_key = format!("ndjson_{i}");
+        let display = filter_display(filter);
+        let mut row = format!("| `{display}` |");
+        let jq_val = results.get(&result_key(&filter_key, ndjson_file, "jq"));
+        for tool in tools {
+            let val = results.get(&result_key(&filter_key, ndjson_file, &tool.name));
+            if val.is_some_and(|v| v.1) {
+                has_failures = true;
+            }
+            let formatted = format_result(val);
+            if tool.name == "qj" {
+                write!(row, " **{formatted}** |").unwrap();
+            } else {
+                write!(row, " {formatted} |").unwrap();
+            }
+            if tool.name.starts_with("qj") {
+                let speedup = match (jq_val, val) {
+                    (Some(&(jq_t, _)), Some(&(tool_t, _))) if jq_t > 0.0 && tool_t > 0.0 => {
+                        format!("{:.1}x", jq_t / tool_t)
+                    }
+                    _ => "-".to_string(),
+                };
+                if tool.name == "qj" {
+                    write!(row, " **{speedup}** |").unwrap();
+                } else {
+                    write!(row, " {speedup} |").unwrap();
+                }
+            }
+        }
+        writeln!(md, "{row}").unwrap();
+    }
+
+    writeln!(md).unwrap();
+    if has_failures {
+        writeln!(
+            md,
+            "\\*non-zero exit code (tool crashed or returned an error)"
+        )
+        .unwrap();
+        writeln!(md).unwrap();
+    }
+
+    md
+}
+
 fn main() {
     let args = Args::parse();
     let qj_path = "./target/release/qj";
     let data_dir = Path::new("benches/data");
     let results_dir = Path::new("benches/results");
+
+    match args.benchmark_type.as_str() {
+        "json" | "ndjson" => {}
+        other => {
+            eprintln!("Error: unknown --type '{other}'. Use 'json' or 'ndjson'.");
+            std::process::exit(1);
+        }
+    }
 
     // --- Preflight checks ---
     if !Path::new(qj_path).exists() {
@@ -721,12 +929,14 @@ fn main() {
     fs::create_dir_all(results_dir).unwrap();
 
     let tools = discover_tools(qj_path);
+    let output_path = args.output_path();
 
     eprintln!(
-        "Settings: --cooldown {} --runs {} --output {}",
+        "Settings: --type {} --cooldown {} --runs {} --output {}",
+        args.benchmark_type,
         args.cooldown,
         args.runs,
-        args.output.display()
+        output_path.display()
     );
 
     let platform = {
@@ -762,33 +972,32 @@ fn main() {
     eprintln!("Date: {date}");
     eprintln!();
 
-    // --- Determine files ---
-    let mut json_files: Vec<&str> = Vec::new();
-    if data_dir.join("large_twitter.json").exists() {
-        json_files.push("large_twitter.json");
-    }
+    let mut results: Results = HashMap::new();
 
-    // --- Correctness check ---
-    let qj = &tools[0];
-    let jq = &tools[1];
-    if args.skip_correctness {
-        eprintln!("=== Correctness check skipped (--skip-correctness) ===");
-        eprintln!();
-    } else {
-        eprintln!("=== Correctness check ===");
-        let mut all_correct = true;
+    if args.benchmark_type == "json" {
+        // --- JSON benchmarks ---
+        let mut json_files: Vec<&str> = Vec::new();
+        if data_dir.join("large_twitter.json").exists() {
+            json_files.push("large_twitter.json");
+        }
+        if json_files.is_empty() {
+            eprintln!("Error: no JSON test data found in benches/data/.");
+            eprintln!("Run: bash benches/download_testdata.sh && bash benches/gen_large.sh");
+            std::process::exit(1);
+        }
 
-        // Check correctness on JSON filters (large_twitter.json).
-        // NDJSON filters use the same evaluator — correctness is covered by tests.
-        let check_groups: Vec<(&[BenchFilter], &[&str], &str)> =
-            vec![(JSON_FILTERS, &json_files, "json")];
-        for (filters, files, group) in &check_groups {
-            if !args.should_run(group) {
-                continue;
-            }
-            for file in *files {
+        // Correctness check
+        let qj = &tools[0];
+        let jq = &tools[2]; // index 2: jq (after qj and qj 1T)
+        if args.skip_correctness {
+            eprintln!("=== Correctness check skipped (--skip-correctness) ===");
+            eprintln!();
+        } else {
+            eprintln!("=== Correctness check ===");
+            let mut all_correct = true;
+            for file in &json_files {
                 let file_path = data_dir.join(file);
-                for filter in *filters {
+                for filter in JSON_FILTERS {
                     let qj_out = run_tool_output(qj, filter, &file_path);
                     let jq_out = run_tool_output(jq, filter, &file_path);
                     if qj_out != jq_out {
@@ -804,41 +1013,73 @@ fn main() {
                     }
                 }
             }
-        }
-        eprintln!();
-        if !all_correct {
-            eprintln!("WARNING: Output mismatches detected. Benchmarking anyway.");
             eprintln!();
+            if !all_correct {
+                eprintln!("WARNING: Output mismatches detected. Benchmarking anyway.");
+                eprintln!();
+            }
         }
-    }
 
-    // --- Run benchmarks ---
-    let mut results: Results = HashMap::new();
+        if args.should_run("json") {
+            run_benchmarks(
+                &tools,
+                JSON_FILTERS,
+                "json",
+                &json_files,
+                data_dir,
+                results_dir,
+                &args,
+                &mut results,
+                true, // caffeinate on macOS
+                false,
+            );
+        }
 
-    if args.should_run("json") {
+        let md = generate_json_markdown(
+            &tools,
+            &json_files,
+            &results,
+            data_dir,
+            args.runs,
+            &platform,
+            &date,
+        );
+        fs::write(&output_path, &md).unwrap();
+    } else {
+        // --- NDJSON benchmarks ---
+        let ndjson_file = "gharchive.ndjson";
+        let ndjson_path = data_dir.join(ndjson_file);
+        if !ndjson_path.exists() {
+            eprintln!("Error: {} not found.", ndjson_path.display());
+            eprintln!("Run: bash benches/download_gharchive.sh");
+            std::process::exit(1);
+        }
+
         run_benchmarks(
             &tools,
-            JSON_FILTERS,
-            "json",
-            &json_files,
+            NDJSON_FILTERS,
+            "ndjson",
+            &[ndjson_file],
             data_dir,
             results_dir,
             &args,
             &mut results,
+            true, // caffeinate on macOS
+            true, // --ignore-failure
         );
+
+        let md = generate_ndjson_markdown(
+            &tools,
+            ndjson_file,
+            &results,
+            data_dir,
+            args.runs,
+            &platform,
+            &date,
+        );
+        fs::write(&output_path, &md).unwrap();
     }
 
-    // --- Generate and write markdown ---
-    let md = generate_markdown(
-        &tools,
-        &json_files,
-        &results,
-        data_dir,
-        args.runs,
-        &platform,
-        &date,
-    );
-    fs::write(&args.output, &md).unwrap();
     eprintln!("=== Done ===");
-    eprintln!("Wrote {}", args.output.display());
+    eprintln!("Wrote {}", output_path.display());
 }
