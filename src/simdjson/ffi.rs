@@ -63,6 +63,12 @@ unsafe extern "C" {
         out_ptr: *mut *mut u8,
         out_len: *mut usize,
     ) -> i32;
+    pub(super) fn jx_dom_to_flat_via_tape(
+        buf: *const c_char,
+        len: usize,
+        out_ptr: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32;
     pub(super) fn jx_flat_buffer_free(ptr: *mut u8);
 
     pub(super) fn jx_minify(

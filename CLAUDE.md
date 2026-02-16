@@ -129,6 +129,9 @@ Use `QJ_GHARCHIVE_HOURS=2` for quick testing with fewer hours of data.
 ```
 ./target/release/qj --debug-timing -c '.' benches/data/large_twitter.json > /dev/null
 ```
+**Caveat:** `--debug-timing` uses the On-Demand parse path (`dom_parse_to_value`), not the
+production DOM tape walk path used by flat eval and the regular eval pipeline. Its parse times
+are ~30% higher than actual production performance. Use `hyperfine` for accurate benchmarks.
 
 ### Ad-hoc comparison
 Always warm cache with `--warmup 3`.

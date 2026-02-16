@@ -33,6 +33,10 @@ pub fn dom_parse_to_value(buf: &[u8], json_len: usize) -> Result<Value> {
     // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
     // (asserted above). flat_ptr/flat_len are valid stack references used as output
     // parameters. C++ heap-allocates the flat token buffer.
+    //
+    // Uses On-Demand path (not DOM tape walk) because this function is called from
+    // fromjson with arbitrary user strings. The DOM parser may not handle all
+    // malformed inputs the same way as On-Demand (different error propagation).
     check(unsafe { jx_dom_to_flat(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len) })?;
 
     // SAFETY: flat_ptr was heap-allocated by jx_dom_to_flat above and flat_len is
@@ -90,6 +94,20 @@ impl Drop for FlatBuffer {
     }
 }
 
+/// Parse a JSON buffer and return a `Value` tree using the faster DOM tape walk.
+///
+/// Uses `jx_dom_to_flat_via_tape` (DOM tape walk) for flat buffer construction,
+/// then decodes to a Value tree. Faster than `dom_parse_to_value()` which uses
+/// On-Demand API, but only safe for inputs known to be valid JSON from files
+/// (not arbitrary user strings like `fromjson` input, since the DOM parser handles
+/// some malformed inputs differently than On-Demand).
+///
+/// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
+pub fn dom_parse_to_value_fast(buf: &[u8], json_len: usize) -> Result<Value> {
+    let flat_buf = dom_parse_to_flat_buf(buf, json_len)?;
+    decode_value(flat_buf.as_bytes(), &mut 0)
+}
+
 /// Parse a JSON buffer via simdjson DOM API and return the raw flat token buffer.
 ///
 /// Same as `dom_parse_to_value()` but skips the expensive decode step.
@@ -101,7 +119,9 @@ pub fn dom_parse_to_flat_buf(buf: &[u8], json_len: usize) -> Result<FlatBuffer> 
     // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
     // (asserted above). flat_ptr/flat_len are valid stack references used as output
     // parameters. C++ heap-allocates the flat token buffer.
-    check(unsafe { jx_dom_to_flat(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len) })?;
+    check(unsafe {
+        jx_dom_to_flat_via_tape(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len)
+    })?;
     Ok(FlatBuffer::from_raw(flat_ptr, flat_len))
 }
 
@@ -1238,5 +1258,165 @@ mod tests {
         let json = br#"{"n":42}"#;
         let buf = pad_buffer(json);
         assert!(dp.field_keys(&buf, json.len(), &["n"]).unwrap().is_none());
+    }
+
+    // --- dom_parse_to_value_fast (DOM tape walk) ---
+
+    /// Helper: assert that dom_parse_to_value_fast produces identical output
+    /// to dom_parse_to_value for a given JSON input.
+    fn assert_fast_matches_standard(json: &[u8]) {
+        let buf = pad_buffer(json);
+        let standard = dom_parse_to_value(&buf, json.len()).unwrap();
+        let fast = dom_parse_to_value_fast(&buf, json.len()).unwrap();
+        assert_eq!(
+            standard,
+            fast,
+            "fast path mismatch for input: {}",
+            std::str::from_utf8(json).unwrap_or("<non-utf8>")
+        );
+    }
+
+    #[test]
+    fn fast_parse_simple_object() {
+        assert_fast_matches_standard(br#"{"name": "alice", "age": 30, "active": true}"#);
+    }
+
+    #[test]
+    fn fast_parse_nested() {
+        assert_fast_matches_standard(br#"{"a": [1, 2], "b": {"c": null}}"#);
+    }
+
+    #[test]
+    fn fast_parse_array() {
+        assert_fast_matches_standard(br#"[1, "two", 3.14, false, null]"#);
+    }
+
+    #[test]
+    fn fast_parse_scalars() {
+        assert_fast_matches_standard(b"42");
+        assert_fast_matches_standard(b"-99");
+        assert_fast_matches_standard(b"3.14");
+        assert_fast_matches_standard(b"true");
+        assert_fast_matches_standard(b"false");
+        assert_fast_matches_standard(b"null");
+        assert_fast_matches_standard(br#""hello""#);
+    }
+
+    #[test]
+    fn fast_parse_empty_containers() {
+        assert_fast_matches_standard(b"{}");
+        assert_fast_matches_standard(b"[]");
+    }
+
+    #[test]
+    fn fast_parse_escaped_strings() {
+        assert_fast_matches_standard(br#"{"s": "a\"b\\c\/d\n\t\r"}"#);
+    }
+
+    #[test]
+    fn fast_parse_large_integer() {
+        assert_fast_matches_standard(b"9223372036854775807");
+    }
+
+    #[test]
+    fn fast_parse_negative_integer() {
+        assert_fast_matches_standard(b"-9223372036854775808");
+    }
+
+    #[test]
+    fn fast_parse_uint64_beyond_i64() {
+        assert_fast_matches_standard(b"9223372036854775808");
+    }
+
+    #[test]
+    fn fast_parse_double_with_raw_text() {
+        // Verify raw number text is preserved through the tape walk
+        let json = b"75.80";
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value_fast(&buf, json.len()).unwrap();
+        match val {
+            Value::Double(d, raw) => {
+                assert!((d - 75.8).abs() < 1e-10);
+                assert_eq!(raw.as_deref(), Some("75.80"));
+            }
+            other => panic!("expected Double, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_parse_scientific_notation_preserved() {
+        let json = b"1e2";
+        let buf = pad_buffer(json);
+        let val = dom_parse_to_value_fast(&buf, json.len()).unwrap();
+        match val {
+            Value::Double(d, raw) => {
+                assert!((d - 100.0).abs() < 1e-10);
+                assert_eq!(raw.as_deref(), Some("1e2"));
+            }
+            other => panic!("expected Double, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_parse_deeply_nested_array() {
+        let json = b"[[[[1]]]]";
+        assert_fast_matches_standard(json);
+    }
+
+    #[test]
+    fn fast_parse_deeply_nested_object() {
+        assert_fast_matches_standard(br#"{"a":{"b":{"c":{"d":"deep"}}}}"#);
+    }
+
+    #[test]
+    fn fast_parse_mixed_whitespace() {
+        assert_fast_matches_standard(b"{ \"a\" : 1 , \"b\" : [ 2 , 3 ] }");
+    }
+
+    #[test]
+    fn fast_parse_bigint_fallback() {
+        // Numbers beyond u64 range should fall back to On-Demand path
+        let json = b"99999999999999999999999999999";
+        let buf = pad_buffer(json);
+        let standard = dom_parse_to_value(&buf, json.len()).unwrap();
+        let fast = dom_parse_to_value_fast(&buf, json.len()).unwrap();
+        assert_eq!(standard, fast);
+    }
+
+    #[test]
+    fn fast_parse_bigint_in_object_fallback() {
+        let json = br#"{"id":99999999999999999999999999999}"#;
+        let buf = pad_buffer(json);
+        let standard = dom_parse_to_value(&buf, json.len()).unwrap();
+        let fast = dom_parse_to_value_fast(&buf, json.len()).unwrap();
+        assert_eq!(standard, fast);
+    }
+
+    // --- flat buffer equivalence (tape walk vs on-demand) ---
+
+    #[test]
+    fn flat_buf_tape_walk_produces_same_bytes() {
+        // Verify the tape walk flat buffer decodes to the same Value as
+        // the On-Demand flat buffer
+        let json = br#"{"name":"alice","scores":[10,20.5],"active":true,"meta":null}"#;
+        let buf = pad_buffer(json);
+        let from_ondemand = dom_parse_to_value(&buf, json.len()).unwrap();
+        let flat_buf = dom_parse_to_flat_buf(&buf, json.len()).unwrap();
+        let from_tape = decode_value(flat_buf.as_bytes(), &mut 0).unwrap();
+        assert_eq!(from_ondemand, from_tape);
+    }
+
+    #[test]
+    fn fast_parse_error_on_invalid_json() {
+        let json = b"not valid json";
+        let buf = pad_buffer(json);
+        assert!(dom_parse_to_value_fast(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn fast_parse_error_on_empty_input() {
+        let json = b"";
+        let buf = pad_buffer(json);
+        assert!(dom_parse_to_value_fast(&buf, json.len()).is_err());
     }
 }

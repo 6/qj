@@ -460,6 +460,171 @@ int jx_dom_to_flat(const char* buf, size_t len,
     }
 }
 
+// ---------------------------------------------------------------------------
+// DOM tape walk — faster flat buffer construction.
+//
+// Uses dom::parser (SIMD-indexed tape + pre-unescaped strings) instead of
+// On-Demand API. A parallel cursor into the original JSON extracts raw
+// number text for literal preservation (e.g. "75.80" stays "75.80").
+//
+// ~2x faster than flatten_ondemand() because DOM tape is pre-indexed
+// and strings are already unescaped — no per-value type dispatch overhead.
+// ---------------------------------------------------------------------------
+
+// Check if a character is part of a JSON number literal.
+static bool is_number_char(char c) {
+    return (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+           c == '+' || c == 'e' || c == 'E';
+}
+
+// Advance cursor past whitespace, commas, and colons.
+static void advance_cursor(const char*& cursor) {
+    while (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' ||
+           *cursor == '\t' || *cursor == ',' || *cursor == ':')
+        cursor++;
+}
+
+// Advance cursor past a JSON string literal (handles escape sequences).
+static void skip_json_string(const char*& cursor) {
+    assert(*cursor == '"');
+    cursor++; // opening quote
+    while (*cursor != '"') {
+        if (*cursor == '\\') cursor++; // skip escaped char
+        cursor++;
+    }
+    cursor++; // closing quote
+}
+
+static void walk_element(std::vector<uint8_t>& flat,
+                          dom::element elem, const char*& cursor,
+                          int depth) {
+    if (depth > MAX_DEPTH) {
+        throw simdjson::simdjson_error(simdjson::DEPTH_ERROR);
+    }
+    advance_cursor(cursor);
+    switch (elem.type()) {
+        case dom::element_type::STRING: {
+            skip_json_string(cursor);
+            std::string_view sv = elem.get_string().value();
+            emit_string(flat, sv);
+            break;
+        }
+        case dom::element_type::INT64: {
+            // Skip raw number text in original JSON
+            if (*cursor == '-') cursor++;
+            while (*cursor >= '0' && *cursor <= '9') cursor++;
+            emit_u8(flat, TAG_INT);
+            emit_i64(flat, elem.get_int64().value());
+            break;
+        }
+        case dom::element_type::UINT64: {
+            const char* start = cursor;
+            while (*cursor >= '0' && *cursor <= '9') cursor++;
+            uint64_t u = elem.get_uint64().value();
+            if (u <= static_cast<uint64_t>(INT64_MAX)) {
+                emit_u8(flat, TAG_INT);
+                emit_i64(flat, static_cast<int64_t>(u));
+            } else {
+                // Beyond i64 range — emit as double with raw text
+                std::string_view raw(start, cursor - start);
+                emit_double_with_raw(flat, static_cast<double>(u), raw);
+            }
+            break;
+        }
+        case dom::element_type::DOUBLE: {
+            const char* start = cursor;
+            while (is_number_char(*cursor)) cursor++;
+            std::string_view raw(start, cursor - start);
+            emit_double_with_raw(flat, elem.get_double().value(), raw);
+            break;
+        }
+        case dom::element_type::BOOL: {
+            bool b = elem.get_bool().value();
+            cursor += b ? 4 : 5; // "true" or "false"
+            emit_u8(flat, TAG_BOOL);
+            emit_u8(flat, b ? 1 : 0);
+            break;
+        }
+        case dom::element_type::NULL_VALUE: {
+            cursor += 4; // "null"
+            emit_u8(flat, TAG_NULL);
+            break;
+        }
+        case dom::element_type::ARRAY: {
+            assert(*cursor == '[');
+            cursor++;
+            emit_u8(flat, TAG_ARRAY_START);
+            size_t count_pos = flat.size();
+            emit_u32(flat, 0); // placeholder
+            uint32_t count = 0;
+            for (dom::element child : dom::array(elem)) {
+                walk_element(flat, child, cursor, depth + 1);
+                count++;
+            }
+            patch_u32(flat, count_pos, count);
+            advance_cursor(cursor);
+            assert(*cursor == ']');
+            cursor++; // skip ']'
+            emit_u8(flat, TAG_ARRAY_END);
+            break;
+        }
+        case dom::element_type::OBJECT: {
+            assert(*cursor == '{');
+            cursor++;
+            emit_u8(flat, TAG_OBJECT_START);
+            size_t count_pos = flat.size();
+            emit_u32(flat, 0);
+            uint32_t count = 0;
+            for (auto field : dom::object(elem)) {
+                advance_cursor(cursor);
+                skip_json_string(cursor); // skip key in original JSON
+                emit_string(flat, field.key);
+                walk_element(flat, field.value, cursor, depth + 1);
+                count++;
+            }
+            patch_u32(flat, count_pos, count);
+            advance_cursor(cursor);
+            assert(*cursor == '}');
+            cursor++; // skip '}'
+            emit_u8(flat, TAG_OBJECT_END);
+            break;
+        }
+    }
+}
+
+// Parse a JSON document using DOM API and walk the tape to produce
+// a flat token buffer. Faster than jx_dom_to_flat (On-Demand based)
+// because DOM tape is pre-indexed with strings already unescaped.
+// Raw number text is extracted via a parallel cursor for literal fidelity.
+//
+// Falls back to On-Demand path (jx_dom_to_flat) if DOM parse fails with
+// NUM_ERROR (numbers beyond u64 range that DOM can't handle).
+int jx_dom_to_flat_via_tape(const char* buf, size_t len,
+                             uint8_t** out_ptr, size_t* out_len) {
+    try {
+        dom::parser parser;
+        dom::element root;
+        auto err = parser.parse(buf, len).get(root);
+        if (err) {
+            if (err == NUMBER_ERROR || err == BIGINT_ERROR) {
+                // DOM can't handle big integers — fall back to On-Demand
+                return jx_dom_to_flat(buf, len, out_ptr, out_len);
+            }
+            return static_cast<int>(err);
+        }
+        std::vector<uint8_t> flat;
+        flat.reserve(len);
+        const char* cursor = buf;
+        walk_element(flat, root, cursor, 0);
+        *out_len = flat.size();
+        *out_ptr = new uint8_t[flat.size()];
+        std::memcpy(*out_ptr, flat.data(), flat.size());
+        return 0;
+    } catch (simdjson::simdjson_error& e) {
+        return static_cast<int>(e.error());
+    } catch (...) { return -1; }
+}
+
 void jx_flat_buffer_free(uint8_t* ptr) {
     delete[] ptr;
 }

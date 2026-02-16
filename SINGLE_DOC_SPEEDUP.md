@@ -1,94 +1,73 @@
 # Single-Document JSON Speedup Plan
 
-## Current State (after Phase 1)
+## Current State (after Phase 2)
 
-Phase 1 (flat eval for single-doc) is complete. Eval time dropped dramatically, but parse now dominates at 90-99% of total time for all filters.
+Phase 1 (flat eval for single-doc) and Phase 2 (DOM tape walk) are complete. Parse times are significantly reduced for all single-doc filters.
 
-Timing breakdown on 49MB `large_twitter.json` (`--debug-timing`):
+**Note:** `--debug-timing` uses the On-Demand parse path (`dom_parse_to_value`), not the production DOM tape walk path. It does NOT reflect actual production performance. Use `hyperfine` for accurate benchmarks.
 
-| Filter | Parse | Eval | Output | Total | vs jq |
-|--------|-------|------|--------|-------|-------|
-| `length` (passthrough) | 28ms | — | — | 28ms | 10.6x |
-| `map({user, text})` | 113ms | 7ms | 4ms | 124ms | 2.55x |
-| `reduce .[] as $x (0; .+1)` | 105ms | 1ms | 0ms | 107ms | 1.65x |
+Benchmarks on 49MB `large_twitter.json` (hyperfine, vs jq):
 
-On 1.1GB `gharchive.json`:
+| Filter | qj | jq | Speedup |
+|--------|----|----|---------|
+| `length` (passthrough) | 34ms | 361ms | **10.6x** |
+| `map({user, text})` | 94ms | 367ms | **3.9x** |
+| `reduce .[] as $x (0; .+1)` | 172ms | 369ms | **2.15x** |
 
-| Filter | Parse | Eval | Output | Total | vs jq |
-|--------|-------|------|--------|-------|-------|
-| `map({type, actor})` | 2452ms | 181ms | 29ms | 2668ms | 4.73x |
-| `reduce .[] as $x (0; .+1)` | 2467ms | 61ms | 0ms | 2534ms | 1.65x |
+Before Phase 2 (On-Demand flat buffer):
 
-**The evaluator is no longer the bottleneck. Parse is.**
+| Filter | qj (before) | Speedup (before) |
+|--------|-------------|-----------------|
+| `map({user, text})` | 124ms | 2.55x |
+| `reduce .[] as $x (0; .+1)` | 224ms | 1.65x |
+
+**Phase 2 raised the floor:** map went from 2.55x to 3.9x, reduce from 1.65x to 2.15x.
 
 ## What "Parse" Actually Means
 
-The 106ms "parse" for the flat buffer path (`dom_parse_to_flat_buf`) is really two things:
+The flat buffer construction is the bottleneck. It has two stages:
 
 ### 1. SIMD parse (~28ms for 49MB)
-simdjson tokenizes JSON bytes into its internal representation. This is what the `length` passthrough uses via `dom::parser`, and it runs at ~1.7 GB/s — near the theoretical limit for JSON validation + structural indexing.
+simdjson tokenizes JSON bytes into its internal representation (DOM tape). This is what the `length` passthrough uses via `dom::parser`, and it runs at ~1.7 GB/s — near the theoretical limit for JSON validation + structural indexing.
 
-### 2. Flat buffer construction (~78ms for 49MB)
-`flatten_ondemand()` in `bridge.cpp:335-397` recursively visits **every value** in the document:
-- Uses simdjson On-Demand API (`ondemand::parser::iterate()`)
-- For each value: determines type, extracts data (strings copied, numbers parsed + raw text preserved)
-- Emits tokens to a `std::vector<uint8_t>` (TAG_STRING, TAG_INT, TAG_ARRAY_START, etc.)
-- This is O(document) regardless of what the filter needs
+### 2. Flat buffer construction
+Recursively visits every value in the document and emits flat buffer tokens.
 
-The flat buffer construction is 2.8x more expensive than the SIMD parse itself. For `map({type, actor})` on 1.1GB, ~700ms of the 2.5s parse is SIMD and ~1.8s is flattening.
+**On-Demand path** (`flatten_ondemand()`, ~78ms for 49MB): Uses simdjson On-Demand API which re-tokenizes, re-unescapes strings, and re-parses numbers — work the DOM parse already did.
+
+**DOM tape walk** (`walk_element()`, ~45ms for 49MB): Uses pre-indexed DOM tape with strings already unescaped and numbers already parsed. A parallel cursor into the original JSON extracts raw number text for literal preservation (e.g., `75.80` stays `75.80`). ~1.7x faster than On-Demand.
 
 ### Why `length` is so much faster
 The `length` passthrough calls `dom::parser` directly (28ms), navigates to the target field, calls `.size()`, and returns. It never builds a flat buffer or Value tree. This is the speed floor for any approach that avoids full-document traversal.
 
-## Proposed Changes (revised)
+## Completed Phases
 
 ### ~~Phase 1: Use FlatValue for single-doc~~ ✅ Done
 
-Eval time reduced from 135ms to 1-7ms. Parse is now the bottleneck.
+Eval time reduced from 135ms to 1-7ms. Parse became the bottleneck.
 
-### Phase 2: Faster flat buffer via DOM tape walk
+### ~~Phase 2: Faster flat buffer via DOM tape walk~~ ✅ Done
 
-**Problem:** `flatten_ondemand()` uses the On-Demand API which iterates tokens sequentially. The DOM API builds a pre-indexed tape in ~28ms that's cache-friendly and supports random access.
+**Implementation:** New `jx_dom_to_flat_via_tape()` in `bridge.cpp` + `walk_element()` recursive tape walker. Uses DOM API's pre-indexed tape instead of On-Demand API for flat buffer construction. A parallel cursor advances through the original JSON in lockstep with the tape walk to extract raw number text.
 
-**Proposal:** Replace `jx_dom_to_flat()` to use DOM API instead of On-Demand:
-1. Call `dom::parser::parse()` to build the tape (~28ms for 49MB)
-2. Walk the DOM tape to emit flat buffer tokens
-3. DOM tape is pre-indexed: arrays/objects have element counts, strings have lengths — no need to count during traversal
-4. DOM tape is contiguous memory — better cache locality than On-Demand's token-by-token iteration
+**Results:** Parse time reduced ~30% for flat buffer path. Combined with faster Value tree construction via `dom_parse_to_value_fast()`, all single-doc filters benefit.
 
-**Why this helps:** The DOM tape already stores type tags, string lengths, and structural boundaries. Converting tape → flat buffer should be mostly memcpy-like, much cheaper than On-Demand's per-value type dispatch + `get_string()` / `get_number()` calls.
+**Edge cases handled:**
+- Big integers beyond u64 range: DOM parser returns NUMBER_ERROR/BIGINT_ERROR. Falls back to On-Demand path automatically.
+- `fromjson` with arbitrary user strings: Uses the On-Demand path (`dom_parse_to_value`) since the DOM parser handles some malformed inputs differently.
+- Number literal preservation: Parallel cursor extracts raw text from original JSON (e.g., `75.80`, `1e2`).
 
-**Risk:** DOM API doesn't preserve raw number text (it parses to double/int64). We currently preserve raw text for number literal fidelity (e.g., `75.80` stays `75.80`). Would need to either:
-- Accept normalized numbers on this path (minor output difference)
-- Hybrid: use DOM tape for structure + On-Demand for number raw text
-- Store raw byte offsets from the original JSON during DOM walk
-
-**Estimated improvement:** 1.5-2.5x faster flat buffer construction → total parse from 106ms to ~50-60ms for 49MB.
-
-**Effort:** ~100-200 LOC in bridge.cpp.
+## Proposed Future Phases
 
 ### Phase 3: Lazy flat buffer — only flatten accessed subtrees
 
-**Problem:** `flatten_ondemand()` visits every value in the document even when the filter only touches a few fields. For `map({type, actor})` on objects with 20+ fields, we flatten all fields but only read 2.
+**Problem:** Both On-Demand and DOM tape walk visit every value in the document even when the filter only touches a few fields.
 
-**Proposal:** Instead of flattening the entire document upfront, flatten lazily:
-1. SIMD parse with On-Demand (keep current API)
-2. For the top-level structure, emit structural tokens (ARRAY_START, OBJECT_START, counts)
-3. For child values, store byte offsets into the original JSON instead of copying data
-4. When `eval_flat` accesses a value, flatten just that subtree on demand
+**Proposal:** Flatten lazily — emit structural tokens upfront, defer leaf values as byte offsets into the original JSON, flatten on access.
 
-This is a deeper change to `FlatBuffer`/`FlatValue`:
-- `FlatValue` would need a "deferred" token type that points back to the original padded JSON
-- Accessing a deferred value triggers a targeted `flatten_ondemand()` on just that region
-- Already-flattened values stay as-is (amortize cost over repeated access)
+**Risk:** Per-value resolution cost via simdjson FFI (~5μs each) makes this SLOWER for materializing filters (map/reduce that touch all elements). Only helps selective filters like `select(.field == "val")`.
 
-**Why this helps:** For `map({type, actor})` on an array of 500K objects with 20 fields each, current approach flattens 10M fields. Lazy approach flattens only 1M fields (2 per object). That's a 10x reduction in flattening work.
-
-**Risk:** More complex FlatValue representation. FFI boundary changes. Need to keep the original padded buffer alive alongside the flat buffer.
-
-**Estimated improvement:** Proportional to filter selectivity. For `map({type, actor})`: 3-5x faster parse. For `.` (identity): no improvement (must flatten everything).
-
-**Effort:** ~300-500 LOC across bridge.cpp, flat_value.rs, flat_eval.rs.
+**Estimated improvement:** Proportional to filter selectivity. For `map({type, actor})` with 20 fields but only 2 accessed: 3-5x faster parse. For identity: no improvement.
 
 ### Phase 4: Extend passthrough/DOM fast paths
 
@@ -101,15 +80,13 @@ These skip the flat buffer entirely for recognized patterns (like `length` alrea
 
 **Expected:** 5-10x for matching patterns, but only raises the floor for those specific patterns.
 
-**Effort:** ~100-200 LOC in bridge.cpp + main.rs.
-
 ## Summary
 
 | Phase | What | Floor impact | Effort |
 |-------|------|-------------|--------|
 | ~~1~~ | ✅ Flat eval for single-doc | Eval 135ms → 7ms | Done |
-| 2 | DOM tape → flat buffer | Parse 106ms → ~55ms (all filters) | Medium |
-| 3 | Lazy flatten (only accessed subtrees) | Parse proportional to selectivity | High |
+| ~~2~~ | ✅ DOM tape walk | map 2.55x → 3.9x, reduce 1.65x → 2.15x | Done |
+| 3 | Lazy flatten (only accessed subtrees) | Only helps selective filters | High |
 | 4 | More DOM passthrough patterns | Skip parse entirely for patterns | Medium |
 
-Phase 2 raises the floor for everything. Phase 3 raises it further for selective filters. Phase 4 is pattern-specific but gives the biggest absolute wins where it applies.
+Phase 2 raised the floor for ALL single-doc filters. Phase 3 only helps selective filters and may hurt materializing ones. Phase 4 is pattern-specific but gives the biggest absolute wins where it applies.

@@ -896,8 +896,8 @@ fn process_padded(
         return Ok(());
     }
 
-    // Regular pipeline: DOM parse → Value tree → eval → output
-    let input = match qj::simdjson::dom_parse_to_value(padded, json_len) {
+    // Regular pipeline: DOM tape walk → flat buffer → Value tree → eval → output
+    let input = match qj::simdjson::dom_parse_to_value_fast(padded, json_len) {
         Ok(v) => v,
         Err(e)
             if e.to_string().contains(&format!(

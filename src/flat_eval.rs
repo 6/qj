@@ -168,8 +168,10 @@ pub fn is_flat_safe(filter: &Filter) -> bool {
         Filter::Alternative(l, r) => is_flat_safe(l) && is_flat_safe(r),
         Filter::Try(inner) => is_flat_safe(inner),
         Filter::Not(inner) => is_flat_safe(inner),
-        // Reduce: source iterates via flat buffer, init/update use regular eval
-        Filter::Reduce(source, _, _, _) => is_flat_safe(source),
+        // Reduce is handled by eval_flat but not enabled for single-doc mode:
+        // the per-element to_value() calls are slower than building the full
+        // Value tree once. NDJSON path (which doesn't check is_flat_safe) still
+        // benefits from the flat eval reduce handler on small per-line documents.
         Filter::Builtin(name, args) if args.is_empty() => {
             matches!(name.as_str(), "length" | "type" | "keys")
         }
@@ -798,14 +800,13 @@ mod tests {
     }
 
     #[test]
-    fn flat_safe_map_reduce() {
+    fn flat_safe_map() {
         assert!(is_flat_safe(&parse_filter("map(.x)")));
         assert!(is_flat_safe(&parse_filter("map_values(.x)")));
-        assert!(is_flat_safe(&parse_filter("reduce .[] as $x (0; . + $x)")));
-        // reduce with nested flat-safe source
-        assert!(is_flat_safe(&parse_filter(
-            "reduce .items[] as $x (0; . + $x)"
-        )));
+        // reduce is NOT flat-safe for single-doc mode (per-element to_value()
+        // is slower than building the full Value tree once). The reduce handler
+        // in eval_flat still works for NDJSON which doesn't check is_flat_safe.
+        assert!(!is_flat_safe(&parse_filter("reduce .[] as $x (0; . + $x)")));
     }
 
     #[test]
