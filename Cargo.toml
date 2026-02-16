@@ -30,13 +30,21 @@ cc = "1"
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+iai-callgrind = "0.16"
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 
+[profile.bench]
+debug = true
+
 [[bench]]
 name = "parse_throughput"
+harness = false
+
+[[bench]]
+name = "eval_regression"
 harness = false
 
 [[bin]]

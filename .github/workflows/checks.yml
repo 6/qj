@@ -51,5 +51,11 @@ jobs:
       - name: Check benchmarks compile
         run: cargo bench --no-run
 
+      - name: Regression benchmarks (iai-callgrind)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get install -y valgrind
+          cargo bench --bench eval_regression
+
       - name: Shellcheck
         run: git ls-files '*.sh' | xargs shellcheck
