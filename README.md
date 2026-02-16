@@ -13,6 +13,8 @@
 
 **When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
+**Memory tradeoff.** qj trades memory for speed. jq streams one line at a time (~5 MB for any size NDJSON). qj streams in parallel windows — ~64 MB for NDJSON regardless of file size, or ~19 MB single-threaded. For single-document JSON, all tools load the full file. If memory is tight (small containers, embedded), jq is the safer choice.
+
 ## Quick start
 
 ```bash
@@ -44,8 +46,8 @@ Filters on the SIMD fast path show 66-150x gains. Evaluator-bound expressions sh
 ## How it works
 
 - **SIMD parsing.** C++ simdjson (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
-- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. On Apple Silicon, uses only performance cores to avoid E-core contention.
-- **Zero-copy I/O.** mmap — no heap allocation or memcpy for the input file.
+- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Streams in fixed-size windows (8–64 MB, scaled to core count) so memory stays flat regardless of file size. On Apple Silicon, uses only performance cores to avoid E-core contention.
+- **Zero-copy I/O.** mmap for single-document JSON — no heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
 
 ## Compatibility
