@@ -37,6 +37,10 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 - **Integration tests:** `tests/e2e.rs` — runs the `qj` binary against known JSON inputs.
   - Includes **jq conformance tests** (`assert_jq_compat`) that run both qj and jq and
     compare output. These run automatically when jq is installed, and are skipped otherwise.
+  - **Zero divergence policy:** Every e2e test that exercises jq-compatible behavior MUST
+    use `assert_jq_compat` to verify output matches jq exactly. Never write tests that
+    accept output differing from jq — if a fast path (passthrough, NDJSON, etc.) would
+    produce different results, it must fall back to the normal evaluator.
   - Includes **number literal preservation tests** — verifies trailing zeros, scientific
     notation, and raw text are preserved from JSON input through output.
 - **NDJSON tests:** `tests/ndjson.rs` — parallel NDJSON processing integration tests.
@@ -69,7 +73,11 @@ diff <(./target/release/qj '.field' test.json) <(jq '.field' test.json)
 
 ## Fuzzing
 
-Seven fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
+Eight fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
+
+Fuzz binaries use libfuzzer which runs indefinitely without `-max_total_time`.
+All `[[bin]]` entries have `test = false` to prevent `cargo test` from picking them up.
+Always run fuzz targets individually via `cargo +nightly fuzz run <target> -- -max_total_time=N`.
 
 **FFI boundary** (run after changing `src/simdjson/`):
 ```

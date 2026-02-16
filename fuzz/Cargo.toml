@@ -20,38 +20,46 @@ members = ["."]
 name = "fuzz_parse"
 path = "fuzz_targets/fuzz_parse.rs"
 doc = false
+test = false
 
 [[bin]]
 name = "fuzz_dom"
 path = "fuzz_targets/fuzz_dom.rs"
 doc = false
+test = false
 
 [[bin]]
 name = "fuzz_ndjson"
 path = "fuzz_targets/fuzz_ndjson.rs"
 doc = false
+test = false
 
 [[bin]]
 name = "fuzz_filter_parse"
 path = "fuzz_targets/fuzz_filter_parse.rs"
 doc = false
+test = false
 
 [[bin]]
 name = "fuzz_eval"
 path = "fuzz_targets/fuzz_eval.rs"
 doc = false
+test = false
 
 [[bin]]
 name = "fuzz_ndjson_diff"
 path = "fuzz_targets/fuzz_ndjson_diff.rs"
 doc = false
+test = false
 
 [[bin]]
 name = "fuzz_output"
 path = "fuzz_targets/fuzz_output.rs"
 doc = false
+test = false
 
 [[bin]]
 name = "fuzz_double_format"
 path = "fuzz_targets/fuzz_double_format.rs"
 doc = false
+test = false
