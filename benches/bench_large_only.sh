@@ -163,7 +163,7 @@ HAS_FAILURES=0
     echo "### NDJSON (${NDJSON_BASENAME}, ${NDJSON_MB}MB, parallel processing)"
     echo ""
 
-    # Build header with vs jq columns
+    # Build header with vs jq columns (only for qj variants)
     HEADER="| Filter |"
     SEP="|--------|"
     for name in "${NAMES[@]}"; do
@@ -173,7 +173,7 @@ HAS_FAILURES=0
             HEADER+=" $name |"
         fi
         SEP+="------:|"
-        if [ "$name" != "jq" ]; then
+        if [[ "$name" == qj* ]]; then
             HEADER+=" vs jq |"
             SEP+="------:|"
         fi
@@ -218,8 +218,8 @@ HAS_FAILURES=0
             else
                 row+=" $formatted |"
             fi
-            # Add vs jq column (skip for jq itself)
-            if [ "${NAMES[$t]}" != "jq" ]; then
+            # Add vs jq column (only for qj variants)
+            if [[ "${NAMES[$t]}" == qj* ]]; then
                 speedup=$(format_speedup "$jq_median" "$median")
                 if [ "${NAMES[$t]}" = "qj" ]; then
                     row+=" **$speedup** |"
