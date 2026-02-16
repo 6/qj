@@ -3,78 +3,62 @@
 ## Motivation
 
 qj's current value proposition is speed on JSON/NDJSON. Adding input format support
-for YAML, TOML, CSV/TSV, and Parquet would make it a "one tool for all structured data"
-option — jq syntax applied to any format, with speed as a bonus.
+for CSV/TSV, Parquet, and optionally YAML/TOML would make it a "one tool for all
+structured data" option — jq syntax applied to any format, with speed as a bonus.
 
 The architecture is clean: convert at the input boundary to `serde_json::Value`, then
 the entire filter/eval/output pipeline works unchanged.
 
 ---
 
-## Priority 1: YAML + TOML (trivial effort, table-stakes)
-
-### Why
-
-- Config files (k8s manifests, Cargo.toml, docker-compose.yml) are the most common
-  non-JSON structured data people work with.
-- Files are almost always <1MB, so speed is irrelevant — this is purely a convenience feature.
-- gojq already has `--yaml-input`/`--yaml-output`. Not having it makes qj look incomplete.
-- Both are ~10 lines of glue code each.
-
-### Implementation
-
-**YAML** — use `serde-saphyr` (replacement for deprecated `serde_yaml`):
-```rust
-let value: serde_json::Value = serde_saphyr::from_str(yaml_str)?;
-```
-Multi-document YAML (`---` separated) maps naturally to NDJSON-style per-document processing.
-
-**TOML** — use `toml` crate (v0.8+):
-```rust
-let toml_val: toml::Value = toml::from_str(toml_str)?;
-let json_val: serde_json::Value = serde_json::to_value(&toml_val)?;
-```
-Two-step because TOML's `Datetime` type has no JSON equivalent (becomes a string).
-
-### CLI flags
-
-```
-qj --yaml-input '.services.app.ports' docker-compose.yml
-qj --toml-input '.package.version' Cargo.toml
-```
-
-Or auto-detect from file extension (`.yml`/`.yaml` → YAML, `.toml` → TOML) with
-explicit flags as override. Auto-detect is what yq and dasel do.
-
-### Gotchas
-
-- **YAML "Norway problem"**: bare `NO`, `YES`, `on`, `off` are booleans in YAML 1.1.
-  Use `strict_booleans: true` in serde-saphyr to only recognize `true`/`false` (YAML 1.2).
-- **TOML datetimes**: become JSON strings, losing type information.
-- **TOML has no null**: missing keys are absent, not null. This is fine for querying.
-- **TOML NaN/Infinity**: floats support `nan`, `+inf`, `-inf` but JSON doesn't.
-  Need special handling (error or convert to null).
-
-### Dependency cost
-
-- `serde-saphyr`: ~302K SLoC across dep tree (heavier than expected, but acceptable).
-- `toml`: ~51K SLoC (moderate, pulls in `winnow` parser combinator).
-
-### Output support (optional, later)
-
-`--yaml-output` and `--toml-output` are nice-to-haves but lower priority than input.
-Output is just `serde_yaml::to_string(&value)` / `toml::to_string(&value)`.
-
----
-
-## Priority 2: CSV/TSV (moderate effort, good fit)
+## Priority 1: CSV/TSV (moderate effort, strongest fit)
 
 ### Why
 
 - CSV files are routinely GB-scale (log exports, analytics dumps, database extracts).
 - Row-based processing maps perfectly to qj's parallel NDJSON architecture.
 - No existing tool combines fast parallel CSV processing with jq query syntax.
-- The pitch: `qj --csv 'select(.status == "500") | {url, timestamp}' access_log.csv`
+- xsv/qsv have fragmented CLIs (separate subcommand for each operation); jq syntax
+  is more expressive and composable.
+
+### Use cases
+
+**Filter + reshape server access logs (GB-scale):**
+```bash
+# "Show me all 500 errors with their URLs and timestamps"
+# xsv: multiple piped subcommands
+xsv search -s status "500" access.csv | xsv select url,timestamp
+
+# qj: one composable expression
+qj --csv 'select(.status == "500") | {url, timestamp}' access.csv
+```
+
+**Computed fields from analytics exports:**
+```bash
+# "Calculate conversion rate per campaign from a marketing dump"
+qj --csv '{campaign: .campaign_name, rate: ((.conversions | tonumber) / (.clicks | tonumber) * 100)}' campaigns.csv
+```
+
+**Aggregate + filter database dumps:**
+```bash
+# "Unique error codes from a 2GB log export"
+qj --csv '.error_code' errors.csv | sort -u
+
+# "Filter rows with complex conditions"
+qj --csv 'select((.amount | tonumber) > 1000 and .currency == "USD") | {id, amount}' transactions.csv
+```
+
+**Convert CSV to NDJSON for downstream pipelines:**
+```bash
+# Every row becomes a JSON object — natural format bridge
+qj --csv '.' data.csv > data.ndjson
+```
+
+**TSV from command output (ps, lsof, database CLIs):**
+```bash
+# psql outputs TSV with \t separator
+psql -t -A -F $'\t' -c "SELECT id, name, email FROM users" | qj --tsv 'select(.email | endswith("@company.com"))'
+```
 
 ### Competitive landscape
 
@@ -155,7 +139,7 @@ always do `.age | tonumber` in the jq filter for explicit conversion.
 
 ---
 
-## Priority 3: Parquet (high differentiation, heavy dependency)
+## Priority 2: Parquet (high differentiation, heavy dependency)
 
 ### Why
 
@@ -164,6 +148,45 @@ always do `.age | tonumber` in the jq filter for explicit conversion.
   datafusion-cli, spark) which are a different paradigm entirely.
 - "Query Parquet files with jq syntax" is a unique and compelling pitch.
 - Data engineers who know jq but don't want to spin up duckdb for a quick query.
+
+### Use cases
+
+**Quick inspection of data warehouse exports:**
+```bash
+# "What does this Parquet file look like?" — no SQL, no Python, no notebooks
+qj '.' events.parquet | head -5
+
+# "What columns/keys are in this data?"
+qj 'keys' events.parquet | head -1
+```
+
+**Ad-hoc filtering without spinning up a query engine:**
+```bash
+# "Find all failed transactions from last month's export"
+# duckdb: install duckdb, write SQL, manage quoting
+duckdb -c "SELECT * FROM 'transactions.parquet' WHERE status = 'failed' AND amount > 1000"
+
+# qj: jq syntax you already know
+qj 'select(.status == "failed" and .amount > 1000)' transactions.parquet
+```
+
+**Pipeline bridge — Parquet to NDJSON:**
+```bash
+# Convert Parquet to NDJSON for tools that don't read Parquet
+qj -c '.' events.parquet | kafka-producer --topic events
+
+# Extract + reshape before sending downstream
+qj -c '{user: .user_id, event: .event_type, ts: .timestamp}' events.parquet | downstream-tool
+```
+
+**Data sampling and exploration in shell scripts:**
+```bash
+# "Sample 100 rows matching a condition" — useful in CI, data validation scripts
+qj 'select(.country == "US") | {id, name}' users.parquet | head -100
+
+# Combine with standard unix tools
+qj '.revenue' sales.parquet | sort -n | tail -10  # top 10 revenues
+```
 
 ### Competitive landscape
 
@@ -212,6 +235,98 @@ consider using a lighter Parquet reader like `parquet2` (deprecated but smaller)
 
 ---
 
+## Priority 3: YAML + TOML (trivial effort, checkbox feature)
+
+### Why
+
+- gojq already has `--yaml-input`/`--yaml-output`. Not having it makes qj look incomplete.
+- Both are ~10 lines of glue code each.
+- Trivial to implement, low maintenance burden.
+
+### Honest assessment
+
+Most YAML/TOML use cases are better served by grep, opening the file, or yq.
+Files are almost always <1MB, so speed is irrelevant. Nobody will switch to qj because
+it reads YAML. This is a checkbox feature, not a use case driver.
+
+### Use cases (where jq syntax is actually better than grep)
+
+**Multi-document k8s manifests — filter across many resources in one file:**
+```bash
+# "Find all Deployments with >2 replicas across a multi-doc manifest"
+# grep can't do this — it doesn't understand document boundaries or nesting
+qj --yaml-input 'select(.kind == "Deployment" and .spec.replicas > 2) | .metadata.name' k8s-resources.yaml
+```
+
+**Extract deeply nested values in shell scripts (more robust than grep):**
+```bash
+# grep breaks if indentation changes or value is on next line
+# jq syntax gives you structural access
+qj --toml-input '.workspace.members[]' Cargo.toml
+qj --yaml-input '.services | keys[]' docker-compose.yml
+```
+
+**Format conversion in pipelines:**
+```bash
+# YAML → JSON for tools that only accept JSON
+qj --yaml-input '.' config.yaml > config.json
+
+# Extract and reshape config for another tool
+qj --toml-input '{name: .package.name, deps: (.dependencies | keys)}' Cargo.toml
+```
+
+**Validating config values in CI:**
+```bash
+# "Fail CI if any service exposes port 80"
+qj --yaml-input '.services[] | select(.ports[]? | startswith("80:"))' docker-compose.yml && exit 1
+```
+
+### Implementation
+
+**YAML** — use `serde-saphyr` (replacement for deprecated `serde_yaml`):
+```rust
+let value: serde_json::Value = serde_saphyr::from_str(yaml_str)?;
+```
+Multi-document YAML (`---` separated) maps naturally to NDJSON-style per-document processing.
+
+**TOML** — use `toml` crate (v0.8+):
+```rust
+let toml_val: toml::Value = toml::from_str(toml_str)?;
+let json_val: serde_json::Value = serde_json::to_value(&toml_val)?;
+```
+Two-step because TOML's `Datetime` type has no JSON equivalent (becomes a string).
+
+### CLI flags
+
+```
+qj --yaml-input '.services.app.ports' docker-compose.yml
+qj --toml-input '.package.version' Cargo.toml
+```
+
+Or auto-detect from file extension (`.yml`/`.yaml` → YAML, `.toml` → TOML) with
+explicit flags as override.
+
+### Gotchas
+
+- **YAML "Norway problem"**: bare `NO`, `YES`, `on`, `off` are booleans in YAML 1.1.
+  Use `strict_booleans: true` in serde-saphyr to only recognize `true`/`false` (YAML 1.2).
+- **TOML datetimes**: become JSON strings, losing type information.
+- **TOML has no null**: missing keys are absent, not null. This is fine for querying.
+- **TOML NaN/Infinity**: floats support `nan`, `+inf`, `-inf` but JSON doesn't.
+  Need special handling (error or convert to null).
+
+### Dependency cost
+
+- `serde-saphyr`: ~302K SLoC across dep tree (heavier than expected, but acceptable).
+- `toml`: ~51K SLoC (moderate, pulls in `winnow` parser combinator).
+
+### Output support (optional, later)
+
+`--yaml-output` and `--toml-output` are nice-to-haves but lower priority than input.
+Output is just `serde_yaml::to_string(&value)` / `toml::to_string(&value)`.
+
+---
+
 ## Won't Do
 
 ### XML
@@ -252,20 +367,21 @@ Too niche. HCL is Terraform-specific. INI/properties are flat key-value, barely
 
 ## Implementation Order
 
-1. **YAML + TOML** — ship together, minimal effort, immediate broadening of appeal.
-2. **CSV/TSV** — moderate effort, good fit for qj's parallel architecture.
-3. **Parquet** — investigate dependency weight, ship as optional feature if feasible.
+1. **CSV/TSV** — strongest fit for qj's speed + parallelism story. Real large-file use cases.
+2. **Parquet** — highest differentiation. No jq-syntax competitor exists. Investigate dep weight.
+3. **YAML + TOML** — trivial to add, ship when convenient. Checkbox feature.
 
 ## CLI Design
 
 Prefer auto-detection from file extension with explicit override flags:
 
 ```
+qj '.col' file.csv           # auto-detect CSV
+qj '.col' file.tsv           # auto-detect TSV
+qj '.col' file.parquet       # auto-detect Parquet
 qj '.key' file.yaml          # auto-detect YAML
 qj '.key' file.toml          # auto-detect TOML
-qj '.col' file.csv           # auto-detect CSV
-qj '.col' file.parquet       # auto-detect Parquet
-qj --yaml-input '.key' -     # explicit for stdin
+qj --csv '.col' -            # explicit for stdin
 qj --csv --csv-separator ';' '.col' data.csv  # explicit with options
 ```
 
