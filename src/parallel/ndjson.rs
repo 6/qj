@@ -136,6 +136,50 @@ pub fn is_ndjson(buf: &[u8]) -> bool {
     false
 }
 
+/// Detect NDJSON by reading enough from a reader to find two complete lines.
+///
+/// Reads in growing chunks (64 KB → 128 KB → ... → 1 MB) until `is_ndjson`
+/// can make a determination or the limit is reached. This handles NDJSON
+/// files whose first line exceeds typical header sizes (e.g., GitHub Archive
+/// events average 5-10 KB per line, with outliers up to ~30 KB).
+///
+/// Starts at 64 KB because: `is_ndjson` needs two complete lines, and
+/// real-world NDJSON lines can be large (GitHub Archive, CloudTrail, etc.).
+/// A false negative here is costly — the file falls through to the single-doc
+/// path which loads the entire file into memory, negating streaming benefits.
+/// 64 KB is negligible memory cost (~0.001% of a typical NDJSON file) and
+/// covers two lines of up to 32 KB each.
+///
+/// The caller should `seek(0)` after this returns if NDJSON is detected.
+pub fn detect_ndjson_from_reader<R: Read>(reader: &mut R) -> Result<bool> {
+    // 64 KB covers most real-world NDJSON lines. Double up to 1 MB if needed.
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut filled = 0;
+
+    loop {
+        let cap = buf.len();
+        let bytes_read = read_fully(reader, &mut buf[filled..cap])?;
+        filled += bytes_read;
+
+        if is_ndjson(&buf[..filled]) {
+            return Ok(true);
+        }
+
+        // If we've read less than the buffer, we're at EOF.
+        if filled < buf.len() {
+            return Ok(false);
+        }
+
+        // Need more data to decide (first line might be very long).
+        // Stop at 1 MB — if the first two lines are > 1 MB, fall through
+        // to single-doc parsing (which will detect NDJSON on the full buffer).
+        if buf.len() >= 1024 * 1024 {
+            return Ok(false);
+        }
+        buf.resize(buf.len() * 2, 0);
+    }
+}
+
 /// Split buffer into chunks of approximately `target_size` bytes,
 /// always breaking at newline boundaries.
 pub fn split_chunks(buf: &[u8], target_size: usize) -> Vec<&[u8]> {
@@ -3810,5 +3854,196 @@ mod tests {
     fn string_pred_empty_string() {
         let pred = StringPred::StartsWith("".to_string());
         assert_eq!(evaluate_string_predicate(b"\"hello\"", &pred), Some(true));
+    }
+
+    // ---- detect_ndjson_from_reader tests ----
+
+    #[test]
+    fn detect_reader_basic_ndjson() {
+        let data = b"{\"a\":1}\n{\"b\":2}\n";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        assert!(detect_ndjson_from_reader(&mut cursor).unwrap());
+    }
+
+    #[test]
+    fn detect_reader_not_ndjson() {
+        let data = b"{\n  \"a\": 1\n}\n";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        assert!(!detect_ndjson_from_reader(&mut cursor).unwrap());
+    }
+
+    #[test]
+    fn detect_reader_single_object() {
+        let data = b"{\"a\":1}\n";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        assert!(!detect_ndjson_from_reader(&mut cursor).unwrap());
+    }
+
+    #[test]
+    fn detect_reader_empty() {
+        let data = b"";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        assert!(!detect_ndjson_from_reader(&mut cursor).unwrap());
+    }
+
+    #[test]
+    fn detect_reader_long_first_line() {
+        // First line is 10 KB (larger than old 4 KB / 8 KB buffers).
+        // This is the case that caused the gharchive regression.
+        let line1 = format!("{{\"data\":\"{}\"}}", "x".repeat(10000));
+        let line2 = "{\"b\":2}";
+        let data = format!("{}\n{}\n", line1, line2);
+        let mut cursor = std::io::Cursor::new(data.as_bytes());
+        assert!(detect_ndjson_from_reader(&mut cursor).unwrap());
+    }
+
+    #[test]
+    fn detect_reader_long_lines_both() {
+        // Both lines are ~50 KB each — requires buffer growth beyond 64 KB.
+        let line1 = format!("{{\"data\":\"{}\"}}", "a".repeat(50000));
+        let line2 = format!("{{\"data\":\"{}\"}}", "b".repeat(50000));
+        let data = format!("{}\n{}\n", line1, line2);
+        let mut cursor = std::io::Cursor::new(data.as_bytes());
+        assert!(detect_ndjson_from_reader(&mut cursor).unwrap());
+    }
+
+    #[test]
+    fn detect_reader_arrays() {
+        let data = b"[1,2,3]\n[4,5,6]\n";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        assert!(detect_ndjson_from_reader(&mut cursor).unwrap());
+    }
+
+    // ---- read_fully tests ----
+
+    #[test]
+    fn read_fully_exact() {
+        let data = b"hello world";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        let mut buf = [0u8; 5];
+        let n = read_fully(&mut cursor, &mut buf).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf, b"hello");
+    }
+
+    #[test]
+    fn read_fully_eof_before_full() {
+        let data = b"hi";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        let mut buf = [0u8; 10];
+        let n = read_fully(&mut cursor, &mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(&buf[..2], b"hi");
+    }
+
+    #[test]
+    fn read_fully_empty() {
+        let data = b"";
+        let mut cursor = std::io::Cursor::new(data.as_slice());
+        let mut buf = [0u8; 10];
+        let n = read_fully(&mut cursor, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    // ---- process_ndjson_streaming tests ----
+
+    fn make_filter(expr: &str) -> Filter {
+        crate::filter::parse(expr).expect("failed to parse filter")
+    }
+
+    fn streaming_output(input: &[u8], filter_expr: &str) -> (Vec<u8>, bool) {
+        let filter = make_filter(filter_expr);
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..OutputConfig::default()
+        };
+        let env = Env::empty();
+        let mut cursor = std::io::Cursor::new(input);
+        let mut out = Vec::new();
+        let ho = process_ndjson_streaming(&mut cursor, &filter, &config, &env, &mut out)
+            .expect("streaming failed");
+        (out, ho)
+    }
+
+    fn buffered_output(input: &[u8], filter_expr: &str) -> (Vec<u8>, bool) {
+        let filter = make_filter(filter_expr);
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..OutputConfig::default()
+        };
+        let env = Env::empty();
+        process_ndjson(input, &filter, &config, &env).expect("buffered failed")
+    }
+
+    #[test]
+    fn streaming_basic_identity() {
+        let input = b"{\"a\":1}\n{\"b\":2}\n";
+        let (out, ho) = streaming_output(input, ".");
+        assert!(ho);
+        assert_eq!(out, b"{\"a\":1}\n{\"b\":2}\n");
+    }
+
+    #[test]
+    fn streaming_field_extraction() {
+        let input = b"{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n";
+        let (out, ho) = streaming_output(input, ".a");
+        assert!(ho);
+        assert_eq!(out, b"1\n3\n");
+    }
+
+    #[test]
+    fn streaming_select() {
+        let input = b"{\"x\":1}\n{\"x\":2}\n{\"x\":3}\n";
+        let (out, ho) = streaming_output(input, "select(.x > 1) | .x");
+        assert!(ho);
+        assert_eq!(out, b"2\n3\n");
+    }
+
+    #[test]
+    fn streaming_empty_input() {
+        let (out, ho) = streaming_output(b"", ".");
+        assert!(!ho);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn streaming_single_line_no_trailing_newline() {
+        let input = b"{\"a\":1}";
+        let (out, ho) = streaming_output(input, ".a");
+        assert!(ho);
+        assert_eq!(out, b"1\n");
+    }
+
+    #[test]
+    fn streaming_matches_buffered() {
+        // Differential test: streaming and buffered should produce identical output.
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("{{\"i\":{},\"s\":\"val_{}\"}}", i, i))
+            .collect();
+        let input = lines.join("\n") + "\n";
+        let input = input.as_bytes();
+
+        for filter_expr in &[".", ".i", ".s", "select(.i > 50) | .s", "{i,s}"] {
+            let (stream_out, stream_ho) = streaming_output(input, filter_expr);
+            let (buf_out, buf_ho) = buffered_output(input, filter_expr);
+            assert_eq!(
+                stream_out, buf_out,
+                "output mismatch for filter: {}",
+                filter_expr
+            );
+            assert_eq!(
+                stream_ho, buf_ho,
+                "had_output mismatch for filter: {}",
+                filter_expr
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_handles_empty_lines() {
+        let input = b"{\"a\":1}\n\n{\"b\":2}\n\n";
+        let (stream_out, _) = streaming_output(input, ".");
+        let (buf_out, _) = buffered_output(input, ".");
+        assert_eq!(stream_out, buf_out);
     }
 }

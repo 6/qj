@@ -945,21 +945,19 @@ fn process_file(
     // into memory — O(window_size) instead of O(file_size).
     // Skip when debug-timing so we get the full pipeline breakdown.
     if !ctx.debug_timing {
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::Seek;
 
         let mut file =
             std::fs::File::open(path).with_context(|| format!("failed to open file: {path}"))?;
-        let mut header_buf = [0u8; 8192];
-        let header_len = file
-            .read(&mut header_buf)
-            .with_context(|| format!("failed to read file: {path}"))?;
 
-        if header_len == 0 {
-            return Ok(()); // Empty file
-        }
-
-        if ctx.force_jsonl || qj::parallel::ndjson::is_ndjson(&header_buf[..header_len]) {
-            file.seek(SeekFrom::Start(0))
+        // Detect NDJSON by peeking at the start of the file, then stream it
+        // in fixed-size windows to keep memory O(window_size) not O(file_size).
+        // force_jsonl skips detection (user asserted NDJSON via --jsonl).
+        if ctx.force_jsonl
+            || qj::parallel::ndjson::detect_ndjson_from_reader(&mut file)
+                .with_context(|| format!("failed to read file: {path}"))?
+        {
+            file.seek(std::io::SeekFrom::Start(0))
                 .with_context(|| format!("failed to seek file: {path}"))?;
             let ho = qj::parallel::ndjson::process_ndjson_streaming(
                 &mut file, ctx.filter, ctx.config, ctx.env, out,

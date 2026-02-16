@@ -95,7 +95,7 @@ Limited coverage but these are textbook patterns. Low complexity — pattern-mat
 
 ### NDJSON infrastructure
 
-- **Streaming NDJSON** — Currently entire file loaded via mmap before processing. Streaming fixed-size blocks (64MB) would enable >RAM files and reduce startup latency. Medium complexity: need to handle lines spanning block boundaries. (`src/parallel/ndjson.rs`, `src/main.rs`)
+- **Streaming NDJSON** — Replaced full-file mmap with 64 MB windowed reading. Each window's chunks processed in parallel (same Rayon approach), output written per-window, partial lines carried across boundaries. Peak RSS dropped from **2.6 GB → 109 MB** (multi-threaded) / **77 MB** (single-threaded) on 1.1 GB gharchive.ndjson. No speed regression (~54x vs jq). Detection uses `detect_ndjson_from_reader()` which reads in growing chunks (64 KB → 1 MB) to handle long first lines. (`src/parallel/ndjson.rs`, `src/main.rs`)
 - **Per-thread output buffers** — Currently each Rayon chunk produces `Vec<u8>`, all collected then concatenated. Pre-allocated per-thread buffers with ordered flush to stdout would avoid the final concatenation and reduce peak memory. Low-moderate complexity. (`src/parallel/ndjson.rs`)
 
 ### Lazy evaluation

@@ -163,9 +163,9 @@ production DOM tape walk path used by flat eval and the regular eval pipeline. I
 are ~30% higher than actual production performance. Use `hyperfine` for accurate benchmarks.
 
 ### Ad-hoc comparison
-Always warm cache with `--warmup 3`.
+Always warm cache with `--warmup 1` (sufficient for file I/O cache; higher values add time without improving accuracy).
 ```
-hyperfine --warmup 3 './target/release/qj ".field" test.json' 'jq ".field" test.json' 'jaq ".field" test.json'
+hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.json' 'jaq ".field" test.json'
 ```
 
 ### Important
