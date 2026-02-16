@@ -30,10 +30,13 @@ JSON="$DIR/gharchive${SUFFIX}.json"
 TMPDIR="$DIR/.gharchive${SUFFIX}_tmp"
 
 # --- Skip if files already exist with >1MB ---
+NDJSON_GZ="$DIR/gharchive${SUFFIX}.ndjson.gz"
 if [ -f "$NDJSON" ] && [ "$(wc -c < "$NDJSON" | tr -d ' ')" -gt 1000000 ] \
-   && [ -f "$JSON" ] && [ "$(wc -c < "$JSON" | tr -d ' ')" -gt 1000000 ]; then
+   && [ -f "$JSON" ] && [ "$(wc -c < "$JSON" | tr -d ' ')" -gt 1000000 ] \
+   && [ -f "$NDJSON_GZ" ] && [ "$(wc -c < "$NDJSON_GZ" | tr -d ' ')" -gt 1000 ]; then
     echo "gharchive.ndjson already exists ($(wc -c < "$NDJSON" | tr -d ' ') bytes)"
     echo "gharchive.json already exists ($(wc -c < "$JSON" | tr -d ' ') bytes)"
+    echo "gharchive.ndjson.gz already exists ($(wc -c < "$NDJSON_GZ" | tr -d ' ') bytes)"
     echo "Done. Delete to re-download."
     exit 0
 fi
@@ -75,6 +78,12 @@ awk 'BEGIN { printf "[" }
      END { printf "]\n" }' "$NDJSON" > "$JSON"
 JSON_SIZE=$(wc -c < "$JSON" | tr -d ' ')
 echo "  $JSON_SIZE bytes ($(( JSON_SIZE / 1024 / 1024 ))MB)"
+
+# --- Keep compressed NDJSON for benchmarking decompression ---
+echo "Building gharchive.ndjson.gz..."
+gzip -c "$NDJSON" > "$NDJSON_GZ"
+GZ_SIZE=$(wc -c < "$NDJSON_GZ" | tr -d ' ')
+echo "  $GZ_SIZE bytes ($(( GZ_SIZE / 1024 / 1024 ))MB)"
 
 # --- Cleanup temp files ---
 rm -rf "$TMPDIR"

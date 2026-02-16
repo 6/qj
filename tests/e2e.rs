@@ -4830,3 +4830,286 @@ fn ndjson_key_order_preserved() {
     let input = "{\"z\":1,\"a\":2}\n{\"b\":3,\"a\":4}\n{\"m\":5,\"c\":6,\"a\":7}\n";
     assert_jq_compat_ndjson(".", input);
 }
+
+// ===========================================================================
+// Transparent gzip/zstd decompression
+// ===========================================================================
+
+/// Helper: write content to a gzip-compressed temp file.
+fn write_gz(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+    let path = dir.join(name);
+    let file = std::fs::File::create(&path).unwrap();
+    let mut enc = GzEncoder::new(file, Compression::fast());
+    enc.write_all(content).unwrap();
+    enc.finish().unwrap();
+    path
+}
+
+/// Helper: write content to a zstd-compressed temp file.
+fn write_zst(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {
+    let path = dir.join(name);
+    let file = std::fs::File::create(&path).unwrap();
+    let mut enc = zstd::Encoder::new(file, 1).unwrap();
+    std::io::Write::write_all(&mut enc, content).unwrap();
+    enc.finish().unwrap();
+    path
+}
+
+#[test]
+fn gz_single_json_doc() {
+    let dir = std::env::temp_dir();
+    let path = write_gz(
+        &dir,
+        "qj_test_single.json.gz",
+        br#"{"name":"alice","age":30}"#,
+    );
+    let (code, stdout, stderr) = qj_exit(&["-c", ".name", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), r#""alice""#);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_ndjson() {
+    let dir = std::env::temp_dir();
+    let ndjson = b"{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n";
+    let path = write_gz(&dir, "qj_test_ndjson.ndjson.gz", ndjson);
+    let (code, stdout, stderr) = qj_exit(&["-c", ".n", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "1\n2\n3");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn zst_single_json_doc() {
+    let dir = std::env::temp_dir();
+    let path = write_zst(&dir, "qj_test_single.json.zst", br#"{"x":42}"#);
+    let (code, stdout, stderr) = qj_exit(&["-c", ".x", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "42");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn zst_ndjson() {
+    let dir = std::env::temp_dir();
+    let ndjson = b"{\"v\":\"a\"}\n{\"v\":\"b\"}\n";
+    let path = write_zst(&dir, "qj_test_ndjson.ndjson.zst", ndjson);
+    let (code, stdout, stderr) = qj_exit(&["-c", ".v", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "\"a\"\n\"b\"");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn zstd_extension() {
+    // .zstd extension also works
+    let dir = std::env::temp_dir();
+    let path = write_zst(&dir, "qj_test.json.zstd", br#"{"k":"v"}"#);
+    let (code, stdout, stderr) = qj_exit(&["-c", ".k", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), r#""v""#);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_empty_file() {
+    // An empty compressed file should produce no output (matches jq behavior)
+    let dir = std::env::temp_dir();
+    let path = write_gz(&dir, "qj_test_empty.json.gz", b"");
+    let (code, stdout, _stderr) = qj_exit(&["-c", ".", path.to_str().unwrap()], "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_select_filter() {
+    // select() filter on compressed NDJSON
+    let dir = std::env::temp_dir();
+    let ndjson =
+        b"{\"type\":\"push\",\"n\":1}\n{\"type\":\"pull\",\"n\":2}\n{\"type\":\"push\",\"n\":3}\n";
+    let path = write_gz(&dir, "qj_test_select.ndjson.gz", ndjson);
+    let (code, stdout, stderr) = qj_exit(
+        &[
+            "-c",
+            r#"select(.type == "push") | .n"#,
+            path.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "1\n3");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_slurp() {
+    // --slurp with compressed file
+    let dir = std::env::temp_dir();
+    let ndjson = b"1\n2\n3\n";
+    let path = write_gz(&dir, "qj_test_slurp.ndjson.gz", ndjson);
+    let (code, stdout, stderr) = qj_exit(&["-c", "-s", "add", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "6");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_raw_input() {
+    // --raw-input with compressed file
+    let dir = std::env::temp_dir();
+    let text = b"hello\nworld\n";
+    let path = write_gz(&dir, "qj_test_raw.txt.gz", text);
+    let (code, stdout, stderr) = qj_exit(&["-R", "-c", ".", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "\"hello\"\n\"world\"");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_raw_input_slurp() {
+    // --raw-input --slurp with compressed file
+    let dir = std::env::temp_dir();
+    let text = b"hello\nworld\n";
+    let path = write_gz(&dir, "qj_test_rs.txt.gz", text);
+    let (code, stdout, stderr) = qj_exit(&["-R", "-s", "-c", "length", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    // "hello\nworld\n" = 12 chars
+    assert_eq!(stdout.trim(), "12");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_multiple_files() {
+    // Multiple compressed files processed in order
+    let dir = std::env::temp_dir();
+    let p1 = write_gz(&dir, "qj_test_multi1.json.gz", br#"{"n":1}"#);
+    let p2 = write_gz(&dir, "qj_test_multi2.json.gz", br#"{"n":2}"#);
+    let (code, stdout, stderr) = qj_exit(
+        &["-c", ".n", p1.to_str().unwrap(), p2.to_str().unwrap()],
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "1\n2");
+    std::fs::remove_file(&p1).ok();
+    std::fs::remove_file(&p2).ok();
+}
+
+#[test]
+fn mixed_compressed_and_plain() {
+    // Mix of compressed and uncompressed files
+    let dir = std::env::temp_dir();
+    let p1 = write_gz(&dir, "qj_test_mix1.json.gz", br#"{"n":1}"#);
+    let p2 = dir.join("qj_test_mix2.json");
+    std::fs::write(&p2, r#"{"n":2}"#).unwrap();
+    let p3 = write_zst(&dir, "qj_test_mix3.json.zst", br#"{"n":3}"#);
+    let (code, stdout, stderr) = qj_exit(
+        &[
+            "-c",
+            ".n",
+            p1.to_str().unwrap(),
+            p2.to_str().unwrap(),
+            p3.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "1\n2\n3");
+    std::fs::remove_file(&p1).ok();
+    std::fs::remove_file(&p2).ok();
+    std::fs::remove_file(&p3).ok();
+}
+
+#[test]
+fn gz_passthrough_identity() {
+    // Passthrough fast path on compressed single doc
+    let dir = std::env::temp_dir();
+    let path = write_gz(&dir, "qj_test_pt.json.gz", br#"{"a":1,"b":2}"#);
+    let (code, stdout, stderr) = qj_exit(&["-c", ".", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), r#"{"a":1,"b":2}"#);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn gz_ndjson_large() {
+    // Larger NDJSON (enough lines to exercise parallel processing)
+    let dir = std::env::temp_dir();
+    let mut ndjson = Vec::new();
+    for i in 0..1000 {
+        ndjson.extend_from_slice(format!("{{\"i\":{i}}}\n").as_bytes());
+    }
+    let path = write_gz(&dir, "qj_test_large.ndjson.gz", &ndjson);
+    let (code, stdout, stderr) = qj_exit(&["-c", ".i", path.to_str().unwrap()], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1000);
+    assert_eq!(lines[0], "0");
+    assert_eq!(lines[999], "999");
+    std::fs::remove_file(&path).ok();
+}
+
+// ===========================================================================
+// Glob pattern expansion
+// ===========================================================================
+
+#[test]
+fn glob_expansion_gz() {
+    // Quoted glob pattern expands to matching files
+    let dir = std::env::temp_dir().join("qj_glob_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let _p1 = write_gz(&dir, "a.json.gz", br#"{"n":1}"#);
+    let _p2 = write_gz(&dir, "b.json.gz", br#"{"n":2}"#);
+    let _p3 = write_gz(&dir, "c.json.gz", br#"{"n":3}"#);
+    let pattern = dir.join("*.json.gz").to_str().unwrap().to_string();
+    let (code, stdout, stderr) = qj_exit(&["-c", ".n", &pattern], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let mut nums: Vec<i64> = stdout.trim().lines().map(|l| l.parse().unwrap()).collect();
+    nums.sort();
+    assert_eq!(nums, vec![1, 2, 3]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn glob_no_match_error() {
+    // Glob pattern with no matches should report an error
+    let (code, _stdout, stderr) = qj_exit(&["-c", ".", "/tmp/qj_nonexistent_glob_*.json"], "");
+    assert_ne!(code, 0);
+    assert!(stderr.contains("no files matched"), "stderr: {stderr}");
+}
+
+#[test]
+fn glob_mixed_with_literal() {
+    // Mix of literal files and glob patterns
+    let dir = std::env::temp_dir().join("qj_glob_mix_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let literal = dir.join("literal.json");
+    std::fs::write(&literal, r#"{"n":0}"#).unwrap();
+    let _p1 = write_gz(&dir, "x.json.gz", br#"{"n":1}"#);
+    let _p2 = write_gz(&dir, "y.json.gz", br#"{"n":2}"#);
+    let pattern = dir.join("*.json.gz").to_str().unwrap().to_string();
+    let (code, stdout, stderr) = qj_exit(&["-c", ".n", literal.to_str().unwrap(), &pattern], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let nums: Vec<i64> = stdout.trim().lines().map(|l| l.parse().unwrap()).collect();
+    // literal.json first (n=0), then glob matches sorted (n=1, n=2)
+    assert_eq!(nums, vec![0, 1, 2]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn glob_slurp() {
+    // Glob with --slurp collects all values
+    let dir = std::env::temp_dir().join("qj_glob_slurp_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let _p1 = write_gz(&dir, "a.json.gz", b"10");
+    let _p2 = write_gz(&dir, "b.json.gz", b"20");
+    let pattern = dir.join("*.json.gz").to_str().unwrap().to_string();
+    let (code, stdout, stderr) = qj_exit(&["-c", "-s", "add", &pattern], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "30");
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -184,5 +184,17 @@ Benchmarks require exclusive CPU access for reliable results.
 - `src/parallel/` — NDJSON chunk splitter + thread pool
 - `src/output/` — pretty-print, compact, raw output formatters
 - `src/input.rs` — input preprocessing (BOM stripping, JSON/NDJSON parsing into Values)
+- `src/decompress.rs` — transparent gzip (flate2) and zstd decompression, detected by file extension
 - `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks
 - `fuzz/` — cargo-fuzz targets for simdjson FFI boundary (requires nightly)
+
+## Compressed file support
+Transparent decompression for `.gz` (gzip) and `.zst`/`.zstd` (zstd) files, detected by extension.
+Glob patterns in file arguments are expanded (quote to bypass shell: `'data/*.json.gz'`).
+```
+qj '.actor.login' data/*.json.gz                      # shell-expanded
+qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'  # qj-expanded glob
+qj -s 'add' file1.json.zst file2.json                 # mixed compressed + plain
+```
+Compressed files are decompressed to memory, then processed through the normal NDJSON/JSON pipeline.
+For benchmarking, `benches/download_gharchive.sh` produces a `.ndjson.gz` alongside the uncompressed files.

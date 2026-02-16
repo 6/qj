@@ -5,6 +5,68 @@ use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// ---------------------------------------------------------------------------
+// File I/O helpers (compression-aware)
+// ---------------------------------------------------------------------------
+
+/// Expand glob patterns in file arguments.
+/// Literal paths are passed through unchanged. Arguments containing glob
+/// metacharacters (*, ?, [) are expanded against the filesystem.
+fn expand_globs(files: Vec<String>) -> Result<Vec<String>> {
+    let mut result = Vec::new();
+    for f in files {
+        // Literal file — use as-is (also handles the case where the filename
+        // happens to contain glob metacharacters, e.g. "file[1].json")
+        if std::path::Path::new(&f).exists() {
+            result.push(f);
+            continue;
+        }
+        if f.contains('*') || f.contains('?') || f.contains('[') {
+            let mut paths: Vec<String> = Vec::new();
+            for entry in glob::glob(&f).with_context(|| format!("invalid glob pattern: {f}"))? {
+                let path = entry.with_context(|| format!("failed to read glob match for: {f}"))?;
+                paths.push(path.display().to_string());
+            }
+            if paths.is_empty() {
+                anyhow::bail!("no files matched pattern: {f}");
+            }
+            paths.sort();
+            result.extend(paths);
+        } else {
+            // Not a glob, not an existing file — pass through (will fail at open)
+            result.push(f);
+        }
+    }
+    Ok(result)
+}
+
+/// Collect parsed JSON values from a file, decompressing if needed.
+/// Preserves mmap for uncompressed files via `read_padded_file`.
+fn collect_file_values(
+    path: &str,
+    force_jsonl: bool,
+    values: &mut Vec<qj::value::Value>,
+) -> Result<()> {
+    if qj::decompress::is_compressed(path) {
+        let bytes = qj::decompress::decompress_file(path)?;
+        qj::input::collect_values_from_buf(&bytes, force_jsonl, values)
+    } else {
+        let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
+            .with_context(|| format!("failed to read file: {path}"))?;
+        qj::input::collect_values_from_buf(&padded[..json_len], force_jsonl, values)
+    }
+}
+
+/// Read a file as a UTF-8 string, decompressing if needed.
+fn read_file_text(path: &str) -> Result<String> {
+    if qj::decompress::is_compressed(path) {
+        let bytes = qj::decompress::decompress_file(path)?;
+        String::from_utf8(bytes).with_context(|| format!("file is not valid UTF-8: {path}"))
+    } else {
+        std::fs::read_to_string(path).with_context(|| format!("failed to read file: {path}"))
+    }
+}
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -202,6 +264,9 @@ fn main() -> Result<()> {
             None => (".".to_string(), cli.files.clone()),
         }
     };
+
+    // Expand glob patterns in file arguments (e.g., '*.json.gz')
+    let input_files = expand_globs(input_files)?;
 
     let filter = match qj::filter::parse(&filter_str) {
         Ok(f) => f,
@@ -402,20 +467,12 @@ fn main() -> Result<()> {
             if !input_files.is_empty() {
                 for path in &input_files {
                     if cli.raw_input {
-                        let content = std::fs::read_to_string(path)
-                            .with_context(|| format!("failed to read file: {path}"))?;
+                        let content = read_file_text(path)?;
                         for line in content.lines() {
                             values.push(qj::value::Value::String(line.to_string()));
                         }
                     } else {
-                        let (padded, json_len) =
-                            qj::simdjson::read_padded_file(std::path::Path::new(path))
-                                .with_context(|| format!("failed to read file: {path}"))?;
-                        qj::input::collect_values_from_buf(
-                            &padded[..json_len],
-                            cli.jsonl,
-                            &mut values,
-                        )?;
+                        collect_file_values(path, cli.jsonl, &mut values)?;
                     }
                 }
             } else {
@@ -471,8 +528,7 @@ fn main() -> Result<()> {
             // into a single string (matches jq -Rs behavior)
             let mut all_text = String::new();
             for path in &input_files {
-                let content = std::fs::read_to_string(path)
-                    .with_context(|| format!("failed to read file: {path}"))?;
+                let content = read_file_text(path)?;
                 all_text.push_str(&content);
             }
             let input = qj::value::Value::String(all_text);
@@ -488,8 +544,7 @@ fn main() -> Result<()> {
             );
         } else {
             for path in &input_files {
-                let content = std::fs::read_to_string(path)
-                    .with_context(|| format!("failed to read file: {path}"))?;
+                let content = read_file_text(path)?;
                 process_raw_input(
                     &content,
                     false,
@@ -515,9 +570,7 @@ fn main() -> Result<()> {
             qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
         } else {
             for path in &input_files {
-                let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
-                    .with_context(|| format!("failed to read file: {path}"))?;
-                qj::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
+                collect_file_values(path, cli.jsonl, &mut values)?;
             }
         }
         let input = qj::value::Value::Array(Arc::new(values));
@@ -598,9 +651,7 @@ fn main() -> Result<()> {
             // Collect all values from all files; first becomes input, rest go to queue
             let mut values = Vec::new();
             for path in &input_files {
-                let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
-                    .with_context(|| format!("failed to read file: {path}"))?;
-                qj::input::collect_values_from_buf(&padded[..json_len], cli.jsonl, &mut values)?;
+                collect_file_values(path, cli.jsonl, &mut values)?;
             }
             let mut queue: std::collections::VecDeque<_> = values.into();
             let input = queue.pop_front().unwrap_or(qj::value::Value::Null);
@@ -940,6 +991,62 @@ fn process_file(
     had_error: &mut bool,
     last_was_falsy: &mut bool,
 ) -> Result<()> {
+    // ---- Compressed file handling ----
+    // Decompress to memory, then process the decompressed buffer.
+    // Can't use mmap or streaming NDJSON directly on compressed data.
+    if qj::decompress::is_compressed(path) {
+        let decompressed = qj::decompress::decompress_file(path)?;
+        if decompressed.is_empty() {
+            return Ok(());
+        }
+
+        // NDJSON: use Cursor as a Read+Seek source for the streaming processor
+        if !ctx.debug_timing && (ctx.force_jsonl || qj::parallel::ndjson::is_ndjson(&decompressed))
+        {
+            let mut cursor = std::io::Cursor::new(decompressed);
+            let ho = qj::parallel::ndjson::process_ndjson_streaming(
+                &mut cursor,
+                ctx.filter,
+                ctx.config,
+                ctx.env,
+                out,
+            )
+            .with_context(|| format!("failed to process NDJSON: {path}"))?;
+            *had_output |= ho;
+            return Ok(());
+        }
+
+        // Single doc: pad and process
+        let json_len = decompressed.len();
+        let padded = qj::simdjson::pad_buffer(&decompressed);
+
+        std::str::from_utf8(&padded[..json_len])
+            .with_context(|| format!("file is not valid UTF-8: {path}"))?;
+
+        if let Some(pt) = ctx.passthrough {
+            let handled = try_passthrough(&padded, json_len, pt, out, had_output)
+                .with_context(|| format!("passthrough failed: {path}"))?;
+            if handled {
+                return Ok(());
+            }
+        }
+
+        process_padded(
+            &padded,
+            json_len,
+            ctx.filter,
+            ctx.env,
+            out,
+            ctx.config,
+            had_output,
+            had_error,
+            last_was_falsy,
+        )?;
+        return Ok(());
+    }
+
+    // ---- Uncompressed file handling ----
+
     // Streaming NDJSON path: peek header to detect NDJSON, then stream from
     // the file descriptor in fixed-size windows. Avoids loading the full file
     // into memory — O(window_size) instead of O(file_size).

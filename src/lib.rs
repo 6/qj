@@ -1,3 +1,4 @@
+pub mod decompress;
 pub mod filter;
 pub mod flat_eval;
 pub mod flat_value;

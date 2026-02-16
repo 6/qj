@@ -22,6 +22,12 @@ cargo build --release
 ./target/release/qj '.name' data.json
 cat logs.jsonl | ./target/release/qj -c 'select(.level == "ERROR")'
 ./target/release/qj '.items[] | {id, name}' large.json
+
+# Compressed files — transparent gzip/zstd decompression
+./target/release/qj '.actor.login' gharchive-2024-01-15-*.json.gz
+
+# Glob patterns (quote to let qj expand instead of shell)
+./target/release/qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 ```
 
 ## Benchmarks
@@ -49,6 +55,7 @@ Filters on the SIMD fast path show 66-150x gains. Evaluator-bound expressions sh
 - **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Streams in fixed-size windows (8–64 MB, scaled to core count) so memory stays flat regardless of file size. On Apple Silicon, uses only performance cores to avoid E-core contention.
 - **Zero-copy I/O.** mmap for single-document JSON — no heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
+- **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed automatically based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).
 
 ## Compatibility
 
