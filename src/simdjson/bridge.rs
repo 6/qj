@@ -355,11 +355,17 @@ pub fn dom_field_length(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<
     Ok(Some(result))
 }
 
-/// DOM parse, navigate fields, and compute `keys` in C++.
+/// DOM parse, navigate fields, and compute `keys` or `keys_unsorted` in C++.
 ///
 /// Returns `Ok(Some(bytes))` on success (JSON array string), `Ok(None)` if the
 /// target type is unsupported (caller should fall back).
-pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Option<Vec<u8>>> {
+/// `sorted`: true for `keys` (alphabetically sorted), false for `keys_unsorted`.
+pub fn dom_field_keys(
+    buf: &[u8],
+    json_len: usize,
+    fields: &[&str],
+    sorted: bool,
+) -> Result<Option<Vec<u8>>> {
     assert!(
         buf.len() >= json_len + padding(),
         "buffer must include SIMDJSON_PADDING extra bytes"
@@ -368,10 +374,6 @@ pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Op
     let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
     let mut out_ptr: *mut c_char = std::ptr::null_mut();
     let mut out_len: usize = 0;
-    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
-    // (asserted above). field_ptrs/field_lens point to valid slices matching
-    // fields.len(). out_ptr/out_len are valid stack references. C++ heap-allocates
-    // the result.
     check(unsafe {
         jx_dom_field_keys(
             buf.as_ptr().cast(),
@@ -379,6 +381,7 @@ pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Op
             field_ptrs.as_ptr(),
             field_lens.as_ptr(),
             fields.len(),
+            if sorted { 1 } else { 0 },
             &mut out_ptr,
             &mut out_len,
         )
@@ -386,12 +389,92 @@ pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Op
     if out_len == usize::MAX - 1 {
         return Ok(None);
     }
-    // SAFETY: out_ptr was heap-allocated by jx_dom_field_keys above and out_len is
-    // its byte count. We copy into a Vec immediately; the pointer is freed on the
-    // next line.
     let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
-    // SAFETY: out_ptr was allocated by C++ new[] in jx_dom_field_keys and has not
-    // been freed yet. After this call the pointer is not used again.
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(Some(result))
+}
+
+/// DOM parse, navigate fields, and check `has("key")` in C++.
+///
+/// Returns `Ok(Some(true/false))` on success, `Ok(None)` if the target is not
+/// an object (caller should fall back).
+pub fn dom_field_has(
+    buf: &[u8],
+    json_len: usize,
+    fields: &[&str],
+    key: &str,
+) -> Result<Option<bool>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let field_ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast()).collect();
+    let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+    let mut result: i32 = 0;
+    let rc = unsafe {
+        jx_dom_field_has(
+            buf.as_ptr().cast(),
+            json_len,
+            field_ptrs.as_ptr(),
+            field_lens.as_ptr(),
+            fields.len(),
+            key.as_ptr().cast(),
+            key.len(),
+            &mut result,
+        )
+    };
+    if rc == -2 {
+        return Ok(None);
+    }
+    check(rc)?;
+    Ok(Some(result != 0))
+}
+
+/// Navigate prefix, iterate array, apply a builtin per element.
+///
+/// `op`: 0=length, 1=keys, 2=type, 3=has.
+/// `sorted`: for keys op, whether to sort.
+/// `arg`: for has op, the key name to check.
+///
+/// Returns `Ok(Some(bytes))` on success, `Ok(None)` if fallback needed.
+pub fn dom_array_map_builtin(
+    buf: &[u8],
+    json_len: usize,
+    prefix: &[&str],
+    op: i32,
+    sorted: bool,
+    arg: &str,
+    wrap_array: bool,
+) -> Result<Option<Vec<u8>>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let prefix_ptrs: Vec<*const c_char> = prefix.iter().map(|f| f.as_ptr().cast()).collect();
+    let prefix_lens: Vec<usize> = prefix.iter().map(|f| f.len()).collect();
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+    let rc = unsafe {
+        jx_dom_array_map_builtin(
+            buf.as_ptr().cast(),
+            json_len,
+            prefix_ptrs.as_ptr(),
+            prefix_lens.as_ptr(),
+            prefix.len(),
+            op,
+            if sorted { 1 } else { 0 },
+            arg.as_ptr().cast(),
+            arg.len(),
+            if wrap_array { 1 } else { 0 },
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
+    if rc == -2 {
+        return Ok(None);
+    }
+    check(rc)?;
+    let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
     unsafe { jx_minify_free(out_ptr) };
     Ok(Some(result))
 }
@@ -425,6 +508,60 @@ pub fn dom_array_map_field(
             prefix_ptrs.as_ptr(),
             prefix_lens.as_ptr(),
             prefix.len(),
+            field_ptrs.as_ptr(),
+            field_lens.as_ptr(),
+            fields.len(),
+            if wrap_array { 1 } else { 0 },
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
+    if rc == -2 {
+        return Ok(None);
+    }
+    check(rc)?;
+    let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(Some(result))
+}
+
+/// Navigate a prefix field chain, then iterate the target array and extract
+/// N fields per element, emitting `{"key1":v1,"key2":v2,...}` per element.
+///
+/// `keys`: pre-encoded JSON key strings (e.g. `"\"user\""`) — 1:1 with `fields`.
+/// `fields`: bare field names to extract from each element.
+///
+/// Returns `Ok(Some(bytes))` on success, `Ok(None)` if target is not an array (fallback).
+/// `wrap_array`: true = output as `[{...},{...},...]`, false = output `{...}\n{...}\n...`.
+pub fn dom_array_map_fields_obj(
+    buf: &[u8],
+    json_len: usize,
+    prefix: &[&str],
+    keys: &[&[u8]],
+    fields: &[&str],
+    wrap_array: bool,
+) -> Result<Option<Vec<u8>>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let prefix_ptrs: Vec<*const c_char> = prefix.iter().map(|f| f.as_ptr().cast()).collect();
+    let prefix_lens: Vec<usize> = prefix.iter().map(|f| f.len()).collect();
+    let key_ptrs: Vec<*const c_char> = keys.iter().map(|k| k.as_ptr().cast()).collect();
+    let key_lens: Vec<usize> = keys.iter().map(|k| k.len()).collect();
+    let field_ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast()).collect();
+    let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+    let rc = unsafe {
+        jx_dom_array_map_fields_obj(
+            buf.as_ptr().cast(),
+            json_len,
+            prefix_ptrs.as_ptr(),
+            prefix_lens.as_ptr(),
+            prefix.len(),
+            key_ptrs.as_ptr(),
+            key_lens.as_ptr(),
             field_ptrs.as_ptr(),
             field_lens.as_ptr(),
             fields.len(),
@@ -679,11 +816,13 @@ impl DomParser {
     }
 
     /// Compute keys of a field chain result.
+    /// `sorted`: true for `keys`, false for `keys_unsorted`.
     pub fn field_keys(
         &mut self,
         buf: &[u8],
         json_len: usize,
         fields: &[&str],
+        sorted: bool,
     ) -> Result<Option<Vec<u8>>> {
         assert!(
             buf.len() >= json_len + padding(),
@@ -703,6 +842,7 @@ impl DomParser {
                 ptrs.as_ptr(),
                 lens.as_ptr(),
                 fields.len(),
+                if sorted { 1 } else { 0 },
                 &mut out_ptr,
                 &mut out_len,
             )
@@ -716,6 +856,44 @@ impl DomParser {
         let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
         unsafe { jx_minify_free(out_ptr) };
         Ok(Some(result))
+    }
+
+    /// Check `has("key")` on a field chain result.
+    /// Returns `Ok(Some(true/false))` on success, `Ok(None)` if not an object (fallback).
+    pub fn field_has(
+        &mut self,
+        buf: &[u8],
+        json_len: usize,
+        fields: &[&str],
+        key: &str,
+    ) -> Result<Option<bool>> {
+        assert!(
+            buf.len() >= json_len + padding(),
+            "buffer must include SIMDJSON_PADDING extra bytes"
+        );
+        let ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast::<c_char>()).collect();
+        let lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+        let mut result: i32 = 0;
+
+        let rc = unsafe {
+            jx_dom_field_has_reuse(
+                self.ptr,
+                buf.as_ptr().cast(),
+                json_len,
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                fields.len(),
+                key.as_ptr().cast(),
+                key.len(),
+                &mut result,
+            )
+        };
+
+        if rc == -2 {
+            return Ok(None);
+        }
+        check(rc)?;
+        Ok(Some(result != 0))
     }
 }
 
@@ -1170,7 +1348,7 @@ mod tests {
     fn field_keys_object() {
         let json = br#"{"data":{"b":2,"a":1}}"#;
         let buf = pad_buffer(json);
-        let out = dom_field_keys(&buf, json.len(), &["data"])
+        let out = dom_field_keys(&buf, json.len(), &["data"], true)
             .unwrap()
             .unwrap();
         assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["a","b"]"#);
@@ -1180,7 +1358,7 @@ mod tests {
     fn field_keys_array() {
         let json = br#"{"items":["x","y","z"]}"#;
         let buf = pad_buffer(json);
-        let out = dom_field_keys(&buf, json.len(), &["items"])
+        let out = dom_field_keys(&buf, json.len(), &["items"], true)
             .unwrap()
             .unwrap();
         assert_eq!(std::str::from_utf8(&out).unwrap(), "[0,1,2]");
@@ -1190,8 +1368,20 @@ mod tests {
     fn field_keys_bare_object() {
         let json = br#"{"b":2,"a":1,"c":3}"#;
         let buf = pad_buffer(json);
-        let out = dom_field_keys(&buf, json.len(), &[]).unwrap().unwrap();
+        let out = dom_field_keys(&buf, json.len(), &[], true)
+            .unwrap()
+            .unwrap();
         assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["a","b","c"]"#);
+    }
+
+    #[test]
+    fn field_keys_unsorted() {
+        let json = br#"{"b":2,"a":1,"c":3}"#;
+        let buf = pad_buffer(json);
+        let out = dom_field_keys(&buf, json.len(), &[], false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["b","a","c"]"#);
     }
 
     #[test]
@@ -1199,7 +1389,7 @@ mod tests {
         let json = br#"{"name":"alice"}"#;
         let buf = pad_buffer(json);
         assert!(
-            dom_field_keys(&buf, json.len(), &["missing"])
+            dom_field_keys(&buf, json.len(), &["missing"], true)
                 .unwrap()
                 .is_none()
         );
@@ -1210,7 +1400,7 @@ mod tests {
         let json = br#"{"name":"alice"}"#;
         let buf = pad_buffer(json);
         assert!(
-            dom_field_keys(&buf, json.len(), &["name"])
+            dom_field_keys(&buf, json.len(), &["name"], true)
                 .unwrap()
                 .is_none()
         );
@@ -1220,7 +1410,7 @@ mod tests {
     fn field_keys_escaped_key() {
         let json = br#"{"data":{"key\"with\\escape":1}}"#;
         let buf = pad_buffer(json);
-        let out = dom_field_keys(&buf, json.len(), &["data"])
+        let out = dom_field_keys(&buf, json.len(), &["data"], true)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1275,7 +1465,10 @@ mod tests {
         let mut dp = DomParser::new().unwrap();
         let json = br#"{"data":{"x":1,"y":2}}"#;
         let buf = pad_buffer(json);
-        let out = dp.field_keys(&buf, json.len(), &["data"]).unwrap().unwrap();
+        let out = dp
+            .field_keys(&buf, json.len(), &["data"], true)
+            .unwrap()
+            .unwrap();
         assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["x","y"]"#);
     }
 
@@ -1303,7 +1496,11 @@ mod tests {
         let mut dp = DomParser::new().unwrap();
         let json = br#"{"n":42}"#;
         let buf = pad_buffer(json);
-        assert!(dp.field_keys(&buf, json.len(), &["n"]).unwrap().is_none());
+        assert!(
+            dp.field_keys(&buf, json.len(), &["n"], true)
+                .unwrap()
+                .is_none()
+        );
     }
 
     // --- dom_parse_to_value_fast (DOM tape walk) ---

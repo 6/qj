@@ -52,12 +52,14 @@ if [ ! -f "$NDJSON" ]; then
 fi
 
 # --- Filters (fast-path spectrum → evaluator-bound) ---
-FILTER_NAMES=("field" "length" "keys" "select" "select+field" "reshape" "evaluator" "evaluator (complex)")
-FILTER_FLAGS=("" "-c" "-c" "-c" "-c" "-c" "-c" "-c")
+FILTER_NAMES=("field" "length" "keys" "type" "has" "select" "select+field" "reshape" "evaluator" "evaluator (complex)")
+FILTER_FLAGS=("" "-c" "-c" "-c" "-c" "-c" "-c" "-c" "-c" "-c")
 FILTER_EXPRS=(
     '.actor.login'
     'length'
     'keys'
+    'type'
+    'has("actor")'
     'select(.type == "PushEvent")'
     'select(.type == "PushEvent") | .payload.size'
     '{type, repo: .repo.name, actor: .actor.login}'

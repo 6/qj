@@ -85,6 +85,21 @@ static JSON_FILTERS: &[BenchFilter] = &[
         expr: ".statuses|map(.user)",
     },
     BenchFilter {
+        name: "map + fields obj (compact)",
+        flags: &["-c"],
+        expr: ".statuses|map({user, text})",
+    },
+    BenchFilter {
+        name: "map + type (compact)",
+        flags: &["-c"],
+        expr: ".statuses|map(type)",
+    },
+    BenchFilter {
+        name: "map + length (compact)",
+        flags: &["-c"],
+        expr: ".statuses|map(length)",
+    },
+    BenchFilter {
         name: "select + construct",
         flags: &[],
         expr: ".statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}",
@@ -179,55 +194,10 @@ static JSON_FILTERS: &[BenchFilter] = &[
     },
 ];
 
-static NDJSON_FILTERS: &[BenchFilter] = &[
-    // --- Fast paths ---
-    BenchFilter {
-        name: "ndjson field",
-        flags: &[],
-        expr: ".name",
-    },
-    BenchFilter {
-        name: "ndjson length",
-        flags: &["-c"],
-        expr: "length",
-    },
-    BenchFilter {
-        name: "ndjson keys",
-        flags: &["-c"],
-        expr: "keys",
-    },
-    BenchFilter {
-        name: "ndjson select",
-        flags: &["-c"],
-        expr: "select(.score > 50)",
-    },
-    BenchFilter {
-        name: "ndjson multi-field obj",
-        flags: &["-c"],
-        expr: "{name,city,score}",
-    },
-    BenchFilter {
-        name: "ndjson select + field",
-        flags: &["-c"],
-        expr: "select(.active == true) | .name",
-    },
-    BenchFilter {
-        name: "ndjson select + construct",
-        flags: &["-c"],
-        expr: "select(.score > 50) | {name, score}",
-    },
-    // --- Normal (evaluator) path ---
-    BenchFilter {
-        name: "ndjson identity compact",
-        flags: &["-c"],
-        expr: ".",
-    },
-    BenchFilter {
-        name: "ndjson evaluator-bound",
-        flags: &["-c"],
-        expr: "{name, score_pct: ((.score / 100 * 100) | floor)}",
-    },
-];
+// NDJSON benchmarks live in bench_large_only.sh (runs against ~1.1GB GH Archive).
+// bench_tools.rs focuses on single-doc JSON where the data (large_twitter.json) is
+// large enough to show passthrough vs evaluator differences.
+static NDJSON_FILTERS: &[BenchFilter] = &[];
 
 // --- Tool discovery ---
 

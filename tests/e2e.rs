@@ -683,6 +683,314 @@ fn passthrough_map_field_pretty_not_affected() {
     assert_eq!(out, "[\n  1,\n  2\n]\n");
 }
 
+// --- Array map fields obj passthrough ---
+
+#[test]
+fn passthrough_map_fields_obj_basic() {
+    let out = qj_compact(
+        "map({name, age})",
+        r#"[{"name":"alice","age":30},{"name":"bob","age":25}]"#,
+    );
+    assert_eq!(
+        out.trim(),
+        r#"[{"name":"alice","age":30},{"name":"bob","age":25}]"#
+    );
+    assert_jq_compat(
+        "map({name, age})",
+        r#"[{"name":"alice","age":30},{"name":"bob","age":25}]"#,
+    );
+}
+
+#[test]
+fn passthrough_map_fields_obj_missing() {
+    let out = qj_compact("map({a, b})", r#"[{"a":1},{"b":2}]"#);
+    assert_eq!(out.trim(), r#"[{"a":1,"b":null},{"a":null,"b":2}]"#);
+    assert_jq_compat("map({a, b})", r#"[{"a":1},{"b":2}]"#);
+}
+
+#[test]
+fn passthrough_map_fields_obj_empty_array() {
+    let out = qj_compact("map({a, b})", "[]");
+    assert_eq!(out.trim(), "[]");
+    assert_jq_compat("map({a, b})", "[]");
+}
+
+#[test]
+fn passthrough_iterate_fields_obj_basic() {
+    let out = qj_compact(
+        ".[] | {name, age}",
+        r#"[{"name":"alice","age":30},{"name":"bob","age":25}]"#,
+    );
+    assert_eq!(
+        out.trim(),
+        "{\"name\":\"alice\",\"age\":30}\n{\"name\":\"bob\",\"age\":25}"
+    );
+    assert_jq_compat(
+        ".[] | {name, age}",
+        r#"[{"name":"alice","age":30},{"name":"bob","age":25}]"#,
+    );
+}
+
+#[test]
+fn passthrough_prefix_map_fields_obj() {
+    let out = qj_compact(
+        ".data | map({x, y})",
+        r#"{"data":[{"x":1,"y":2},{"x":3,"y":4}]}"#,
+    );
+    assert_eq!(out.trim(), r#"[{"x":1,"y":2},{"x":3,"y":4}]"#);
+    assert_jq_compat(
+        ".data | map({x, y})",
+        r#"{"data":[{"x":1,"y":2},{"x":3,"y":4}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_prefix_iterate_fields_obj() {
+    let out = qj_compact(
+        ".data[] | {x, y}",
+        r#"{"data":[{"x":1,"y":2},{"x":3,"y":4}]}"#,
+    );
+    assert_eq!(out.trim(), "{\"x\":1,\"y\":2}\n{\"x\":3,\"y\":4}");
+    assert_jq_compat(
+        ".data[] | {x, y}",
+        r#"{"data":[{"x":1,"y":2},{"x":3,"y":4}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_map_fields_obj_null_element() {
+    // null elements produce all-null obj (matches jq: .a on null is null)
+    let out = qj_compact("map({a, b})", r#"[{"a":1},null]"#);
+    assert_eq!(out.trim(), r#"[{"a":1,"b":null},{"a":null,"b":null}]"#);
+    assert_jq_compat("map({a, b})", r#"[{"a":1},null]"#);
+}
+
+#[test]
+fn passthrough_map_field_null_element() {
+    // Same for single-field: null element produces null
+    let out = qj_compact("map(.a)", r#"[{"a":1},null]"#);
+    assert_eq!(out.trim(), "[1,null]");
+    assert_jq_compat("map(.a)", r#"[{"a":1},null]"#);
+}
+
+#[test]
+fn passthrough_map_fields_obj_pretty_not_affected() {
+    // Without -c, passthrough should not activate
+    let out = qj("map({a})", r#"[{"a":1},{"a":2}]"#);
+    assert!(out.contains('\n') && out.contains("  "));
+}
+
+// --- Phase 5: Scalar builtin passthroughs ---
+
+#[test]
+fn passthrough_keys_unsorted_object() {
+    let out = qj_compact("keys_unsorted", r#"{"b":2,"a":1,"c":3}"#);
+    assert_eq!(out.trim(), r#"["b","a","c"]"#);
+    assert_jq_compat("keys_unsorted", r#"{"b":2,"a":1,"c":3}"#);
+}
+
+#[test]
+fn passthrough_keys_unsorted_field() {
+    let out = qj_compact(".data | keys_unsorted", r#"{"data":{"z":1,"m":2,"a":3}}"#);
+    assert_eq!(out.trim(), r#"["z","m","a"]"#);
+    assert_jq_compat(".data | keys_unsorted", r#"{"data":{"z":1,"m":2,"a":3}}"#);
+}
+
+#[test]
+fn passthrough_keys_unsorted_array() {
+    let out = qj_compact("keys_unsorted", r#"["x","y","z"]"#);
+    assert_eq!(out.trim(), "[0,1,2]");
+    assert_jq_compat("keys_unsorted", r#"["x","y","z"]"#);
+}
+
+#[test]
+fn passthrough_type_object() {
+    let out = qj_compact("type", r#"{"a":1}"#);
+    assert_eq!(out.trim(), r#""object""#);
+    assert_jq_compat("type", r#"{"a":1}"#);
+}
+
+#[test]
+fn passthrough_type_array() {
+    let out = qj_compact("type", r#"[1,2,3]"#);
+    assert_eq!(out.trim(), r#""array""#);
+    assert_jq_compat("type", r#"[1,2,3]"#);
+}
+
+#[test]
+fn passthrough_type_string() {
+    let out = qj_compact("type", r#""hello""#);
+    assert_eq!(out.trim(), r#""string""#);
+    assert_jq_compat("type", r#""hello""#);
+}
+
+#[test]
+fn passthrough_type_number() {
+    let out = qj_compact("type", "42");
+    assert_eq!(out.trim(), r#""number""#);
+    assert_jq_compat("type", "42");
+}
+
+#[test]
+fn passthrough_type_boolean() {
+    let out = qj_compact("type", "true");
+    assert_eq!(out.trim(), r#""boolean""#);
+    assert_jq_compat("type", "true");
+}
+
+#[test]
+fn passthrough_type_null() {
+    let out = qj_compact("type", "null");
+    assert_eq!(out.trim(), r#""null""#);
+    assert_jq_compat("type", "null");
+}
+
+#[test]
+fn passthrough_type_field() {
+    let out = qj_compact(".data | type", r#"{"data":[1,2]}"#);
+    assert_eq!(out.trim(), r#""array""#);
+    assert_jq_compat(".data | type", r#"{"data":[1,2]}"#);
+}
+
+#[test]
+fn passthrough_type_missing_field() {
+    let out = qj_compact(".missing | type", r#"{"a":1}"#);
+    assert_eq!(out.trim(), r#""null""#);
+    assert_jq_compat(".missing | type", r#"{"a":1}"#);
+}
+
+#[test]
+fn passthrough_has_true() {
+    let out = qj_compact(r#"has("name")"#, r#"{"name":"alice","age":30}"#);
+    assert_eq!(out.trim(), "true");
+    assert_jq_compat(r#"has("name")"#, r#"{"name":"alice","age":30}"#);
+}
+
+#[test]
+fn passthrough_has_false() {
+    let out = qj_compact(r#"has("missing")"#, r#"{"name":"alice"}"#);
+    assert_eq!(out.trim(), "false");
+    assert_jq_compat(r#"has("missing")"#, r#"{"name":"alice"}"#);
+}
+
+#[test]
+fn passthrough_has_field_prefix() {
+    let out = qj_compact(r#".data | has("x")"#, r#"{"data":{"x":1,"y":2}}"#);
+    assert_eq!(out.trim(), "true");
+    assert_jq_compat(r#".data | has("x")"#, r#"{"data":{"x":1,"y":2}}"#);
+}
+
+// --- Phase 6: Iterate + builtin passthroughs ---
+
+#[test]
+fn passthrough_map_length() {
+    let out = qj_compact("map(length)", r#"[{"a":1,"b":2},[1,2,3],"hello"]"#);
+    assert_eq!(out.trim(), "[2,3,5]");
+    assert_jq_compat("map(length)", r#"[{"a":1,"b":2},[1,2,3],"hello"]"#);
+}
+
+#[test]
+fn passthrough_iterate_length() {
+    let out = qj_compact(".[] | length", r#"[{"a":1},[1,2]]"#);
+    assert_eq!(out.trim(), "1\n2");
+    assert_jq_compat(".[] | length", r#"[{"a":1},[1,2]]"#);
+}
+
+#[test]
+fn passthrough_map_type() {
+    let out = qj_compact("map(type)", r#"[{"a":1},[1],42,"hi",true,null]"#);
+    assert_eq!(
+        out.trim(),
+        r#"["object","array","number","string","boolean","null"]"#
+    );
+    assert_jq_compat("map(type)", r#"[{"a":1},[1],42,"hi",true,null]"#);
+}
+
+#[test]
+fn passthrough_iterate_type() {
+    let out = qj_compact(".[] | type", r#"[1,"hello",null]"#);
+    assert_eq!(out.trim(), "\"number\"\n\"string\"\n\"null\"");
+    assert_jq_compat(".[] | type", r#"[1,"hello",null]"#);
+}
+
+#[test]
+fn passthrough_map_keys() {
+    let out = qj_compact("map(keys)", r#"[{"b":2,"a":1},{"z":3}]"#);
+    assert_eq!(out.trim(), r#"[["a","b"],["z"]]"#);
+    assert_jq_compat("map(keys)", r#"[{"b":2,"a":1},{"z":3}]"#);
+}
+
+#[test]
+fn passthrough_map_keys_unsorted() {
+    let out = qj_compact("map(keys_unsorted)", r#"[{"b":2,"a":1}]"#);
+    assert_eq!(out.trim(), r#"[["b","a"]]"#);
+    assert_jq_compat("map(keys_unsorted)", r#"[{"b":2,"a":1}]"#);
+}
+
+#[test]
+fn passthrough_map_has() {
+    let out = qj_compact(r#"map(has("a"))"#, r#"[{"a":1,"b":2},{"b":3}]"#);
+    assert_eq!(out.trim(), "[true,false]");
+    assert_jq_compat(r#"map(has("a"))"#, r#"[{"a":1,"b":2},{"b":3}]"#);
+}
+
+#[test]
+fn passthrough_prefix_map_length() {
+    let out = qj_compact(".items | map(length)", r#"{"items":[[1,2],[3]]}"#);
+    assert_eq!(out.trim(), "[2,1]");
+    assert_jq_compat(".items | map(length)", r#"{"items":[[1,2],[3]]}"#);
+}
+
+#[test]
+fn passthrough_prefix_iterate_type() {
+    let out = qj_compact(".items[] | type", r#"{"items":[1,"hello"]}"#);
+    assert_eq!(out.trim(), "\"number\"\n\"string\"");
+    assert_jq_compat(".items[] | type", r#"{"items":[1,"hello"]}"#);
+}
+
+// --- Phase 7: Syntactic variant detection ---
+
+#[test]
+fn passthrough_array_construct_field() {
+    let out = qj_compact("[.[] | .name]", r#"[{"name":"a"},{"name":"b"}]"#);
+    assert_eq!(out.trim(), r#"["a","b"]"#);
+    assert_jq_compat("[.[] | .name]", r#"[{"name":"a"},{"name":"b"}]"#);
+}
+
+#[test]
+fn passthrough_array_construct_fields_obj() {
+    let out = qj_compact("[.[] | {a, b}]", r#"[{"a":1,"b":2},{"a":3,"b":4}]"#);
+    assert_eq!(out.trim(), r#"[{"a":1,"b":2},{"a":3,"b":4}]"#);
+    assert_jq_compat("[.[] | {a, b}]", r#"[{"a":1,"b":2},{"a":3,"b":4}]"#);
+}
+
+#[test]
+fn passthrough_array_construct_builtin() {
+    let out = qj_compact("[.[] | length]", r#"[[1,2],[3]]"#);
+    assert_eq!(out.trim(), "[2,1]");
+    assert_jq_compat("[.[] | length]", r#"[[1,2],[3]]"#);
+}
+
+#[test]
+fn passthrough_array_construct_prefix_field() {
+    let out = qj_compact(
+        "[.items[] | .name]",
+        r#"{"items":[{"name":"a"},{"name":"b"}]}"#,
+    );
+    assert_eq!(out.trim(), r#"["a","b"]"#);
+    assert_jq_compat(
+        "[.items[] | .name]",
+        r#"{"items":[{"name":"a"},{"name":"b"}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_array_construct_prefix_builtin() {
+    let out = qj_compact("[.items[] | length]", r#"{"items":[[1,2],[3]]}"#);
+    assert_eq!(out.trim(), "[2,1]");
+    assert_jq_compat("[.items[] | length]", r#"{"items":[[1,2],[3]]}"#);
+}
+
 // --- Number literal preservation ---
 
 #[test]

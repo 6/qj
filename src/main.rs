@@ -673,11 +673,61 @@ fn try_passthrough(
                 None => Ok(false),
             }
         }
-        qj::filter::PassthroughPath::FieldKeys(fields) => {
+        qj::filter::PassthroughPath::FieldKeys { fields, sorted } => {
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-            match qj::simdjson::dom_field_keys(padded, json_len, &field_refs)? {
+            match qj::simdjson::dom_field_keys(padded, json_len, &field_refs, *sorted)? {
                 Some(result) => {
                     out.write_all(&result)?;
+                    out.write_all(b"\n")?;
+                    *had_output = true;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+        qj::filter::PassthroughPath::FieldType(fields) => {
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            // Get the raw JSON of the target, then check first byte for type
+            let raw = if field_refs.is_empty() {
+                // Bare `type` — check the input directly
+                // Skip leading whitespace
+                let first_byte = padded[..json_len]
+                    .iter()
+                    .find(|&&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+                match first_byte {
+                    Some(b'{') => "\"object\"",
+                    Some(b'[') => "\"array\"",
+                    Some(b'"') => "\"string\"",
+                    Some(b't') | Some(b'f') => "\"boolean\"",
+                    Some(b'n') => "\"null\"",
+                    Some(b'0'..=b'9') | Some(b'-') => "\"number\"",
+                    _ => return Ok(false),
+                }
+            } else {
+                let raw = qj::simdjson::dom_find_field_raw(padded, json_len, &field_refs)?;
+                let first_byte = raw.first();
+                match first_byte {
+                    Some(b'{') => "\"object\"",
+                    Some(b'[') => "\"array\"",
+                    Some(b'"') => "\"string\"",
+                    Some(b't') | Some(b'f') => "\"boolean\"",
+                    // "null" as raw result means field missing OR actual null value
+                    // jq returns "null" for both, so this is correct
+                    Some(b'n') => "\"null\"",
+                    Some(b'0'..=b'9') | Some(b'-') => "\"number\"",
+                    _ => return Ok(false),
+                }
+            };
+            out.write_all(raw.as_bytes())?;
+            out.write_all(b"\n")?;
+            *had_output = true;
+            Ok(true)
+        }
+        qj::filter::PassthroughPath::FieldHas { fields, key } => {
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            match qj::simdjson::dom_field_has(padded, json_len, &field_refs, key)? {
+                Some(result) => {
+                    out.write_all(if result { b"true" } else { b"false" })?;
                     out.write_all(b"\n")?;
                     *had_output = true;
                     Ok(true)
@@ -697,6 +747,73 @@ fn try_passthrough(
                 json_len,
                 &prefix_refs,
                 &field_refs,
+                *wrap_array,
+            )? {
+                Some(result) => {
+                    out.write_all(&result)?;
+                    out.write_all(b"\n")?;
+                    *had_output = true;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+        qj::filter::PassthroughPath::ArrayMapFieldsObj {
+            prefix,
+            entries,
+            wrap_array,
+        } => {
+            let prefix_refs: Vec<&str> = prefix.iter().map(|s| s.as_str()).collect();
+            let field_refs: Vec<&str> = entries.iter().map(|s| s.as_str()).collect();
+            // Pre-encode JSON keys: "fieldname" (with quotes)
+            let json_keys: Vec<Vec<u8>> = entries
+                .iter()
+                .map(|s| {
+                    let mut k = Vec::with_capacity(s.len() + 2);
+                    k.push(b'"');
+                    k.extend_from_slice(s.as_bytes());
+                    k.push(b'"');
+                    k
+                })
+                .collect();
+            let key_refs: Vec<&[u8]> = json_keys.iter().map(|k| k.as_slice()).collect();
+            match qj::simdjson::dom_array_map_fields_obj(
+                padded,
+                json_len,
+                &prefix_refs,
+                &key_refs,
+                &field_refs,
+                *wrap_array,
+            )? {
+                Some(result) => {
+                    out.write_all(&result)?;
+                    out.write_all(b"\n")?;
+                    *had_output = true;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+        qj::filter::PassthroughPath::ArrayMapBuiltin {
+            prefix,
+            op,
+            wrap_array,
+        } => {
+            let prefix_refs: Vec<&str> = prefix.iter().map(|s| s.as_str()).collect();
+            let (op_code, sorted, arg) = match op {
+                qj::filter::PassthroughBuiltin::Length => (0, true, ""),
+                qj::filter::PassthroughBuiltin::Keys => (1, true, ""),
+                qj::filter::PassthroughBuiltin::KeysUnsorted => (1, false, ""),
+                qj::filter::PassthroughBuiltin::Type => (2, false, ""),
+                qj::filter::PassthroughBuiltin::Has(key) => (3, false, key.as_str()),
+            };
+            match qj::simdjson::dom_array_map_builtin(
+                padded,
+                json_len,
+                &prefix_refs,
+                op_code,
+                sorted,
+                arg,
                 *wrap_array,
             )? {
                 Some(result) => {
@@ -764,8 +881,12 @@ fn process_file(
                 let label = match pt {
                     qj::filter::PassthroughPath::Identity => "minify",
                     qj::filter::PassthroughPath::FieldLength(_) => "length",
-                    qj::filter::PassthroughPath::FieldKeys(_) => "keys",
+                    qj::filter::PassthroughPath::FieldKeys { .. } => "keys",
+                    qj::filter::PassthroughPath::FieldType(_) => "type",
+                    qj::filter::PassthroughPath::FieldHas { .. } => "has",
                     qj::filter::PassthroughPath::ArrayMapField { .. } => "map_field",
+                    qj::filter::PassthroughPath::ArrayMapFieldsObj { .. } => "map_fields_obj",
+                    qj::filter::PassthroughPath::ArrayMapBuiltin { .. } => "map_builtin",
                 };
                 eprintln!("--- debug-timing ({label} passthrough): {path} ({mb:.1} MB) ---");
                 print_timing_line("read", t_read, total);

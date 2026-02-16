@@ -265,6 +265,16 @@ impl Env {
     }
 }
 
+/// Builtin operations for `map(builtin)` / `.[] | builtin` passthrough.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PassthroughBuiltin {
+    Length,
+    Keys,
+    KeysUnsorted,
+    Type,
+    Has(String),
+}
+
 /// Detected passthrough-eligible filter patterns that can bypass the
 /// full DOM parse → Value → eval → output pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,13 +284,31 @@ pub enum PassthroughPath {
     /// `.field | length` or bare `length` — compute length in C++.
     FieldLength(Vec<String>),
     /// `.field | keys` or bare `keys` — compute keys in C++.
-    FieldKeys(Vec<String>),
+    FieldKeys { fields: Vec<String>, sorted: bool },
+    /// `.field | type` or bare `type` — determine JSON type.
+    FieldType(Vec<String>),
+    /// `.field | has("key")` or bare `has("key")` — check key existence.
+    FieldHas { fields: Vec<String>, key: String },
     /// `map(.field)` or `.[] | .field` — iterate root array, extract field per element.
     /// `prefix`: field chain to navigate from root to reach the array (empty for root).
     /// `wrap_array`: true for `map` (output `[v1,v2,...]`), false for `.[]` (one per line).
     ArrayMapField {
         prefix: Vec<String>,
         fields: Vec<String>,
+        wrap_array: bool,
+    },
+    /// `map({f1, f2})` or `.[] | {f1, f2}` — iterate array, extract N fields per element,
+    /// emit `{"f1":v1,"f2":v2}` per element. Only simple same-name shorthand fields.
+    /// `entries`: (key_name, field_name) pairs — key == field for shorthand.
+    ArrayMapFieldsObj {
+        prefix: Vec<String>,
+        entries: Vec<String>,
+        wrap_array: bool,
+    },
+    /// `map(builtin)` or `.[] | builtin` — iterate array, apply builtin per element.
+    ArrayMapBuiltin {
+        prefix: Vec<String>,
+        op: PassthroughBuiltin,
         wrap_array: bool,
     },
 }
@@ -292,8 +320,12 @@ impl PassthroughPath {
         match self {
             PassthroughPath::Identity => true,
             PassthroughPath::FieldLength(_) => false,
-            PassthroughPath::FieldKeys(_) => false,
+            PassthroughPath::FieldKeys { .. } => false,
+            PassthroughPath::FieldType(_) => false,
+            PassthroughPath::FieldHas { .. } => false,
             PassthroughPath::ArrayMapField { .. } => true,
+            PassthroughPath::ArrayMapFieldsObj { .. } => true,
+            PassthroughPath::ArrayMapBuiltin { .. } => true,
         }
     }
 }
@@ -333,39 +365,198 @@ pub(crate) fn decompose_field_builtin(filter: &Filter) -> Option<(Vec<String>, &
     }
 }
 
+/// Check if an ObjectConstruct is a simple shorthand `{f1, f2, ...}` where each
+/// pair is `ObjKey::Name(f) / Filter::Field(f)` (key == field, single-level).
+/// Returns the field names on success.
+fn try_simple_obj_shorthand(filter: &Filter) -> Option<Vec<String>> {
+    let pairs = match filter {
+        Filter::ObjectConstruct(pairs) => pairs,
+        _ => return None,
+    };
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(pairs.len());
+    for (key, val) in pairs {
+        match (key, val.as_ref()) {
+            (ObjKey::Name(k), Filter::Field(f)) if k == f => {
+                entries.push(k.clone());
+            }
+            _ => return None,
+        }
+    }
+    Some(entries)
+}
+
+/// Try to detect a builtin suitable for passthrough from a filter.
+/// Returns the builtin op if the filter is a zero-arg builtin (or has("literal")).
+fn try_passthrough_builtin(filter: &Filter) -> Option<PassthroughBuiltin> {
+    match filter {
+        Filter::Builtin(name, args) => match (name.as_str(), args.as_slice()) {
+            ("length", []) => Some(PassthroughBuiltin::Length),
+            ("keys", []) => Some(PassthroughBuiltin::Keys),
+            ("keys_unsorted", []) => Some(PassthroughBuiltin::KeysUnsorted),
+            ("type", []) => Some(PassthroughBuiltin::Type),
+            ("has", [Filter::Literal(crate::value::Value::String(s))]) => {
+                Some(PassthroughBuiltin::Has(s.clone()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Check if a parsed filter is eligible for a fast passthrough path.
 pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
     match filter {
         Filter::Identity => Some(PassthroughPath::Identity),
-        // Bare `length` or `keys` (no field prefix)
-        Filter::Builtin(name, args) if args.is_empty() => match name.as_str() {
-            "length" => Some(PassthroughPath::FieldLength(vec![])),
-            "keys" => Some(PassthroughPath::FieldKeys(vec![])),
-            _ => None,
-        },
-        // map(.field) or map(.field.chain)
-        Filter::Builtin(name, args) if name == "map" && args.len() == 1 => {
-            let mut fields = Vec::new();
-            if collect_field_chain(&args[0], &mut fields) && !fields.is_empty() {
-                Some(PassthroughPath::ArrayMapField {
-                    prefix: vec![],
-                    fields,
-                    wrap_array: true,
-                })
-            } else {
-                None
+        // Bare builtins (no field prefix): length, keys, keys_unsorted, type, has("f")
+        Filter::Builtin(name, args) => {
+            match (name.as_str(), args.as_slice()) {
+                ("length", []) => Some(PassthroughPath::FieldLength(vec![])),
+                ("keys", []) => Some(PassthroughPath::FieldKeys {
+                    fields: vec![],
+                    sorted: true,
+                }),
+                ("keys_unsorted", []) => Some(PassthroughPath::FieldKeys {
+                    fields: vec![],
+                    sorted: false,
+                }),
+                ("type", []) => Some(PassthroughPath::FieldType(vec![])),
+                ("has", [Filter::Literal(crate::value::Value::String(s))]) => {
+                    Some(PassthroughPath::FieldHas {
+                        fields: vec![],
+                        key: s.clone(),
+                    })
+                }
+                // map(.field) or map(.field.chain) or map({f1, f2}) or map(builtin)
+                ("map", [inner]) => {
+                    let mut fields = Vec::new();
+                    if collect_field_chain(inner, &mut fields) && !fields.is_empty() {
+                        return Some(PassthroughPath::ArrayMapField {
+                            prefix: vec![],
+                            fields,
+                            wrap_array: true,
+                        });
+                    }
+                    if let Some(entries) = try_simple_obj_shorthand(inner) {
+                        return Some(PassthroughPath::ArrayMapFieldsObj {
+                            prefix: vec![],
+                            entries,
+                            wrap_array: true,
+                        });
+                    }
+                    if let Some(op) = try_passthrough_builtin(inner) {
+                        return Some(PassthroughPath::ArrayMapBuiltin {
+                            prefix: vec![],
+                            op,
+                            wrap_array: true,
+                        });
+                    }
+                    None
+                }
+                _ => None,
             }
         }
+        // [.[] | expr] or [.prefix[] | expr] — syntactic variant of map(expr)
+        Filter::ArrayConstruct(inner) => {
+            if let Filter::Pipe(lhs, rhs) = inner.as_ref() {
+                // Check for bare [.[] | expr]
+                if matches!(lhs.as_ref(), Filter::Iterate) {
+                    let mut fields = Vec::new();
+                    if collect_field_chain(rhs, &mut fields) && !fields.is_empty() {
+                        return Some(PassthroughPath::ArrayMapField {
+                            prefix: vec![],
+                            fields,
+                            wrap_array: true,
+                        });
+                    }
+                    if let Some(entries) = try_simple_obj_shorthand(rhs) {
+                        return Some(PassthroughPath::ArrayMapFieldsObj {
+                            prefix: vec![],
+                            entries,
+                            wrap_array: true,
+                        });
+                    }
+                    if let Some(op) = try_passthrough_builtin(rhs) {
+                        return Some(PassthroughPath::ArrayMapBuiltin {
+                            prefix: vec![],
+                            op,
+                            wrap_array: true,
+                        });
+                    }
+                }
+                // Check for [.prefix[] | expr] — lhs is Pipe(prefix_chain, Iterate)
+                if let Filter::Pipe(inner_lhs, inner_rhs) = lhs.as_ref()
+                    && matches!(inner_rhs.as_ref(), Filter::Iterate)
+                {
+                    let mut prefix = Vec::new();
+                    if collect_field_chain(inner_lhs, &mut prefix) && !prefix.is_empty() {
+                        let mut fields = Vec::new();
+                        if collect_field_chain(rhs, &mut fields) && !fields.is_empty() {
+                            return Some(PassthroughPath::ArrayMapField {
+                                prefix,
+                                fields,
+                                wrap_array: true,
+                            });
+                        }
+                        if let Some(entries) = try_simple_obj_shorthand(rhs) {
+                            return Some(PassthroughPath::ArrayMapFieldsObj {
+                                prefix,
+                                entries,
+                                wrap_array: true,
+                            });
+                        }
+                        if let Some(op) = try_passthrough_builtin(rhs) {
+                            return Some(PassthroughPath::ArrayMapBuiltin {
+                                prefix,
+                                op,
+                                wrap_array: true,
+                            });
+                        }
+                    }
+                }
+            }
+            None
+        }
         Filter::Pipe(lhs, rhs) => {
-            // Check for .field | length / .field | keys first
+            // Check for .field | builtin patterns first
             if let Some((fields, builtin)) = decompose_field_builtin(filter) {
                 match builtin {
                     "length" => return Some(PassthroughPath::FieldLength(fields)),
-                    "keys" => return Some(PassthroughPath::FieldKeys(fields)),
+                    "keys" => {
+                        return Some(PassthroughPath::FieldKeys {
+                            fields,
+                            sorted: true,
+                        });
+                    }
+                    "keys_unsorted" => {
+                        return Some(PassthroughPath::FieldKeys {
+                            fields,
+                            sorted: false,
+                        });
+                    }
+                    "type" => return Some(PassthroughPath::FieldType(fields)),
                     _ => {}
                 }
             }
+            // .field | has("key")
+            if let Filter::Builtin(name, args) = rhs.as_ref()
+                && name == "has"
+                && args.len() == 1
+                && let Filter::Literal(crate::value::Value::String(key)) = &args[0]
+            {
+                let mut fields = Vec::new();
+                if collect_field_chain(lhs, &mut fields) {
+                    return Some(PassthroughPath::FieldHas {
+                        fields,
+                        key: key.clone(),
+                    });
+                }
+            }
             // .[] | .field or .[] | .field.chain
+            // .[] | {f1, f2}
+            // .[] | builtin
             if matches!(lhs.as_ref(), Filter::Iterate) {
                 let mut fields = Vec::new();
                 if collect_field_chain(rhs, &mut fields) && !fields.is_empty() {
@@ -375,8 +566,22 @@ pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
                         wrap_array: false,
                     });
                 }
+                if let Some(entries) = try_simple_obj_shorthand(rhs) {
+                    return Some(PassthroughPath::ArrayMapFieldsObj {
+                        prefix: vec![],
+                        entries,
+                        wrap_array: false,
+                    });
+                }
+                if let Some(op) = try_passthrough_builtin(rhs) {
+                    return Some(PassthroughPath::ArrayMapBuiltin {
+                        prefix: vec![],
+                        op,
+                        wrap_array: false,
+                    });
+                }
             }
-            // .prefix | map(.field) — navigate prefix, then iterate+extract
+            // .prefix | map(.field) or .prefix | map({f1, f2}) or .prefix | map(builtin)
             if let Filter::Builtin(name, args) = rhs.as_ref()
                 && name == "map"
                 && args.len() == 1
@@ -391,9 +596,23 @@ pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
                             wrap_array: true,
                         });
                     }
+                    if let Some(entries) = try_simple_obj_shorthand(&args[0]) {
+                        return Some(PassthroughPath::ArrayMapFieldsObj {
+                            prefix,
+                            entries,
+                            wrap_array: true,
+                        });
+                    }
+                    if let Some(op) = try_passthrough_builtin(&args[0]) {
+                        return Some(PassthroughPath::ArrayMapBuiltin {
+                            prefix,
+                            op,
+                            wrap_array: true,
+                        });
+                    }
                 }
             }
-            // .prefix[] | .field — Pipe(Pipe(field_chain, Iterate), field_chain)
+            // .prefix[] | .field or .prefix[] | {f1, f2} or .prefix[] | builtin
             if let Filter::Pipe(inner_lhs, inner_rhs) = lhs.as_ref()
                 && matches!(inner_rhs.as_ref(), Filter::Iterate)
             {
@@ -404,6 +623,20 @@ pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
                         return Some(PassthroughPath::ArrayMapField {
                             prefix,
                             fields,
+                            wrap_array: false,
+                        });
+                    }
+                    if let Some(entries) = try_simple_obj_shorthand(rhs) {
+                        return Some(PassthroughPath::ArrayMapFieldsObj {
+                            prefix,
+                            entries,
+                            wrap_array: false,
+                        });
+                    }
+                    if let Some(op) = try_passthrough_builtin(rhs) {
+                        return Some(PassthroughPath::ArrayMapBuiltin {
+                            prefix,
+                            op,
                             wrap_array: false,
                         });
                     }
@@ -725,6 +958,299 @@ mod tests {
         // map(.a + .b) should NOT be detected as passthrough
         let f = parse("map(.a + .b)").unwrap();
         assert_eq!(passthrough_path(&f), None);
+    }
+
+    #[test]
+    fn passthrough_map_fields_obj() {
+        let f = parse("map({name, age})").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapFieldsObj {
+                prefix: vec![],
+                entries: vec!["name".into(), "age".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_iterate_fields_obj() {
+        let f = parse(".[] | {name, age}").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapFieldsObj {
+                prefix: vec![],
+                entries: vec!["name".into(), "age".into()],
+                wrap_array: false,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_prefix_map_fields_obj() {
+        let f = parse(".data | map({x, y})").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapFieldsObj {
+                prefix: vec!["data".into()],
+                entries: vec!["x".into(), "y".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_prefix_iterate_fields_obj() {
+        let f = parse(".data[] | {x, y}").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapFieldsObj {
+                prefix: vec!["data".into()],
+                entries: vec!["x".into(), "y".into()],
+                wrap_array: false,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_obj_with_expr_key_not_detected() {
+        // {(.k): .v} has a computed key, should not be detected
+        let f = parse("map({(.k): .v})").unwrap();
+        assert_eq!(passthrough_path(&f), None);
+    }
+
+    #[test]
+    fn passthrough_obj_renamed_not_detected() {
+        // {name: .user.name} has key != field, should not be detected
+        let f = parse("map({name: .user.name})").unwrap();
+        assert_eq!(passthrough_path(&f), None);
+    }
+
+    // --- Phase 5: Scalar builtin passthroughs ---
+
+    #[test]
+    fn passthrough_bare_keys_unsorted() {
+        let f = parse("keys_unsorted").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::FieldKeys {
+                fields: vec![],
+                sorted: false,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_field_keys_unsorted() {
+        let f = parse(".data | keys_unsorted").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::FieldKeys {
+                fields: vec!["data".into()],
+                sorted: false,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_bare_keys_sorted() {
+        let f = parse("keys").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::FieldKeys {
+                fields: vec![],
+                sorted: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_bare_type() {
+        let f = parse("type").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::FieldType(vec![]))
+        );
+    }
+
+    #[test]
+    fn passthrough_field_type() {
+        let f = parse(".data | type").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::FieldType(vec!["data".into()]))
+        );
+    }
+
+    #[test]
+    fn passthrough_bare_has() {
+        let f = parse(r#"has("name")"#).unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::FieldHas {
+                fields: vec![],
+                key: "name".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_field_has() {
+        let f = parse(r#".data | has("name")"#).unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::FieldHas {
+                fields: vec!["data".into()],
+                key: "name".into(),
+            })
+        );
+    }
+
+    // --- Phase 6: Iterate + builtin passthroughs ---
+
+    #[test]
+    fn passthrough_map_length() {
+        let f = parse("map(length)").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec![],
+                op: PassthroughBuiltin::Length,
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_iterate_type() {
+        let f = parse(".[] | type").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec![],
+                op: PassthroughBuiltin::Type,
+                wrap_array: false,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_map_keys() {
+        let f = parse("map(keys)").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec![],
+                op: PassthroughBuiltin::Keys,
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_map_has() {
+        let f = parse(r#"map(has("x"))"#).unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec![],
+                op: PassthroughBuiltin::Has("x".into()),
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_prefix_map_length() {
+        let f = parse(".items | map(length)").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec!["items".into()],
+                op: PassthroughBuiltin::Length,
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_prefix_iterate_type() {
+        let f = parse(".items[] | type").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec!["items".into()],
+                op: PassthroughBuiltin::Type,
+                wrap_array: false,
+            })
+        );
+    }
+
+    // --- Phase 7: Syntactic variant detection ---
+
+    #[test]
+    fn passthrough_array_construct_field() {
+        let f = parse("[.[] | .name]").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapField {
+                prefix: vec![],
+                fields: vec!["name".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_array_construct_fields_obj() {
+        let f = parse("[.[] | {name, age}]").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapFieldsObj {
+                prefix: vec![],
+                entries: vec!["name".into(), "age".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_array_construct_builtin() {
+        let f = parse("[.[] | length]").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec![],
+                op: PassthroughBuiltin::Length,
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_array_construct_prefix_field() {
+        let f = parse("[.items[] | .name]").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapField {
+                prefix: vec!["items".into()],
+                fields: vec!["name".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_array_construct_prefix_builtin() {
+        let f = parse("[.items[] | length]").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapBuiltin {
+                prefix: vec!["items".into()],
+                op: PassthroughBuiltin::Length,
+                wrap_array: true,
+            })
+        );
     }
 
     #[test]

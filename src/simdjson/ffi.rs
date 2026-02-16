@@ -149,6 +149,17 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
 
+    pub(super) fn jx_dom_field_keys(
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        sorted: i32,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
     pub(super) fn jx_dom_field_keys_reuse(
         p: *mut JxDomParser,
         buf: *const c_char,
@@ -156,18 +167,32 @@ unsafe extern "C" {
         fields: *const *const c_char,
         field_lens: *const usize,
         field_count: usize,
+        sorted: i32,
         out_ptr: *mut *mut c_char,
         out_len: *mut usize,
     ) -> i32;
 
-    pub(super) fn jx_dom_field_keys(
+    pub(super) fn jx_dom_field_has(
         buf: *const c_char,
         len: usize,
         fields: *const *const c_char,
         field_lens: *const usize,
         field_count: usize,
-        out_ptr: *mut *mut c_char,
-        out_len: *mut usize,
+        key: *const c_char,
+        key_len: usize,
+        result: *mut i32,
+    ) -> i32;
+
+    pub(super) fn jx_dom_field_has_reuse(
+        p: *mut JxDomParser,
+        buf: *const c_char,
+        len: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        key: *const c_char,
+        key_len: usize,
+        result: *mut i32,
     ) -> i32;
 
     pub(super) fn jx_dom_array_map_field(
@@ -179,6 +204,37 @@ unsafe extern "C" {
         fields: *const *const c_char,
         field_lens: *const usize,
         field_count: usize,
+        wrap_array: i32,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
+    pub(super) fn jx_dom_array_map_fields_obj(
+        buf: *const c_char,
+        len: usize,
+        prefix: *const *const c_char,
+        prefix_lens: *const usize,
+        prefix_count: usize,
+        keys: *const *const c_char,
+        key_lens: *const usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        wrap_array: i32,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
+
+    pub(super) fn jx_dom_array_map_builtin(
+        buf: *const c_char,
+        len: usize,
+        prefix: *const *const c_char,
+        prefix_lens: *const usize,
+        prefix_count: usize,
+        op: i32,
+        sorted: i32,
+        arg: *const c_char,
+        arg_len: usize,
         wrap_array: i32,
         out_ptr: *mut *mut c_char,
         out_len: *mut usize,

@@ -834,6 +834,7 @@ int jx_dom_field_length(
 int jx_dom_field_keys(
     const char* buf, size_t len,
     const char** fields, const size_t* field_lens, size_t field_count,
+    int sorted,
     char** out_ptr, size_t* out_len)
 {
     try {
@@ -856,8 +857,7 @@ int jx_dom_field_keys(
                 for (auto field : obj) {
                     keys.push_back(field.key);
                 }
-                // Sort (jq `keys` sorts)
-                std::sort(keys.begin(), keys.end());
+                if (sorted) std::sort(keys.begin(), keys.end());
                 // Build JSON array string
                 std::string s;
                 s.push_back('[');
@@ -1081,6 +1081,7 @@ int jx_dom_field_keys_reuse(
     JxDomParser* p,
     const char* buf, size_t len,
     const char** fields, const size_t* field_lens, size_t field_count,
+    int sorted,
     char** out_ptr, size_t* out_len)
 {
     try {
@@ -1098,7 +1099,7 @@ int jx_dom_field_keys_reuse(
                 for (auto kv : obj) {
                     keys.push_back(kv.key);
                 }
-                std::sort(keys.begin(), keys.end());
+                if (sorted) std::sort(keys.begin(), keys.end());
                 s = "[";
                 for (size_t i = 0; i < keys.size(); i++) {
                     if (i > 0) s += ",";
@@ -1173,6 +1174,13 @@ int jx_dom_array_map_field(
             }
             first = false;
 
+            // null → null (matches jq); non-object/non-null → fallback to evaluator
+            if (elem.type() == dom::element_type::NULL_VALUE) {
+                out += "null";
+                continue;
+            }
+            if (elem.type() != dom::element_type::OBJECT) return -2;
+
             // Navigate field chain within this element
             dom::element cur = elem;
             bool found = true;
@@ -1187,6 +1195,277 @@ int jx_dom_array_map_field(
                 out += simdjson::to_string(cur);
             } else {
                 out += "null";
+            }
+        }
+
+        if (wrap_array) out.push_back(']');
+
+        *out_len = out.size();
+        *out_ptr = new char[out.size()];
+        std::memcpy(*out_ptr, out.data(), out.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
+// ---------------------------------------------------------------------------
+// Array map fields obj — iterate array, extract N fields per element, emit
+// {"key1":v1,"key2":v2,...} per element.
+//
+// Returns: 0 = success, -1 = error, -2 = target is not an array (fallback).
+// wrap_array: 1 = output as JSON array [{...},{...},...], 0 = one obj per line.
+// Missing fields produce "null". Caller frees with jx_minify_free.
+//
+// `keys`/`key_lens`: JSON-encoded key strings (e.g. `"user"` with quotes).
+// `fields`/`field_lens`: bare field names to extract from each element.
+// Both arrays have `field_count` entries (1:1 correspondence).
+// ---------------------------------------------------------------------------
+
+int jx_dom_array_map_fields_obj(
+    const char* buf, size_t len,
+    const char** prefix, const size_t* prefix_lens, size_t prefix_count,
+    const char** keys, const size_t* key_lens,
+    const char** fields, const size_t* field_lens,
+    size_t field_count,
+    int wrap_array,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::parser parser;
+        dom::element root;
+        auto err = parser.parse(buf, len).get(root);
+        if (err) return -1;
+
+        // Navigate prefix field chain to reach the array
+        dom::element target = root;
+        for (size_t i = 0; i < prefix_count; i++) {
+            std::string_view key(prefix[i], prefix_lens[i]);
+            if (target.type() != dom::element_type::OBJECT) return -2;
+            auto field_err = target.at_key(key).get(target);
+            if (field_err) return -2;
+        }
+        if (target.type() != dom::element_type::ARRAY) return -2;
+
+        std::string out;
+        out.reserve(len / 4);
+        if (wrap_array) out.push_back('[');
+
+        bool first_elem = true;
+        for (dom::element elem : dom::array(target)) {
+            if (!first_elem) {
+                if (wrap_array) out.push_back(',');
+                else out.push_back('\n');
+            }
+            first_elem = false;
+
+            // null → all-null obj (matches jq); non-object/non-null → fallback
+            bool is_null = (elem.type() == dom::element_type::NULL_VALUE);
+            if (!is_null && elem.type() != dom::element_type::OBJECT) return -2;
+
+            out.push_back('{');
+            for (size_t i = 0; i < field_count; i++) {
+                if (i > 0) out.push_back(',');
+                // Emit pre-encoded key
+                out.append(keys[i], key_lens[i]);
+                out.push_back(':');
+
+                if (is_null) {
+                    out += "null";
+                } else {
+                    // Extract field value
+                    std::string_view field_name(fields[i], field_lens[i]);
+                    dom::element val;
+                    bool found = !elem.at_key(field_name).get(val);
+                    if (found) {
+                        out += simdjson::to_string(val);
+                    } else {
+                        out += "null";
+                    }
+                }
+            }
+            out.push_back('}');
+        }
+
+        if (wrap_array) out.push_back(']');
+
+        *out_len = out.size();
+        *out_ptr = new char[out.size()];
+        std::memcpy(*out_ptr, out.data(), out.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
+// ---------------------------------------------------------------------------
+// Field has — check if an object has a given key.
+//
+// Returns: 0 = success (*result set), -1 = error, -2 = fallback (not object).
+// *result: 1 = has key, 0 = does not have key.
+// ---------------------------------------------------------------------------
+
+int jx_dom_field_has(
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    const char* key, size_t key_len,
+    int* result)
+{
+    try {
+        dom::parser parser;
+        dom::element target;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, parser, target);
+        if (nav == 2) return -1;
+        if (nav == 1) return -2;
+        if (target.type() != dom::element_type::OBJECT) return -2;
+        dom::element val;
+        *result = target.at_key(std::string_view(key, key_len)).get(val) ? 0 : 1;
+        return 0;
+    } catch (...) { return -1; }
+}
+
+int jx_dom_field_has_reuse(
+    JxDomParser* p,
+    const char* buf, size_t len,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    const char* key, size_t key_len,
+    int* result)
+{
+    try {
+        dom::element target;
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->dom, target);
+        if (nav == 2) return -1;
+        if (nav == 1) return -2;
+        if (target.type() != dom::element_type::OBJECT) return -2;
+        dom::element val;
+        *result = target.at_key(std::string_view(key, key_len)).get(val) ? 0 : 1;
+        return 0;
+    } catch (...) { return -1; }
+}
+
+// ---------------------------------------------------------------------------
+// Array map builtin — iterate array, apply a builtin per element.
+//
+// ops: 0=length, 1=keys, 2=type, 3=has
+// Returns: 0 = success, -1 = error, -2 = fallback (not array or unsupported element).
+// ---------------------------------------------------------------------------
+
+static const char* type_string(dom::element_type t) {
+    switch (t) {
+        case dom::element_type::OBJECT: return "\"object\"";
+        case dom::element_type::ARRAY:  return "\"array\"";
+        case dom::element_type::STRING: return "\"string\"";
+        case dom::element_type::INT64:
+        case dom::element_type::UINT64:
+        case dom::element_type::DOUBLE: return "\"number\"";
+        case dom::element_type::BOOL:   return "\"boolean\"";
+        case dom::element_type::NULL_VALUE: return "\"null\"";
+        default: return "\"null\"";
+    }
+}
+
+int jx_dom_array_map_builtin(
+    const char* buf, size_t len,
+    const char** prefix, const size_t* prefix_lens, size_t prefix_count,
+    int op, int sorted,
+    const char* arg, size_t arg_len,
+    int wrap_array,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::parser parser;
+        dom::element root;
+        auto err = parser.parse(buf, len).get(root);
+        if (err) return -1;
+
+        dom::element target = root;
+        for (size_t i = 0; i < prefix_count; i++) {
+            std::string_view key(prefix[i], prefix_lens[i]);
+            if (target.type() != dom::element_type::OBJECT) return -2;
+            auto field_err = target.at_key(key).get(target);
+            if (field_err) return -2;
+        }
+        if (target.type() != dom::element_type::ARRAY) return -2;
+
+        std::string out;
+        out.reserve(len / 8);
+        if (wrap_array) out.push_back('[');
+
+        bool first = true;
+        for (dom::element elem : dom::array(target)) {
+            if (!first) {
+                if (wrap_array) out.push_back(',');
+                else out.push_back('\n');
+            }
+            first = false;
+
+            switch (op) {
+                case 0: { // length
+                    switch (elem.type()) {
+                        case dom::element_type::OBJECT:
+                            out += std::to_string(dom::object(elem).size());
+                            break;
+                        case dom::element_type::ARRAY:
+                            out += std::to_string(dom::array(elem).size());
+                            break;
+                        case dom::element_type::STRING: {
+                            std::string_view sv;
+                            if (!elem.get(sv)) {
+                                out += std::to_string(sv.size());
+                            } else {
+                                return -2;
+                            }
+                            break;
+                        }
+                        case dom::element_type::NULL_VALUE:
+                            out += "null";
+                            break;
+                        default:
+                            return -2;
+                    }
+                    break;
+                }
+                case 1: { // keys
+                    switch (elem.type()) {
+                        case dom::element_type::OBJECT: {
+                            dom::object obj = dom::object(elem);
+                            std::vector<std::string_view> keys;
+                            for (auto field : obj) keys.push_back(field.key);
+                            if (sorted) std::sort(keys.begin(), keys.end());
+                            out.push_back('[');
+                            for (size_t i = 0; i < keys.size(); i++) {
+                                if (i > 0) out.push_back(',');
+                                json_escape(keys[i], out);
+                            }
+                            out.push_back(']');
+                            break;
+                        }
+                        case dom::element_type::ARRAY: {
+                            size_t count = dom::array(elem).size();
+                            out.push_back('[');
+                            for (size_t i = 0; i < count; i++) {
+                                if (i > 0) out.push_back(',');
+                                out += std::to_string(i);
+                            }
+                            out.push_back(']');
+                            break;
+                        }
+                        case dom::element_type::NULL_VALUE:
+                            return -2;
+                        default:
+                            return -2;
+                    }
+                    break;
+                }
+                case 2: { // type
+                    out += type_string(elem.type());
+                    break;
+                }
+                case 3: { // has
+                    if (elem.type() != dom::element_type::OBJECT) return -2;
+                    dom::element val;
+                    std::string_view k(arg, arg_len);
+                    out += (elem.at_key(k).get(val) ? "false" : "true");
+                    break;
+                }
+                default:
+                    return -1;
             }
         }
 

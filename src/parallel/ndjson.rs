@@ -30,7 +30,11 @@ enum NdjsonFastPath {
     /// `length` or `.field | length` — compute length via C++ bridge
     Length(Vec<String>),
     /// `keys` or `.field | keys` — compute keys via C++ bridge
-    Keys(Vec<String>),
+    Keys { fields: Vec<String>, sorted: bool },
+    /// `type` or `.field | type` — determine JSON type
+    Type(Vec<String>),
+    /// `has("key")` or `.field | has("key")` — check key existence
+    Has { fields: Vec<String>, key: String },
     /// `select(.field == literal) | .out_field` — select then extract
     SelectEqField {
         pred_fields: Vec<String>,
@@ -546,10 +550,38 @@ fn process_line(
                 dom_parser.as_mut().unwrap(),
             )?;
         }
-        NdjsonFastPath::Keys(fields) => {
+        NdjsonFastPath::Keys { fields, sorted } => {
             process_line_keys(
                 trimmed,
                 fields,
+                *sorted,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
+            )?;
+        }
+        NdjsonFastPath::Type(fields) => {
+            process_line_type(
+                trimmed,
+                fields,
+                filter,
+                config,
+                env,
+                output_buf,
+                had_output,
+                scratch,
+                dom_parser.as_mut().unwrap(),
+            )?;
+        }
+        NdjsonFastPath::Has { fields, key } => {
+            process_line_has(
+                trimmed,
+                fields,
+                key,
                 filter,
                 config,
                 env,
@@ -1122,22 +1154,65 @@ fn process_line_select_string_pred_field(
 // ---------------------------------------------------------------------------
 
 fn detect_length_keys_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
-    // Bare `length` or `keys`
-    if let Filter::Builtin(name, args) = filter
-        && args.is_empty()
-    {
-        match name.as_str() {
-            "length" => return Some(NdjsonFastPath::Length(vec![])),
-            "keys" | "keys_unsorted" => return Some(NdjsonFastPath::Keys(vec![])),
+    // Bare builtins: length, keys, keys_unsorted, type, has("f")
+    if let Filter::Builtin(name, args) = filter {
+        match (name.as_str(), args.as_slice()) {
+            ("length", []) => return Some(NdjsonFastPath::Length(vec![])),
+            ("keys", []) => {
+                return Some(NdjsonFastPath::Keys {
+                    fields: vec![],
+                    sorted: true,
+                });
+            }
+            ("keys_unsorted", []) => {
+                return Some(NdjsonFastPath::Keys {
+                    fields: vec![],
+                    sorted: false,
+                });
+            }
+            ("type", []) => return Some(NdjsonFastPath::Type(vec![])),
+            ("has", [Filter::Literal(crate::value::Value::String(s))]) => {
+                return Some(NdjsonFastPath::Has {
+                    fields: vec![],
+                    key: s.clone(),
+                });
+            }
             _ => {}
         }
     }
-    // `.field | length` or `.field | keys`
+    // `.field | length` or `.field | keys` or `.field | type`
     if let Some((fields, builtin)) = crate::filter::decompose_field_builtin(filter) {
         match builtin {
             "length" => return Some(NdjsonFastPath::Length(fields)),
-            "keys" | "keys_unsorted" => return Some(NdjsonFastPath::Keys(fields)),
+            "keys" => {
+                return Some(NdjsonFastPath::Keys {
+                    fields,
+                    sorted: true,
+                });
+            }
+            "keys_unsorted" => {
+                return Some(NdjsonFastPath::Keys {
+                    fields,
+                    sorted: false,
+                });
+            }
+            "type" => return Some(NdjsonFastPath::Type(fields)),
             _ => {}
+        }
+    }
+    // `.field | has("key")`
+    if let Filter::Pipe(lhs, rhs) = filter
+        && let Filter::Builtin(name, args) = rhs.as_ref()
+        && name == "has"
+        && args.len() == 1
+        && let Filter::Literal(crate::value::Value::String(key)) = &args[0]
+    {
+        let mut fields = Vec::new();
+        if crate::filter::collect_field_chain(lhs, &mut fields) {
+            return Some(NdjsonFastPath::Has {
+                fields,
+                key: key.clone(),
+            });
         }
     }
     None
@@ -1305,11 +1380,12 @@ fn process_line_length(
     Ok(())
 }
 
-/// Process a line with the `keys` fast path.
+/// Process a line with the `keys` / `keys_unsorted` fast path.
 #[allow(clippy::too_many_arguments)]
 fn process_line_keys(
     trimmed: &[u8],
     fields: &[String],
+    sorted: bool,
     filter: &Filter,
     config: &OutputConfig,
     env: &Env,
@@ -1320,7 +1396,7 @@ fn process_line_keys(
 ) -> Result<()> {
     let padded = prepare_padded(trimmed, scratch);
     let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-    match dp.field_keys(padded, trimmed.len(), &field_refs)? {
+    match dp.field_keys(padded, trimmed.len(), &field_refs, sorted)? {
         Some(result) => {
             *had_output = true;
             output_buf.extend_from_slice(&result);
@@ -1328,6 +1404,104 @@ fn process_line_keys(
         }
         None => {
             // Fallback: unsupported type — use normal path
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Process a line with the `type` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_type(
+    trimmed: &[u8],
+    fields: &[String],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
+) -> Result<()> {
+    let type_str = if fields.is_empty() {
+        // Bare `type` — check first non-whitespace byte
+        let first_byte = trimmed
+            .iter()
+            .find(|&&b| !matches!(b, b' ' | b'\t' | b'\r'));
+        match first_byte {
+            Some(b'{') => Some("\"object\""),
+            Some(b'[') => Some("\"array\""),
+            Some(b'"') => Some("\"string\""),
+            Some(b't') | Some(b'f') => Some("\"boolean\""),
+            Some(b'n') => Some("\"null\""),
+            Some(b'0'..=b'9') | Some(b'-') => Some("\"number\""),
+            _ => None,
+        }
+    } else {
+        // `.field | type` — extract field, check first byte
+        let padded = prepare_padded(trimmed, scratch);
+        let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+        let raw = dp.find_field_raw(padded, trimmed.len(), &field_refs)?;
+        match raw.first() {
+            Some(b'{') => Some("\"object\""),
+            Some(b'[') => Some("\"array\""),
+            Some(b'"') => Some("\"string\""),
+            Some(b't') | Some(b'f') => Some("\"boolean\""),
+            Some(b'n') => Some("\"null\""),
+            Some(b'0'..=b'9') | Some(b'-') => Some("\"number\""),
+            _ => None,
+        }
+    };
+    match type_str {
+        Some(s) => {
+            *had_output = true;
+            output_buf.extend_from_slice(s.as_bytes());
+            write_line_terminator(output_buf, config);
+        }
+        None => {
+            // Fallback
+            let padded = prepare_padded(trimmed, scratch);
+            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+                .context("failed to parse NDJSON line")?;
+            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+                *had_output = true;
+                output::write_value(output_buf, &v, config).ok();
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Process a line with the `has("key")` fast path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_has(
+    trimmed: &[u8],
+    fields: &[String],
+    key: &str,
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+    scratch: &mut Vec<u8>,
+    dp: &mut simdjson::DomParser,
+) -> Result<()> {
+    let padded = prepare_padded(trimmed, scratch);
+    let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+    match dp.field_has(padded, trimmed.len(), &field_refs, key)? {
+        Some(result) => {
+            *had_output = true;
+            output_buf.extend_from_slice(if result { b"true" } else { b"false" });
+            write_line_terminator(output_buf, config);
+        }
+        None => {
+            // Fallback: not an object — use normal path
             let padded = prepare_padded(trimmed, scratch);
             let value = simdjson::dom_parse_to_value(padded, trimmed.len())
                 .context("failed to parse NDJSON line")?;
@@ -2064,8 +2238,23 @@ mod tests {
     fn fast_path_detects_bare_keys() {
         let filter = crate::filter::parse("keys").unwrap();
         match detect_fast_path(&filter) {
-            NdjsonFastPath::Keys(fields) => assert!(fields.is_empty()),
+            NdjsonFastPath::Keys { fields, sorted } => {
+                assert!(fields.is_empty());
+                assert!(sorted);
+            }
             other => panic!("expected Keys, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_bare_keys_unsorted() {
+        let filter = crate::filter::parse("keys_unsorted").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Keys { fields, sorted } => {
+                assert!(fields.is_empty());
+                assert!(!sorted);
+            }
+            other => panic!("expected Keys unsorted, got {:?}", other),
         }
     }
 
@@ -2082,8 +2271,53 @@ mod tests {
     fn fast_path_detects_field_keys() {
         let filter = crate::filter::parse(".data | keys").unwrap();
         match detect_fast_path(&filter) {
-            NdjsonFastPath::Keys(fields) => assert_eq!(fields, vec!["data"]),
+            NdjsonFastPath::Keys { fields, sorted } => {
+                assert_eq!(fields, vec!["data"]);
+                assert!(sorted);
+            }
             other => panic!("expected Keys, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_bare_type() {
+        let filter = crate::filter::parse("type").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Type(fields) => assert!(fields.is_empty()),
+            other => panic!("expected Type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_field_type() {
+        let filter = crate::filter::parse(".data | type").unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Type(fields) => assert_eq!(fields, vec!["data"]),
+            other => panic!("expected Type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_bare_has() {
+        let filter = crate::filter::parse(r#"has("name")"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Has { fields, key } => {
+                assert!(fields.is_empty());
+                assert_eq!(key, "name");
+            }
+            other => panic!("expected Has, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_path_detects_field_has() {
+        let filter = crate::filter::parse(r#".data | has("name")"#).unwrap();
+        match detect_fast_path(&filter) {
+            NdjsonFastPath::Has { fields, key } => {
+                assert_eq!(fields, vec!["data"]);
+                assert_eq!(key, "name");
+            }
+            other => panic!("expected Has, got {:?}", other),
         }
     }
 

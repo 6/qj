@@ -294,14 +294,17 @@ fn dom_parser_reuse_field_keys() {
     let mut dp = DomParser::new().unwrap();
     let json = br#"{"data":{"b":2,"a":1}}"#;
     let buf = pad_buffer(json);
-    let out = dp.field_keys(&buf, json.len(), &["data"]).unwrap().unwrap();
+    let out = dp
+        .field_keys(&buf, json.len(), &["data"], true)
+        .unwrap()
+        .unwrap();
     assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["a","b"]"#);
 
     // Reuse with different input
     let json2 = br#"{"items":["x","y"]}"#;
     let buf2 = pad_buffer(json2);
     let out2 = dp
-        .field_keys(&buf2, json2.len(), &["items"])
+        .field_keys(&buf2, json2.len(), &["items"], true)
         .unwrap()
         .unwrap();
     assert_eq!(std::str::from_utf8(&out2).unwrap(), "[0,1]");
