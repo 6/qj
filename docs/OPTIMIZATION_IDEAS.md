@@ -42,8 +42,60 @@ The fast paths above only help recognized patterns. The "floor" is the slowdown 
 
 ## Remaining to explore
 
+### Single-doc floor (currently 2.15x vs jq)
+
+The single-doc floor is the weakest performance area. Current state on 49MB `large_twitter.json`:
+
+| Filter | qj | jq | Speedup |
+|--------|----|----|---------|
+| `length` (passthrough) | 34ms | 361ms | 10.6x |
+| `.statuses | map({user, text})` (passthrough) | 58ms | 751ms | 12.9x |
+| `map({user, text})` (flat eval) | 94ms | 367ms | 3.9x |
+| `reduce .[] as $x (0; .+1)` (flat eval) | 172ms | 369ms | 2.15x |
+
+Time breakdown for the worst case (`reduce`, 172ms): I/O ~7ms, SIMD parse + flat buffer ~45ms, reduce loop (~2M iterations) ~120ms. The flat eval already has a zero-materialization optimization for this case (detects `$x` unused in `. + 1`, counts elements from flat buffer, loops without materializing any array elements). The 120ms is pure evaluator dispatch overhead.
+
+**A. Parallel map/select on single-doc arrays.** Currently single-doc is always single-threaded, even for `map(transform)` on a large array. The NDJSON parallel infrastructure could apply to array elements: split array into chunks, process per-chunk, merge. Would turn `map({user, text})` from 3.9x to potentially 20-40x (similar to NDJSON speedups). Doesn't help `reduce` (inherently sequential) but helps the common `map`, `.[]`, `select` patterns. Medium complexity — reuse existing Rayon chunking from `src/parallel/ndjson.rs`. (`src/main.rs`, `src/parallel/`)
+
+**B. Specialized reduce detection.** Detect common reduce idioms and execute natively without the eval loop:
+- `reduce .[] as $x (0; . + 1)` → `length`
+- `reduce .[] as $x (0; . + $x)` → sum elements
+- `reduce .[] as $x (null; if . == null or $x > . then $x else . end)` → max
+
+Limited coverage but these are textbook patterns. Low complexity — pattern-match on AST in `detect_fast_path()`. (`src/parallel/ndjson.rs`, `src/main.rs`)
+
+**C. Bytecode VM for the evaluator.** Replace the tree-walking interpreter with a compiled bytecode loop. This is the only option that raises the floor for *all* filter types, not just recognized patterns.
+
+**Current overhead per eval() call:** The evaluator (`src/filter/eval.rs`, 3600 lines) uses a callback-based tree walk. For `reduce .[] as $x (0; . + $x)` on a 1000-element array, each iteration involves:
+- 6-8 pattern matches on the 35-variant `Filter` enum (Reduce → Iterate → Arith → Identity + Var)
+- 2-3 nested closures (Arith creates `&mut |rval| { eval(left, &mut |lval| { ... }) }`)
+- 1 thread-local `LAST_ERROR.with()` access per `eval()` call
+- 1 `acc.clone()` (cheap for scalars, Arc bump for Array/Object)
+- Environment lookup via `Rc<VarScope>` chain (pointer chasing)
+
+**What bytecode eliminates:**
+- Closure overhead → explicit value stack + program counter (biggest win)
+- Pattern matching → computed goto / jump table
+- TLS error checks → local error register
+- Environment chain → indexed stack frame (array lookup instead of pointer chasing)
+
+**Estimated impact:** 20-40% speedup on the eval loop portion. For `reduce` on 49MB: eval is ~120ms of 172ms, so 24-48ms saved → total ~124-148ms → **2.5-3.0x** vs jq (up from 2.15x). For NDJSON fallback filters, the same improvement applies per-core. The speedup compounds with parallelism: if per-core eval drops 30%, NDJSON fallback filters gain ~30% wall-time improvement too.
+
+**The hard part:** jq's generator semantics — filters produce 0-N outputs per input. Current approach uses `&mut dyn FnMut(Value)` callbacks. Bytecode needs an explicit yield/resume mechanism (coroutine-style stack or iterator protocol). This is the bulk of the implementation complexity.
+
+**Scope:** ~800-1200 lines for bytecode compiler + interpreter covering the core subset (Identity, Field, Pipe, Iterate, Arith, Compare, Select, Literal, Var, Reduce, Foreach, IfThenElse, ObjectConstruct, ArrayConstruct, builtins). Unsupported filters fall back to tree-walking eval. Can be done incrementally — compile what you can, fall back for the rest.
+
+**Files:** new `src/filter/bytecode.rs` (compiler + VM), modified `src/filter/eval.rs` (dispatch to bytecode when available), `src/flat_eval.rs` (same).
+
+**D. HashMap for object field lookup.** Currently `Value::Object(Arc<Vec<(String, Value)>>)` — `.field` access is O(n) linear scan (`src/filter/eval.rs`). For objects with 20-30 fields (typical GH Archive), every field access scans ~15 entries on average. A `HashMap` or sorted+binary-search layout would make this O(1) or O(log n). Independent of the bytecode question. Low-moderate complexity but changes Value's memory layout. (`src/value.rs`, `src/filter/eval.rs`)
+
+### NDJSON infrastructure
+
 - **Streaming NDJSON** — Currently entire file loaded via mmap before processing. Streaming fixed-size blocks (64MB) would enable >RAM files and reduce startup latency. Medium complexity: need to handle lines spanning block boundaries. (`src/parallel/ndjson.rs`, `src/main.rs`)
 - **Per-thread output buffers** — Currently each Rayon chunk produces `Vec<u8>`, all collected then concatenated. Pre-allocated per-thread buffers with ordered flush to stdout would avoid the final concatenation and reduce peak memory. Low-moderate complexity. (`src/parallel/ndjson.rs`)
+
+### Lazy evaluation
+
 - **Lazy flat buffer (single-doc)** — Only flatten accessed subtrees instead of the whole document. Risk: per-value resolution cost via simdjson FFI (~5us each) makes it slower for materializing filters (map/reduce that touch all elements). Only helps selective filters.
 - **Lazy Value (NDJSON fallback)** — Wrap simdjson DOM nodes in `LazyValue` that materializes children on access. Helps selective filters (touch few fields) but doesn't raise the floor for full-document filters. Medium effort, ~500-800 lines. Complementary to FlatValue.
 
