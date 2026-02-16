@@ -84,10 +84,11 @@ same template.
 
 - **[zsv](https://github.com/liquidaty/zsv)** — C library, MIT licensed, actively
   maintained, claims "world's fastest CSV parser." ~4 GB/s throughput. Has a clean
-  row-iteration API. Best choice for FFI integration.
-- **[csimdv-rs](https://github.com/juliusgeo/csimdv-rs)** — Pure Rust, uses PCLMULQDQ
-  trick from simdjson. Up to 60% faster than other SIMD parsers on x86_64 with AVX-512.
-  Works on aarch64. No FFI needed but less mature.
+  row-iteration API. Best choice for FFI integration (same pattern as simdjson).
+- **[simd-csv](https://github.com/medialab/simd-csv)** — Pure Rust, production-ready
+  (212 commits, used by the `xan` CLI). SIMD-accelerated string searching with
+  traditional state machine. Supports x86_64 (SSE2/AVX2), aarch64 (NEON), WASM
+  (SIMD128), with scalar fallback. No FFI needed. MIT licensed.
 - **[simdcsv](https://github.com/geofflangdale/simdcsv)** — by Geoff Langdale
   (co-creator of simdjson). Never finished, but the techniques are proven.
 
@@ -124,7 +125,7 @@ for row in csv_rows() {
 }
 ```
 
-Alternative: use csimdv-rs directly in Rust (no FFI, but less battle-tested).
+Alternative: use simd-csv directly in Rust (no FFI, production-tested in `xan` CLI).
 
 Parallel processing: mmap the file, split into ~1MB chunks at newline boundaries
 (with quote-awareness), parse each chunk's rows independently with rayon, merge
