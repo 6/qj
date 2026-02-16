@@ -1616,3 +1616,16 @@ fn golden_fast_path_number_preservation() {
     assert_fast_path_matches_normal("[.n, .s]", input);
     assert_fast_path_matches_normal("select(.n == 0) | .s", input);
 }
+
+// --- Key-order preservation ---
+
+#[test]
+fn ndjson_key_order_preserved() {
+    // Each NDJSON line preserves its own key order through parallel processing
+    let input = "{\"z\":1,\"a\":2}\n{\"b\":3,\"a\":4}\n{\"m\":5,\"c\":6,\"a\":7}\n";
+    let out = qj_stdin(&["-c", "."], input);
+    assert_eq!(
+        out,
+        "{\"z\":1,\"a\":2}\n{\"b\":3,\"a\":4}\n{\"m\":5,\"c\":6,\"a\":7}\n"
+    );
+}

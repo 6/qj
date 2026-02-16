@@ -4797,3 +4797,36 @@ fn jq_compat_postfix_slice() {
     assert_jq_compat(r#""hello"[1:3]"#, "null");
     assert_jq_compat("[.[] | .x][:2]", r#"[{"x":1},{"x":2},{"x":3}]"#);
 }
+
+// --- Key-order preservation ---
+
+#[test]
+fn key_order_identity_roundtrip() {
+    // Identity filter must preserve original key order (z, m, a — not sorted)
+    let out = qj_compact(".", r#"{"z":1,"m":2,"a":3}"#);
+    assert_eq!(out.trim(), r#"{"z":1,"m":2,"a":3}"#);
+    assert_jq_compat(".", r#"{"z":1,"m":2,"a":3}"#);
+}
+
+#[test]
+fn key_order_object_construction() {
+    // Object construction preserves construction order, not input order
+    let out = qj_compact("{b:.b, a:.a}", r#"{"a":1,"b":2}"#);
+    assert_eq!(out.trim(), r#"{"b":2,"a":1}"#);
+    assert_jq_compat("{b:.b, a:.a}", r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn key_order_nested_objects() {
+    // Both outer and inner objects preserve their respective key orders
+    let out = qj_compact(".", r#"{"z":{"y":1,"x":2},"a":{"c":3,"b":4}}"#);
+    assert_eq!(out.trim(), r#"{"z":{"y":1,"x":2},"a":{"c":3,"b":4}}"#);
+    assert_jq_compat(".", r#"{"z":{"y":1,"x":2},"a":{"c":3,"b":4}}"#);
+}
+
+#[test]
+fn ndjson_key_order_preserved() {
+    // Each NDJSON line preserves its own key order through parallel processing
+    let input = "{\"z\":1,\"a\":2}\n{\"b\":3,\"a\":4}\n{\"m\":5,\"c\":6,\"a\":7}\n";
+    assert_jq_compat_ndjson(".", input);
+}
