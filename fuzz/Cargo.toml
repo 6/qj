@@ -30,3 +30,23 @@ doc = false
 name = "fuzz_ndjson"
 path = "fuzz_targets/fuzz_ndjson.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_filter_parse"
+path = "fuzz_targets/fuzz_filter_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_eval"
+path = "fuzz_targets/fuzz_eval.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_ndjson_diff"
+path = "fuzz_targets/fuzz_ndjson_diff.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_output"
+path = "fuzz_targets/fuzz_output.rs"
+doc = false

@@ -2481,7 +2481,11 @@ mod tests {
 
     #[test]
     fn fast_path_select_unicode_escape_match() {
-        // \u0041 is "A" — should match select(.s == "A")
+        // \u0041 is "A" — should match select(.s == "A").
+        // The fast path extracts raw field bytes ("\u0041"), which don't byte-match
+        // the literal "A", so it falls back to normal eval. The normal path
+        // normalizes the unicode escape, producing "A" in the output.
+        // This matches what the normal path (QJ_NO_FAST_PATH) produces.
         let data = b"{\"s\":\"\\u0041\",\"id\":1}\n{\"s\":\"B\",\"id\":2}\n";
         let filter = crate::filter::parse("select(.s == \"A\")").unwrap();
         let config = OutputConfig {
@@ -2492,7 +2496,7 @@ mod tests {
         let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "{\"s\":\"\\u0041\",\"id\":1}\n"
+            "{\"s\":\"A\",\"id\":1}\n"
         );
     }
 

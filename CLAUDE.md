@@ -69,11 +69,29 @@ diff <(./target/release/qj '.field' test.json) <(jq '.field' test.json)
 
 ## Fuzzing
 
-Three fuzz targets exercise the C++/FFI boundary (`fuzz/`). Run after changing `src/simdjson/`. Requires nightly and `cargo-fuzz`.
+Seven fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
+
+**FFI boundary** (run after changing `src/simdjson/`):
 ```
 cargo +nightly fuzz run fuzz_parse   -- -max_total_time=120
 cargo +nightly fuzz run fuzz_dom     -- -max_total_time=120
 cargo +nightly fuzz run fuzz_ndjson  -- -max_total_time=120
+```
+
+**Filter pipeline** (run after changing `src/filter/`):
+```
+cargo +nightly fuzz run fuzz_filter_parse -- -max_total_time=120
+cargo +nightly fuzz run fuzz_eval         -- -max_total_time=120
+```
+
+**NDJSON fast-path differential** (run after changing `src/parallel/`):
+```
+cargo +nightly fuzz run fuzz_ndjson_diff  -- -max_total_time=120
+```
+
+**Output formatting** (run after changing `src/output.rs`):
+```
+cargo +nightly fuzz run fuzz_output       -- -max_total_time=120
 ```
 
 ## Benchmarking

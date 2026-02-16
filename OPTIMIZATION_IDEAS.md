@@ -16,8 +16,9 @@ Techniques drawn from simdjson internals, gigagrep (faster-than-ripgrep grep), a
 | 7 | `length`/`keys` NDJSON fast path | DONE | **~45% faster** `length`/`keys` on 1.1GB NDJSON |
 | 8 | `select` ordering operators | DONE | Coverage: `>`, `<`, `>=`, `<=` now use fast path (same ~50% speedup as `==`) |
 | 9 | DOM parser reuse | DONE | **~40% faster** — reuse parser across lines: 259ms→155ms on 3-field obj |
-| 10 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
-| 11 | Per-thread output buffers | TODO | Avoid final concatenation step |
+| 10 | On-Demand raw field extraction | DONE | **~35% faster** single field, **~14% faster** 2-field, neutral 3-field — also fixes number preservation |
+| 11 | Streaming NDJSON | TODO | Enable >RAM files, reduce startup latency |
+| 12 | Per-thread output buffers | TODO | Avoid final concatenation step |
 | — | Rc\<str\> for Value strings | REVERTED | Neutral — Rc indirection offsets clone savings |
 | — | Arena allocation (bumpalo) | SKIPPED | Very high complexity, uncertain payoff |
 
@@ -231,11 +232,34 @@ Propagated to all select variants: `SelectEq`, `SelectEqField`, `SelectEqObj`, `
 
 **Files:** `src/simdjson/bridge.cpp`, `src/simdjson/ffi.rs`, `src/simdjson/bridge.rs`, `src/simdjson/mod.rs`, `src/parallel/ndjson.rs`, `tests/simdjson_ffi.rs`
 
+### 10. On-Demand raw field extraction (DONE)
+
+**What:** Switched fast-path field extraction from simdjson DOM API + `to_string()` to On-Demand API + `raw_json()`. DOM parses numbers into IEEE 754 doubles and re-serializes them, losing the original representation (`1.5e10` → `15000000000.0`, `42.00` → `42`). On-Demand's `raw_json()` returns a `string_view` pointing directly at the original source bytes — zero-copy, preserves exact input representation.
+
+**Why (correctness):** The normal eval path uses On-Demand's `raw_json_token()` to store original number text in `Value::Double(f64, Some("1.5e10"))`. The fast path's DOM `to_string()` diverged, producing different output for the same input. This was caught by the differential golden tests.
+
+**Why (performance):** On-Demand avoids building the full DOM tree. For single-field extraction, it navigates directly to the target field without materializing siblings. `raw_json()` is a zero-cost pointer return into the source buffer — no serialization step.
+
+**Change:** `src/simdjson/bridge.cpp` — added `ondemand::parser` to `JxDomParser` struct (alongside existing `dom::parser` for length/keys). New `navigate_fields_raw()` helper navigates a field chain via On-Demand and returns `raw_json()`. Rewrote `jx_dom_find_field_raw()`, `jx_dom_find_field_raw_reuse()`, and `jx_dom_find_fields_raw_reuse()` to use it. Added `trim_raw_json()` to strip trailing whitespace/commas from `raw_json()` output. DOM parser retained for `length_reuse` and `keys_reuse` which return computed results, not raw field values.
+
+**Benchmarks (M4 Pro, 1.1GB gharchive.ndjson, 5 runs, warmup 3):**
+
+| Query | Before (DOM `to_string`) | After (On-Demand `raw_json`) | Delta |
+|-------|-------------------------|------------------------------|-------|
+| `.actor.login` | 107.0ms | 79.6ms | **-26% (1.35x faster)** |
+| `{type, login: .actor.login}` (2 fields) | 127.6ms | 111.9ms | **-12% (1.14x faster)** |
+| `select(.type=="PushEvent") \| .actor.login` | 124.2ms | 86.3ms | **-31% (1.44x faster)** |
+| `{type, login: .actor.login, id: .id}` (3 fields) | 130.7ms | 134.3ms | ~neutral (within noise) |
+
+**Verdict:** Net performance win across all patterns. Single-field and select+field see 26-31% speedups. 2-field objects gain 12%. 3-field objects are break-even — the cost of 3 On-Demand parses roughly matches 1 DOM parse + 3 `to_string()` calls. No regressions. The batch extraction path (`find_fields_raw_reuse`) re-parses N times per line, but N is typically 2-4 and On-Demand iterate is very cheap.
+
+**Files:** `src/simdjson/bridge.cpp`, `tests/ndjson.rs`
+
 ---
 
 ## Tier 2: Medium Impact
 
-### 10. Streaming NDJSON
+### 11. Streaming NDJSON
 
 **Current:** Entire file loaded into memory (via mmap or heap) before processing. 10GB file = 10GB virtual address space.
 
@@ -247,7 +271,7 @@ Propagated to all select variants: `SelectEq`, `SelectEqField`, `SelectEqObj`, `
 
 **Files:** `src/parallel/ndjson.rs`, `src/main.rs`
 
-### 11. Per-thread output buffers with ordered flush
+### 12. Per-thread output buffers with ordered flush
 
 **Current:** Each Rayon chunk produces `Vec<u8>`, all collected into `Vec<Vec<u8>>`, then concatenated and written.
 
@@ -263,7 +287,7 @@ Propagated to all select variants: `SelectEq`, `SelectEqField`, `SelectEqObj`, `
 
 ## Tier 3: Speculative / Low Impact
 
-### 12. simdjson parse_many for NDJSON
+### 13. simdjson parse_many for NDJSON
 
 **Current:** Rust splits at newlines via `memchr`, parses each line individually.
 
@@ -271,15 +295,15 @@ Propagated to all select variants: `SelectEq`, `SelectEqField`, `SelectEqObj`, `
 
 **Caveat:** parse_many is single-threaded internally. Would need chunking on top. And memchr is already extremely fast for newline splitting. Unclear if this helps.
 
-### 13. Lift 4GB single-document limit
+### 14. Lift 4GB single-document limit
 
 For large arrays: treat `[\n{...}\n{...}\n]` as streaming docs. High complexity, rare use case.
 
-### 14. NEON-specific output formatting
+### 15. NEON-specific output formatting
 
 SIMD scan for chars needing escaping. Bulk-copy safe runs. Small impact since output is rarely the bottleneck.
 
-### 15. Arena allocation (bumpalo)
+### 16. Arena allocation (bumpalo)
 
 Per-document bump arena for Value tree construction. Theoretically cache-friendly and fast deallocation. In practice, the Rc\<str\> experiment showed allocation pressure isn't the dominant cost — fast-path avoidance of the Value tree entirely is a strictly better approach. Would be a massive refactor (lifetime parameter on Value, propagates everywhere). Not worth the complexity given the fast-path strategy.
 

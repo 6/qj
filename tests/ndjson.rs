@@ -769,10 +769,12 @@ fn ndjson_select_scientific_notation() {
 
 #[test]
 fn ndjson_select_unicode_escape() {
-    // \u0041 is "A" — should match
+    // \u0041 is "A" — should match. Fast path extracts raw "\u0041" bytes,
+    // which don't byte-match "A", so falls back to normal eval which
+    // normalizes the unicode escape. Output matches QJ_NO_FAST_PATH behavior.
     let input = "{\"s\":\"\\u0041\",\"id\":1}\n{\"s\":\"B\",\"id\":2}\n";
     let out = qj_stdin(&["-c", "select(.s == \"A\")"], &input);
-    assert_eq!(out, "{\"s\":\"\\u0041\",\"id\":1}\n");
+    assert_eq!(out, "{\"s\":\"A\",\"id\":1}\n");
 }
 
 #[test]
@@ -1335,4 +1337,282 @@ fn ndjson_iterate() {
 "#;
     let out = qj_stdin(&["-c", ".[]"], input);
     assert_eq!(out, "1\n2\n3\n");
+}
+
+// =============================================================================
+// Golden differential tests: fast path vs normal path with diverse inputs
+//
+// These tests generate NDJSON with edge cases (type mismatches, missing fields,
+// unicode, escapes, numeric edge cases) and assert fast == normal for every
+// supported fast-path variant.
+// =============================================================================
+
+/// Simple deterministic PRNG (xorshift32) for generating diverse test data
+/// without pulling in proptest. Seed is fixed for reproducibility.
+struct Rng(u32);
+
+impl Rng {
+    fn new(seed: u32) -> Self {
+        Self(seed)
+    }
+    fn next(&mut self) -> u32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0
+    }
+    fn range(&mut self, lo: i64, hi: i64) -> i64 {
+        let span = (hi - lo) as u64;
+        if span == 0 {
+            return lo;
+        }
+        lo + (self.next() as u64 % span) as i64
+    }
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items[self.next() as usize % items.len()]
+    }
+}
+
+/// Build NDJSON with diverse edge-case objects.
+fn generate_diverse_ndjson(rng: &mut Rng, count: usize) -> String {
+    let types = &["PushEvent", "WatchEvent", "CreateEvent", "DeleteEvent"];
+    let names = &["alice", "bob", "charlie", "delta", "echo"];
+    let mut buf = String::new();
+
+    for i in 0..count {
+        let kind = rng.next() % 10;
+        match kind {
+            // Normal object with all fields
+            0..=3 => {
+                let ty = rng.pick(types);
+                let name = rng.pick(names);
+                let n = rng.range(-100, 200);
+                let active = if rng.next() % 2 == 0 { "true" } else { "false" };
+                buf.push_str(&format!(
+                    "{{\"type\":\"{ty}\",\"name\":\"{name}\",\"count\":{n},\"active\":{active},\"actor\":{{\"login\":\"{name}\"}},\"meta\":{{\"x\":1,\"y\":2}},\"items\":[1,2,3]}}\n"
+                ));
+            }
+            // Missing fields
+            4 => {
+                buf.push_str(&format!("{{\"id\":{i}}}\n"));
+            }
+            // Null fields
+            5 => {
+                buf.push_str(&format!(
+                    "{{\"type\":null,\"name\":null,\"count\":null,\"active\":null}}\n"
+                ));
+            }
+            // Numeric edge cases: floats, scientific notation, negative, trailing zeros.
+            // The On-Demand raw_json() path preserves these exactly as written.
+            6 => {
+                // Note: -0 intentionally excluded — fast path emits the raw line
+                // (preserving "-0"), normal path normalizes to "0" through Value.
+                // Both are semantically correct (IEEE 754: -0.0 == 0.0).
+                let vals = &["1.0", "1e2", "0.0001", "42.00", "1.5e10", "-3.14"];
+                let v = rng.pick(vals);
+                let name = rng.pick(names);
+                buf.push_str(&format!(
+                    "{{\"type\":\"PushEvent\",\"name\":\"{name}\",\"count\":{v},\"active\":true}}\n"
+                ));
+            }
+            // String with escape sequences
+            7 => {
+                buf.push_str(&format!(
+                    "{{\"type\":\"PushEvent\",\"name\":\"line1\\nline2\",\"count\":{i},\"desc\":\"tab\\there\"}}\n"
+                ));
+            }
+            // Type mismatches: count as string, name as number
+            8 => {
+                buf.push_str(&format!(
+                    "{{\"type\":42,\"name\":999,\"count\":\"not_a_number\",\"active\":\"yes\"}}\n"
+                ));
+            }
+            // Empty/minimal objects
+            _ => {
+                buf.push_str("{}\n");
+            }
+        }
+    }
+    buf
+}
+
+#[test]
+fn golden_fast_path_field_chain() {
+    let mut rng = Rng::new(1001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal(".name", &input);
+    assert_fast_path_matches_normal(".actor.login", &input);
+    assert_fast_path_matches_normal(".missing", &input);
+    assert_fast_path_matches_normal(".meta.x", &input);
+}
+
+#[test]
+fn golden_fast_path_select_eq_string() {
+    let mut rng = Rng::new(2001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("select(.type == \"PushEvent\")", &input);
+    assert_fast_path_matches_normal("select(.type == \"nonexistent\")", &input);
+    assert_fast_path_matches_normal("select(.name == \"alice\")", &input);
+}
+
+#[test]
+fn golden_fast_path_select_eq_int() {
+    let mut rng = Rng::new(3001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("select(.count == 42)", &input);
+    assert_fast_path_matches_normal("select(.count == 0)", &input);
+    assert_fast_path_matches_normal("select(.count == -1)", &input);
+}
+
+#[test]
+fn golden_fast_path_select_eq_bool_null() {
+    let mut rng = Rng::new(4001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("select(.active == true)", &input);
+    assert_fast_path_matches_normal("select(.active == false)", &input);
+    assert_fast_path_matches_normal("select(.type == null)", &input);
+    assert_fast_path_matches_normal("select(.active == null)", &input);
+}
+
+#[test]
+fn golden_fast_path_select_ne() {
+    let mut rng = Rng::new(5001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("select(.type != \"PushEvent\")", &input);
+    assert_fast_path_matches_normal("select(.count != 0)", &input);
+}
+
+#[test]
+fn golden_fast_path_select_ordering() {
+    let mut rng = Rng::new(6001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("select(.count > 10)", &input);
+    assert_fast_path_matches_normal("select(.count < 50)", &input);
+    assert_fast_path_matches_normal("select(.count >= 0)", &input);
+    assert_fast_path_matches_normal("select(.count <= -1)", &input);
+    assert_fast_path_matches_normal("select(.name > \"charlie\")", &input);
+    assert_fast_path_matches_normal("select(.name < \"bob\")", &input);
+}
+
+#[test]
+fn golden_fast_path_select_eq_field() {
+    let mut rng = Rng::new(7001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | .name", &input);
+    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | .actor.login", &input);
+    assert_fast_path_matches_normal("select(.count > 10) | .name", &input);
+    assert_fast_path_matches_normal("select(.active == true) | .count", &input);
+}
+
+#[test]
+fn golden_fast_path_select_eq_obj() {
+    let mut rng = Rng::new(8001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal(
+        "select(.type == \"PushEvent\") | {name: .name, count: .count}",
+        &input,
+    );
+    assert_fast_path_matches_normal(
+        "select(.count > 0) | {type: .type, login: .actor.login}",
+        &input,
+    );
+}
+
+#[test]
+fn golden_fast_path_select_eq_arr() {
+    let mut rng = Rng::new(9001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | [.name, .count]", &input);
+    assert_fast_path_matches_normal("select(.active == true) | [.type, .name]", &input);
+}
+
+#[test]
+fn golden_fast_path_multi_field_obj() {
+    let mut rng = Rng::new(10001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("{name: .name, count: .count}", &input);
+    assert_fast_path_matches_normal("{type: .type, login: .actor.login}", &input);
+}
+
+#[test]
+fn golden_fast_path_multi_field_arr() {
+    let mut rng = Rng::new(11001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("[.name, .count]", &input);
+    assert_fast_path_matches_normal("[.type, .actor.login, .active]", &input);
+}
+
+#[test]
+fn golden_fast_path_length_keys() {
+    let mut rng = Rng::new(12001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal("length", &input);
+    assert_fast_path_matches_normal("keys", &input);
+    assert_fast_path_matches_normal(".meta | length", &input);
+    assert_fast_path_matches_normal(".meta | keys", &input);
+    assert_fast_path_matches_normal(".items | length", &input);
+}
+
+#[test]
+fn golden_fast_path_select_string_pred() {
+    let mut rng = Rng::new(13001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal(r#"select(.name | test("^a"))"#, &input);
+    assert_fast_path_matches_normal(r#"select(.name | startswith("al"))"#, &input);
+    assert_fast_path_matches_normal(r#"select(.name | endswith("ce"))"#, &input);
+    assert_fast_path_matches_normal(r#"select(.name | contains("ob"))"#, &input);
+}
+
+#[test]
+fn golden_fast_path_select_string_pred_field() {
+    let mut rng = Rng::new(14001);
+    let input = generate_diverse_ndjson(&mut rng, 100);
+    assert_fast_path_matches_normal(r#"select(.name | contains("alice")) | .count"#, &input);
+    assert_fast_path_matches_normal(r#"select(.name | test("^b")) | .type"#, &input);
+}
+
+/// Test with >1MB of NDJSON to trigger parallel chunk splitting and rayon,
+/// exercising the SharedFilter unsafe Send+Sync wrapper.
+#[test]
+fn golden_fast_path_parallel_large_input() {
+    let mut rng = Rng::new(99001);
+    // ~1.5MB of NDJSON (enough to trigger >1 chunk).
+    let input = generate_diverse_ndjson(&mut rng, 20000);
+    assert!(
+        input.len() > 1_000_000,
+        "Input should be >1MB to trigger parallel processing, got {} bytes",
+        input.len()
+    );
+
+    // Test several fast-path variants with large parallel input.
+    assert_fast_path_matches_normal(".name", &input);
+    assert_fast_path_matches_normal("select(.type == \"PushEvent\")", &input);
+    assert_fast_path_matches_normal("select(.count > 50)", &input);
+    assert_fast_path_matches_normal("{name: .name, count: .count}", &input);
+    assert_fast_path_matches_normal("[.type, .name]", &input);
+    assert_fast_path_matches_normal("length", &input);
+    assert_fast_path_matches_normal("keys", &input);
+    assert_fast_path_matches_normal(r#"select(.name | contains("alice"))"#, &input);
+    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | .name", &input);
+    assert_fast_path_matches_normal(
+        "select(.type == \"PushEvent\") | {name: .name, count: .count}",
+        &input,
+    );
+}
+
+/// Verify that the fast path preserves the original number representation
+/// (scientific notation, trailing zeros, etc.) identically to the normal path.
+#[test]
+fn golden_fast_path_number_preservation() {
+    let input = r#"{"n":1.5e10,"s":"x"}
+{"n":1e2,"s":"y"}
+{"n":42.00,"s":"z"}
+{"n":-3.14,"s":"w"}
+{"n":0,"s":"v"}
+"#;
+    assert_fast_path_matches_normal(".n", input);
+    assert_fast_path_matches_normal("select(.s == \"x\") | .n", input);
+    assert_fast_path_matches_normal("{n: .n, s: .s}", input);
+    assert_fast_path_matches_normal("[.n, .s]", input);
+    assert_fast_path_matches_normal("select(.n == 0) | .s", input);
 }

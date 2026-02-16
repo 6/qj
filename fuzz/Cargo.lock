@@ -329,6 +329,7 @@ dependencies = [
  "clap",
  "itoa",
  "jiff",
+ "libc",
  "memchr",
  "rayon",
  "regex",

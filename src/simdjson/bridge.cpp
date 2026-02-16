@@ -534,28 +534,71 @@ static void json_escape(const std::string_view sv, std::string& out) {
     out.push_back('"');
 }
 
+// Navigate a field chain using On-Demand API, returning the raw JSON bytes
+// of the leaf value (preserves original number representation, escapes, etc.).
+// Returns: 0 = found (raw set), 1 = null (field missing), 2 = parse error.
+static int navigate_fields_raw(
+    ondemand::parser& parser,
+    const char* buf, size_t len,
+    const char* const* fields, const size_t* field_lens, size_t field_count,
+    std::string_view& raw)
+{
+    auto sv = padded_string_view(buf, len, len + SIMDJSON_PADDING);
+    ondemand::document doc;
+    auto err = parser.iterate(sv).get(doc);
+    if (err) return 2;
+
+    ondemand::value current;
+    // Get first field from document root.
+    {
+        std::string_view key(fields[0], field_lens[0]);
+        auto r = doc.find_field(key);
+        if (r.error()) return 1;
+        current = r.value();
+    }
+    // Navigate remaining fields.
+    for (size_t i = 1; i < field_count; i++) {
+        std::string_view key(fields[i], field_lens[i]);
+        ondemand::object obj;
+        if (current.get_object().get(obj)) return 1;
+        auto r = obj.find_field(key);
+        if (r.error()) return 1;
+        current = r.value();
+    }
+    auto raw_result = current.raw_json();
+    if (raw_result.error()) return 2;
+    raw = raw_result.value();
+    return 0;
+}
+
+// Trim trailing whitespace from a raw_json() result.
+static std::string_view trim_raw_json(std::string_view raw) {
+    while (!raw.empty() && (raw.back() == ' ' || raw.back() == '\n' ||
+           raw.back() == '\r' || raw.back() == '\t' || raw.back() == ','))
+        raw.remove_suffix(1);
+    return raw;
+}
+
 int jx_dom_find_field_raw(
     const char* buf, size_t len,
     const char** fields, const size_t* field_lens, size_t field_count,
     char** out_ptr, size_t* out_len)
 {
     try {
-        dom::parser parser;
-        dom::element result;
-        int nav = navigate_fields(buf, len, fields, field_lens, field_count, parser, result);
+        ondemand::parser parser;
+        std::string_view raw;
+        int nav = navigate_fields_raw(parser, buf, len, fields, field_lens, field_count, raw);
         if (nav == 2) return -1; // parse error
         if (nav == 1) {
-            const char* null_str = "null";
             *out_ptr = new char[4];
-            std::memcpy(*out_ptr, null_str, 4);
+            std::memcpy(*out_ptr, "null", 4);
             *out_len = 4;
             return 0;
         }
-
-        std::string s = simdjson::to_string(result);
-        *out_len = s.size();
-        *out_ptr = new char[s.size()];
-        std::memcpy(*out_ptr, s.data(), s.size());
+        raw = trim_raw_json(raw);
+        *out_len = raw.size();
+        *out_ptr = new char[raw.size()];
+        std::memcpy(*out_ptr, raw.data(), raw.size());
         return 0;
     } catch (...) { return -1; }
 }
@@ -750,7 +793,8 @@ int jx_dom_find_fields_raw(
 // ---------------------------------------------------------------------------
 
 struct JxDomParser {
-    dom::parser parser;
+    dom::parser dom;           // used for length/keys (needs validated tree)
+    ondemand::parser ondemand; // used for raw field extraction (preserves original bytes)
 };
 
 JxDomParser* jx_dom_parser_new() {
@@ -770,20 +814,20 @@ int jx_dom_find_field_raw_reuse(
     char** out_ptr, size_t* out_len)
 {
     try {
-        dom::element result;
-        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->parser, result);
+        std::string_view raw;
+        int nav = navigate_fields_raw(p->ondemand, buf, len,
+                                       fields, field_lens, field_count, raw);
         if (nav == 2) return -1;
         if (nav == 1) {
-            const char* null_str = "null";
             *out_ptr = new char[4];
-            std::memcpy(*out_ptr, null_str, 4);
+            std::memcpy(*out_ptr, "null", 4);
             *out_len = 4;
             return 0;
         }
-        std::string s = simdjson::to_string(result);
-        *out_len = s.size();
-        *out_ptr = new char[s.size()];
-        std::memcpy(*out_ptr, s.data(), s.size());
+        raw = trim_raw_json(raw);
+        *out_len = raw.size();
+        *out_ptr = new char[raw.size()];
+        std::memcpy(*out_ptr, raw.data(), raw.size());
         return 0;
     } catch (...) { return -1; }
 }
@@ -798,26 +842,22 @@ int jx_dom_find_fields_raw_reuse(
     char** out_ptr, size_t* out_len)
 {
     try {
-        dom::element doc;
-        auto err = p->parser.parse(buf, len).get(doc);
-        if (err) return -1;
-
         std::string packed;
         packed.reserve(num_chains * 32);
         for (size_t i = 0; i < num_chains; i++) {
-            dom::element cur = doc;
-            bool found = true;
-            for (size_t j = 0; j < chain_counts[i]; j++) {
-                std::string_view key(chains[i][j], chain_lens[i][j]);
-                if (cur.type() != dom::element_type::OBJECT) { found = false; break; }
-                auto field_err = cur.at_key(key).get(cur);
-                if (field_err) { found = false; break; }
+            std::string_view raw;
+            int nav = navigate_fields_raw(p->ondemand, buf, len,
+                                           chains[i], chain_lens[i],
+                                           chain_counts[i], raw);
+            std::string_view val;
+            if (nav == 0) {
+                val = trim_raw_json(raw);
+            } else {
+                val = std::string_view("null", 4);
             }
-            std::string s;
-            if (found) { s = simdjson::to_string(cur); } else { s = "null"; }
-            uint32_t slen = static_cast<uint32_t>(s.size());
+            uint32_t slen = static_cast<uint32_t>(val.size());
             packed.append(reinterpret_cast<const char*>(&slen), 4);
-            packed.append(s);
+            packed.append(val);
         }
         *out_len = packed.size();
         *out_ptr = new char[packed.size()];
@@ -834,7 +874,7 @@ int jx_dom_field_length_reuse(
 {
     try {
         dom::element result;
-        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->parser, result);
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->dom, result);
         if (nav == 2) return -1;
         if (nav == 1) {
             // null → length not applicable, signal to Rust to fall back
@@ -880,7 +920,7 @@ int jx_dom_field_keys_reuse(
 {
     try {
         dom::element result;
-        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->parser, result);
+        int nav = navigate_fields(buf, len, fields, field_lens, field_count, p->dom, result);
         if (nav == 2) return -1;
         if (nav == 1) return -2;
 
