@@ -6,6 +6,9 @@
 #   - Non-zero exit code detection (appends * to times, with footnote)
 #   - "vs jq" speedup column per tool
 #
+# Note: hyperfine redirects stdout to /dev/null by default (--output=null),
+# so benchmarks measure compute + formatting, not terminal/pipe IO.
+#
 # Usage:
 #   bash benches/bench_large_only.sh
 set -euo pipefail
@@ -22,8 +25,8 @@ if [ ! -x "$QJ" ]; then
     cargo build --release
 fi
 
-declare -a TOOLS=("$QJ")
-declare -a NAMES=("qj")
+declare -a TOOLS=("$QJ" "$QJ --threads 1")
+declare -a NAMES=("qj" "qj (1T)")
 
 for tool in jq jaq gojq; do
     path=$(which "$tool" 2>/dev/null || true)

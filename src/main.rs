@@ -126,16 +126,13 @@ struct Cli {
     /// Print timing breakdown to stderr (for profiling)
     #[arg(long = "debug-timing", hide = true)]
     debug_timing: bool,
+
+    /// Number of threads for parallel NDJSON processing
+    #[arg(long, value_name = "N")]
+    threads: Option<usize>,
 }
 
 fn main() -> Result<()> {
-    // Configure Rayon thread pool to use P-cores only on Apple Silicon.
-    // E-cores add contention without throughput benefit for I/O-bound NDJSON work.
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(default_thread_count())
-        .build_global()
-        .ok(); // Ignore error if pool already initialized (e.g., in tests)
-
     // Pre-scan for --args / --jsonargs: split argv before clap sees them.
     // Everything after --args or --jsonargs becomes positional string/JSON values.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -156,6 +153,13 @@ fn main() -> Result<()> {
     };
 
     let cli = Cli::parse_from(&clap_args);
+
+    // Configure Rayon thread pool to use P-cores only on Apple Silicon.
+    // E-cores add contention without throughput benefit for I/O-bound NDJSON work.
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(cli.threads.unwrap_or_else(default_thread_count))
+        .build_global()
+        .ok(); // Ignore error if pool already initialized (e.g., in tests)
 
     // Resolve filter string and input files.
     // With --from-file, all positional args are input files.
