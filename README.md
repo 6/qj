@@ -2,11 +2,11 @@
 
 `qj` is Quick JSON, a `jq`-compatible processor.
 
-**2-120x** faster on NDJSON (JSONL). **2-10x** faster on JSON.
+**5-120x** faster on NDJSON (JSONL). **2-10x** faster on JSON.
 
 ## When to use qj instead of jq
 
-**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 106 ms vs jq's 13.5 s (127x). No `xargs` or `parallel` needed.
+**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 104 ms vs jq's 12.6 s (121x). No `xargs` or `parallel` needed.
 
 **Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Parse-heavy operations like `length` and `keys` are ~10x faster; evaluator-bound filters 2-4x.
 
@@ -23,22 +23,22 @@ cat logs.jsonl | ./target/release/qj -c 'select(.level == "ERROR")'
 
 ## Benchmarks
 
-All benchmarks on M4 Pro MacBook Pro, 1.1 GB GitHub Archive NDJSON. See [benches/](benches/) for methodology.
+All benchmarks on M4 Pro MacBook Pro, 1.1 GB GitHub Archive NDJSON, 3 runs + 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine). Hyperfine discards stdout by default, so we measure compute + formatting, not terminal IO. See [benches/](benches/) for methodology.
 
-Filters on the SIMD fast path show 60-127x gains. Evaluator-bound expressions narrow to 2-16x.
+Filters on the SIMD fast path show 59-121x gains. Evaluator-bound expressions show 27-28x. The single-threaded column shows qj's SIMD/fast-path gains without parallelism.
 
-| Workload | qj | jq | Speedup | Why |
+| Workload | qj (parallel) | qj (1 thread) | jq | Speedup |
 |----------|----|----|---------|-----|
-| `.actor.login` | **77 ms** | 7.2 s | **94x** | SIMD fast path |
-| `length` | **108 ms** | 7.2 s | **66x** | SIMD fast path |
-| `keys` | **126 ms** | 7.7 s | **61x** | SIMD fast path |
-| `select(.type == "PushEvent")` | **106 ms** | 13.5 s | **127x** | SIMD fast path |
-| `select(.type == "PushEvent") \| .payload.size` | **80 ms** | 7.3 s | **91x** | SIMD fast path |
-| `{type, repo: .repo.name, actor: .actor.login}` | **134 ms** | 8.1 s | **60x** | SIMD fast path |
-| `{type, commits: [.payload.commits[]?.message]}` | **494 ms** | 7.9 s | **16x** | mixed SIMD + evaluator |
-| `{type, commits: (.payload.commits // [] \| length)}` | **2.73 s** | 7.6 s | **2.8x** | evaluator-bound |
+| `.actor.login` | **75 ms** | 347 ms | 7.2 s | **96x** |
+| `length` | **91 ms** | 576 ms | 7.0 s | **77x** |
+| `keys` | **120 ms** | 733 ms | 7.6 s | **64x** |
+| `select(.type == "PushEvent")` | **104 ms** | 405 ms | 12.6 s | **121x** |
+| `select(.type == "PushEvent") \| .payload.size` | **78 ms** | 426 ms | 7.2 s | **91x** |
+| `{type, repo: .repo.name, actor: .actor.login}` | **132 ms** | 828 ms | 7.8 s | **59x** |
+| `{type, commits: [.payload.commits[]?.message]}` | **295 ms** | 1.78 s | 7.9 s | **27x** |
+| `{type, commits: (.payload.commits // [] \| length)}` | **266 ms** | 1.56 s | 7.5 s | **28x** |
 
-[Full results](benches/results_large_only.md).
+[Full results with jaq and gojq](benches/results_large_only.md).
 
 ## How it works
 
