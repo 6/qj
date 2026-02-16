@@ -31,7 +31,12 @@ fn default_thread_count() -> usize {
 }
 
 #[derive(Parser)]
-#[command(name = "qj", about = "A faster jq", version)]
+#[command(
+    name = "qj",
+    about = "qj - a faster jq",
+    version,
+    after_help = "Example:\n\n\t$ echo '{\"foo\": 0}' | qj .\n\t{\n\t  \"foo\": 0\n\t}"
+)]
 struct Cli {
     /// jq filter expression (not needed with --from-file/-f)
     filter: Option<String>,
@@ -164,6 +169,7 @@ fn main() -> Result<()> {
     // Resolve filter string and input files.
     // With --from-file, all positional args are input files.
     // Without it, the first positional is the filter expression.
+    // If no filter given: default to "." (like jq). On TTY with no files, show usage hint.
     let (filter_str, input_files) = if let Some(ref path) = cli.from_file {
         let filter_str = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read filter file: {path}"))?;
@@ -173,16 +179,26 @@ fn main() -> Result<()> {
         }
         (filter_str, files)
     } else {
-        let filter_str = cli.filter.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "no filter provided\nUsage: qj [OPTIONS] FILTER [FILES...]\n       qj -f FILTER_FILE [FILES...]"
-            )
-        })?;
-        (filter_str, cli.files.clone())
+        match cli.filter.clone() {
+            Some(f) => (f, cli.files.clone()),
+            None if !cli.null_input && cli.files.is_empty() && io::stdin().is_terminal() => {
+                eprintln!("qj - a faster jq [version {}]", env!("CARGO_PKG_VERSION"));
+                eprintln!("Usage: qj [OPTIONS] [FILTER] [FILES...]");
+                eprintln!("       echo '{{}}' | qj '.'");
+                eprintln!("For help: qj --help");
+                std::process::exit(0);
+            }
+            None => (".".to_string(), cli.files.clone()),
+        }
     };
 
-    let filter = qj::filter::parse(&filter_str)
-        .with_context(|| format!("failed to parse filter: {filter_str}"))?;
+    let filter = match qj::filter::parse(&filter_str) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("qj: error: failed to parse filter: {filter_str}\n\nCaused by:\n    {e}");
+            std::process::exit(3);
+        }
+    };
 
     // Build environment from --arg / --argjson
     // Variable names in the AST include the '$' prefix (e.g., "$name"),
@@ -297,7 +313,8 @@ fn main() -> Result<()> {
     let stdout = io::stdout().lock();
     let mut out = BufWriter::with_capacity(128 * 1024, stdout);
 
-    let config = if cli.raw || cli.raw_output0 {
+    // -j / --join-output implies raw output (matches jq behavior)
+    let config = if cli.raw || cli.raw_output0 || cli.join_output {
         qj::output::OutputConfig {
             mode: qj::output::OutputMode::Raw,
             indent: String::new(),
@@ -339,6 +356,7 @@ fn main() -> Result<()> {
     // Detect passthrough-eligible patterns. Disable when semantic-changing
     // flags are active (slurp, raw_input, sort_keys, join_output) or when
     // color is enabled (passthrough bypasses the output formatter).
+    // Also disable when -e is active — we need full eval to inspect output values.
     let passthrough = if cli.slurp
         || cli.raw_input
         || cli.sort_keys
@@ -347,6 +365,7 @@ fn main() -> Result<()> {
         || cli.ascii_output
         || cli.raw
         || cli.raw_output0
+        || cli.exit_status
     {
         None
     } else {
@@ -356,6 +375,7 @@ fn main() -> Result<()> {
     let uses_input = filter.uses_input_builtins();
     let mut had_output = false;
     let mut had_error = false;
+    let mut last_was_falsy = false;
 
     if cli.null_input {
         // With -n: collect all input values into the input queue (for input/inputs),
@@ -408,6 +428,7 @@ fn main() -> Result<()> {
             &config,
             &mut had_output,
             &mut had_error,
+            &mut last_was_falsy,
         );
     } else if cli.raw_input {
         // --raw-input: read lines as strings instead of parsing JSON
@@ -426,18 +447,18 @@ fn main() -> Result<()> {
                 &config,
                 &mut had_output,
                 &mut had_error,
+                &mut last_was_falsy,
             )?;
         } else if cli.slurp {
-            // --raw-input --slurp with files: collect all lines from all files
-            let mut all_lines = Vec::new();
+            // --raw-input --slurp with files: concatenate all file contents
+            // into a single string (matches jq -Rs behavior)
+            let mut all_text = String::new();
             for path in &input_files {
                 let content = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read file: {path}"))?;
-                for line in content.lines() {
-                    all_lines.push(qj::value::Value::String(line.to_string()));
-                }
+                all_text.push_str(&content);
             }
-            let input = qj::value::Value::Array(Arc::new(all_lines));
+            let input = qj::value::Value::String(all_text);
             eval_and_output(
                 &filter,
                 &input,
@@ -446,6 +467,7 @@ fn main() -> Result<()> {
                 &config,
                 &mut had_output,
                 &mut had_error,
+                &mut last_was_falsy,
             );
         } else {
             for path in &input_files {
@@ -460,6 +482,7 @@ fn main() -> Result<()> {
                     &config,
                     &mut had_output,
                     &mut had_error,
+                    &mut last_was_falsy,
                 )?;
             }
         }
@@ -489,6 +512,7 @@ fn main() -> Result<()> {
             &config,
             &mut had_output,
             &mut had_error,
+            &mut last_was_falsy,
         );
     } else if input_files.is_empty() {
         // stdin
@@ -497,46 +521,58 @@ fn main() -> Result<()> {
             .read_to_end(&mut buf)
             .context("failed to read stdin")?;
         qj::input::strip_bom(&mut buf);
-        if !uses_input && (cli.jsonl || qj::parallel::ndjson::is_ndjson(&buf)) {
-            let (output, ho) = qj::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
-                .context("failed to process NDJSON from stdin")?;
-            out.write_all(&output)?;
-            had_output |= ho;
-        } else if uses_input {
-            // Collect all values; first becomes input, rest go to queue
-            let mut values = Vec::new();
-            qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
-            let mut queue: std::collections::VecDeque<_> = values.into();
-            let input = queue.pop_front().unwrap_or(qj::value::Value::Null);
-            qj::filter::eval::set_input_queue(queue);
-            eval_and_output(
-                &filter,
-                &input,
-                &env,
-                &mut out,
-                &config,
-                &mut had_output,
-                &mut had_error,
-            );
-        } else {
-            let json_len = buf.len();
-            let padded = qj::simdjson::pad_buffer(&buf);
-            let mut handled = false;
-            if let Some(pt) = &passthrough {
-                handled = try_passthrough(&padded, json_len, pt, &mut out, &mut had_output)
-                    .context("passthrough failed")?;
-            }
-            if !handled {
-                process_padded(
-                    &padded,
-                    json_len,
+        // Empty input produces no output (matches jq behavior)
+        let is_empty = buf
+            .iter()
+            .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'));
+        if !is_empty {
+            if !uses_input
+                && !cli.exit_status
+                && (cli.jsonl || qj::parallel::ndjson::is_ndjson(&buf))
+            {
+                let (output, ho) =
+                    qj::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
+                        .context("failed to process NDJSON from stdin")?;
+                out.write_all(&output)?;
+                had_output |= ho;
+            } else if uses_input {
+                // Collect all values; first becomes input, rest go to queue
+                let mut values = Vec::new();
+                qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+                let mut queue: std::collections::VecDeque<_> = values.into();
+                let input = queue.pop_front().unwrap_or(qj::value::Value::Null);
+                qj::filter::eval::set_input_queue(queue);
+                eval_and_output(
                     &filter,
+                    &input,
                     &env,
                     &mut out,
                     &config,
                     &mut had_output,
                     &mut had_error,
-                )?;
+                    &mut last_was_falsy,
+                );
+            } else {
+                let json_len = buf.len();
+                let padded = qj::simdjson::pad_buffer(&buf);
+                let mut handled = false;
+                if let Some(pt) = &passthrough {
+                    handled = try_passthrough(&padded, json_len, pt, &mut out, &mut had_output)
+                        .context("passthrough failed")?;
+                }
+                if !handled {
+                    process_padded(
+                        &padded,
+                        json_len,
+                        &filter,
+                        &env,
+                        &mut out,
+                        &config,
+                        &mut had_output,
+                        &mut had_error,
+                        &mut last_was_falsy,
+                    )?;
+                }
             }
         }
     } else {
@@ -560,6 +596,7 @@ fn main() -> Result<()> {
                 &config,
                 &mut had_output,
                 &mut had_error,
+                &mut last_was_falsy,
             );
         } else {
             let ctx = ProcessCtx {
@@ -570,8 +607,29 @@ fn main() -> Result<()> {
                 config: &config,
                 debug_timing: cli.debug_timing,
             };
+            let mut had_file_error = false;
             for path in &input_files {
-                process_file(path, &ctx, &mut out, &mut had_output, &mut had_error)?;
+                match process_file(
+                    path,
+                    &ctx,
+                    &mut out,
+                    &mut had_output,
+                    &mut had_error,
+                    &mut last_was_falsy,
+                ) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        // Strip the redundant anyhow context wrapping — just show root cause
+                        let root = e.root_cause();
+                        eprintln!("qj: error: Could not open file {path}: {root}");
+                        had_file_error = true;
+                    }
+                }
+            }
+            if had_file_error {
+                // Flush buffered output from successfully processed files before exiting
+                let _ = out.flush();
+                std::process::exit(2);
             }
         }
     }
@@ -582,8 +640,13 @@ fn main() -> Result<()> {
         std::process::exit(5);
     }
 
-    if cli.exit_status && !had_output {
-        std::process::exit(4);
+    if cli.exit_status {
+        if !had_output {
+            std::process::exit(4);
+        }
+        if last_was_falsy {
+            std::process::exit(1);
+        }
     }
 
     Ok(())
@@ -596,6 +659,7 @@ fn main() -> Result<()> {
 /// Evaluate a filter against an input value and write all outputs.
 /// After evaluation, checks for uncaught runtime errors and reports them
 /// to stderr (like jq's exit-code-5 behavior).
+#[allow(clippy::too_many_arguments)]
 fn eval_and_output(
     filter: &qj::filter::Filter,
     input: &qj::value::Value,
@@ -604,6 +668,7 @@ fn eval_and_output(
     config: &qj::output::OutputConfig,
     had_output: &mut bool,
     had_error: &mut bool,
+    last_was_falsy: &mut bool,
 ) {
     let mut nul_error = false;
     let mut write_failed = false;
@@ -619,6 +684,7 @@ fn eval_and_output(
             nul_error = true;
             return;
         }
+        *last_was_falsy = matches!(v, qj::value::Value::Null | qj::value::Value::Bool(false));
         *had_output = true;
         if qj::output::write_value(out, &v, config).is_err() {
             write_failed = true;
@@ -846,11 +912,17 @@ fn process_file(
     out: &mut impl Write,
     had_output: &mut bool,
     had_error: &mut bool,
+    last_was_falsy: &mut bool,
 ) -> Result<()> {
     let t0 = Instant::now();
     let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
         .with_context(|| format!("failed to read file: {path}"))?;
     let t_read = t0.elapsed();
+
+    // Empty file produces no output (matches jq behavior)
+    if json_len == 0 {
+        return Ok(());
+    }
 
     // NDJSON fast path (skip when debug-timing so we get the full pipeline breakdown)
     if !ctx.debug_timing
@@ -956,7 +1028,15 @@ fn process_file(
         print_timing_total(total, mb);
     } else {
         process_padded(
-            &padded, json_len, ctx.filter, ctx.env, out, ctx.config, had_output, had_error,
+            &padded,
+            json_len,
+            ctx.filter,
+            ctx.env,
+            out,
+            ctx.config,
+            had_output,
+            had_error,
+            last_was_falsy,
         )?;
     }
 
@@ -968,7 +1048,7 @@ fn process_file(
 // ---------------------------------------------------------------------------
 
 /// Process --raw-input text: each line becomes a Value::String.
-/// If slurp is true, collect all lines into an array.
+/// If slurp is true, concatenate all input into a single string (matches jq -Rs).
 #[allow(clippy::too_many_arguments)]
 fn process_raw_input(
     text: &str,
@@ -979,18 +1059,34 @@ fn process_raw_input(
     config: &qj::output::OutputConfig,
     had_output: &mut bool,
     had_error: &mut bool,
+    last_was_falsy: &mut bool,
 ) -> Result<()> {
     if slurp {
-        let arr: Vec<qj::value::Value> = text
-            .lines()
-            .map(|l| qj::value::Value::String(l.to_string()))
-            .collect();
-        let input = qj::value::Value::Array(Arc::new(arr));
-        eval_and_output(filter, &input, env, out, config, had_output, had_error);
+        // jq's -Rs concatenates all input into a single string value (not an array)
+        let input = qj::value::Value::String(text.to_string());
+        eval_and_output(
+            filter,
+            &input,
+            env,
+            out,
+            config,
+            had_output,
+            had_error,
+            last_was_falsy,
+        );
     } else {
         for line in text.lines() {
             let input = qj::value::Value::String(line.to_string());
-            eval_and_output(filter, &input, env, out, config, had_output, had_error);
+            eval_and_output(
+                filter,
+                &input,
+                env,
+                out,
+                config,
+                had_output,
+                had_error,
+                last_was_falsy,
+            );
         }
     }
     Ok(())
@@ -1006,6 +1102,7 @@ fn process_padded(
     config: &qj::output::OutputConfig,
     had_output: &mut bool,
     had_error: &mut bool,
+    last_was_falsy: &mut bool,
 ) -> Result<()> {
     // Use flat evaluation (lazy, zero-copy) when the filter is safe for it.
     // Flat eval was designed for NDJSON and silently ignores type errors,
@@ -1026,6 +1123,7 @@ fn process_padded(
                 nul_error = true;
                 return;
             }
+            *last_was_falsy = matches!(v, qj::value::Value::Null | qj::value::Value::Bool(false));
             *had_output = true;
             if qj::output::write_value(out, &v, config).is_err() {
                 write_failed = true;
@@ -1059,9 +1157,23 @@ fn process_padded(
                 .context("failed to parse JSON (serde_json fallback for >4GB file)")?;
             qj::value::Value::from(serde_val)
         }
-        Err(e) => return Err(e).context("failed to parse JSON"),
+        Err(e) => {
+            // JSON parse errors → exit 5 (matches jq behavior)
+            eprintln!("qj: error (at <stdin>): {e:#}");
+            *had_error = true;
+            return Ok(());
+        }
     };
-    eval_and_output(filter, &input, env, out, config, had_output, had_error);
+    eval_and_output(
+        filter,
+        &input,
+        env,
+        out,
+        config,
+        had_output,
+        had_error,
+        last_was_falsy,
+    );
     Ok(())
 }
 

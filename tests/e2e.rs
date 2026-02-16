@@ -3023,16 +3023,22 @@ fn raw_input_multi() {
 
 #[test]
 fn raw_input_slurp() {
+    // jq -Rs: concatenate all input into a single string (not an array of lines)
     assert_eq!(
         qj_args(&["-Rsc", ".", "--"], "hello\nworld").trim(),
-        r#"["hello","world"]"#
+        r#""hello\nworld""#
     );
 }
 
 #[test]
-fn raw_input_slurp_join() {
+fn raw_input_slurp_split_join() {
+    // To get the old array-of-lines behavior, use split("\n")
     assert_eq!(
-        qj_args(&["-Rsr", r#"join(",")"#, "--"], "hello\nworld").trim(),
+        qj_args(
+            &["-Rsr", r#"split("\n") | join(",")"#, "--"],
+            "hello\nworld"
+        )
+        .trim(),
         "hello,world"
     );
 }
