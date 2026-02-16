@@ -5,9 +5,10 @@
 //! allocation) and only materializes at the point where a concrete Value is
 //! needed (output boundary, complex computation, etc.).
 
-use crate::filter::{Env, Filter, ObjKey};
+use crate::filter::{Env, Filter, ObjKey, Pattern};
 use crate::flat_value::FlatValue;
 use crate::value::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Result of navigating a filter on a FlatValue.
@@ -19,6 +20,28 @@ enum NavResult<'a> {
     Flat(FlatValue<'a>),
     /// Materialized Value results.
     Values(Vec<Value>),
+}
+
+/// Check if any variable bound by `pattern` is referenced in `filter`.
+fn pattern_var_used_in(pattern: &Pattern, filter: &Filter) -> bool {
+    let mut pat_vars = HashSet::new();
+    crate::filter::collect_pattern_var_refs(pattern, &mut pat_vars);
+    let mut filter_vars = HashSet::new();
+    filter.collect_var_refs(&mut filter_vars);
+    pat_vars.iter().any(|v| filter_vars.contains(v))
+}
+
+/// Count how many values `source` would produce from `flat` without materializing.
+/// Returns `Some(count)` for navigable patterns (`.[]`, `.field[]`), `None` otherwise.
+fn flat_source_count(filter: &Filter, flat: FlatValue<'_>, env: &Env) -> Option<usize> {
+    match filter {
+        Filter::Iterate => flat.len(),
+        Filter::Pipe(left, right) => match eval_flat_nav(left, flat, env) {
+            NavResult::Flat(child) => flat_source_count(right, child, env),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Try to evaluate a filter as flat navigation, avoiding materialization.
@@ -168,10 +191,13 @@ pub fn is_flat_safe(filter: &Filter) -> bool {
         Filter::Alternative(l, r) => is_flat_safe(l) && is_flat_safe(r),
         Filter::Try(inner) => is_flat_safe(inner),
         Filter::Not(inner) => is_flat_safe(inner),
-        // Reduce is handled by eval_flat but not enabled for single-doc mode:
-        // the per-element to_value() calls are slower than building the full
-        // Value tree once. NDJSON path (which doesn't check is_flat_safe) still
-        // benefits from the flat eval reduce handler on small per-line documents.
+        // Reduce: source must be flat-safe (passed to eval_flat). Init goes
+        // through eval_flat too (literals handled directly, exotic expressions
+        // fall through to catch-all). Update runs via eval_filter_with_env on
+        // a materialized accumulator, so it doesn't need the check.
+        Filter::Reduce(source, _pattern, init, _update) => {
+            is_flat_safe(source) && is_flat_safe(init)
+        }
         Filter::Builtin(name, args) if args.is_empty() => {
             matches!(name.as_str(), "length" | "type" | "keys")
         }
@@ -369,20 +395,47 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
         }
 
         Filter::Reduce(source, pattern, init, update) => {
-            // Evaluate source lazily via flat buffer, but run init/update with regular eval
+            // Evaluate init via flat eval — literals like `0` are handled directly
+            // without materializing the document; exotic init expressions fall
+            // through to eval_flat's catch-all which materializes as needed.
             let mut acc = Value::Null;
-            {
-                let value = flat.to_value();
-                crate::filter::eval::eval_filter_with_env(init, &value, env, &mut |v| acc = v);
-            }
-            eval_flat(source, flat, env, &mut |val| {
-                if let Some(new_env) = crate::filter::eval::match_pattern(pattern, &val, env) {
-                    let cur = acc.clone();
-                    crate::filter::eval::eval_filter_with_env(update, &cur, &new_env, &mut |v| {
-                        acc = v;
+            eval_flat(init, flat, env, &mut |v| acc = v);
+
+            if !pattern_var_used_in(pattern, update) {
+                // Dead variable: pattern var is never referenced in update.
+                // Try to count source elements without materializing them.
+                if let Some(count) = flat_source_count(source, flat, env) {
+                    // Zero-materialization path: just run update N times.
+                    for _ in 0..count {
+                        let cur = acc.clone();
+                        crate::filter::eval::eval_filter_with_env(update, &cur, env, &mut |v| {
+                            acc = v
+                        });
+                    }
+                } else {
+                    // Uncountable source (e.g., contains select): materialize
+                    // elements but skip match_pattern/binding.
+                    eval_flat(source, flat, env, &mut |_val| {
+                        let cur = acc.clone();
+                        crate::filter::eval::eval_filter_with_env(update, &cur, env, &mut |v| {
+                            acc = v
+                        });
                     });
                 }
-            });
+            } else {
+                // Live variable: materialize each element and bind pattern.
+                eval_flat(source, flat, env, &mut |val| {
+                    if let Some(new_env) = crate::filter::eval::match_pattern(pattern, &val, env) {
+                        let cur = acc.clone();
+                        crate::filter::eval::eval_filter_with_env(
+                            update,
+                            &cur,
+                            &new_env,
+                            &mut |v| acc = v,
+                        );
+                    }
+                });
+            }
             output(acc);
         }
 
@@ -717,6 +770,23 @@ mod tests {
     }
 
     #[test]
+    fn reduce_dead_var_counting() {
+        // Pattern var $x is unused in update — takes zero-materialization path
+        assert_equiv("reduce .[] as $x (0; . + 1)", b"[1,2,3,4,5]");
+        assert_equiv("reduce .[] as $x (0; . + 1)", br#"{"a":1,"b":2}"#);
+        assert_equiv("reduce .[] as $x (0; . + 1)", b"[]");
+    }
+
+    #[test]
+    fn reduce_dead_var_field_source() {
+        // Dead variable with field chain source
+        assert_equiv(
+            "reduce .items[] as $x (0; . + 1)",
+            br#"{"items":[10,20,30]}"#,
+        );
+    }
+
+    #[test]
     fn try_operator() {
         assert_equiv(".foo?", br#"{"foo":1}"#);
         assert_equiv(".foo?", b"42");
@@ -803,10 +873,20 @@ mod tests {
     fn flat_safe_map() {
         assert!(is_flat_safe(&parse_filter("map(.x)")));
         assert!(is_flat_safe(&parse_filter("map_values(.x)")));
-        // reduce is NOT flat-safe for single-doc mode (per-element to_value()
-        // is slower than building the full Value tree once). The reduce handler
-        // in eval_flat still works for NDJSON which doesn't check is_flat_safe.
-        assert!(!is_flat_safe(&parse_filter("reduce .[] as $x (0; . + $x)")));
+    }
+
+    #[test]
+    fn flat_safe_reduce() {
+        // reduce with flat-safe source and init
+        assert!(is_flat_safe(&parse_filter("reduce .[] as $x (0; . + $x)")));
+        assert!(is_flat_safe(&parse_filter("reduce .[] as $x (0; . + 1)")));
+        assert!(is_flat_safe(&parse_filter(
+            "reduce .items[] as $x (0; . + $x)"
+        )));
+        // reduce with non-flat-safe source
+        assert!(!is_flat_safe(&parse_filter(
+            "reduce (if . then .[] else empty end) as $x (0; . + $x)"
+        )));
     }
 
     #[test]

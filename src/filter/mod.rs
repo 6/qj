@@ -177,10 +177,43 @@ pub struct UserFunc {
     pub is_def: bool,
 }
 
+/// Scope chain for variable bindings. Each `bind_var` creates a new `Cons`
+/// node that points to the parent scope — O(1) bind instead of cloning
+/// the entire HashMap. Lookup walks the chain — O(depth) where depth is
+/// typically < 10 for jq programs.
+#[derive(Debug, Clone)]
+enum VarScope {
+    Empty,
+    Cons {
+        name: String,
+        value: Value,
+        parent: Rc<VarScope>,
+    },
+}
+
+impl VarScope {
+    fn get(&self, target: &str) -> Option<&Value> {
+        match self {
+            VarScope::Empty => None,
+            VarScope::Cons {
+                name,
+                value,
+                parent,
+            } => {
+                if name == target {
+                    Some(value)
+                } else {
+                    parent.get(target)
+                }
+            }
+        }
+    }
+}
+
 /// Evaluation environment: variable bindings + user-defined functions.
 #[derive(Debug, Clone)]
 pub struct Env {
-    vars: Rc<HashMap<String, Value>>,
+    vars: Rc<VarScope>,
     /// User-defined functions keyed by (name, arity).
     funcs: Rc<HashMap<(String, usize), UserFunc>>,
 }
@@ -188,14 +221,14 @@ pub struct Env {
 impl Env {
     pub fn empty() -> Self {
         Env {
-            vars: Rc::new(HashMap::new()),
+            vars: Rc::new(VarScope::Empty),
             funcs: Rc::new(HashMap::new()),
         }
     }
 
     /// Returns true if the environment has no variable bindings.
     pub fn is_empty(&self) -> bool {
-        self.vars.is_empty()
+        matches!(*self.vars, VarScope::Empty)
     }
 
     /// Look up a variable binding (e.g., "$x").
@@ -204,11 +237,14 @@ impl Env {
     }
 
     /// Create a new env with an additional variable binding.
+    /// O(1): creates a single Cons node pointing to the current scope.
     pub fn bind_var(&self, name: String, value: Value) -> Env {
-        let mut new_vars = (*self.vars).clone();
-        new_vars.insert(name, value);
         Env {
-            vars: Rc::new(new_vars),
+            vars: Rc::new(VarScope::Cons {
+                name,
+                value,
+                parent: self.vars.clone(),
+            }),
             funcs: self.funcs.clone(),
         }
     }
@@ -523,8 +559,8 @@ impl Filter {
     }
 }
 
-/// Collect variable references from a destructuring pattern.
-fn collect_pattern_var_refs(pat: &Pattern, out: &mut HashSet<String>) {
+/// Collect variable names bound by a destructuring pattern.
+pub(crate) fn collect_pattern_var_refs(pat: &Pattern, out: &mut HashSet<String>) {
     match pat {
         Pattern::Var(name) => {
             out.insert(name.clone());

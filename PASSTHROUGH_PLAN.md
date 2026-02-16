@@ -2,9 +2,18 @@
 
 ## Context
 
-After Phase 2, `map({user, text})` on 49MB `large_twitter.json` takes 94ms (3.9x vs jq). The `length` passthrough achieves 34ms by skipping flat buffer + Value tree entirely. Phase 4 extends this to the most common array iteration pattern: extracting a single field per element.
+After Phase 2 + flat eval reduce + Env scope chain, benchmarks on 49MB `large_twitter.json` (hyperfine, vs jq):
 
-**Target:** `map(.field)` and `.[] | .field` via DOM passthrough. Expected ~35ms (vs 94ms).
+| Filter | qj | jq | Speedup |
+|--------|----|----|---------|
+| `length` (passthrough) | 34ms | 361ms | **10.6x** |
+| `reduce .[] as $x (0; .+1)` | 88ms | 366ms | **4.1x** |
+| `map({user, text})` | 88ms | 367ms | **4.2x** |
+| `reduce .statuses[] as $x (0; . + $x.id)` | 157ms | 370ms | **2.4x** |
+
+The `length` passthrough achieves 34ms by skipping flat buffer + Value tree entirely. Phase 4 extends this to the most common array iteration pattern: extracting a single field per element.
+
+**Target:** `map(.field)` and `.[] | .field` via DOM passthrough. Expected ~35ms (vs 88ms).
 
 ## Files to Change
 
