@@ -55,7 +55,9 @@ The single-doc floor is the weakest performance area. Current state on 49MB `lar
 
 Time breakdown for the worst case (`reduce`, 172ms): I/O ~7ms, SIMD parse + flat buffer ~45ms, reduce loop (~2M iterations) ~120ms. The flat eval already has a zero-materialization optimization for this case (detects `$x` unused in `. + 1`, counts elements from flat buffer, loops without materializing any array elements). The 120ms is pure evaluator dispatch overhead.
 
-**A. Parallel map/select on single-doc arrays.** Currently single-doc is always single-threaded, even for `map(transform)` on a large array. The NDJSON parallel infrastructure could apply to array elements: split array into chunks, process per-chunk, merge. Would turn `map({user, text})` from 3.9x to potentially 20-40x (similar to NDJSON speedups). Doesn't help `reduce` (inherently sequential) but helps the common `map`, `.[]`, `select` patterns. Medium complexity — reuse existing Rayon chunking from `src/parallel/ndjson.rs`. (`src/main.rs`, `src/parallel/`)
+**A. Parallel map/select on single-doc arrays.** Currently single-doc is always single-threaded, even for `map(transform)` on a large array. The NDJSON parallel infrastructure could apply to array elements: split array into chunks, process per-chunk, merge. Doesn't help `reduce` (inherently sequential) but helps the common `map`, `.[]`, `select` patterns. Medium complexity — reuse existing Rayon chunking from `src/parallel/ndjson.rs`. (`src/main.rs`, `src/parallel/`)
+
+*Caveat:* Needs large arrays (10K+ elements) to amortize thread pool overhead. Won't show up on `large_twitter.json` where `.statuses` has ~100 tweets — passthroughs already catch those patterns at 10-13x. Would matter on bare arrays with 100K+ elements.
 
 **B. Specialized reduce detection.** Detect common reduce idioms and execute natively without the eval loop:
 - `reduce .[] as $x (0; . + 1)` → `length`
@@ -88,6 +90,8 @@ Limited coverage but these are textbook patterns. Low complexity — pattern-mat
 **Files:** new `src/filter/bytecode.rs` (compiler + VM), modified `src/filter/eval.rs` (dispatch to bytecode when available), `src/flat_eval.rs` (same).
 
 **D. HashMap for object field lookup.** Currently `Value::Object(Arc<Vec<(String, Value)>>)` — `.field` access is O(n) linear scan (`src/filter/eval.rs`). For objects with 20-30 fields (typical GH Archive), every field access scans ~15 entries on average. A `HashMap` or sorted+binary-search layout would make this O(1) or O(log n). Independent of the bytecode question. Low-moderate complexity but changes Value's memory layout. (`src/value.rs`, `src/filter/eval.rs`)
+
+*Caveat:* Won't show up on `large_twitter.json` benchmarks. For `map({user, text})` on ~100 tweets: 100 × 2 lookups × ~10 string comparisons ≈ 2000 comparisons at ~5-10ns each = ~10-20μs (negligible vs 94ms total). The reduce floor has zero field accesses. Also has a cost: HashMap construction is more expensive than Vec, so filters that build many objects could regress. More likely to show up on `gharchive.ndjson` (30-field objects, millions of lines) or deep pipelines with many `.field` accesses on wide objects.
 
 ### NDJSON infrastructure
 
