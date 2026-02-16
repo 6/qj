@@ -75,7 +75,7 @@ run_filter() {
 
     local json_out="$RESULTS_DIR/${section}_${idx}.json"
 
-    local hyp_args=(caffeinate -dims hyperfine --warmup 0 --runs 2 --ignore-failure --export-json "$json_out")
+    local hyp_args=(caffeinate -dims hyperfine --warmup 1 --runs 3 --ignore-failure --export-json "$json_out")
     for t in "${!TOOLS[@]}"; do
         local cmd="${TOOLS[$t]} $flags '$expr' '$file'"
         hyp_args+=("$cmd")
@@ -158,7 +158,7 @@ HAS_FAILURES=0
     echo "# GH Archive Benchmark"
     echo ""
     echo "> Generated: $DATE on \`$PLATFORM\`"
-    echo "> 2 runs, no warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
+    echo "> 3 runs, 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
     echo ""
     echo "### NDJSON (${NDJSON_BASENAME}, ${NDJSON_MB}MB, parallel processing)"
     echo ""
