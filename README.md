@@ -1,12 +1,14 @@
 # qj
 
-Quick JSON. A jq-compatible processor, 2-100x faster on large inputs.
+`qj` is Quick JSON, a `jq`-compatible processor.
+
+**2-120x** faster on NDJSON (JSONL). **2-10x** faster on JSON.
 
 ## When to use qj instead of jq
 
-**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Parse-heavy operations like `length` and `keys` are ~10x faster; evaluator-bound filters 2-4x.
-
 **NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 106 ms vs jq's 13.5 s (127x). No `xargs` or `parallel` needed.
+
+**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Parse-heavy operations like `length` and `keys` are ~10x faster; evaluator-bound filters 2-4x.
 
 **When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
@@ -21,20 +23,9 @@ cat logs.jsonl | ./target/release/qj -c 'select(.level == "ERROR")'
 
 ## Benchmarks
 
-All benchmarks on M4 Pro MacBook Pro. See [benches/](benches/) for methodology.
-
-49 MB JSON (large_twitter.json):
-
-| Workload | qj | jq | jaq | gojq |
-|----------|----|----|-----|------|
-| `.statuses \| length` | **34 ms** | 361 ms | 157 ms | 299 ms |
-| `keys` | **36 ms** | 364 ms | 152 ms | 294 ms |
-| `.statuses[] \| .user.name` | **152 ms** | 367 ms | 165 ms | 316 ms |
-| `walk(if type == "boolean" then not else . end)` | **374 ms** | 3.47 s | 2.10 s | 1.61 s |
+All benchmarks on M4 Pro MacBook Pro, 1.1 GB GitHub Archive NDJSON. See [benches/](benches/) for methodology.
 
 Filters on the SIMD fast path show 60-127x gains. Evaluator-bound expressions narrow to 2-16x.
-
-GB-scale NDJSON (1.1 GB GitHub Archive, parallel processing):
 
 | Workload | qj | jq | Speedup | Why |
 |----------|----|----|---------|-----|
@@ -47,7 +38,7 @@ GB-scale NDJSON (1.1 GB GitHub Archive, parallel processing):
 | `{type, commits: [.payload.commits[]?.message]}` | **494 ms** | 7.9 s | **16x** | mixed SIMD + evaluator |
 | `{type, commits: (.payload.commits // [] \| length)}` | **2.73 s** | 7.6 s | **2.8x** | evaluator-bound |
 
-[Full results](benches/results_large_only.md) and [tool comparison data](benches/results.md).
+[Full results](benches/results_large_only.md).
 
 ## How it works
 
