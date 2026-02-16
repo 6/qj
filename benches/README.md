@@ -33,6 +33,17 @@ bash benches/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
 bash benches/download_gharchive.sh  # ~1.1GB gharchive.ndjson, gharchive.json
 ```
 
+## Memory usage comparison
+
+Measures peak resident set size (RSS) via `wait4()` rusage:
+
+```bash
+cargo run --release --bin bench_mem -- --type json     # peak RSS on large_twitter.json
+cargo run --release --bin bench_mem -- --type ndjson    # peak RSS on gharchive.ndjson (or 1m.ndjson)
+```
+
+No external tools needed (no hyperfine). Results written to `benches/results_mem_json.md` or `benches/results_mem_ndjson.md`.
+
 ## Other benchmarks
 
 ### Parse throughput (simdjson vs serde_json)

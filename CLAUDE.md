@@ -139,6 +139,14 @@ cargo run --release --bin bench_tools -- --type ndjson                  # NDJSON
 cargo run --release --bin bench_tools -- --type json --runs 3 --cooldown 2  # quick JSON run
 ```
 
+### Memory usage comparison (qj vs jq vs jaq vs gojq)
+```
+cargo run --release --bin bench_mem -- --type json     # JSON (large_twitter.json)
+cargo run --release --bin bench_mem -- --type ndjson    # NDJSON (gharchive.ndjson or 1m.ndjson)
+```
+Measures peak RSS via `wait4()` rusage. No external tools needed (no hyperfine).
+Results written to `benches/results_mem_json.md` / `benches/results_mem_ndjson.md`.
+
 ### GH Archive data (for NDJSON benchmarks)
 ```
 bash benches/download_gharchive.sh           # gharchive.ndjson (~1.1GB), gharchive.json (~1.1GB)

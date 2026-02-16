@@ -54,3 +54,8 @@ path = "benches/gen_ndjson.rs"
 [[bin]]
 name = "bench_tools"
 path = "benches/bench_tools.rs"
+
+[[bin]]
+name = "bench_mem"
+path = "benches/bench_mem.rs"
+test = false
