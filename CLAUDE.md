@@ -91,7 +91,8 @@ cargo +nightly fuzz run fuzz_ndjson_diff  -- -max_total_time=120
 
 **Output formatting** (run after changing `src/output.rs`):
 ```
-cargo +nightly fuzz run fuzz_output       -- -max_total_time=120
+cargo +nightly fuzz run fuzz_output        -- -max_total_time=120
+cargo +nightly fuzz run fuzz_double_format -- -max_total_time=120
 ```
 
 ## Benchmarking

@@ -592,6 +592,97 @@ fn passthrough_field_keys_array_value() {
     assert_jq_compat(".items | keys", r#"{"items":["x","y"]}"#);
 }
 
+// --- Array map field passthrough ---
+
+#[test]
+fn passthrough_map_field_basic() {
+    let out = qj_compact("map(.name)", r#"[{"name":"alice"},{"name":"bob"}]"#);
+    assert_eq!(out.trim(), r#"["alice","bob"]"#);
+    assert_jq_compat("map(.name)", r#"[{"name":"alice"},{"name":"bob"}]"#);
+}
+
+#[test]
+fn passthrough_map_field_nested() {
+    let out = qj_compact("map(.a.b)", r#"[{"a":{"b":1}},{"a":{"b":2}}]"#);
+    assert_eq!(out.trim(), "[1,2]");
+    assert_jq_compat("map(.a.b)", r#"[{"a":{"b":1}},{"a":{"b":2}}]"#);
+}
+
+#[test]
+fn passthrough_map_field_missing() {
+    let out = qj_compact("map(.x)", r#"[{"a":1},{"x":2}]"#);
+    assert_eq!(out.trim(), "[null,2]");
+    assert_jq_compat("map(.x)", r#"[{"a":1},{"x":2}]"#);
+}
+
+#[test]
+fn passthrough_map_field_empty_array() {
+    let out = qj_compact("map(.x)", "[]");
+    assert_eq!(out.trim(), "[]");
+    assert_jq_compat("map(.x)", "[]");
+}
+
+#[test]
+fn passthrough_iterate_field_basic() {
+    let out = qj_compact(".[] | .name", r#"[{"name":"alice"},{"name":"bob"}]"#);
+    assert_eq!(out.trim(), "\"alice\"\n\"bob\"");
+    assert_jq_compat(".[] | .name", r#"[{"name":"alice"},{"name":"bob"}]"#);
+}
+
+#[test]
+fn passthrough_iterate_field_nested() {
+    let out = qj_compact(".[] | .a.b", r#"[{"a":{"b":1}},{"a":{"b":2}}]"#);
+    assert_eq!(out.trim(), "1\n2");
+    assert_jq_compat(".[] | .a.b", r#"[{"a":{"b":1}},{"a":{"b":2}}]"#);
+}
+
+#[test]
+fn passthrough_iterate_field_mixed_types() {
+    let out = qj_compact(
+        "map(.val)",
+        r#"[{"val":1},{"val":"str"},{"val":true},{"val":null},{"val":[1,2]}]"#,
+    );
+    assert_eq!(out.trim(), r#"[1,"str",true,null,[1,2]]"#);
+    assert_jq_compat(
+        "map(.val)",
+        r#"[{"val":1},{"val":"str"},{"val":true},{"val":null},{"val":[1,2]}]"#,
+    );
+}
+
+#[test]
+fn passthrough_prefix_map_field() {
+    let out = qj_compact(
+        ".data | map(.name)",
+        r#"{"data":[{"name":"alice"},{"name":"bob"}]}"#,
+    );
+    assert_eq!(out.trim(), r#"["alice","bob"]"#);
+    assert_jq_compat(
+        ".data | map(.name)",
+        r#"{"data":[{"name":"alice"},{"name":"bob"}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_prefix_iterate_field() {
+    let out = qj_compact(
+        ".data[] | .name",
+        r#"{"data":[{"name":"alice"},{"name":"bob"}]}"#,
+    );
+    assert_eq!(out.trim(), "\"alice\"\n\"bob\"");
+    assert_jq_compat(
+        ".data[] | .name",
+        r#"{"data":[{"name":"alice"},{"name":"bob"}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_map_field_pretty_not_affected() {
+    // Without -c, passthrough should not activate (requires_compact = true),
+    // so it goes through normal pipeline with pretty printing.
+    let out = qj("map(.x)", r#"[{"x":1},{"x":2}]"#);
+    assert_eq!(out, "[\n  1,\n  2\n]\n");
+}
+
 // --- Number literal preservation ---
 
 #[test]

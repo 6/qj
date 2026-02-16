@@ -396,6 +396,52 @@ pub fn dom_field_keys(buf: &[u8], json_len: usize, fields: &[&str]) -> Result<Op
     Ok(Some(result))
 }
 
+/// Navigate a prefix field chain, then iterate the target array and extract
+/// a field chain from each element.
+///
+/// Returns `Ok(Some(bytes))` on success, `Ok(None)` if target is not an array (fallback).
+/// `wrap_array`: true = output as `[v1,v2,...]`, false = output `v1\nv2\n...`.
+pub fn dom_array_map_field(
+    buf: &[u8],
+    json_len: usize,
+    prefix: &[&str],
+    fields: &[&str],
+    wrap_array: bool,
+) -> Result<Option<Vec<u8>>> {
+    assert!(
+        buf.len() >= json_len + padding(),
+        "buffer must include SIMDJSON_PADDING extra bytes"
+    );
+    let prefix_ptrs: Vec<*const c_char> = prefix.iter().map(|f| f.as_ptr().cast()).collect();
+    let prefix_lens: Vec<usize> = prefix.iter().map(|f| f.len()).collect();
+    let field_ptrs: Vec<*const c_char> = fields.iter().map(|f| f.as_ptr().cast()).collect();
+    let field_lens: Vec<usize> = fields.iter().map(|f| f.len()).collect();
+    let mut out_ptr: *mut c_char = std::ptr::null_mut();
+    let mut out_len: usize = 0;
+    let rc = unsafe {
+        jx_dom_array_map_field(
+            buf.as_ptr().cast(),
+            json_len,
+            prefix_ptrs.as_ptr(),
+            prefix_lens.as_ptr(),
+            prefix.len(),
+            field_ptrs.as_ptr(),
+            field_lens.as_ptr(),
+            fields.len(),
+            if wrap_array { 1 } else { 0 },
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
+    if rc == -2 {
+        return Ok(None);
+    }
+    check(rc)?;
+    let result = unsafe { std::slice::from_raw_parts(out_ptr.cast::<u8>(), out_len) }.to_vec();
+    unsafe { jx_minify_free(out_ptr) };
+    Ok(Some(result))
+}
+
 /// Batch field extraction: parse once, extract N field chains.
 ///
 /// Each entry in `field_chains` is a slice of field segments, e.g. `&["actor", "login"]`.

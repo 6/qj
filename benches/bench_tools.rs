@@ -75,6 +75,16 @@ static JSON_FILTERS: &[BenchFilter] = &[
         expr: ".statuses[]|.user.name",
     },
     BenchFilter {
+        name: "iterate + field (compact)",
+        flags: &["-c"],
+        expr: ".statuses[]|.user.name",
+    },
+    BenchFilter {
+        name: "map + field (compact)",
+        flags: &["-c"],
+        expr: ".statuses|map(.user)",
+    },
+    BenchFilter {
         name: "select + construct",
         flags: &[],
         expr: ".statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}",

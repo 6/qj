@@ -345,6 +345,8 @@ fn main() -> Result<()> {
         || cli.join_output
         || use_color
         || cli.ascii_output
+        || cli.raw
+        || cli.raw_output0
     {
         None
     } else {
@@ -683,6 +685,29 @@ fn try_passthrough(
                 None => Ok(false),
             }
         }
+        qj::filter::PassthroughPath::ArrayMapField {
+            prefix,
+            fields,
+            wrap_array,
+        } => {
+            let prefix_refs: Vec<&str> = prefix.iter().map(|s| s.as_str()).collect();
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            match qj::simdjson::dom_array_map_field(
+                padded,
+                json_len,
+                &prefix_refs,
+                &field_refs,
+                *wrap_array,
+            )? {
+                Some(result) => {
+                    out.write_all(&result)?;
+                    out.write_all(b"\n")?;
+                    *had_output = true;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
     }
 }
 
@@ -740,6 +765,7 @@ fn process_file(
                     qj::filter::PassthroughPath::Identity => "minify",
                     qj::filter::PassthroughPath::FieldLength(_) => "length",
                     qj::filter::PassthroughPath::FieldKeys(_) => "keys",
+                    qj::filter::PassthroughPath::ArrayMapField { .. } => "map_field",
                 };
                 eprintln!("--- debug-timing ({label} passthrough): {path} ({mb:.1} MB) ---");
                 print_timing_line("read", t_read, total);

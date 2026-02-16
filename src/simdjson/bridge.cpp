@@ -1130,4 +1130,73 @@ int jx_dom_field_keys_reuse(
     } catch (...) { return -1; }
 }
 
+// ---------------------------------------------------------------------------
+// Array map field — iterate root array, extract one field chain per element.
+//
+// Returns: 0 = success, -1 = error, -2 = root is not an array (fallback).
+// wrap_array: 1 = output as JSON array [v1,v2,...], 0 = one value per line.
+// Missing fields produce "null". Caller frees with jx_minify_free.
+// ---------------------------------------------------------------------------
+
+int jx_dom_array_map_field(
+    const char* buf, size_t len,
+    const char** prefix, const size_t* prefix_lens, size_t prefix_count,
+    const char** fields, const size_t* field_lens, size_t field_count,
+    int wrap_array,
+    char** out_ptr, size_t* out_len)
+{
+    try {
+        dom::parser parser;
+        dom::element root;
+        auto err = parser.parse(buf, len).get(root);
+        if (err) return -1;
+
+        // Navigate prefix field chain to reach the array
+        dom::element target = root;
+        for (size_t i = 0; i < prefix_count; i++) {
+            std::string_view key(prefix[i], prefix_lens[i]);
+            if (target.type() != dom::element_type::OBJECT) return -2;
+            auto field_err = target.at_key(key).get(target);
+            if (field_err) return -2;
+        }
+        if (target.type() != dom::element_type::ARRAY) return -2;
+
+        std::string out;
+        out.reserve(len / 4);
+        if (wrap_array) out.push_back('[');
+
+        bool first = true;
+        for (dom::element elem : dom::array(target)) {
+            if (!first) {
+                if (wrap_array) out.push_back(',');
+                else out.push_back('\n');
+            }
+            first = false;
+
+            // Navigate field chain within this element
+            dom::element cur = elem;
+            bool found = true;
+            for (size_t i = 0; i < field_count; i++) {
+                std::string_view key(fields[i], field_lens[i]);
+                if (cur.type() != dom::element_type::OBJECT) { found = false; break; }
+                auto field_err = cur.at_key(key).get(cur);
+                if (field_err) { found = false; break; }
+            }
+
+            if (found) {
+                out += simdjson::to_string(cur);
+            } else {
+                out += "null";
+            }
+        }
+
+        if (wrap_array) out.push_back(']');
+
+        *out_len = out.size();
+        *out_ptr = new char[out.size()];
+        std::memcpy(*out_ptr, out.data(), out.size());
+        return 0;
+    } catch (...) { return -1; }
+}
+
 } // extern "C"

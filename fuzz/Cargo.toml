@@ -50,3 +50,8 @@ doc = false
 name = "fuzz_output"
 path = "fuzz_targets/fuzz_output.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_double_format"
+path = "fuzz_targets/fuzz_double_format.rs"
+doc = false

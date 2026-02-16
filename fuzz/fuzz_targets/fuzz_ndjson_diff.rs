@@ -104,7 +104,8 @@ fuzz_target!(|data: &[u8]| {
     match (&fast_result, &normal_result) {
         (Ok((fast_out, _)), Ok((normal_out, _))) => {
             assert_eq!(
-                fast_out, normal_out,
+                fast_out,
+                normal_out,
                 "Fast path diverged from normal path for filter: {filter_str}\n\
                  Input ({} bytes): {:?}\n\
                  Fast output:   {:?}\n\

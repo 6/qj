@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use qj::simdjson::{pad_buffer, Parser};
+use qj::simdjson::{Parser, pad_buffer};
 
 // Feed arbitrary bytes to the On-Demand parser via FFI.
 // Any crash here is a bug in simdjson or the bridge.

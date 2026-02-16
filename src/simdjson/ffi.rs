@@ -169,4 +169,18 @@ unsafe extern "C" {
         out_ptr: *mut *mut c_char,
         out_len: *mut usize,
     ) -> i32;
+
+    pub(super) fn jx_dom_array_map_field(
+        buf: *const c_char,
+        len: usize,
+        prefix: *const *const c_char,
+        prefix_lens: *const usize,
+        prefix_count: usize,
+        fields: *const *const c_char,
+        field_lens: *const usize,
+        field_count: usize,
+        wrap_array: i32,
+        out_ptr: *mut *mut c_char,
+        out_len: *mut usize,
+    ) -> i32;
 }

@@ -275,6 +275,14 @@ pub enum PassthroughPath {
     FieldLength(Vec<String>),
     /// `.field | keys` or bare `keys` — compute keys in C++.
     FieldKeys(Vec<String>),
+    /// `map(.field)` or `.[] | .field` — iterate root array, extract field per element.
+    /// `prefix`: field chain to navigate from root to reach the array (empty for root).
+    /// `wrap_array`: true for `map` (output `[v1,v2,...]`), false for `.[]` (one per line).
+    ArrayMapField {
+        prefix: Vec<String>,
+        fields: Vec<String>,
+        wrap_array: bool,
+    },
 }
 
 impl PassthroughPath {
@@ -285,6 +293,7 @@ impl PassthroughPath {
             PassthroughPath::Identity => true,
             PassthroughPath::FieldLength(_) => false,
             PassthroughPath::FieldKeys(_) => false,
+            PassthroughPath::ArrayMapField { .. } => true,
         }
     }
 }
@@ -334,13 +343,70 @@ pub fn passthrough_path(filter: &Filter) -> Option<PassthroughPath> {
             "keys" => Some(PassthroughPath::FieldKeys(vec![])),
             _ => None,
         },
-        Filter::Pipe(_, _) => {
+        // map(.field) or map(.field.chain)
+        Filter::Builtin(name, args) if name == "map" && args.len() == 1 => {
+            let mut fields = Vec::new();
+            if collect_field_chain(&args[0], &mut fields) && !fields.is_empty() {
+                Some(PassthroughPath::ArrayMapField {
+                    prefix: vec![],
+                    fields,
+                    wrap_array: true,
+                })
+            } else {
+                None
+            }
+        }
+        Filter::Pipe(lhs, rhs) => {
             // Check for .field | length / .field | keys first
             if let Some((fields, builtin)) = decompose_field_builtin(filter) {
                 match builtin {
                     "length" => return Some(PassthroughPath::FieldLength(fields)),
                     "keys" => return Some(PassthroughPath::FieldKeys(fields)),
                     _ => {}
+                }
+            }
+            // .[] | .field or .[] | .field.chain
+            if matches!(lhs.as_ref(), Filter::Iterate) {
+                let mut fields = Vec::new();
+                if collect_field_chain(rhs, &mut fields) && !fields.is_empty() {
+                    return Some(PassthroughPath::ArrayMapField {
+                        prefix: vec![],
+                        fields,
+                        wrap_array: false,
+                    });
+                }
+            }
+            // .prefix | map(.field) — navigate prefix, then iterate+extract
+            if let Filter::Builtin(name, args) = rhs.as_ref()
+                && name == "map"
+                && args.len() == 1
+            {
+                let mut prefix = Vec::new();
+                if collect_field_chain(lhs, &mut prefix) && !prefix.is_empty() {
+                    let mut fields = Vec::new();
+                    if collect_field_chain(&args[0], &mut fields) && !fields.is_empty() {
+                        return Some(PassthroughPath::ArrayMapField {
+                            prefix,
+                            fields,
+                            wrap_array: true,
+                        });
+                    }
+                }
+            }
+            // .prefix[] | .field — Pipe(Pipe(field_chain, Iterate), field_chain)
+            if let Filter::Pipe(inner_lhs, inner_rhs) = lhs.as_ref()
+                && matches!(inner_rhs.as_ref(), Filter::Iterate)
+            {
+                let mut prefix = Vec::new();
+                if collect_field_chain(inner_lhs, &mut prefix) && !prefix.is_empty() {
+                    let mut fields = Vec::new();
+                    if collect_field_chain(rhs, &mut fields) && !fields.is_empty() {
+                        return Some(PassthroughPath::ArrayMapField {
+                            prefix,
+                            fields,
+                            wrap_array: false,
+                        });
+                    }
                 }
             }
             None
@@ -588,6 +654,78 @@ pub(crate) fn collect_pattern_var_refs(pat: &Pattern, out: &mut HashSet<String>)
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn passthrough_map_field() {
+        let f = parse("map(.name)").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapField {
+                prefix: vec![],
+                fields: vec!["name".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_map_nested_field() {
+        let f = parse("map(.a.b)").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapField {
+                prefix: vec![],
+                fields: vec!["a".into(), "b".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_iterate_field() {
+        let f = parse(".[] | .name").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapField {
+                prefix: vec![],
+                fields: vec!["name".into()],
+                wrap_array: false,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_prefix_map_field() {
+        let f = parse(".statuses | map(.user)").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapField {
+                prefix: vec!["statuses".into()],
+                fields: vec!["user".into()],
+                wrap_array: true,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_prefix_iterate_field() {
+        let f = parse(".statuses[] | .user").unwrap();
+        assert_eq!(
+            passthrough_path(&f),
+            Some(PassthroughPath::ArrayMapField {
+                prefix: vec!["statuses".into()],
+                fields: vec!["user".into()],
+                wrap_array: false,
+            })
+        );
+    }
+
+    #[test]
+    fn passthrough_map_complex_not_detected() {
+        // map(.a + .b) should NOT be detected as passthrough
+        let f = parse("map(.a + .b)").unwrap();
+        assert_eq!(passthrough_path(&f), None);
+    }
 
     #[test]
     fn filter_safety_check() {
