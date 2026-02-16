@@ -24,7 +24,7 @@ struct Args {
     #[arg(long, default_value = "benches/results.md")]
     output: PathBuf,
 
-    /// Run only these benchmark groups (json, ndjson).
+    /// Run only these benchmark groups (json).
     /// Can be repeated. Omit to run all.
     #[arg(long)]
     only: Vec<String>,
@@ -193,11 +193,6 @@ static JSON_FILTERS: &[BenchFilter] = &[
         expr: r#"def hi(rt): if rt > 10 then "viral" elif rt > 0 then "shared" else "none" end; [.statuses[] | hi(.retweet_count)]"#,
     },
 ];
-
-// NDJSON benchmarks live in bench_large_only.sh (runs against ~1.1GB GH Archive).
-// bench_tools.rs focuses on single-doc JSON where the data (large_twitter.json) is
-// large enough to show passthrough vs evaluator differences.
-static NDJSON_FILTERS: &[BenchFilter] = &[];
 
 // --- Tool discovery ---
 
@@ -410,19 +405,12 @@ fn run_benchmarks(
     for file in files {
         let file_path = data_dir.join(file);
         let file_bytes = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
-        if key_prefix == "ndjson" {
-            eprintln!("=== NDJSON: {file} ({file_bytes} bytes) ===");
-        } else {
-            eprintln!("=== {file} ({file_bytes} bytes) ===");
-        }
+        eprintln!("=== {file} ({file_bytes} bytes) ===");
         eprintln!();
 
         for (i, filter) in filters.iter().enumerate() {
             let filter_key = format!("{key_prefix}_{i}");
-            let file_stem = file
-                .strip_suffix(".json")
-                .or_else(|| file.strip_suffix(".ndjson"))
-                .unwrap_or(file);
+            let file_stem = file.strip_suffix(".json").unwrap_or(file);
             let json_file = results_dir.join(format!("{key_prefix}-run-{i}-{file_stem}.json"));
 
             let mut cmds = Vec::new();
@@ -492,7 +480,6 @@ fn run_benchmarks(
 fn generate_markdown(
     tools: &[Tool],
     json_files: &[&str],
-    ndjson_files: &[&str],
     results: &Results,
     data_dir: &Path,
     runs: u32,
@@ -511,8 +498,7 @@ fn generate_markdown(
     writeln!(md).unwrap();
     writeln!(
         md,
-        "All benchmarks: warm cache (`--warmup 3`), {runs} runs, output to pipe. \
-         NDJSON uses parallel processing."
+        "All benchmarks: warm cache (`--warmup 3`), {runs} runs, output to pipe."
     )
     .unwrap();
     writeln!(
@@ -557,42 +543,6 @@ fn generate_markdown(
                 }
             }
             writeln!(md, "{row}").unwrap();
-        }
-    }
-
-    // NDJSON results
-    if !ndjson_files.is_empty() {
-        writeln!(md).unwrap();
-        writeln!(md, "### NDJSON (parallel processing)").unwrap();
-        writeln!(md).unwrap();
-        writeln!(
-            md,
-            "qj processes NDJSON in parallel across all cores using rayon."
-        )
-        .unwrap();
-        writeln!(md).unwrap();
-        writeln!(md, "{header}").unwrap();
-        writeln!(md, "{separator}").unwrap();
-
-        for file in ndjson_files {
-            for (i, filter) in NDJSON_FILTERS.iter().enumerate() {
-                let filter_key = format!("ndjson_{i}");
-                let display = filter_display(filter);
-                let mut row = format!("| `{display}` | {file} |");
-                for tool in tools {
-                    let val = results.get(&result_key(&filter_key, file, &tool.name));
-                    if val.is_some_and(|v| v.1) {
-                        has_failures = true;
-                    }
-                    let formatted = format_result(val);
-                    if tool.name == "qj" {
-                        write!(row, " **{formatted}** |").unwrap();
-                    } else {
-                        write!(row, " {formatted} |").unwrap();
-                    }
-                }
-                writeln!(md, "{row}").unwrap();
-            }
         }
     }
 
@@ -689,36 +639,6 @@ fn generate_markdown(
     }
     writeln!(md, "{json_row}").unwrap();
 
-    // NDJSON category
-    if !ndjson_files.is_empty() {
-        let ndjson_file = ndjson_files.last().unwrap();
-        let mut ndjson_row = format!("| NDJSON ({ndjson_file}) |");
-        for tool in tools {
-            if tool.name == "jq" {
-                continue;
-            }
-            let pairs: Vec<(f64, f64)> = NDJSON_FILTERS
-                .iter()
-                .enumerate()
-                .filter_map(|(i, _)| {
-                    let key = format!("ndjson_{i}");
-                    let jq_val = results.get(&result_key(&key, ndjson_file, "jq"))?.0;
-                    let tool_val = results.get(&result_key(&key, ndjson_file, &tool.name))?.0;
-                    Some((jq_val, tool_val))
-                })
-                .collect();
-            let formatted = geomean_ratio(&pairs)
-                .map(|v| format!("{v:.1}x"))
-                .unwrap_or_else(|| "-".to_string());
-            if tool.name == "qj" {
-                write!(ndjson_row, " **{formatted}** |").unwrap();
-            } else {
-                write!(ndjson_row, " {formatted} |").unwrap();
-            }
-        }
-        writeln!(md, "{ndjson_row}").unwrap();
-    }
-
     writeln!(md).unwrap();
     writeln!(
         md,
@@ -803,11 +723,6 @@ fn main() {
         json_files.push("large_twitter.json");
     }
 
-    let mut ndjson_files: Vec<&str> = Vec::new();
-    if data_dir.join("1m.ndjson").exists() {
-        ndjson_files.push("1m.ndjson");
-    }
-
     // --- Correctness check ---
     let qj = &tools[0];
     let jq = &tools[1];
@@ -868,30 +783,8 @@ fn main() {
         );
     }
 
-    if args.should_run("ndjson") && !ndjson_files.is_empty() {
-        run_benchmarks(
-            &tools,
-            NDJSON_FILTERS,
-            "ndjson",
-            &ndjson_files,
-            data_dir,
-            results_dir,
-            &args,
-            &mut results,
-        );
-    }
-
     // --- Generate and write markdown ---
-    let md = generate_markdown(
-        &tools,
-        &json_files,
-        &ndjson_files,
-        &results,
-        data_dir,
-        args.runs,
-        &platform,
-        &date,
-    );
+    let md = generate_markdown(&tools, &json_files, &results, data_dir, args.runs, &platform, &date);
     fs::write(&args.output, &md).unwrap();
     eprintln!("=== Done ===");
     eprintln!("Wrote {}", args.output.display());
