@@ -224,6 +224,7 @@ static NDJSON_FILTERS: &[BenchFilter] = &[
 struct Tool {
     name: String,
     path: String,
+    extra_args: Vec<String>,
 }
 
 fn find_tool(name: &str) -> Option<String> {
@@ -238,14 +239,23 @@ fn find_tool(name: &str) -> Option<String> {
 }
 
 fn discover_tools(qj_path: &str) -> Vec<Tool> {
-    let mut tools = vec![Tool {
-        name: "qj".into(),
-        path: qj_path.into(),
-    }];
+    let mut tools = vec![
+        Tool {
+            name: "qj".into(),
+            path: qj_path.into(),
+            extra_args: vec![],
+        },
+        Tool {
+            name: "qj (1T)".into(),
+            path: qj_path.into(),
+            extra_args: vec!["--threads".into(), "1".into()],
+        },
+    ];
     match find_tool("jq") {
         Some(path) => tools.push(Tool {
             name: "jq".into(),
             path,
+            extra_args: vec![],
         }),
         None => {
             eprintln!("Error: jq not found.");
@@ -257,6 +267,7 @@ fn discover_tools(qj_path: &str) -> Vec<Tool> {
             tools.push(Tool {
                 name: name.into(),
                 path,
+                extra_args: vec![],
             });
         } else {
             eprintln!("Note: {name} not found, skipping");
@@ -278,8 +289,11 @@ fn shell_output(cmd: &str, args: &[&str]) -> String {
 }
 
 /// Build a shell command string for hyperfine (run via default shell).
-fn build_cmd(tool_path: &str, flags: &[&str], expr: &str, file: &str) -> String {
-    let mut cmd = tool_path.to_string();
+fn build_cmd(tool: &Tool, flags: &[&str], expr: &str, file: &str) -> String {
+    let mut cmd = tool.path.to_string();
+    for arg in &tool.extra_args {
+        write!(cmd, " {arg}").unwrap();
+    }
     for flag in flags {
         write!(cmd, " {flag}").unwrap();
     }
@@ -290,6 +304,9 @@ fn build_cmd(tool_path: &str, flags: &[&str], expr: &str, file: &str) -> String 
 /// Check if a tool can run a filter on a file without error.
 fn tool_supports_filter(tool: &Tool, filter: &BenchFilter, file: &Path) -> bool {
     let mut cmd = Command::new(&tool.path);
+    for arg in &tool.extra_args {
+        cmd.arg(arg);
+    }
     for flag in filter.flags {
         cmd.arg(flag);
     }
@@ -305,6 +322,9 @@ fn tool_supports_filter(tool: &Tool, filter: &BenchFilter, file: &Path) -> bool 
 /// Run a tool and capture stdout+stderr combined (for correctness comparison on small files).
 fn run_tool_output(tool: &Tool, filter: &BenchFilter, file: &Path) -> String {
     let mut cmd = Command::new(&tool.path);
+    for arg in &tool.extra_args {
+        cmd.arg(arg);
+    }
     for flag in filter.flags {
         cmd.arg(flag);
     }
@@ -430,7 +450,7 @@ fn run_benchmarks(
             for tool in tools {
                 if tool_supports_filter(tool, filter, &file_path) {
                     cmds.push(build_cmd(
-                        &tool.path,
+                        tool,
                         filter.flags,
                         filter.expr,
                         file_path.to_str().unwrap(),
