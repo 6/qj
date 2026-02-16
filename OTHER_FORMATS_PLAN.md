@@ -89,6 +89,10 @@ same template.
   (212 commits, used by the `xan` CLI). SIMD-accelerated string searching with
   traditional state machine. Supports x86_64 (SSE2/AVX2), aarch64 (NEON), WASM
   (SIMD128), with scalar fallback. No FFI needed. MIT licensed.
+- **[csimdv-rs](https://github.com/juliusgeo/csimdv-rs)** — Experimental fork/reimagining
+  of simd-csv that adds the PCLMULQDQ trick (same technique simdjson uses for quote
+  masking). On aarch64 it's comparable to simd-csv, but on x86_64 with AVX-512 it's
+  up to 61% faster. Less mature but interesting for the simdjson-style approach.
 - **[simdcsv](https://github.com/geofflangdale/simdcsv)** — by Geoff Langdale
   (co-creator of simdjson). Never finished, but the techniques are proven.
 
