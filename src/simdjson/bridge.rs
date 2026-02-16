@@ -13,15 +13,15 @@ use super::types::{check, padding};
 pub const SIMDJSON_CAPACITY: i32 = 1;
 
 // Token tags (must match bridge.cpp)
-const TAG_NULL: u8 = 0;
-const TAG_BOOL: u8 = 1;
-const TAG_INT: u8 = 2;
-const TAG_DOUBLE: u8 = 3;
-const TAG_STRING: u8 = 4;
-const TAG_ARRAY_START: u8 = 5;
-const TAG_ARRAY_END: u8 = 6;
-const TAG_OBJECT_START: u8 = 7;
-const TAG_OBJECT_END: u8 = 8;
+pub(crate) const TAG_NULL: u8 = 0;
+pub(crate) const TAG_BOOL: u8 = 1;
+pub(crate) const TAG_INT: u8 = 2;
+pub(crate) const TAG_DOUBLE: u8 = 3;
+pub(crate) const TAG_STRING: u8 = 4;
+pub(crate) const TAG_ARRAY_START: u8 = 5;
+pub(crate) const TAG_ARRAY_END: u8 = 6;
+pub(crate) const TAG_OBJECT_START: u8 = 7;
+pub(crate) const TAG_OBJECT_END: u8 = 8;
 
 /// Parse a JSON buffer via simdjson DOM API and return a `Value` tree.
 ///
@@ -44,6 +44,65 @@ pub fn dom_parse_to_value(buf: &[u8], json_len: usize) -> Result<Value> {
     // been freed yet. After this call the pointer is not used again.
     unsafe { jx_flat_buffer_free(flat_ptr) };
     result
+}
+
+/// Owns the flat token buffer allocated by C++.
+///
+/// The flat buffer uses a tag-length-value encoding that can be navigated
+/// by `FlatValue` without allocating a full Rust `Value` tree.
+pub struct FlatBuffer {
+    ptr: *mut u8,
+    len: usize,
+}
+
+// SAFETY: The flat buffer is an independent heap allocation with no interior
+// mutability or shared state. It can safely be sent across threads.
+unsafe impl Send for FlatBuffer {}
+
+impl FlatBuffer {
+    /// Create from raw C++ allocated pointer and length.
+    pub(crate) fn from_raw(ptr: *mut u8, len: usize) -> Self {
+        Self { ptr, len }
+    }
+
+    /// Get a reference to the flat buffer bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        if self.len == 0 {
+            &[]
+        } else {
+            // SAFETY: ptr was heap-allocated by jx_dom_to_flat with len bytes.
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        }
+    }
+
+    /// Get a `FlatValue` pointing to the root of the flat buffer.
+    pub fn root(&self) -> crate::flat_value::FlatValue<'_> {
+        crate::flat_value::FlatValue::new(self.as_bytes(), 0)
+    }
+}
+
+impl Drop for FlatBuffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            // SAFETY: ptr was allocated by C++ new[] in jx_dom_to_flat.
+            unsafe { jx_flat_buffer_free(self.ptr) };
+        }
+    }
+}
+
+/// Parse a JSON buffer via simdjson DOM API and return the raw flat token buffer.
+///
+/// Same as `dom_parse_to_value()` but skips the expensive decode step.
+/// `buf` must include SIMDJSON_PADDING extra zeroed bytes after `json_len`.
+pub fn dom_parse_to_flat_buf(buf: &[u8], json_len: usize) -> Result<FlatBuffer> {
+    assert!(buf.len() >= json_len + padding());
+    let mut flat_ptr: *mut u8 = std::ptr::null_mut();
+    let mut flat_len: usize = 0;
+    // SAFETY: buf points to a valid buffer with json_len + SIMDJSON_PADDING bytes
+    // (asserted above). flat_ptr/flat_len are valid stack references used as output
+    // parameters. C++ heap-allocates the flat token buffer.
+    check(unsafe { jx_dom_to_flat(buf.as_ptr().cast(), json_len, &mut flat_ptr, &mut flat_len) })?;
+    Ok(FlatBuffer::from_raw(flat_ptr, flat_len))
 }
 
 fn read_u8(buf: &[u8], pos: &mut usize) -> Result<u8> {
@@ -95,7 +154,7 @@ fn read_string(buf: &[u8], pos: &mut usize) -> Result<String> {
     Ok(s)
 }
 
-fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
+pub(crate) fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
     let tag = read_u8(buf, pos)?;
     match tag {
         TAG_NULL => Ok(Value::Null),

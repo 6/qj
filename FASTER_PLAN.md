@@ -213,3 +213,64 @@ To raise the floor **across the board**:
 3. **Consider Approach C later** if the floor needs to go to 20x+ for common filters. The mini C++ evaluator gets supported filters to near fast-path speed (60-100x) but doesn't help the remaining Rust fallback cases.
 
 Steps 1 and 2 are complementary and can be done incrementally. Step 3 is a larger investment with diminishing returns given 1+2.
+
+---
+
+## Progress
+
+### Step 1: FlatValue (implemented)
+
+**Status:** Complete. All tests pass (672 unit + 467 e2e + 139 NDJSON + 28 FFI). Zero regressions. jq conformance: 91.8% (456/497). Feature coverage: 98.2%.
+
+**What was done:**
+
+- **`src/flat_value.rs`** (new) — `FlatValue<'a>`: zero-copy, `Copy`-able view into the flat token buffer. Navigates objects (`get_field`), arrays (`get_index`), iterates without allocation (`array_iter`, `object_iter`). Computes `skip_bytes` to skip over unneeded values. `to_value()` materializes only when needed. Includes `type_name()`, `is_truthy()`, `len()`.
+- **`src/flat_eval.rs`** (new) — `eval_flat()`: lazy evaluator wrapper. Handles Field, Pipe, ObjectConstruct, ArrayConstruct, Iterate, Select, Alternative, Try, Comma, Literal, and builtins (length, type, keys, not) on FlatValue inputs. Pipe chains of field access stay as FlatValue through all stages. Falls back to regular evaluator for unsupported filters (reduce, def, foreach, variable binding, etc.).
+- **`src/simdjson/bridge.rs`** (modified) — Added `FlatBuffer` (owns C++ flat token bytes, frees on Drop), `dom_parse_to_flat_buf()` (same as `dom_parse_to_value` but skips the expensive decode step). Made TAG_* constants `pub(crate)` and `decode_value` `pub(crate)`.
+- **`src/parallel/ndjson.rs`** (modified) — `NdjsonFastPath::None` case now uses `dom_parse_to_flat_buf` + `eval_flat` instead of `dom_parse_to_value` + `eval_filter_with_env`.
+
+**Key optimization path for `{type, commits: (.payload.commits // [] | length)}`:**
+1. Parse JSON to flat token buffer (one FFI call, no Rust allocation)
+2. ObjectConstruct evaluates each value independently with flat input
+3. For "type": navigate to `.type` field in flat buffer, materialize just the string
+4. For "commits": navigate `.payload.commits` as FlatValue chain, check truthiness, compute `length` directly from flat buffer count field
+5. Only the accessed fields get materialized; all ~30 other fields are never touched
+
+**Testing:** 54 new unit tests (FlatValue navigation, skip_bytes, to_value equivalence, FFI round-trip) + 35 new equivalence tests (flat eval vs regular eval on identical inputs, covering all handled filter types, generators in object construction, and the exact benchmark filter).
+
+**Benchmark results** (gharchive.ndjson, 1131 MB, Apple M4 Pro, `--warmup 1 --runs 3`):
+
+**Evaluator-bound (the target filter): 2.8x -> 4.8x** (1.75x internal speedup)
+```
+$ hyperfine --warmup 1 --runs 3 \
+  "./target/release/qj -c '{type, commits: (.payload.commits // [] | length)}' benches/data/gharchive.ndjson" \
+  "jq -c '{type, commits: (.payload.commits // [] | length)}' benches/data/gharchive.ndjson"
+
+  qj:  1.558 s ±  0.003 s   (was 2.73s before FlatValue)
+  jq:  7.525 s ±  0.026 s
+  Speedup: 4.83x  (was 2.8x)
+```
+
+**Mixed SIMD+evaluator: 16x -> 23.5x**
+```
+$ hyperfine --warmup 1 --runs 3 \
+  "./target/release/qj -c '{type, commits: [.payload.commits[]?.message]}' benches/data/gharchive.ndjson" \
+  "jq -c '{type, commits: [.payload.commits[]?.message]}' benches/data/gharchive.ndjson"
+
+  qj:  333.9 ms ±   3.0 ms   (was 494ms before FlatValue)
+  jq:  7.857 s ±  0.016 s
+  Speedup: 23.5x  (was 16x)
+```
+
+**SIMD fast path (no change expected): ~103x**
+```
+$ hyperfine --warmup 1 --runs 3 \
+  "./target/release/qj '.actor.login' benches/data/gharchive.ndjson" \
+  "jq '.actor.login' benches/data/gharchive.ndjson"
+
+  qj:  70.6 ms ±   1.1 ms
+  jq:  7.294 s ±  0.171 s
+  Speedup: 103x  (was 94x — no regression, variance)
+```
+
+**Summary:** Floor raised from 2.8x to 4.8x on the worst-case evaluator-bound filter. Mixed filters improved from 16x to 23.5x. SIMD fast-path filters unaffected.

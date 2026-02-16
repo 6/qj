@@ -684,12 +684,13 @@ fn process_line(
             )?;
         }
         NdjsonFastPath::None => {
-            // Normal path: parse → Value → eval → output
+            // Lazy path: parse → flat buffer → navigate/eval → output
+            // Only materializes the subtrees the filter actually accesses.
             let padded = prepare_padded(trimmed, scratch);
-            let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+            let flat_buf = simdjson::dom_parse_to_flat_buf(padded, trimmed.len())
                 .context("failed to parse NDJSON line")?;
 
-            crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+            crate::flat_eval::eval_flat(filter, flat_buf.root(), env, &mut |v| {
                 *had_output = true;
                 output::write_value(output_buf, &v, config).ok();
             });
