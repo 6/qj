@@ -442,7 +442,7 @@ fn run_benchmarks(
             let mut hyperfine = Command::new("hyperfine");
             hyperfine
                 .arg("--warmup")
-                .arg("3")
+                .arg("1")
                 .arg("--runs")
                 .arg(args.runs.to_string())
                 .arg("--export-json")
@@ -498,7 +498,7 @@ fn generate_markdown(
     writeln!(md).unwrap();
     writeln!(
         md,
-        "All benchmarks: warm cache (`--warmup 3`), {runs} runs, output to pipe."
+        "All benchmarks: warm cache (`--warmup 1`), {runs} runs, output to pipe."
     )
     .unwrap();
     writeln!(
@@ -784,7 +784,15 @@ fn main() {
     }
 
     // --- Generate and write markdown ---
-    let md = generate_markdown(&tools, &json_files, &results, data_dir, args.runs, &platform, &date);
+    let md = generate_markdown(
+        &tools,
+        &json_files,
+        &results,
+        data_dir,
+        args.runs,
+        &platform,
+        &date,
+    );
     fs::write(&args.output, &md).unwrap();
     eprintln!("=== Done ===");
     eprintln!("Wrote {}", args.output.display());
