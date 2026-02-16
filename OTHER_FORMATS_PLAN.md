@@ -74,34 +74,61 @@ Key insight: zsv already acknowledges jq is useful for CSV (`zsv jq` subcommand)
 shells out to single-threaded jq. qj with parallel row processing would be strictly
 faster for jq-style queries on CSV, without needing SIMD CSV parsing.
 
-### SIMD CSV: considered and deferred
+### SIMD CSV parsing
 
-SIMD CSV parsers exist ([simdcsv](https://github.com/geofflangdale/simdcsv) by Geoff
-Langdale, [zsv](https://github.com/liquidaty/zsv), [csimdv-rs](https://github.com/juliusgeo/csimdv-rs))
-but integrating one via FFI is a substantial engineering effort:
-- Quote-aware chunk splitting for parallel processing is harder than NDJSON newline splitting.
-- The `csv` crate (by BurntSushi) is already very fast and production-hardened.
-- The bottleneck shifts to jq evaluation anyway, same as NDJSON.
-- Engineering weeks for marginal parse-speed gains over `csv` crate + rayon.
+SIMD CSV parsers exist and the FFI integration pattern is already established in qj
+(simdjson bridge.cpp → bridge.rs → build.rs). Adding another C library follows the
+same template.
 
-Decision: **use BurntSushi's `csv` crate + rayon parallelism**. "Fast enough" + jq syntax
-is the pitch, not "fastest CSV parser." Revisit SIMD if CSV becomes a major use case.
+**Best candidates:**
+
+- **[zsv](https://github.com/liquidaty/zsv)** — C library, MIT licensed, actively
+  maintained, claims "world's fastest CSV parser." ~4 GB/s throughput. Has a clean
+  row-iteration API. Best choice for FFI integration.
+- **[csimdv-rs](https://github.com/juliusgeo/csimdv-rs)** — Pure Rust, uses PCLMULQDQ
+  trick from simdjson. Up to 60% faster than other SIMD parsers on x86_64 with AVX-512.
+  Works on aarch64. No FFI needed but less mature.
+- **[simdcsv](https://github.com/geofflangdale/simdcsv)** — by Geoff Langdale
+  (co-creator of simdjson). Never finished, but the techniques are proven.
+
+**Parallel chunk splitting:** For NDJSON, qj splits on `\n` — trivial. For CSV, the
+only added complexity is quoted fields can contain newlines. The standard approach is
+split on `\n` then verify you're not inside a quoted field (scan for unbalanced quotes,
+adjust boundary). In practice quoted newlines are rare; this works for 99.9% of real
+files. Same speculative approach zsv and others use.
+
+**Estimated effort:** ~3 days following the established simdjson FFI pattern:
+1. Integrate zsv via FFI, get single-threaded row iteration working
+2. Wire into existing parallel architecture with quote-aware chunk splitting
+3. CLI flags, auto-detect, type inference, tests
 
 ### Implementation
 
-```rust
-let mut rdr = csv::ReaderBuilder::new()
-    .delimiter(if tsv { b'\t' } else { b',' })
-    .from_reader(input);
+FFI approach (zsv):
+```c
+// bridge_csv.cpp — C-linkage wrapper around zsv
+extern "C" int csv_open(const char* path, char delimiter);
+extern "C" int csv_next_row(/* row handle */);
+extern "C" const char* csv_get_field(int col, size_t* len);
+extern "C" void csv_close();
+```
 
-for result in rdr.deserialize() {
-    let record: HashMap<String, serde_json::Value> = result?;
-    // → run jq filter on record
+```rust
+// Rust side — convert each row to serde_json::Value (or flat key-value pairs)
+let headers = csv_get_headers();
+for row in csv_rows() {
+    let obj: Map<String, Value> = headers.iter().zip(row.fields())
+        .map(|(k, v)| (k.clone(), Value::String(v.to_string())))
+        .collect();
+    // → run jq filter on obj
 }
 ```
 
-Parallel processing: split file into chunks (respecting quoted newlines), parse each
-chunk's rows independently with rayon, merge output in order. Same architecture as NDJSON.
+Alternative: use csimdv-rs directly in Rust (no FFI, but less battle-tested).
+
+Parallel processing: mmap the file, split into ~1MB chunks at newline boundaries
+(with quote-awareness), parse each chunk's rows independently with rayon, merge
+output in order. Same architecture as NDJSON.
 
 ### CLI flags
 
