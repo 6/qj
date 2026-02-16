@@ -2,14 +2,14 @@
 
 `qj` is Quick JSON, a `jq`-compatible processor. SIMD parsing and automatic parallelization across cores.
 
-- **Single-threaded:** 4-30x faster on NDJSON, 2-10x on JSON.
+- **Single-threaded:** 4-30x faster on NDJSON, 1.5-10x on JSON.
 - **Parallel:** 20-120x faster on NDJSON.
 
 ## When to use qj instead of jq
 
 **NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 104 ms vs jq's 12.6 s (121x). No `xargs` or `parallel` needed.
 
-**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Parse-heavy operations like `length` and `keys` are ~10x faster; evaluator-bound filters 2-4x.
+**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Parse-heavy operations like `length` and `keys` are ~10x faster; evaluator-bound filters 1.5-4x.
 
 **When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
