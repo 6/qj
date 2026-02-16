@@ -160,3 +160,38 @@ Update debug-timing labels for the new variants.
    - `select(.type == "PushEvent")` — expect ~30ms (vs current ~70ms)
 4. Verify fallback works: `map(.field)` on non-array input, `select` with float comparison
 5. Verify `-r` flag disables passthrough and output is correct
+
+----
+
+FEEDBACK
+
+----
+
+Fair concern. The plan has grown complex — three new C++ functions, triple-pointer FFI for multi-field obj, comparison semantics
+  for select. Let me step back.
+
+  What actually matters:
+
+  The single biggest win is map(.field) / .[] | .field. One C++ function (~30 LOC), one enum variant, straightforward detection. It
+  follows the exact same pattern as the existing length/keys passthrough — detect AST pattern, call C++ function, output bytes.
+
+  The multi-field obj (map({k: .f})) adds significant FFI complexity (triple-pointer layout for N field chains). And select(.field ==
+   "val") on single-doc is lower impact — the document is processed as a whole, so the savings are smaller, and the comparison
+  semantics (ambiguous number/string matching with fallback) add non-trivial complexity.
+
+  Simpler alternative: Just implement ArrayMapField first. That's:
+  - ~30 LOC in bridge.cpp (iterate array, extract field, serialize)
+  - ~3 LOC in ffi.rs
+  - ~15 LOC in bridge.rs
+  - ~10 LOC detection in filter/mod.rs
+  - ~10 LOC dispatch in main.rs
+
+  Total ~70 LOC of real code. Covers both map(.field) and .[] | .field with a wrap_array flag. Gets the ~2.5x improvement on the most
+   common pattern. No triple-pointer FFI, no comparison semantics.
+
+  Then if that proves valuable, multi-field obj and select can be added later as incremental additions.
+
+  The other option is to skip all of this and just live with the current 94ms for map — which is already 3.9x faster than jq. The
+  passthrough would bring it to maybe ~5-6x, but the absolute gain is ~60ms on a 49MB file.
+
+  What's your preference — start with just the single-field pattern, or is the current performance good enough to focus elsewhere?
