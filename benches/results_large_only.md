@@ -1,18 +1,18 @@
 # GH Archive Benchmark
 
-> Generated: 2026-02-15 on `Apple M4 Pro (48 GB)`
-> 2 runs, no warmup via [hyperfine](https://github.com/sharkdp/hyperfine).
+> Generated: 2026-02-16 on `Apple M4 Pro (48 GB)`
+> 3 runs, 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine).
 
 ### NDJSON (gharchive.ndjson, 1131MB, parallel processing)
 
-| Filter | **qj** | vs jq | jq | jaq | vs jq | gojq | vs jq |
+| Filter | **qj** | vs jq | qj (1T) | vs jq | jq | jaq | gojq |
 |--------|------:|------:|------:|------:|------:|------:|------:|
-| ` '.actor.login'` | **77ms** | **94.2x** | 7.21s | 2.85s | 2.5x | 6.72s | 1.1x |
-| `-c 'length'` | **108ms** | **66.4x** | 7.17s | 2.80s | 2.6x | 6.73s | 1.1x |
-| `-c 'keys'` | **126ms** | **61.1x** | 7.70s | 2.87s | 2.7x | 6.72s | 1.1x |
-| `-c 'select(.type == "PushEvent")'` | **106ms** | **127.4x** | 13.45s | 3.51s | 3.8x | 7.70s | 1.7x |
-| `-c 'select(.type == "PushEvent") | .payload.size'` | **80ms** | **91.3x** | 7.26s | 2.89s | 2.5x | 6.96s | 1.0x |
-| `-c '{type, repo: .repo.name, actor: .actor.login}'` | **134ms** | **60.2x** | 8.07s | 3.29s | 2.5x | 6.96s | 1.2x |
-| `-c '{type, commits: [.payload.commits[]?.message]}'` | **494ms** | **16.0x** | 7.89s | 3.09s | 2.6x | 6.92s | 1.1x |
-| `-c '{type, commits: (.payload.commits // [] | length)}'` | **2.73s** | **2.8x** | 7.58s | 3.14s | 2.4x | 6.70s | 1.1x |
+| ` '.actor.login'` | **75ms** | **95.8x** | 347ms | 20.7x | 7.19s | 2.76s | 6.52s |
+| `-c 'length'` | **91ms** | **77.2x** | 576ms | 12.2x | 7.03s | 2.66s | 6.58s |
+| `-c 'keys'` | **120ms** | **63.8x** | 733ms | 10.4x | 7.64s | 2.83s | 6.78s |
+| `-c 'select(.type == "PushEvent")'` | **104ms** | **121.2x** | 405ms | 31.2x | 12.62s | 3.48s | 7.63s |
+| `-c 'select(.type == "PushEvent") | .payload.size'` | **78ms** | **91.1x** | 426ms | 16.8x | 7.15s | 2.90s | 6.56s |
+| `-c '{type, repo: .repo.name, actor: .actor.login}'` | **132ms** | **59.1x** | 828ms | 9.5x | 7.83s | 3.28s | 6.75s |
+| `-c '{type, commits: [.payload.commits[]?.message]}'` | **295ms** | **26.7x** | 1.78s | 4.4x | 7.87s | 3.11s | 7.03s |
+| `-c '{type, commits: (.payload.commits // [] | length)}'` | **266ms** | **28.2x** | 1.56s | 4.8x | 7.49s | 3.08s | 6.85s |
 
