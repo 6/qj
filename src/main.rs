@@ -142,6 +142,13 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Restore default SIGPIPE behavior so piping to `head` etc. exits cleanly
+    // instead of producing BrokenPipe errors. Rust's runtime sets SIG_IGN by default.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     // Pre-scan for --args / --jsonargs: split argv before clap sees them.
     // Everything after --args or --jsonargs becomes positional string/JSON values.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -248,14 +255,20 @@ fn main() -> Result<()> {
     // Build $ARGS: {positional: [...], named: {...}}
     {
         let pos_values: Vec<qj::value::Value> = if positional_json {
-            positional_args
-                .iter()
-                .map(|s| {
-                    let padded = qj::simdjson::pad_buffer(s.as_bytes());
-                    qj::simdjson::dom_parse_to_value(&padded, s.len())
-                        .with_context(|| format!("invalid JSON for --jsonargs: {s}"))
-                })
-                .collect::<Result<Vec<_>>>()?
+            let mut vals = Vec::new();
+            for s in &positional_args {
+                let padded = qj::simdjson::pad_buffer(s.as_bytes());
+                match qj::simdjson::dom_parse_to_value(&padded, s.len()) {
+                    Ok(v) => vals.push(v),
+                    Err(e) => {
+                        eprintln!(
+                            "qj: invalid JSON text passed to --jsonargs: {s}\n\nCaused by:\n    {e}"
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            }
+            vals
         } else {
             positional_args
                 .iter()
@@ -725,7 +738,16 @@ fn try_passthrough(
 ) -> Result<bool> {
     match passthrough {
         qj::filter::PassthroughPath::Identity => {
-            let minified = qj::simdjson::minify(padded, json_len)?;
+            // Validate that this is a single JSON document before minifying.
+            // simdjson's minify doesn't reject multi-doc input (e.g., {"a":1}{"b":2}),
+            // so we must verify with a parse first to avoid incorrect passthrough.
+            if qj::simdjson::dom_parse_to_flat_buf_tape(padded, json_len).is_err() {
+                return Ok(false);
+            }
+            let minified = match qj::simdjson::minify(padded, json_len) {
+                Ok(m) => m,
+                Err(_) => return Ok(false),
+            };
             out.write_all(&minified)?;
             out.write_all(b"\n")?;
             *had_output = true;
@@ -1147,10 +1169,8 @@ fn process_padded(
     let input = match qj::simdjson::dom_parse_to_value_fast(padded, json_len) {
         Ok(v) => v,
         Err(e)
-            if e.to_string().contains(&format!(
-                "simdjson error code {}",
-                qj::simdjson::SIMDJSON_CAPACITY
-            )) =>
+            if e.to_string()
+                == format!("simdjson error code {}", qj::simdjson::SIMDJSON_CAPACITY) =>
         {
             // simdjson CAPACITY limit (~4GB) — fall back to serde_json
             let text = std::str::from_utf8(&padded[..json_len])
@@ -1160,9 +1180,51 @@ fn process_padded(
             qj::value::Value::from(serde_val)
         }
         Err(e) => {
-            // JSON parse errors → exit 5 (matches jq behavior)
-            eprintln!("qj: error (at <stdin>): {e:#}");
-            *had_error = true;
+            // Try multi-doc fallback: serde_json's StreamDeserializer handles
+            // concatenated JSON like {"a":1}{"b":2} and whitespace-separated values.
+            let text = match std::str::from_utf8(&padded[..json_len]) {
+                Ok(t) => t,
+                Err(_) => {
+                    eprintln!("qj: error (at <stdin>): {e:#}");
+                    *had_error = true;
+                    return Ok(());
+                }
+            };
+            let mut stream =
+                serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
+            let mut count = 0usize;
+            let mut last_stream_err = None;
+            for result in &mut stream {
+                match result {
+                    Ok(serde_val) => {
+                        count += 1;
+                        let input = qj::value::Value::from(serde_val);
+                        eval_and_output(
+                            filter,
+                            &input,
+                            env,
+                            out,
+                            config,
+                            had_output,
+                            had_error,
+                            last_was_falsy,
+                        );
+                    }
+                    Err(se) => {
+                        last_stream_err = Some(se);
+                        break;
+                    }
+                }
+            }
+            if count == 0 {
+                // Stream produced nothing — report the original simdjson error
+                eprintln!("qj: error (at <stdin>): {e:#}");
+                *had_error = true;
+            } else if let Some(se) = last_stream_err {
+                // Partial parse — some docs succeeded, then an error
+                eprintln!("qj: error (at <stdin>): {se}");
+                *had_error = true;
+            }
             return Ok(());
         }
     };

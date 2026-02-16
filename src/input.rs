@@ -34,10 +34,8 @@ pub fn collect_values_from_buf(
         match crate::simdjson::dom_parse_to_value(&padded, json_len) {
             Ok(val) => values.push(val),
             Err(e)
-                if e.to_string().contains(&format!(
-                    "simdjson error code {}",
-                    crate::simdjson::SIMDJSON_CAPACITY
-                )) =>
+                if e.to_string()
+                    == format!("simdjson error code {}", crate::simdjson::SIMDJSON_CAPACITY) =>
             {
                 // simdjson CAPACITY limit (~4GB) — fall back to serde_json
                 let text = std::str::from_utf8(buf)
@@ -50,7 +48,32 @@ pub fn collect_values_from_buf(
                 // Single-doc parse failed but buffer has newlines — try line-by-line
                 parse_lines(buf, values)?;
             }
-            Err(e) => return Err(e).context("failed to parse JSON"),
+            Err(e) => {
+                // Try multi-doc fallback: serde_json StreamDeserializer handles
+                // concatenated JSON like {"a":1}{"b":2} and whitespace-separated values.
+                let text = std::str::from_utf8(buf).context("input is not valid UTF-8")?;
+                let mut stream =
+                    serde_json::Deserializer::from_str(text).into_iter::<serde_json::Value>();
+                let mut count = 0usize;
+                for result in &mut stream {
+                    match result {
+                        Ok(serde_val) => {
+                            count += 1;
+                            values.push(Value::from(serde_val));
+                        }
+                        Err(se) => {
+                            if count == 0 {
+                                // Nothing parsed — report original simdjson error
+                                return Err(e).context("failed to parse JSON");
+                            }
+                            return Err(se.into());
+                        }
+                    }
+                }
+                if count == 0 {
+                    return Err(e).context("failed to parse JSON");
+                }
+            }
         }
     }
     Ok(())

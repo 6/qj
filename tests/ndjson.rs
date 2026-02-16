@@ -413,12 +413,15 @@ fn qj_stdin_lossy(args: &[&str], input: &str) -> (String, String, bool) {
 
 #[test]
 fn ndjson_malformed_line_mixed() {
-    // Mix of valid and invalid JSON lines
+    // Mix of valid and invalid JSON lines.
+    // is_ndjson returns false (second line starts with 'n', not '{'),
+    // so this goes through the normal single-doc → multi-doc fallback path.
+    // Like jq, parsing stops at the first invalid document.
     let input = "{\"a\":1}\nnot json\n{\"b\":2}\n";
-    let (stdout, _stderr, _success) = qj_stdin_lossy(&["-c", "."], input);
-    // Valid lines should still produce output
-    assert!(stdout.contains("{\"a\":1}"));
-    assert!(stdout.contains("{\"b\":2}"));
+    let (stdout, stderr, success) = qj_stdin_lossy(&["-c", "."], input);
+    assert!(stdout.contains("{\"a\":1}"), "first valid doc should appear in output");
+    assert!(!success, "should exit with error due to invalid JSON");
+    assert!(!stderr.is_empty(), "should report parse error on stderr");
 }
 
 #[test]

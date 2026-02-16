@@ -478,3 +478,200 @@ fn cli_e_with_multiple_outputs_last_truthy() {
     // [false, true] | .[] → false, then true → exit 0
     assert_same_exit(&["-e", ".[]"], b"[false,true]\n");
 }
+
+// ===========================================================================
+// SIGPIPE handling
+// ===========================================================================
+
+#[test]
+fn cli_sigpipe_no_error() {
+    // Pipe large output through a process that reads one line and closes.
+    // qj should exit cleanly without error messages on stderr.
+    use std::process::{Command, Stdio};
+    let mut qj = Command::new(env!("CARGO_BIN_EXE_qj"))
+        .args(["-nc", "[range(100000)][]"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn qj");
+
+    let qj_stdout = qj.stdout.take().unwrap();
+    // head -1: read one line, then close the pipe
+    let head = Command::new("head")
+        .args(["-1"])
+        .stdin(qj_stdout)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .expect("failed to run head");
+
+    let qj_out = qj.wait_with_output().expect("failed to wait on qj");
+    let stderr = String::from_utf8_lossy(&qj_out.stderr);
+    assert!(
+        stderr.is_empty(),
+        "qj should not produce stderr on SIGPIPE, got: {stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        "0",
+        "head should capture first line"
+    );
+}
+
+// ===========================================================================
+// Concatenated JSON documents
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cli_concat_objects() {
+    // {"a":1}{"b":2} — two objects concatenated without separator
+    assert_same(&["-c", "."], b"{\"a\":1}{\"b\":2}");
+}
+
+#[test]
+#[ignore]
+fn cli_concat_space_separated() {
+    // 1 2 3 — whitespace-separated scalars
+    assert_same(&["-c", "."], b"1 2 3");
+}
+
+#[test]
+#[ignore]
+fn cli_concat_arrays() {
+    // [1][2] — two arrays concatenated
+    assert_same(&["-c", "."], b"[1][2]");
+}
+
+#[test]
+#[ignore]
+fn cli_concat_newline_scalars() {
+    // Newline-separated bare scalars (not detected as NDJSON)
+    assert_same(&["-c", "."], b"1\n2\n3\n");
+}
+
+// ===========================================================================
+// $ENV / env builtin
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cli_env_home() {
+    // $ENV.HOME should return a string
+    assert_same_output(&["-n", "$ENV.HOME"], b"");
+}
+
+#[test]
+#[ignore]
+fn cli_env_nonexistent() {
+    // $ENV.QJ_TEST_NONEXISTENT_VAR should return null
+    assert_same_output(&["-n", "$ENV.QJ_TEST_NONEXISTENT_VAR_12345"], b"");
+}
+
+#[test]
+#[ignore]
+fn cli_env_builtin() {
+    // env | has("HOME") should return true
+    assert_same_output(&["-n", "env | has(\"HOME\")"], b"");
+}
+
+// ===========================================================================
+// input / inputs builtins
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cli_inputs_multi_doc() {
+    // -n '[inputs]' with multiple JSON documents
+    assert_same(&["-n", "[inputs]"], b"1\n2\n3\n");
+}
+
+#[test]
+#[ignore]
+fn cli_first_input() {
+    // first(inputs) with multiple docs — returns just the first
+    assert_same(&["-n", "first(inputs)"], b"1\n2\n3\n");
+}
+
+// ===========================================================================
+// Multiple valid files
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cli_two_valid_files() {
+    if !jq_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let f1 = dir.path().join("one.json");
+    let f2 = dir.path().join("two.json");
+    std::fs::write(&f1, "{\"x\":1}\n").unwrap();
+    std::fs::write(&f2, "{\"y\":2}\n").unwrap();
+    let f1s = f1.to_str().unwrap();
+    let f2s = f2.to_str().unwrap();
+
+    let qj = run_qj_file(&["-c", ".", f1s, f2s]);
+    let jq = run_jq_file(&["-c", ".", f1s, f2s]);
+    assert_eq!(
+        stdout_str(&qj),
+        stdout_str(&jq),
+        "two valid files output mismatch"
+    );
+    assert_eq!(
+        exit_code(&qj),
+        exit_code(&jq),
+        "two valid files exit code mismatch"
+    );
+}
+
+// ===========================================================================
+// --arg + --args combined
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cli_arg_plus_args() {
+    // Combine named --arg with positional --args
+    assert_same_output(
+        &["-n", "$ARGS", "--arg", "name", "hello", "--args", "a", "b"],
+        b"",
+    );
+}
+
+// ===========================================================================
+// --jsonargs error handling
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cli_jsonargs_invalid() {
+    // Invalid JSON in --jsonargs should error
+    assert_same_exit(&["-n", "$ARGS", "--jsonargs", "not_valid_json"], b"");
+}
+
+// ===========================================================================
+// --version flag
+// ===========================================================================
+
+#[test]
+fn cli_version_exits_zero() {
+    let qj = run_qj(&["--version"], b"");
+    assert_eq!(exit_code(&qj), 0, "qj --version should exit 0");
+    assert!(
+        !stdout_str(&qj).is_empty(),
+        "qj --version should produce output"
+    );
+}
+
+// ===========================================================================
+// --indent 0
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cli_indent_0() {
+    // --indent 0 should behave like -c
+    assert_same(&["--indent", "0", "."], b"{\"a\":1,\"b\":[2,3]}\n");
+}
