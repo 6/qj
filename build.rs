@@ -7,9 +7,9 @@ fn main() {
         .define("SIMDJSON_EXCEPTIONS", "1")
         .warnings(true)
         .flag_if_supported("-Wextra")
-        .file("src/simdjson/simdjson.cpp")
+        .file("simdjson/simdjson.cpp")
         .file("src/simdjson/bridge.cpp")
-        .include("src/simdjson");
+        .include("simdjson");
 
     // Enable sanitizers for C++ when Rust is also compiled with them.
     // Usage: RUSTFLAGS="-Zsanitizer=address" cargo +nightly test
@@ -31,6 +31,6 @@ fn main() {
     build.compile("simdjson");
 
     println!("cargo:rerun-if-changed=src/simdjson/bridge.cpp");
-    println!("cargo:rerun-if-changed=src/simdjson/simdjson.cpp");
-    println!("cargo:rerun-if-changed=src/simdjson/simdjson.h");
+    println!("cargo:rerun-if-changed=simdjson/simdjson.cpp");
+    println!("cargo:rerun-if-changed=simdjson/simdjson.h");
 }
