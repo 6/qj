@@ -38,7 +38,11 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
             } else if flat.is_null() {
                 NavResult::Values(vec![Value::Null])
             } else {
-                // jq: .field on non-object/non-null is an error (no output in NDJSON)
+                crate::filter::eval::set_last_error(Value::String(format!(
+                    "Cannot index {} with string \"{}\"",
+                    flat.type_name(),
+                    name
+                )));
                 NavResult::Values(vec![])
             }
         }
@@ -79,7 +83,9 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
 
         Filter::Try(inner) => {
             // Try: suppress errors, treat as navigation
-            eval_flat_nav(inner, flat, env)
+            let result = eval_flat_nav(inner, flat, env);
+            let _ = crate::filter::eval::take_last_error();
+            result
         }
 
         Filter::Literal(v) => NavResult::Values(vec![v.clone()]),
@@ -137,6 +143,37 @@ fn eval_flat_obj_entries(
     }
 }
 
+/// Check whether a filter is safe for flat evaluation in single-document mode.
+///
+/// Returns true if the filter only uses operations that flat eval handles
+/// natively. Filters that could produce type errors (e.g., `.field` on an
+/// array) are still safe here — flat eval silences them, which matches jq
+/// behavior in NDJSON. For single-doc, we only call this for filters where
+/// the top-level structure is known to be compatible (object construction,
+/// pipes of field chains, etc.).
+///
+/// This is conservative: it returns false for any filter that would fall
+/// through to the regular evaluator's catch-all, since that path may set
+/// thread-local errors that the caller expects to check.
+pub fn is_flat_safe(filter: &Filter) -> bool {
+    match filter {
+        Filter::Identity | Filter::Literal(_) | Filter::Iterate | Filter::Select(_) => true,
+        Filter::Field(_) | Filter::Index(_) => true,
+        Filter::Pipe(l, r) => is_flat_safe(l) && is_flat_safe(r),
+        Filter::Comma(fs) => fs.iter().all(is_flat_safe),
+        Filter::ObjectConstruct(entries) => entries
+            .iter()
+            .all(|(key, val)| matches!(key, ObjKey::Name(_)) && is_flat_safe(val)),
+        Filter::ArrayConstruct(inner) => is_flat_safe(inner),
+        Filter::Alternative(l, r) => is_flat_safe(l) && is_flat_safe(r),
+        Filter::Try(inner) => is_flat_safe(inner),
+        Filter::Builtin(name, args) if args.is_empty() => {
+            matches!(name.as_str(), "length" | "type" | "keys" | "not")
+        }
+        _ => false,
+    }
+}
+
 /// Evaluate a filter with a FlatValue input, producing Value outputs.
 ///
 /// This is the main entry point for lazy NDJSON evaluation. It navigates
@@ -155,8 +192,13 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                 }
             } else if flat.is_null() {
                 output(Value::Null);
+            } else {
+                crate::filter::eval::set_last_error(Value::String(format!(
+                    "Cannot index {} with string \"{}\"",
+                    flat.type_name(),
+                    name
+                )));
             }
-            // else: non-object, non-null → error in jq (no output)
         }
 
         Filter::Pipe(left, right) => {
@@ -293,6 +335,8 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
 
         Filter::Try(inner) => {
             eval_flat(inner, flat, env, output);
+            // Try suppresses errors — clear any set by the inner expression
+            let _ = crate::filter::eval::take_last_error();
         }
 
         // Fall back to regular evaluator for everything else

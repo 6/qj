@@ -137,6 +137,11 @@ pub fn take_last_error() -> Option<Value> {
     LAST_ERROR.with(|e| e.borrow_mut().take())
 }
 
+/// Set a runtime error (used by flat_eval for type errors).
+pub fn set_last_error(err: Value) {
+    LAST_ERROR.with(|e| *e.borrow_mut() = Some(err));
+}
+
 /// Set the input queue for `input`/`inputs` builtins.
 pub fn set_input_queue(values: VecDeque<Value>) {
     INPUT_QUEUE.with(|q| *q.borrow_mut() = values);

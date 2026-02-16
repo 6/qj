@@ -860,6 +860,43 @@ fn process_padded(
     had_output: &mut bool,
     had_error: &mut bool,
 ) -> Result<()> {
+    // Use flat evaluation (lazy, zero-copy) when the filter is safe for it.
+    // Flat eval was designed for NDJSON and silently ignores type errors,
+    // so we only use it when the filter won't produce errors that need reporting.
+    if qj::flat_eval::is_flat_safe(filter)
+        && let Ok(flat_buf) = qj::simdjson::dom_parse_to_flat_buf(padded, json_len)
+    {
+        let mut nul_error = false;
+        let mut write_failed = false;
+        qj::flat_eval::eval_flat(filter, flat_buf.root(), env, &mut |v| {
+            if nul_error || write_failed {
+                return;
+            }
+            if config.null_separator
+                && let qj::value::Value::String(s) = &v
+                && s.contains('\0')
+            {
+                nul_error = true;
+                return;
+            }
+            *had_output = true;
+            if qj::output::write_value(out, &v, config).is_err() {
+                write_failed = true;
+            }
+        });
+        if nul_error {
+            *had_error = true;
+            eprintln!("qj: error: Cannot dump a string containing NUL with --raw-output0 option");
+        }
+        if let Some(err) = qj::filter::eval::take_last_error() {
+            *had_error = true;
+            let msg = format_error(&err);
+            eprintln!("qj: error: {msg}");
+        }
+        return Ok(());
+    }
+
+    // Regular pipeline: DOM parse → Value tree → eval → output
     let input = match qj::simdjson::dom_parse_to_value(padded, json_len) {
         Ok(v) => v,
         Err(e)
