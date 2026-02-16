@@ -940,6 +940,37 @@ fn process_file(
     had_error: &mut bool,
     last_was_falsy: &mut bool,
 ) -> Result<()> {
+    // Streaming NDJSON path: peek header to detect NDJSON, then stream from
+    // the file descriptor in fixed-size windows. Avoids loading the full file
+    // into memory — O(window_size) instead of O(file_size).
+    // Skip when debug-timing so we get the full pipeline breakdown.
+    if !ctx.debug_timing {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let mut file =
+            std::fs::File::open(path).with_context(|| format!("failed to open file: {path}"))?;
+        let mut header_buf = [0u8; 8192];
+        let header_len = file
+            .read(&mut header_buf)
+            .with_context(|| format!("failed to read file: {path}"))?;
+
+        if header_len == 0 {
+            return Ok(()); // Empty file
+        }
+
+        if ctx.force_jsonl || qj::parallel::ndjson::is_ndjson(&header_buf[..header_len]) {
+            file.seek(SeekFrom::Start(0))
+                .with_context(|| format!("failed to seek file: {path}"))?;
+            let ho = qj::parallel::ndjson::process_ndjson_streaming(
+                &mut file, ctx.filter, ctx.config, ctx.env, out,
+            )
+            .with_context(|| format!("failed to process NDJSON: {path}"))?;
+            *had_output |= ho;
+            return Ok(());
+        }
+    }
+
+    // Non-NDJSON: load the full file for single-doc processing
     let t0 = Instant::now();
     let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
         .with_context(|| format!("failed to read file: {path}"))?;
@@ -947,22 +978,6 @@ fn process_file(
 
     // Empty file produces no output (matches jq behavior)
     if json_len == 0 {
-        return Ok(());
-    }
-
-    // NDJSON fast path (skip when debug-timing so we get the full pipeline breakdown)
-    if !ctx.debug_timing
-        && (ctx.force_jsonl || qj::parallel::ndjson::is_ndjson(&padded[..json_len]))
-    {
-        let (output, ho) = qj::parallel::ndjson::process_ndjson(
-            &padded[..json_len],
-            ctx.filter,
-            ctx.config,
-            ctx.env,
-        )
-        .with_context(|| format!("failed to process NDJSON: {path}"))?;
-        out.write_all(&output)?;
-        *had_output |= ho;
         return Ok(());
     }
 

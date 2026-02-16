@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use regex::Regex;
 
 use std::collections::HashSet;
+use std::io::{Read, Write};
 
 use crate::filter::{CmpOp, Env, Filter};
 use crate::output::{self, OutputConfig};
@@ -224,6 +225,129 @@ pub fn process_ndjson(
     }
 
     Ok((out, had_output))
+}
+
+/// Default window size for streaming NDJSON processing (64 MiB).
+const WINDOW_SIZE: usize = 64 * 1024 * 1024;
+
+/// Process NDJSON from a reader in fixed-size windows, writing output per-window.
+///
+/// Reads `WINDOW_SIZE` bytes at a time, processes each window's chunks in
+/// parallel, and writes output directly to `out`. Lines spanning window
+/// boundaries are carried to the next window. Memory usage is O(window_size)
+/// instead of O(file_size).
+///
+/// Returns `had_output`.
+pub fn process_ndjson_streaming<R: Read, W: Write>(
+    reader: &mut R,
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    out: &mut W,
+) -> Result<bool> {
+    let needs_env = if env.is_empty() {
+        false
+    } else {
+        let mut var_refs = HashSet::new();
+        filter.collect_var_refs(&mut var_refs);
+        var_refs.iter().any(|v| env.get_var(v).is_some())
+    };
+    let use_parallel = !needs_env && filter.is_parallel_safe();
+    let fast_path = if use_parallel {
+        detect_fast_path(filter)
+    } else {
+        NdjsonFastPath::None
+    };
+
+    let mut buf = vec![0u8; WINDOW_SIZE];
+    let mut carry_len: usize = 0;
+    let mut had_output = false;
+
+    loop {
+        // Read up to (WINDOW_SIZE - carry_len) bytes after the carry region.
+        let max_read = buf.len() - carry_len;
+        let bytes_read = read_fully(reader, &mut buf[carry_len..carry_len + max_read])?;
+
+        if bytes_read == 0 && carry_len == 0 {
+            break; // EOF, nothing carried
+        }
+
+        let data_len = carry_len + bytes_read;
+        let at_eof = bytes_read < max_read;
+
+        // Find the last newline. Everything after it is a partial line to carry.
+        let (process_len, next_carry_len) = if at_eof {
+            // Last window: process everything including trailing partial line
+            (data_len, 0)
+        } else {
+            match memchr::memrchr(b'\n', &buf[..data_len]) {
+                Some(pos) => (pos + 1, data_len - (pos + 1)),
+                None => {
+                    // No newline in entire buffer — single line > buffer size.
+                    // Grow buffer to accommodate and continue reading.
+                    carry_len = data_len;
+                    buf.resize(buf.len() * 2, 0);
+                    continue;
+                }
+            }
+        };
+
+        let window_data = &buf[..process_len];
+
+        if use_parallel {
+            let chunks = split_chunks(window_data, CHUNK_TARGET_SIZE);
+            if chunks.len() <= 1 {
+                let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+                out.write_all(&chunk_out)?;
+                had_output |= ho;
+            } else {
+                let shared = SharedFilter::new(filter);
+                let results: Result<Vec<(Vec<u8>, bool)>> = chunks
+                    .par_iter()
+                    .map(|&chunk| {
+                        let empty_env = Env::empty();
+                        process_chunk(chunk, shared.get(), config, &fast_path, &empty_env)
+                    })
+                    .collect();
+                let results = results?;
+                for (chunk_out, ho) in results {
+                    out.write_all(&chunk_out)?;
+                    had_output |= ho;
+                }
+            }
+        } else {
+            // Sequential: env-dependent filters
+            let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+            out.write_all(&chunk_out)?;
+            had_output |= ho;
+        }
+
+        if at_eof {
+            break;
+        }
+
+        // Move the partial trailing line to the start of the buffer.
+        if next_carry_len > 0 {
+            buf.copy_within(process_len..process_len + next_carry_len, 0);
+        }
+        carry_len = next_carry_len;
+    }
+
+    Ok(had_output)
+}
+
+/// Read until `buf` is full or EOF, handling short reads and EINTR.
+fn read_fully<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match reader.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(total)
 }
 
 fn detect_fast_path(filter: &Filter) -> NdjsonFastPath {
