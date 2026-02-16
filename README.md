@@ -1,6 +1,6 @@
 # qj
 
-Quick JSON. A jq-compatible processor, 3-100x faster on large inputs.
+Quick JSON. A jq-compatible processor, 2-100x faster on large inputs.
 
 ## When to use qj instead of jq
 
