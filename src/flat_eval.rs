@@ -648,14 +648,13 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
         }
 
         Filter::IfThenElse(cond, then_branch, else_branch) => {
-            let value = flat.to_value();
-            crate::filter::eval::eval_filter_with_env(cond, &value, env, &mut |cond_val| {
+            eval_flat(cond, flat, env, &mut |cond_val| {
                 if cond_val.is_truthy() {
-                    crate::filter::eval::eval_filter_with_env(then_branch, &value, env, output);
+                    eval_flat(then_branch, flat, env, output);
                 } else if let Some(else_br) = else_branch {
-                    crate::filter::eval::eval_filter_with_env(else_br, &value, env, output);
+                    eval_flat(else_br, flat, env, output);
                 } else {
-                    output(value.clone());
+                    output(flat.to_value());
                 }
             });
         }
