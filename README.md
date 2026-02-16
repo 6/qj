@@ -9,7 +9,7 @@
 
 **NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 104 ms vs jq's 12.6 s (121x). No `xargs` or `parallel` needed.
 
-**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Parse-heavy operations like `length` and `keys` are ~10x faster; evaluator-bound filters 1.5-4x.
+**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Simple operations like `length` and `keys` are ~10x faster; complex filters like `map` and `reduce` are 1.5-4x.
 
 **When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
