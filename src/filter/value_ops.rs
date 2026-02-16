@@ -617,7 +617,7 @@ pub(super) fn path_of(
 // Value comparison, ordering, arithmetic, and traversal
 // ---------------------------------------------------------------------------
 
-pub(super) fn compare_values(left: &Value, op: &CmpOp, right: &Value) -> bool {
+pub fn compare_values(left: &Value, op: &CmpOp, right: &Value) -> bool {
     match op {
         CmpOp::Eq => values_equal(left, right),
         CmpOp::Ne => !values_equal(left, right),
@@ -726,7 +726,7 @@ fn value_desc(v: &Value) -> String {
     v.short_desc()
 }
 
-pub(super) fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, String> {
+pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, String> {
     match op {
         ArithOp::Add => match (left, right) {
             (Value::Int(a), Value::Int(b)) => Ok(a

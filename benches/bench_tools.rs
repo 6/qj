@@ -17,7 +17,7 @@ struct Args {
     cooldown: u64,
 
     /// Number of hyperfine runs per benchmark
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 3)]
     runs: u32,
 
     /// Output markdown file path

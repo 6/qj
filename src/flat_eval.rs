@@ -5,7 +5,7 @@
 //! allocation) and only materializes at the point where a concrete Value is
 //! needed (output boundary, complex computation, etc.).
 
-use crate::filter::{Env, Filter, ObjKey, Pattern};
+use crate::filter::{BoolOp, Env, Filter, ObjKey, Pattern};
 use crate::flat_value::FlatValue;
 use crate::value::Value;
 use std::collections::HashSet;
@@ -213,6 +213,20 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
             eval_flat_nav(rest, flat, &new_env)
         }
 
+        Filter::Select(cond) => {
+            let mut is_truthy = false;
+            eval_flat(cond, flat, env, &mut |v| {
+                if v.is_truthy() {
+                    is_truthy = true;
+                }
+            });
+            if is_truthy {
+                NavResult::Flat(flat)
+            } else {
+                NavResult::Values(vec![])
+            }
+        }
+
         // For anything else: materialize and delegate
         _ => {
             let value = flat.to_value();
@@ -381,16 +395,14 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
         }
 
         Filter::Select(cond) => {
-            // Evaluate condition — need to materialize for complex conditions
-            let value = flat.to_value();
             let mut is_truthy = false;
-            crate::filter::eval::eval_filter_with_env(cond, &value, env, &mut |v| {
+            eval_flat(cond, flat, env, &mut |v| {
                 if v.is_truthy() {
                     is_truthy = true;
                 }
             });
             if is_truthy {
-                output(value);
+                output(flat.to_value());
             }
         }
 
@@ -601,6 +613,71 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
             crate::filter::eval::eval_filter_with_env(expr, &value, env, &mut |val| {
                 if let Some(new_env) = crate::filter::eval::match_pattern(pattern, &val, env) {
                     crate::filter::eval::eval_filter_with_env(body, &value, &new_env, output);
+                }
+            });
+        }
+
+        Filter::Compare(left, op, right) => {
+            eval_flat(right, flat, env, &mut |rval| {
+                eval_flat(left, flat, env, &mut |lval| {
+                    output(Value::Bool(crate::filter::compare_values(&lval, op, &rval)));
+                });
+            });
+        }
+
+        Filter::BoolOp(left, op, right) => {
+            let mut lval = Value::Null;
+            eval_flat(left, flat, env, &mut |v| lval = v);
+            match op {
+                BoolOp::And => {
+                    if lval.is_truthy() {
+                        let mut rval = Value::Null;
+                        eval_flat(right, flat, env, &mut |v| rval = v);
+                        output(Value::Bool(rval.is_truthy()));
+                    } else {
+                        output(Value::Bool(false));
+                    }
+                }
+                BoolOp::Or => {
+                    if lval.is_truthy() {
+                        output(Value::Bool(true));
+                    } else {
+                        let mut rval = Value::Null;
+                        eval_flat(right, flat, env, &mut |v| rval = v);
+                        output(Value::Bool(rval.is_truthy()));
+                    }
+                }
+            }
+        }
+
+        Filter::Arith(left, op, right) => {
+            eval_flat(right, flat, env, &mut |rval| {
+                eval_flat(
+                    left,
+                    flat,
+                    env,
+                    &mut |lval| match crate::filter::arith_values(&lval, op, &rval) {
+                        Ok(result) => output(result),
+                        Err(msg) => {
+                            crate::filter::eval::set_last_error(Value::String(msg));
+                        }
+                    },
+                );
+            });
+        }
+
+        Filter::Neg(inner) => {
+            eval_flat(inner, flat, env, &mut |v| match v {
+                Value::Int(n) => output(
+                    n.checked_neg()
+                        .map_or_else(|| Value::Double(-(n as f64), None), Value::Int),
+                ),
+                Value::Double(f, _) => output(Value::Double(-f, None)),
+                _ => {
+                    crate::filter::eval::set_last_error(Value::String(format!(
+                        "{} cannot be negated",
+                        v.type_name()
+                    )));
                 }
             });
         }
