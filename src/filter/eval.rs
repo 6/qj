@@ -14,7 +14,7 @@ use super::value_ops::{arith_values, compare_values, recurse};
 
 /// Match a destructuring pattern against a value (lenient mode for `as`).
 /// Always succeeds — missing fields/indices produce null.
-fn match_pattern(pattern: &Pattern, value: &Value, env: &Env) -> Option<Env> {
+pub fn match_pattern(pattern: &Pattern, value: &Value, env: &Env) -> Option<Env> {
     match_pattern_inner(pattern, value, env, false)
 }
 

@@ -167,8 +167,11 @@ pub fn is_flat_safe(filter: &Filter) -> bool {
         Filter::ArrayConstruct(inner) => is_flat_safe(inner),
         Filter::Alternative(l, r) => is_flat_safe(l) && is_flat_safe(r),
         Filter::Try(inner) => is_flat_safe(inner),
+        Filter::Not(inner) => is_flat_safe(inner),
+        // Reduce: source iterates via flat buffer, init/update use regular eval
+        Filter::Reduce(source, _, _, _) => is_flat_safe(source),
         Filter::Builtin(name, args) if args.is_empty() => {
-            matches!(name.as_str(), "length" | "type" | "keys" | "not")
+            matches!(name.as_str(), "length" | "type" | "keys")
         }
         Filter::Builtin(name, args) if args.len() == 1 => {
             matches!(name.as_str(), "map" | "map_values") && is_flat_safe(&args[0])
@@ -353,10 +356,6 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
             }
         }
 
-        Filter::Builtin(name, args) if name == "not" && args.is_empty() => {
-            output(Value::Bool(!flat.is_truthy()));
-        }
-
         Filter::Comma(filters) => {
             for f in filters {
                 eval_flat(f, flat, env, output);
@@ -367,10 +366,34 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
             output(v.clone());
         }
 
+        Filter::Reduce(source, pattern, init, update) => {
+            // Evaluate source lazily via flat buffer, but run init/update with regular eval
+            let mut acc = Value::Null;
+            {
+                let value = flat.to_value();
+                crate::filter::eval::eval_filter_with_env(init, &value, env, &mut |v| acc = v);
+            }
+            eval_flat(source, flat, env, &mut |val| {
+                if let Some(new_env) = crate::filter::eval::match_pattern(pattern, &val, env) {
+                    let cur = acc.clone();
+                    crate::filter::eval::eval_filter_with_env(update, &cur, &new_env, &mut |v| {
+                        acc = v;
+                    });
+                }
+            });
+            output(acc);
+        }
+
         Filter::Try(inner) => {
             eval_flat(inner, flat, env, output);
             // Try suppresses errors — clear any set by the inner expression
             let _ = crate::filter::eval::take_last_error();
+        }
+
+        Filter::Not(inner) => {
+            eval_flat(inner, flat, env, &mut |v| {
+                output(Value::Bool(!v.is_truthy()));
+            });
         }
 
         // Fall back to regular evaluator for everything else
@@ -653,9 +676,42 @@ mod tests {
 
     // --- Complex fallback ---
 
+    // --- Reduce ---
+
     #[test]
-    fn reduce_fallback() {
+    fn reduce_sum() {
         assert_equiv("reduce .[] as $x (0; . + $x)", b"[1,2,3,4,5]");
+    }
+
+    #[test]
+    fn reduce_string_concat() {
+        assert_equiv(r#"reduce .[] as $x (""; . + $x)"#, br#"["a","b","c"]"#);
+    }
+
+    #[test]
+    fn reduce_object_iteration() {
+        assert_equiv("reduce .[] as $x (0; . + $x)", br#"{"a":1,"b":2,"c":3}"#);
+    }
+
+    #[test]
+    fn reduce_with_field_source() {
+        assert_equiv(
+            "reduce .items[] as $x (0; . + $x)",
+            br#"{"items":[10,20,30]}"#,
+        );
+    }
+
+    #[test]
+    fn reduce_empty_array() {
+        assert_equiv("reduce .[] as $x (0; . + $x)", b"[]");
+    }
+
+    #[test]
+    fn reduce_nested_pattern() {
+        assert_equiv(
+            r#"reduce .[] as {name: $n} (""; . + $n)"#,
+            br#"[{"name":"a"},{"name":"b"}]"#,
+        );
     }
 
     #[test]
@@ -664,12 +720,129 @@ mod tests {
         assert_equiv(".foo?", b"42");
     }
 
+    // --- Map ---
+
+    #[test]
+    fn map_field() {
+        assert_equiv("map(.name)", br#"[{"name":"a"},{"name":"b"}]"#);
+    }
+
+    #[test]
+    fn map_construct() {
+        assert_equiv(
+            "map({name, age})",
+            br#"[{"name":"a","age":1,"extra":true},{"name":"b","age":2,"extra":false}]"#,
+        );
+    }
+
+    #[test]
+    fn map_length() {
+        assert_equiv("map(length)", br#"[[1,2],[3],[4,5,6]]"#);
+    }
+
+    #[test]
+    fn map_empty_array() {
+        assert_equiv("map(.x)", b"[]");
+    }
+
+    #[test]
+    fn map_nested_pipe() {
+        assert_equiv("map(.a | .b)", br#"[{"a":{"b":1}},{"a":{"b":2}}]"#);
+    }
+
+    // --- Map values ---
+
+    #[test]
+    fn map_values_object() {
+        assert_equiv("map_values(. + 1)", br#"{"a":1,"b":2,"c":3}"#);
+    }
+
+    #[test]
+    fn map_values_array() {
+        assert_equiv("map_values(. + 10)", b"[1,2,3]");
+    }
+
     // --- Literal ---
 
     #[test]
     fn literal_in_filter() {
         assert_equiv("42", br#"{"a":1}"#);
         assert_equiv(r#""hello""#, b"null");
+    }
+
+    // --- is_flat_safe ---
+
+    #[test]
+    fn flat_safe_simple_filters() {
+        assert!(is_flat_safe(&parse_filter(".")));
+        assert!(is_flat_safe(&parse_filter(".foo")));
+        assert!(is_flat_safe(&parse_filter(".foo.bar")));
+        assert!(is_flat_safe(&parse_filter(".[]")));
+        assert!(is_flat_safe(&parse_filter("length")));
+        assert!(is_flat_safe(&parse_filter("type")));
+        assert!(is_flat_safe(&parse_filter("keys")));
+        assert!(is_flat_safe(&parse_filter("not")));
+        assert!(is_flat_safe(&parse_filter("42")));
+        assert!(is_flat_safe(&parse_filter(r#""hello""#)));
+    }
+
+    #[test]
+    fn flat_safe_compound_filters() {
+        assert!(is_flat_safe(&parse_filter(".a | .b")));
+        assert!(is_flat_safe(&parse_filter("{type, name: .user.name}")));
+        assert!(is_flat_safe(&parse_filter("[.[] | .x]")));
+        assert!(is_flat_safe(&parse_filter(".a, .b")));
+        assert!(is_flat_safe(&parse_filter(r#".x // "default""#)));
+        assert!(is_flat_safe(&parse_filter(".foo?")));
+        assert!(is_flat_safe(&parse_filter(r#"select(.type == "Push")"#)));
+    }
+
+    #[test]
+    fn flat_safe_map_reduce() {
+        assert!(is_flat_safe(&parse_filter("map(.x)")));
+        assert!(is_flat_safe(&parse_filter("map_values(.x)")));
+        assert!(is_flat_safe(&parse_filter("reduce .[] as $x (0; . + $x)")));
+        // reduce with nested flat-safe source
+        assert!(is_flat_safe(&parse_filter(
+            "reduce .items[] as $x (0; . + $x)"
+        )));
+    }
+
+    #[test]
+    fn flat_safe_rejects_unsupported() {
+        // if-then-else is not flat-safe
+        assert!(!is_flat_safe(&parse_filter("if .x then .a else .b end")));
+        // def is not flat-safe
+        assert!(!is_flat_safe(&parse_filter("def f: .; f")));
+        // Unsupported builtins
+        assert!(!is_flat_safe(&parse_filter("to_entries")));
+        assert!(!is_flat_safe(&parse_filter("sort")));
+        assert!(!is_flat_safe(&parse_filter("group_by(.x)")));
+        // map with non-flat-safe inner
+        assert!(!is_flat_safe(&parse_filter("map(if . then 1 else 0 end)")));
+    }
+
+    // --- Error handling ---
+
+    #[test]
+    fn field_on_non_object_sets_error() {
+        // .foo on an array should produce no output but set an error
+        let filter = parse_filter(".foo");
+        let result = eval_with_flat(&filter, b"[1,2,3]");
+        assert!(result.is_empty());
+        // Error should have been set
+        let err = crate::filter::eval::take_last_error();
+        assert!(err.is_some(), "expected error for .foo on array");
+    }
+
+    #[test]
+    fn try_clears_error() {
+        // .foo? on a non-object should produce no output and NO error
+        let filter = parse_filter(".foo?");
+        let result = eval_with_flat(&filter, b"[1,2,3]");
+        assert!(result.is_empty());
+        let err = crate::filter::eval::take_last_error();
+        assert!(err.is_none(), "try should have cleared the error");
     }
 
     // --- Mixed complex ---
