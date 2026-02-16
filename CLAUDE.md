@@ -111,6 +111,13 @@ cargo +nightly fuzz run fuzz_double_format -s none -- -max_total_time=120
 
 All benchmark scripts, data generators, and results live in `benches/`.
 
+### Regression detection (iai-callgrind, requires valgrind)
+```
+cargo bench --bench eval_regression
+```
+Counts CPU instructions (deterministic, no wall-clock noise). Runs on CI for every PR (Ubuntu only).
+Covers: SIMD parse, flat eval, standard eval, filter parsing.
+
 ### Parse throughput (simdjson vs serde_json)
 ```
 bash benches/download_testdata.sh   # twitter.json, citm_catalog.json, canada.json
