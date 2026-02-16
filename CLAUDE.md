@@ -79,28 +79,32 @@ Fuzz binaries use libfuzzer which runs indefinitely without `-max_total_time`.
 All `[[bin]]` entries have `test = false` to prevent `cargo test` from picking them up.
 Always run fuzz targets individually via `cargo +nightly fuzz run <target> -- -max_total_time=N`.
 
+**ASan link error on macOS:** The C++ FFI objects (simdjson/bridge) are compiled with Apple
+Clang, whose ASan runtime is incompatible with rustc nightly's. Use `-s none` to disable
+sanitizers: `cargo +nightly fuzz run <target> -s none -- -max_total_time=N`.
+
 **FFI boundary** (run after changing `src/simdjson/`):
 ```
-cargo +nightly fuzz run fuzz_parse   -- -max_total_time=120
-cargo +nightly fuzz run fuzz_dom     -- -max_total_time=120
-cargo +nightly fuzz run fuzz_ndjson  -- -max_total_time=120
+cargo +nightly fuzz run fuzz_parse   -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_dom     -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_ndjson  -s none -- -max_total_time=120
 ```
 
 **Filter pipeline** (run after changing `src/filter/`):
 ```
-cargo +nightly fuzz run fuzz_filter_parse -- -max_total_time=120
-cargo +nightly fuzz run fuzz_eval         -- -max_total_time=120
+cargo +nightly fuzz run fuzz_filter_parse -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_eval         -s none -- -max_total_time=120
 ```
 
 **NDJSON fast-path differential** (run after changing `src/parallel/`):
 ```
-cargo +nightly fuzz run fuzz_ndjson_diff  -- -max_total_time=120
+cargo +nightly fuzz run fuzz_ndjson_diff  -s none -- -max_total_time=120
 ```
 
 **Output formatting** (run after changing `src/output.rs`):
 ```
-cargo +nightly fuzz run fuzz_output        -- -max_total_time=120
-cargo +nightly fuzz run fuzz_double_format -- -max_total_time=120
+cargo +nightly fuzz run fuzz_output        -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_double_format -s none -- -max_total_time=120
 ```
 
 ## Benchmarking
