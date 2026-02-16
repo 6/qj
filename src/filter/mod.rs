@@ -3,7 +3,7 @@ pub mod eval;
 pub mod lexer;
 pub mod parser;
 mod value_ops;
-pub use value_ops::{arith_values, compare_values};
+pub use value_ops::{arith_values, compare_values, values_order};
 
 use crate::value::Value;
 use std::collections::{HashMap, HashSet};

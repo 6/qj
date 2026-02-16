@@ -1422,7 +1422,7 @@ fn eval_assign_via_paths(
 }
 
 /// Resolve a slice index: handle negatives (wrap with len), clamp to [0, len].
-fn resolve_slice_index(val: Option<&Value>, default: i64, len: i64) -> i64 {
+pub(crate) fn resolve_slice_index(val: Option<&Value>, default: i64, len: i64) -> i64 {
     let idx = match val {
         Some(Value::Int(n)) => *n,
         Some(Value::Double(f, _)) if f.is_finite() => *f as i64,

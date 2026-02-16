@@ -734,6 +734,137 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
             });
         }
 
+        Filter::Builtin(name, args) if name == "sort_by" && args.len() == 1 => {
+            if flat.is_array() {
+                let f = &args[0];
+                // Collect (sort_key, index) pairs from flat space
+                let elems: Vec<FlatValue<'_>> = flat.array_iter().collect();
+                let mut pairs: Vec<(Vec<Value>, usize)> = elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, elem)| {
+                        let mut keys = Vec::new();
+                        eval_flat(f, *elem, env, &mut |v| keys.push(v));
+                        (keys, i)
+                    })
+                    .collect();
+                pairs.sort_by(|(a, _), (b, _)| {
+                    for (ak, bk) in a.iter().zip(b.iter()) {
+                        let ord = crate::filter::values_order(ak, bk)
+                            .unwrap_or(std::cmp::Ordering::Equal);
+                        if ord != std::cmp::Ordering::Equal {
+                            return ord;
+                        }
+                    }
+                    a.len().cmp(&b.len())
+                });
+                // Materialize only in sorted order
+                let sorted: Vec<Value> = pairs
+                    .into_iter()
+                    .map(|(_, i)| elems[i].to_value())
+                    .collect();
+                output(Value::Array(Arc::new(sorted)));
+            }
+        }
+
+        Filter::Builtin(name, args) if name == "group_by" && args.len() == 1 => {
+            if flat.is_array() {
+                let f = &args[0];
+                let elems: Vec<FlatValue<'_>> = flat.array_iter().collect();
+                let mut pairs: Vec<(Value, usize)> = elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, elem)| {
+                        let mut key = Value::Null;
+                        eval_flat(f, *elem, env, &mut |v| key = v);
+                        (key, i)
+                    })
+                    .collect();
+                pairs.sort_by(|(a, _), (b, _)| {
+                    crate::filter::values_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                // Group consecutive equal keys
+                let mut groups: Vec<Value> = Vec::new();
+                let mut current_group: Vec<Value> = Vec::new();
+                let mut current_key: Option<&Value> = None;
+                for (key, idx) in &pairs {
+                    if current_key.is_some_and(|k| {
+                        crate::filter::values_order(k, key) != Some(std::cmp::Ordering::Equal)
+                    }) {
+                        groups.push(Value::Array(Arc::new(std::mem::take(&mut current_group))));
+                    }
+                    current_key = Some(key);
+                    current_group.push(elems[*idx].to_value());
+                }
+                if !current_group.is_empty() {
+                    groups.push(Value::Array(Arc::new(current_group)));
+                }
+                output(Value::Array(Arc::new(groups)));
+            }
+        }
+
+        Filter::PostfixSlice(base, start_f, end_f) => {
+            // Evaluate base via flat eval
+            eval_flat(base, flat, env, &mut |base_val| {
+                let start_val = start_f.as_ref().map(|f| {
+                    let mut v = Value::Null;
+                    eval_flat(f, flat, env, &mut |val| v = val);
+                    if let Value::Double(f, _) = &v
+                        && f.is_finite()
+                    {
+                        return Value::Int(f.floor() as i64);
+                    }
+                    v
+                });
+                let end_val = end_f.as_ref().map(|f| {
+                    let mut v = Value::Null;
+                    eval_flat(f, flat, env, &mut |val| v = val);
+                    if let Value::Double(f, _) = &v
+                        && f.is_finite()
+                    {
+                        return Value::Int(f.ceil() as i64);
+                    }
+                    v
+                });
+                match &base_val {
+                    Value::Array(arr) => {
+                        let len = arr.len() as i64;
+                        let s =
+                            crate::filter::eval::resolve_slice_index(start_val.as_ref(), 0, len);
+                        let e =
+                            crate::filter::eval::resolve_slice_index(end_val.as_ref(), len, len);
+                        if s < e {
+                            output(Value::Array(Arc::new(arr[s as usize..e as usize].to_vec())));
+                        } else {
+                            output(Value::Array(Arc::new(vec![])));
+                        }
+                    }
+                    Value::String(s) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let len = chars.len() as i64;
+                        let start =
+                            crate::filter::eval::resolve_slice_index(start_val.as_ref(), 0, len);
+                        let end =
+                            crate::filter::eval::resolve_slice_index(end_val.as_ref(), len, len);
+                        if start < end {
+                            let sliced: String =
+                                chars[start as usize..end as usize].iter().collect();
+                            output(Value::String(sliced));
+                        } else {
+                            output(Value::String(String::new()));
+                        }
+                    }
+                    Value::Null => output(Value::Null),
+                    _ => {
+                        crate::filter::eval::set_last_error(Value::String(format!(
+                            "{} cannot be sliced",
+                            base_val.type_name()
+                        )));
+                    }
+                }
+            });
+        }
+
         // Fall back to regular evaluator for everything else
         _ => {
             let value = flat.to_value();
@@ -1540,5 +1671,70 @@ mod tests {
         let mut out = Vec::new();
         write_compact_flat(&mut out, flat_buf.root());
         assert_eq!(std::str::from_utf8(&out).unwrap(), r#""hello\nworld""#);
+    }
+
+    // --- sort_by ---
+
+    #[test]
+    fn sort_by_numeric() {
+        assert_equiv(
+            "sort_by(.x)",
+            br#"[{"x":3,"n":"c"},{"x":1,"n":"a"},{"x":2,"n":"b"}]"#,
+        );
+    }
+
+    #[test]
+    fn sort_by_string() {
+        assert_equiv("sort_by(.x)", br#"[{"x":"b"},{"x":"a"},{"x":"c"}]"#);
+    }
+
+    #[test]
+    fn sort_by_last() {
+        assert_equiv(
+            "sort_by(.x) | .[-1]",
+            br#"[{"x":3,"n":"c"},{"x":1,"n":"a"}]"#,
+        );
+    }
+
+    // --- group_by ---
+
+    #[test]
+    fn group_by_basic() {
+        assert_equiv(
+            "group_by(.t)",
+            br#"[{"t":1,"n":"a"},{"t":2,"n":"b"},{"t":1,"n":"c"}]"#,
+        );
+    }
+
+    #[test]
+    fn group_by_length() {
+        assert_equiv(
+            "group_by(.t) | length",
+            br#"[{"t":"a"},{"t":"b"},{"t":"a"},{"t":"c"},{"t":"b"}]"#,
+        );
+    }
+
+    // --- PostfixSlice ---
+
+    #[test]
+    fn postfix_slice_array() {
+        assert_equiv(".[:3]", b"[1,2,3,4,5]");
+        assert_equiv(".[2:4]", b"[1,2,3,4,5]");
+        assert_equiv(".[3:]", b"[1,2,3,4,5]");
+    }
+
+    #[test]
+    fn postfix_slice_string() {
+        assert_equiv(".[1:3]", br#""hello""#);
+    }
+
+    #[test]
+    fn postfix_slice_negative() {
+        assert_equiv(".[-2:]", b"[1,2,3,4,5]");
+    }
+
+    #[test]
+    fn postfix_slice_in_pipe() {
+        assert_equiv("[.[] | .x][:2]", br#"[{"x":1},{"x":2},{"x":3}]"#);
     }
 }

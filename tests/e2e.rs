@@ -4757,3 +4757,43 @@ fn jq_compat_bind_in_iterate() {
         r#"[{"name":"a","x":1},{"name":"b","x":2}]"#,
     );
 }
+
+// --- Flat eval: sort_by ---
+
+#[test]
+fn jq_compat_sort_by() {
+    assert_jq_compat(
+        "sort_by(.x)",
+        r#"[{"x":3,"n":"c"},{"x":1,"n":"a"},{"x":2,"n":"b"}]"#,
+    );
+    assert_jq_compat(
+        "sort_by(.x) | .[-1].n",
+        r#"[{"x":3,"n":"c"},{"x":1,"n":"a"}]"#,
+    );
+    assert_jq_compat("sort_by(.x)", r#"[{"x":"b"},{"x":"a"},{"x":"c"}]"#);
+}
+
+// --- Flat eval: group_by ---
+
+#[test]
+fn jq_compat_group_by_flat() {
+    assert_jq_compat(
+        "group_by(.t) | length",
+        r#"[{"t":"a"},{"t":"b"},{"t":"a"},{"t":"c"},{"t":"b"}]"#,
+    );
+    assert_jq_compat(
+        "group_by(.t)",
+        r#"[{"t":1,"n":"a"},{"t":2,"n":"b"},{"t":1,"n":"c"}]"#,
+    );
+}
+
+// --- Flat eval: PostfixSlice ---
+
+#[test]
+fn jq_compat_postfix_slice() {
+    assert_jq_compat("[1,2,3,4,5][:3]", "null");
+    assert_jq_compat("[1,2,3,4,5][2:4]", "null");
+    assert_jq_compat("[1,2,3,4,5][3:]", "null");
+    assert_jq_compat(r#""hello"[1:3]"#, "null");
+    assert_jq_compat("[.[] | .x][:2]", r#"[{"x":1},{"x":2},{"x":3}]"#);
+}

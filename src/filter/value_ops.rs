@@ -671,7 +671,7 @@ fn type_order(v: &Value) -> u8 {
     }
 }
 
-pub(super) fn values_order(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+pub fn values_order(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
     let lt = type_order(left);
     let rt = type_order(right);
     if lt != rt {
