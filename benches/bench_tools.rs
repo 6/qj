@@ -48,7 +48,7 @@ impl Args {
             p.clone()
         } else {
             match self.benchmark_type.as_str() {
-                "ndjson" => PathBuf::from("benches/results_large_only.md"),
+                "ndjson" => PathBuf::from("benches/results_ndjson.md"),
                 _ => PathBuf::from("benches/results_json.md"),
             }
         }
