@@ -14,10 +14,13 @@ use std::sync::Arc;
 /// Result of navigating a filter on a FlatValue.
 ///
 /// `Flat` means we successfully navigated without materializing.
-/// `Values` means we had to materialize (or the filter produced multiple outputs).
+/// `FlatMany` means the filter produced multiple FlatValue outputs (e.g. Iterate).
+/// `Values` means we had to materialize.
 enum NavResult<'a> {
     /// Single FlatValue result — still zero-copy.
     Flat(FlatValue<'a>),
+    /// Multiple FlatValue results — still zero-copy (e.g. from `.[]`).
+    FlatMany(Vec<FlatValue<'a>>),
     /// Materialized Value results.
     Values(Vec<Value>),
 }
@@ -38,6 +41,14 @@ fn flat_source_count(filter: &Filter, flat: FlatValue<'_>, env: &Env) -> Option<
         Filter::Iterate => flat.len(),
         Filter::Pipe(left, right) => match eval_flat_nav(left, flat, env) {
             NavResult::Flat(child) => flat_source_count(right, child, env),
+            NavResult::FlatMany(children) => {
+                // Sum counts across all children
+                let mut total = 0;
+                for child in children {
+                    total += flat_source_count(right, child, env)?;
+                }
+                Some(total)
+            }
             _ => None,
         },
         _ => None,
@@ -70,8 +81,75 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
             }
         }
 
+        Filter::Iterate => {
+            if flat.is_array() {
+                NavResult::FlatMany(flat.array_iter().collect())
+            } else if flat.is_object() {
+                NavResult::FlatMany(flat.object_iter().map(|(_, v)| v).collect())
+            } else {
+                crate::filter::eval::set_last_error(Value::String(format!(
+                    "Cannot iterate over {}",
+                    flat.type_name()
+                )));
+                NavResult::Values(vec![])
+            }
+        }
+
+        Filter::Index(idx_filter) => match idx_filter.as_ref() {
+            Filter::Literal(Value::Int(i)) => {
+                if flat.is_array() {
+                    let len = flat.len().unwrap_or(0);
+                    let idx = if *i < 0 { len as i64 + i } else { *i } as usize;
+                    if idx < len {
+                        match flat.get_index(idx) {
+                            Some(child) => NavResult::Flat(child),
+                            None => NavResult::Values(vec![Value::Null]),
+                        }
+                    } else {
+                        NavResult::Values(vec![Value::Null])
+                    }
+                } else if flat.is_null() {
+                    NavResult::Values(vec![Value::Null])
+                } else {
+                    crate::filter::eval::set_last_error(Value::String(format!(
+                        "Cannot index {} with number",
+                        flat.type_name()
+                    )));
+                    NavResult::Values(vec![])
+                }
+            }
+            // Dynamic index: materialize and delegate
+            _ => {
+                let value = flat.to_value();
+                let mut results = Vec::new();
+                crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |out| {
+                    results.push(out);
+                });
+                NavResult::Values(results)
+            }
+        },
+
         Filter::Pipe(left, right) => match eval_flat_nav(left, flat, env) {
             NavResult::Flat(mid) => eval_flat_nav(right, mid, env),
+            NavResult::FlatMany(mids) => {
+                let mut all_flat = Vec::new();
+                let mut all_values = Vec::new();
+                for mid in mids {
+                    match eval_flat_nav(right, mid, env) {
+                        NavResult::Flat(child) => all_flat.push(child),
+                        NavResult::FlatMany(children) => all_flat.extend(children),
+                        NavResult::Values(values) => all_values.extend(values),
+                    }
+                }
+                if all_values.is_empty() {
+                    NavResult::FlatMany(all_flat)
+                } else {
+                    let mut combined: Vec<Value> =
+                        all_flat.into_iter().map(|f| f.to_value()).collect();
+                    combined.extend(all_values);
+                    NavResult::Values(combined)
+                }
+            }
             NavResult::Values(values) => {
                 let mut results = Vec::new();
                 for v in &values {
@@ -83,26 +161,32 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
             }
         },
 
-        Filter::Alternative(left, right) => {
-            match eval_flat_nav(left, flat, env) {
-                NavResult::Flat(child) => {
-                    if child.is_truthy() {
-                        NavResult::Flat(child)
-                    } else {
-                        eval_flat_nav(right, flat, env)
-                    }
-                }
-                NavResult::Values(values) => {
-                    // Alternative: first truthy output wins
-                    let truthy: Vec<Value> = values.into_iter().filter(|v| v.is_truthy()).collect();
-                    if !truthy.is_empty() {
-                        NavResult::Values(truthy)
-                    } else {
-                        eval_flat_nav(right, flat, env)
-                    }
+        Filter::Alternative(left, right) => match eval_flat_nav(left, flat, env) {
+            NavResult::Flat(child) => {
+                if child.is_truthy() {
+                    NavResult::Flat(child)
+                } else {
+                    eval_flat_nav(right, flat, env)
                 }
             }
-        }
+            NavResult::FlatMany(children) => {
+                let truthy: Vec<FlatValue> =
+                    children.into_iter().filter(|c| c.is_truthy()).collect();
+                if !truthy.is_empty() {
+                    NavResult::FlatMany(truthy)
+                } else {
+                    eval_flat_nav(right, flat, env)
+                }
+            }
+            NavResult::Values(values) => {
+                let truthy: Vec<Value> = values.into_iter().filter(|v| v.is_truthy()).collect();
+                if !truthy.is_empty() {
+                    NavResult::Values(truthy)
+                } else {
+                    eval_flat_nav(right, flat, env)
+                }
+            }
+        },
 
         Filter::Try(inner) => {
             // Try: suppress errors, treat as navigation
@@ -241,6 +325,11 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                 NavResult::Flat(child) => {
                     eval_flat(right, child, env, output);
                 }
+                NavResult::FlatMany(children) => {
+                    for child in children {
+                        eval_flat(right, child, env, output);
+                    }
+                }
                 NavResult::Values(values) => {
                     for v in &values {
                         crate::filter::eval::eval_filter_with_env(right, v, env, output);
@@ -293,6 +382,17 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
             NavResult::Flat(child) => {
                 if child.is_truthy() {
                     output(child.to_value());
+                } else {
+                    eval_flat(right, flat, env, output);
+                }
+            }
+            NavResult::FlatMany(children) => {
+                let truthy: Vec<FlatValue> =
+                    children.into_iter().filter(|c| c.is_truthy()).collect();
+                if !truthy.is_empty() {
+                    for child in truthy {
+                        output(child.to_value());
+                    }
                 } else {
                     eval_flat(right, flat, env, output);
                 }
