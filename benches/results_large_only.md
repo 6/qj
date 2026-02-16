@@ -15,12 +15,6 @@
 | `-c '{type, repo: .repo.name, actor: .actor.login}'` | **140ms** | **55.8x** | 7.81s | 3.19s | 2.4x | 6.92s | 1.1x |
 | `-c 'select(.type == "PushEvent") | {login: .actor.login, commits: (.payload.commits // [] | length)}'` | **2.72s** | **2.8x** | 7.49s | 3.08s | 2.4x | 6.76s | 1.1x |
 
-### Throughput (`-c '.'`, single pass)
-
-| File | qj | jq | jaq | gojq |
-|------|------:|------:|------:|------:|
-| gharchive.ndjson | **2.7 GB/s** | 157 MB/s | 395 MB/s | 169 MB/s |
-
 ## Tier: ~5GB
 
 ### NDJSON (gharchive_large.ndjson, 4808MB, parallel processing)
@@ -32,10 +26,4 @@
 | `-c 'select(.type == "PushEvent")'` | **527ms** | **111.0x** | 58.49s | 17.83s | 3.3x | 36.41s | 1.6x |
 | `-c '{type, repo: .repo.name, actor: .actor.login}'` | **662ms** | **58.7x** | 38.84s | 17.27s | 2.2x | 33.00s | 1.2x |
 | `-c 'select(.type == "PushEvent") | {login: .actor.login, commits: (.payload.commits // [] | length)}'` | **13.19s** | **2.6x** | 34.49s | 16.65s | 2.1x | 32.16s | 1.1x |
-
-### Throughput (`-c '.'`, single pass)
-
-| File | qj | jq | jaq | gojq |
-|------|------:|------:|------:|------:|
-| gharchive_large.ndjson | **14.3 GB/s** | 148 MB/s | 363 MB/s | 156 MB/s |
 

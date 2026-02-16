@@ -4,7 +4,7 @@
 #   ~5GB tier: gharchive_large.ndjson  (24h of 2026-02-01)
 #
 # Four workloads from parse-dominated to evaluator-dominated:
-#   minify, field extract, select, select + construct
+#   field extract, length, select, reshape, select + construct
 #
 # Features:
 #   - Non-zero exit code detection (appends * to times, with footnote)
