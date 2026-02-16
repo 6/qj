@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use mimalloc::MiMalloc;
 use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// Detect P-core count on Apple Silicon via sysctlbyname(3), fall back to available_parallelism.
 /// Only runs on aarch64 macOS — Intel Macs don't have P/E core distinction.
