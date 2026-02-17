@@ -5428,3 +5428,372 @@ fn def_in_expression_complex() {
         "null",
     );
 }
+
+// ---------------------------------------------------------------------------
+// NDJSON edge case jq compatibility — whitespace, non-objects, errors
+// ---------------------------------------------------------------------------
+
+/// Run a tool (qj or jq) and return (stdout, stderr, success).
+fn run_tool_full(cmd: &str, args: &[&str], input: &str) -> (String, String, bool) {
+    let output = Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect(&format!("failed to run {cmd}"));
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (stdout, stderr, output.status.success())
+}
+
+/// Assert that qj and jq produce the same stdout and agree on success/failure.
+/// For error cases, error messages may differ — only checks that both error.
+fn assert_jq_compat_ndjson_full(filter: &str, ndjson_input: &str) {
+    if !jq_available() {
+        return;
+    }
+    let (qj_stdout, _qj_stderr, qj_ok) =
+        run_tool_full(env!("CARGO_BIN_EXE_qj"), &["-c", filter], ndjson_input);
+    let (jq_stdout, _jq_stderr, jq_ok) = run_tool_full("jq", &["-c", filter], ndjson_input);
+
+    assert_eq!(
+        qj_stdout.trim(),
+        jq_stdout.trim(),
+        "stdout mismatch for filter={filter:?}\nqj_ok={qj_ok}, jq_ok={jq_ok}"
+    );
+    assert_eq!(
+        qj_ok, jq_ok,
+        "exit status mismatch for filter={filter:?}: qj_ok={qj_ok}, jq_ok={jq_ok}\n\
+         qj stderr: {_qj_stderr}\njq stderr: {_jq_stderr}"
+    );
+}
+
+// --- Select fast path with internal whitespace (compact mode) ---
+
+#[test]
+fn ndjson_jq_compat_select_whitespace_compact() {
+    // NDJSON with internal whitespace: select match should produce compact output
+    assert_jq_compat_ndjson(
+        "select(.value == null)",
+        "{ \"value\":null }\n{ \"value\":1 }\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_whitespace_keys() {
+    // Whitespace around keys/colons
+    assert_jq_compat_ndjson(
+        "select(.type == \"PushEvent\")",
+        "{ \"type\" : \"PushEvent\" , \"id\" : 1 }\n{ \"type\" : \"WatchEvent\" }\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_string_pred_whitespace() {
+    // select with string predicate on whitespace-containing NDJSON
+    assert_jq_compat_ndjson(
+        "select(.name | startswith(\"a\"))",
+        "{ \"name\" : \"alice\" }\n{ \"name\" : \"bob\" }\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_field_whitespace() {
+    // Field extraction on whitespace-containing NDJSON
+    assert_jq_compat_ndjson(
+        ".name",
+        "{ \"name\" : \"alice\" }\n{ \"name\" : \"bob\" }\n",
+    );
+}
+
+// --- Leading CR whitespace ---
+
+#[test]
+fn ndjson_jq_compat_leading_cr() {
+    // Leading \r (e.g. from Windows line endings or data corruption)
+    assert_jq_compat_ndjson(".name", "\r{\"name\":\"alice\"}\n\r{\"name\":\"bob\"}\n");
+}
+
+#[test]
+fn ndjson_jq_compat_leading_mixed_whitespace() {
+    // Leading space, tab, and CR mixed
+    assert_jq_compat_ndjson("select(.x == 1)", " \t\r{\"x\":1}\n\t {\"x\":2}\n");
+}
+
+// --- Array NDJSON with field access (should error, not return null) ---
+
+#[test]
+fn ndjson_jq_compat_array_field_access_errors() {
+    // jq errors on field access of arrays — qj should too
+    assert_jq_compat_ndjson_full(".a.b.c", "[1,2]\n[3,4]\n[5,6]\n");
+}
+
+#[test]
+fn ndjson_jq_compat_array_field_access_simple() {
+    // Even simple .a on arrays should error
+    assert_jq_compat_ndjson_full(".a", "[1,2]\n[3,4]\n");
+}
+
+#[test]
+fn ndjson_jq_compat_mixed_objects_arrays() {
+    // Mix of objects and arrays: objects succeed, arrays should error
+    assert_jq_compat_ndjson_full(".a", "{\"a\":1}\n[1,2]\n{\"a\":3}\n");
+}
+
+// --- More non-object NDJSON error cases ---
+
+#[test]
+fn ndjson_jq_compat_string_ndjson_field_access() {
+    // Bare strings in NDJSON — jq errors on field access
+    assert_jq_compat_ndjson_full(".a", "\"hello\"\n\"world\"\n");
+}
+
+#[test]
+fn ndjson_jq_compat_mixed_types_select() {
+    // Mix of objects and arrays with select — select should only match objects
+    assert_jq_compat_ndjson_full(
+        "select(.type == \"a\")",
+        "{\"type\":\"a\"}\n[1]\n{\"type\":\"b\"}\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_array_ndjson_length() {
+    // length on arrays should return array length, not error
+    assert_jq_compat_ndjson_full("length", "[1,2,3]\n[4,5]\n");
+}
+
+#[test]
+fn ndjson_jq_compat_array_ndjson_keys() {
+    // keys on arrays should return indices
+    assert_jq_compat_ndjson_full("keys", "[10,20,30]\n[40]\n");
+}
+
+// --- Select fast path with ordering operators + whitespace ---
+
+#[test]
+fn ndjson_jq_compat_select_gt_whitespace() {
+    assert_jq_compat_ndjson(
+        "select(.count > 10)",
+        "{ \"count\" : 20 }\n{ \"count\" : 5 }\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_le_whitespace() {
+    assert_jq_compat_ndjson(
+        "select(.count <= 10)",
+        "{ \"count\" : 10 }\n{ \"count\" : 20 }\n",
+    );
+}
+
+// --- Multi-field construction + whitespace ---
+
+#[test]
+fn ndjson_jq_compat_multi_field_obj_whitespace() {
+    assert_jq_compat_ndjson(
+        "{name: .name, id: .id}",
+        "{ \"name\" : \"alice\" , \"id\" : 1 }\n{ \"name\" : \"bob\" , \"id\" : 2 }\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_multi_field_arr_whitespace() {
+    assert_jq_compat_ndjson(
+        "[.name, .id]",
+        "{ \"name\" : \"alice\" , \"id\" : 1 }\n{ \"name\" : \"bob\" , \"id\" : 2 }\n",
+    );
+}
+
+// --- Select + field extraction + whitespace ---
+
+#[test]
+fn ndjson_jq_compat_select_eq_field_whitespace() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"a\") | .name",
+        "{ \"type\" : \"a\" , \"name\" : \"alice\" }\n{ \"type\" : \"b\" , \"name\" : \"bob\" }\n",
+    );
+}
+
+// --- Select + object/array construction + whitespace ---
+
+#[test]
+fn ndjson_jq_compat_select_eq_obj_whitespace() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"a\") | {name: .name}",
+        "{ \"type\" : \"a\" , \"name\" : \"alice\" }\n{ \"type\" : \"b\" , \"name\" : \"bob\" }\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_select_eq_arr_whitespace() {
+    assert_jq_compat_ndjson(
+        "select(.type == \"a\") | [.name, .id]",
+        "{ \"type\" : \"a\" , \"name\" : \"x\" , \"id\" : 1 }\n{ \"type\" : \"b\" }\n",
+    );
+}
+
+// --- Builtins + whitespace ---
+
+#[test]
+fn ndjson_jq_compat_length_whitespace() {
+    assert_jq_compat_ndjson("length", "{ \"a\" : 1 , \"b\" : 2 }\n{ \"x\" : 1 }\n");
+}
+
+#[test]
+fn ndjson_jq_compat_keys_whitespace() {
+    assert_jq_compat_ndjson("keys", "{ \"b\" : 2 , \"a\" : 1 }\n{ \"x\" : 1 }\n");
+}
+
+#[test]
+fn ndjson_jq_compat_keys_unsorted_whitespace() {
+    assert_jq_compat_ndjson(
+        "keys_unsorted",
+        "{ \"b\" : 2 , \"a\" : 1 }\n{ \"x\" : 1 }\n",
+    );
+}
+
+#[test]
+fn ndjson_jq_compat_type_whitespace() {
+    assert_jq_compat_ndjson("type", "{ \"a\" : 1 }\n{ \"b\" : 2 }\n");
+}
+
+#[test]
+fn ndjson_jq_compat_has_whitespace() {
+    assert_jq_compat_ndjson("has(\"a\")", "{ \"a\" : 1 }\n{ \"b\" : 2 }\n");
+}
+
+// --- Windows CRLF line endings ---
+
+#[test]
+fn ndjson_jq_compat_crlf_line_endings() {
+    // Windows-style \r\n line endings
+    assert_jq_compat_ndjson(".name", "{\"name\":\"alice\"}\r\n{\"name\":\"bob\"}\r\n");
+}
+
+#[test]
+fn ndjson_jq_compat_crlf_select() {
+    assert_jq_compat_ndjson("select(.x == 1)", "{\"x\":1}\r\n{\"x\":2}\r\n");
+}
+
+// --- Empty/whitespace-only lines ---
+
+#[test]
+fn ndjson_jq_compat_empty_lines() {
+    // Empty lines between valid NDJSON should be ignored
+    assert_jq_compat_ndjson(".name", "{\"name\":\"alice\"}\n\n{\"name\":\"bob\"}\n\n");
+}
+
+#[test]
+fn ndjson_jq_compat_whitespace_only_lines() {
+    // Lines with only whitespace between valid NDJSON
+    assert_jq_compat_ndjson(
+        ".name",
+        "{\"name\":\"alice\"}\n  \t  \n{\"name\":\"bob\"}\n",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Negative zero (-0) preservation from JSON input
+// ---------------------------------------------------------------------------
+
+#[test]
+fn negative_zero_field_extraction() {
+    // jq preserves -0 from JSON input: echo '{"count":-0}' | jq '.count' → -0
+    assert_jq_compat(".count", r#"{"count":-0}"#);
+}
+
+#[test]
+fn negative_zero_identity() {
+    // Identity should preserve -0 in objects
+    assert_jq_compat(".", r#"{"count":-0}"#);
+}
+
+#[test]
+fn negative_zero_bare_value() {
+    // Bare -0 as input
+    assert_jq_compat(".", "-0");
+}
+
+#[test]
+fn negative_zero_in_array() {
+    // -0 inside an array
+    assert_jq_compat(".[0]", "[-0]");
+}
+
+#[test]
+fn negative_zero_nested() {
+    // -0 in nested structure
+    assert_jq_compat(".a.b", r#"{"a":{"b":-0}}"#);
+}
+
+#[test]
+fn negative_zero_ndjson_fast_path() {
+    // NDJSON fast path (raw byte passthrough) should preserve -0
+    assert_jq_compat_ndjson(".count", "{\"count\":-0}\n{\"count\":1}\n");
+}
+
+#[test]
+fn negative_zero_ndjson_normal_path() {
+    // NDJSON normal path (no fast path) should also preserve -0.
+    // Uses QJ_NO_FAST_PATH=1 to force the DOM eval path.
+    let input = "{\"count\":-0}\n{\"count\":1}\n";
+    let filter = ".count";
+
+    let qj_out = Command::new(env!("CARGO_BIN_EXE_qj"))
+        .args(["-c", filter])
+        .env("QJ_NO_FAST_PATH", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run qj");
+
+    let jq_out = Command::new("jq")
+        .args(["-c", filter])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jq");
+
+    let qj_stdout = String::from_utf8_lossy(&qj_out.stdout);
+    let jq_stdout = String::from_utf8_lossy(&jq_out.stdout);
+    assert_eq!(
+        qj_stdout, jq_stdout,
+        "NDJSON normal path -0 mismatch: qj={:?} jq={:?}",
+        qj_stdout, jq_stdout
+    );
+}

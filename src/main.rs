@@ -600,11 +600,20 @@ fn main() -> Result<()> {
                 && !cli.exit_status
                 && (cli.jsonl || qj::parallel::ndjson::is_ndjson(&buf))
             {
-                let (output, ho) =
+                let (output, ho, errs) =
                     qj::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
                         .context("failed to process NDJSON from stdin")?;
                 out.write_all(&output)?;
                 had_output |= ho;
+                if !errs.is_empty() {
+                    // Always surface per-line errors to stderr (matching jq).
+                    // Only set had_error (exit 5) when no output was produced —
+                    // jq exits 0 for mixed success/error NDJSON.
+                    if !ho {
+                        had_error = true;
+                    }
+                    std::io::Write::write_all(&mut std::io::stderr(), &errs)?;
+                }
             } else if uses_input {
                 // Collect all values; first becomes input, rest go to queue
                 let mut values = Vec::new();

@@ -89,6 +89,20 @@ enum StringPred {
 /// Target size for parallel chunks.
 const CHUNK_TARGET_SIZE: usize = 1024 * 1024;
 
+/// Output, had-output flag, and collected error messages from processing a chunk.
+type ChunkResult = (Vec<u8>, bool, Vec<u8>);
+
+/// Write per-line error messages to stderr. Returns true if any errors were present.
+fn flush_errors(errors: &[u8]) -> bool {
+    if !errors.is_empty() {
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(errors);
+        true
+    } else {
+        false
+    }
+}
+
 /// Process an NDJSON file: detect format, mmap + process in parallel.
 ///
 /// Returns `Ok(Some(had_output))` if the file was NDJSON and was processed.
@@ -217,12 +231,14 @@ fn process_ndjson_file_mmap<W: Write>(
         if use_parallel {
             let chunks = split_chunks(to_process, CHUNK_TARGET_SIZE);
             if chunks.len() <= 1 {
-                let (chunk_out, ho) = process_chunk(to_process, filter, config, &fast_path, env)?;
+                let (chunk_out, ho, errs) =
+                    process_chunk(to_process, filter, config, &fast_path, env)?;
                 out.write_all(&chunk_out)?;
                 had_output |= ho;
+                flush_errors(&errs);
             } else {
                 let shared = SharedFilter::new(filter);
-                let results: Result<Vec<(Vec<u8>, bool)>> = chunks
+                let results: Result<Vec<ChunkResult>> = chunks
                     .par_iter()
                     .map(|&chunk| {
                         let empty_env = Env::empty();
@@ -230,15 +246,17 @@ fn process_ndjson_file_mmap<W: Write>(
                     })
                     .collect();
                 let results = results?;
-                for (chunk_out, ho) in results {
+                for (chunk_out, ho, errs) in results {
                     out.write_all(&chunk_out)?;
                     had_output |= ho;
+                    flush_errors(&errs);
                 }
             }
         } else {
-            let (chunk_out, ho) = process_chunk(to_process, filter, config, &fast_path, env)?;
+            let (chunk_out, ho, errs) = process_chunk(to_process, filter, config, &fast_path, env)?;
             out.write_all(&chunk_out)?;
             had_output |= ho;
+            flush_errors(&errs);
         }
 
         file_offset += process_len;
@@ -419,17 +437,19 @@ pub fn split_chunks(buf: &[u8], target_size: usize) -> Vec<&[u8]> {
     chunks
 }
 
-/// Process an NDJSON buffer, returning `(output_bytes, had_output)`.
+/// Process an NDJSON buffer, returning `(output_bytes, had_output, error_bytes)`.
 ///
 /// Automatically parallelizes across cores for data larger than one chunk.
 /// Falls back to sequential processing for small data or when the filter
 /// references variables from a non-empty Env (Env uses Rc, not Send).
+/// Error bytes contain per-line error messages (e.g. type errors) that should
+/// be written to stderr by the caller.
 pub fn process_ndjson(
     data: &[u8],
     filter: &Filter,
     config: &OutputConfig,
     env: &Env,
-) -> Result<(Vec<u8>, bool)> {
+) -> Result<ChunkResult> {
     let needs_env = if env.is_empty() {
         false
     } else {
@@ -454,7 +474,7 @@ pub fn process_ndjson(
     // Each thread creates its own Values and Env; no cross-thread sharing.
     let shared = SharedFilter::new(filter);
 
-    let results: Result<Vec<(Vec<u8>, bool)>> = chunks
+    let results: Result<Vec<ChunkResult>> = chunks
         .par_iter()
         .map(|&chunk| {
             let empty_env = Env::empty();
@@ -464,16 +484,18 @@ pub fn process_ndjson(
 
     let results = results?;
 
-    let total_size: usize = results.iter().map(|(buf, _)| buf.len()).sum();
+    let total_size: usize = results.iter().map(|(buf, _, _)| buf.len()).sum();
     let mut out = Vec::with_capacity(total_size);
     let mut had_output = false;
+    let mut errors = Vec::new();
 
-    for (buf, ho) in results {
+    for (buf, ho, errs) in results {
         out.extend_from_slice(&buf);
         had_output |= ho;
+        errors.extend_from_slice(&errs);
     }
 
-    Ok((out, had_output))
+    Ok((out, had_output, errors))
 }
 
 /// Like [`process_ndjson`], but forces the normal (non-fast-path) evaluator.
@@ -485,7 +507,7 @@ pub fn process_ndjson_no_fast_path(
     filter: &Filter,
     config: &OutputConfig,
     env: &Env,
-) -> Result<(Vec<u8>, bool)> {
+) -> Result<ChunkResult> {
     process_chunk(data, filter, config, &NdjsonFastPath::None, env)
 }
 
@@ -536,12 +558,14 @@ pub fn process_ndjson_windowed<W: Write>(
         if use_parallel {
             let chunks = split_chunks(window_data, CHUNK_TARGET_SIZE);
             if chunks.len() <= 1 {
-                let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+                let (chunk_out, ho, errs) =
+                    process_chunk(window_data, filter, config, &fast_path, env)?;
                 out.write_all(&chunk_out)?;
                 had_output |= ho;
+                flush_errors(&errs);
             } else {
                 let shared = SharedFilter::new(filter);
-                let results: Result<Vec<(Vec<u8>, bool)>> = chunks
+                let results: Result<Vec<ChunkResult>> = chunks
                     .par_iter()
                     .map(|&chunk| {
                         let empty_env = Env::empty();
@@ -549,15 +573,18 @@ pub fn process_ndjson_windowed<W: Write>(
                     })
                     .collect();
                 let results = results?;
-                for (chunk_out, ho) in results {
+                for (chunk_out, ho, errs) in results {
                     out.write_all(&chunk_out)?;
                     had_output |= ho;
+                    flush_errors(&errs);
                 }
             }
         } else {
-            let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+            let (chunk_out, ho, errs) =
+                process_chunk(window_data, filter, config, &fast_path, env)?;
             out.write_all(&chunk_out)?;
             had_output |= ho;
+            flush_errors(&errs);
         }
 
         offset = process_end;
@@ -657,12 +684,14 @@ pub fn process_ndjson_streaming<R: Read, W: Write>(
         if use_parallel {
             let chunks = split_chunks(window_data, CHUNK_TARGET_SIZE);
             if chunks.len() <= 1 {
-                let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+                let (chunk_out, ho, errs) =
+                    process_chunk(window_data, filter, config, &fast_path, env)?;
                 out.write_all(&chunk_out)?;
+                flush_errors(&errs);
                 had_output |= ho;
             } else {
                 let shared = SharedFilter::new(filter);
-                let results: Result<Vec<(Vec<u8>, bool)>> = chunks
+                let results: Result<Vec<ChunkResult>> = chunks
                     .par_iter()
                     .map(|&chunk| {
                         let empty_env = Env::empty();
@@ -670,15 +699,18 @@ pub fn process_ndjson_streaming<R: Read, W: Write>(
                     })
                     .collect();
                 let results = results?;
-                for (chunk_out, ho) in results {
+                for (chunk_out, ho, errs) in results {
                     out.write_all(&chunk_out)?;
                     had_output |= ho;
+                    flush_errors(&errs);
                 }
             }
         } else {
             // Sequential: env-dependent filters
-            let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+            let (chunk_out, ho, errs) =
+                process_chunk(window_data, filter, config, &fast_path, env)?;
             out.write_all(&chunk_out)?;
+            flush_errors(&errs);
             had_output |= ho;
         }
 
@@ -772,13 +804,14 @@ impl SharedFilter {
 }
 
 /// Process a single chunk of NDJSON lines sequentially.
+/// Returns (output_bytes, had_output, error_messages).
 fn process_chunk(
     chunk: &[u8],
     filter: &Filter,
     config: &OutputConfig,
     fast_path: &NdjsonFastPath,
     env: &Env,
-) -> Result<(Vec<u8>, bool)> {
+) -> Result<ChunkResult> {
     let mut output_buf = Vec::new();
     let mut had_output = false;
     // Reusable scratch buffer for simdjson padding — avoids per-line allocation.
@@ -789,6 +822,8 @@ fn process_chunk(
     } else {
         Some(simdjson::DomParser::new()?)
     };
+
+    let mut error_buf = Vec::new();
 
     let mut start = 0;
     for nl_pos in memchr_iter(b'\n', chunk) {
@@ -802,6 +837,7 @@ fn process_chunk(
             env,
             &mut output_buf,
             &mut had_output,
+            &mut error_buf,
             &mut scratch,
             &mut dom_parser,
         )?;
@@ -817,12 +853,13 @@ fn process_chunk(
             env,
             &mut output_buf,
             &mut had_output,
+            &mut error_buf,
             &mut scratch,
             &mut dom_parser,
         )?;
     }
 
-    Ok((output_buf, had_output))
+    Ok((output_buf, had_output, error_buf))
 }
 
 /// Unescape a JSON string interior (without surrounding quotes) into the output buffer.
@@ -907,6 +944,19 @@ fn unescape_json_string(data: &[u8], out: &mut Vec<u8>) {
     }
 }
 
+/// Drain any per-line evaluation errors (set via `set_last_error`) into the
+/// error buffer. Matches jq's behavior of writing per-line type errors to
+/// stderr (e.g. "Cannot index array with string").
+fn drain_eval_errors(error_buf: &mut Vec<u8>) {
+    if let Some(err) = crate::filter::eval::take_last_error() {
+        let msg = match &err {
+            crate::value::Value::String(s) => s.as_str().to_owned(),
+            other => other.short_desc(),
+        };
+        let _ = writeln!(error_buf, "qj: error: {msg}");
+    }
+}
+
 /// Write the line terminator (newline, NUL, or nothing) after a fast-path output.
 #[inline]
 fn write_line_terminator(output_buf: &mut Vec<u8>, config: &OutputConfig) {
@@ -976,23 +1026,35 @@ fn process_line(
     env: &Env,
     output_buf: &mut Vec<u8>,
     had_output: &mut bool,
+    error_buf: &mut Vec<u8>,
     scratch: &mut Vec<u8>,
     dom_parser: &mut Option<simdjson::DomParser>,
 ) -> Result<()> {
-    // Trim leading and trailing whitespace
+    // Trim leading and trailing whitespace (space, tab, CR).
     let end = line
         .iter()
         .rposition(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
         .map_or(0, |p| p + 1);
     let start = line[..end]
         .iter()
-        .position(|&b| !matches!(b, b' ' | b'\t'))
+        .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
         .unwrap_or(end);
     let trimmed = &line[start..end];
 
     if trimmed.is_empty() {
         return Ok(());
     }
+
+    // Fast paths are designed for JSON objects. Non-object lines (arrays,
+    // bare values) fall back to the normal evaluator so they get the same
+    // error semantics as single-doc mode (e.g. "Cannot index array with
+    // string" instead of silently returning null).
+    let none_path = NdjsonFastPath::None;
+    let fast_path = if !matches!(fast_path, NdjsonFastPath::None) && trimmed[0] != b'{' {
+        &none_path
+    } else {
+        fast_path
+    };
 
     match fast_path {
         NdjsonFastPath::FieldChain(fields) => {
@@ -1209,6 +1271,13 @@ fn process_line(
             });
         }
     }
+
+    // Surface per-line type errors (e.g. "Cannot index array with string").
+    // These are set by eval_flat/eval_filter_with_env via set_last_error()
+    // but not automatically surfaced in the NDJSON path. Draining here (after
+    // the match) catches errors from any code path — the None fallback, select
+    // predicate fallbacks, etc.
+    drain_eval_errors(error_buf);
 
     Ok(())
 }
@@ -1437,8 +1506,7 @@ fn process_line_select_eq(
     match evaluate_select_predicate(&raw, literal_bytes, op) {
         Some(true) => {
             *had_output = true;
-            output_buf.extend_from_slice(trimmed);
-            write_line_terminator(output_buf, config);
+            emit_select_match(trimmed, filter, config, env, output_buf, scratch)?;
         }
         Some(false) => {}
         None => {
@@ -1574,8 +1642,7 @@ fn process_line_select_string_pred(
     match evaluate_string_predicate(&raw, pred) {
         Some(true) => {
             *had_output = true;
-            output_buf.extend_from_slice(trimmed);
-            write_line_terminator(output_buf, config);
+            emit_select_match(trimmed, filter, config, env, output_buf, scratch)?;
         }
         Some(false) => {}
         None => {
@@ -1587,6 +1654,36 @@ fn process_line_select_string_pred(
                 output::write_value(output_buf, &v, config).ok();
             });
         }
+    }
+    Ok(())
+}
+
+/// Emit a matched select line with proper formatting. In compact mode, uses
+/// simdjson's SIMD minifier to strip insignificant whitespace (no-op on
+/// already-compact JSON). In non-compact modes, falls back to full
+/// parse + serialize for proper formatting (e.g. pretty-printing).
+fn emit_select_match(
+    trimmed: &[u8],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &crate::filter::Env,
+    output_buf: &mut Vec<u8>,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    if config.mode == output::OutputMode::Compact {
+        let padded = prepare_padded(trimmed, scratch);
+        let minified =
+            simdjson::minify(padded, trimmed.len()).context("failed to minify matched line")?;
+        output_buf.extend_from_slice(&minified);
+        write_line_terminator(output_buf, config);
+    } else {
+        // Non-compact mode: re-serialize for proper formatting (e.g. pretty-print).
+        let padded = prepare_padded(trimmed, scratch);
+        let value = simdjson::dom_parse_to_value(padded, trimmed.len())
+            .context("failed to parse NDJSON line")?;
+        crate::filter::eval::eval_filter_with_env(filter, &value, env, &mut |v| {
+            output::write_value(output_buf, &v, config).ok();
+        });
     }
     Ok(())
 }
@@ -2329,7 +2426,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(String::from_utf8(output).unwrap(), "\"alice\"\n\"bob\"\n");
     }
@@ -2343,7 +2440,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"a\":1}\n{\"b\":2}\n");
     }
 
@@ -2356,7 +2453,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"a\":1}\n{\"b\":2}\n");
     }
 
@@ -2401,7 +2498,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -2418,7 +2515,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "42\n7\n");
     }
 
@@ -2431,7 +2528,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "\"deep\"\n\"val\"\n");
     }
 
@@ -2444,7 +2541,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "\"alice\"\nnull\n");
     }
 
@@ -2457,7 +2554,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "alice\nbob\n");
     }
 
@@ -2470,7 +2567,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         // First line is number (no quotes to strip), second is null (missing field)
         assert_eq!(String::from_utf8(output).unwrap(), "42\nnull\n");
     }
@@ -2669,7 +2766,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -2686,7 +2783,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -2704,7 +2801,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"a\":1}\n{\"x\":null}\n"
@@ -2818,7 +2915,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(String::from_utf8(output).unwrap(), "2\n1\n");
     }
@@ -2832,7 +2929,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "3\n2\n");
     }
 
@@ -2845,7 +2942,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "[\"a\",\"b\"]\n[\"x\"]\n"
@@ -2864,7 +2961,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(!had_output);
         assert!(output.is_empty());
     }
@@ -2878,7 +2975,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -2895,7 +2992,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"name\":\"\"}\n");
     }
 
@@ -2908,7 +3005,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"a\":{\"b\":\"yes\"},\"id\":1}\n"
@@ -2924,7 +3021,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"type\":\"PushEvent\"}\n"
@@ -2940,7 +3037,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"active\":false}\n");
     }
 
@@ -2953,7 +3050,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":0}\n");
     }
 
@@ -2966,7 +3063,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":-1}\n");
     }
 
@@ -2981,7 +3078,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "0\n1\n");
     }
 
@@ -2994,7 +3091,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "0\n1\n");
     }
 
@@ -3008,7 +3105,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "5\n3\n");
     }
 
@@ -3021,7 +3118,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "[]\n[\"a\"]\n");
     }
 
@@ -3035,7 +3132,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "[0,1,2]\n[0]\n");
     }
 
@@ -3048,7 +3145,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "1\n2\n");
     }
 
@@ -3061,7 +3158,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "3\n1\n");
     }
 
@@ -3074,7 +3171,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "[\"a\",\"b\"]\n[\"z\"]\n"
@@ -3157,7 +3254,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"n\":1.0,\"id\":\"a\"}\n"
@@ -3174,7 +3271,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":2}\n");
     }
 
@@ -3188,7 +3285,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"n\":1e2,\"id\":\"a\"}\n"
@@ -3209,7 +3306,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"s\":\"A\",\"id\":1}\n"
@@ -3226,7 +3323,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":42}\n");
     }
 
@@ -3240,7 +3337,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"x\":\"hello\"}\n");
     }
 
@@ -3254,7 +3351,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":42.00}\n");
     }
 
@@ -3423,7 +3520,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(String::from_utf8(output).unwrap(), "\"alice\"\n");
     }
@@ -3437,7 +3534,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(!had_output);
         assert!(output.is_empty());
     }
@@ -3452,7 +3549,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "null\n");
     }
 
@@ -3466,7 +3563,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "\"a\"\n");
     }
 
@@ -3481,7 +3578,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"n\":10}\n{\"n\":50}\n"
@@ -3497,7 +3594,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":5}\n");
     }
 
@@ -3510,7 +3607,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"n\":10}\n{\"n\":50}\n"
@@ -3526,7 +3623,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"n\":10}\n{\"n\":5}\n"
@@ -3542,7 +3639,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":3.14}\n");
     }
 
@@ -3556,7 +3653,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"s\":\"cherry\"}\n");
     }
 
@@ -3571,7 +3668,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         // jq: strings > numbers in type ordering, so both match
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -3589,7 +3686,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "\"a\"\n");
     }
 
@@ -3602,7 +3699,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":0}\n{\"n\":5}\n");
     }
 
@@ -3725,7 +3822,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -3743,7 +3840,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"type\":\"PushEvent\",\"id\":null}\n{\"type\":\"WatchEvent\",\"id\":2}\n"
@@ -3759,7 +3856,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"actor\":\"alice\",\"repo\":\"foo\"}\n"
@@ -3775,7 +3872,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(String::from_utf8(output).unwrap(), "[1,2]\n[3,4]\n");
     }
@@ -3789,7 +3886,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "[1,null]\n[2,3]\n");
     }
 
@@ -3802,7 +3899,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "[\"deep\",1]\n");
     }
 
@@ -3817,7 +3914,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"x\":1}\n");
     }
 
@@ -3830,7 +3927,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(!had_output);
         assert!(output.is_empty());
     }
@@ -3844,7 +3941,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "[1,2]\n");
     }
 
@@ -3947,7 +4044,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(had_output);
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -3964,7 +4061,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"url\":\"/api/users\",\"id\":1}\n"
@@ -3980,7 +4077,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"file\":\"data.json\",\"id\":1}\n"
@@ -3996,7 +4093,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"desc\":\"hello alice\",\"id\":1}\n"
@@ -4012,7 +4109,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, had_output) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert!(!had_output);
         assert!(output.is_empty());
     }
@@ -4027,7 +4124,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"code\":\"ERR-001\"}\n{\"code\":\"ERR-42\"}\n"
@@ -4044,7 +4141,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "{\"n\":\"hello\"}\n");
     }
 
@@ -4058,7 +4155,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "{\"msg\":\"line1\\nline2\",\"id\":1}\n"
@@ -4074,7 +4171,7 @@ mod tests {
             ..Default::default()
         };
         let env = crate::filter::Env::empty();
-        let (output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        let (output, _, _) = process_ndjson(data, &filter, &config, &env).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "500\n");
     }
 
@@ -4292,7 +4389,8 @@ mod tests {
             ..OutputConfig::default()
         };
         let env = Env::empty();
-        process_ndjson(input, &filter, &config, &env).expect("buffered failed")
+        let (out, ho, _) = process_ndjson(input, &filter, &config, &env).expect("buffered failed");
+        (out, ho)
     }
 
     #[test]

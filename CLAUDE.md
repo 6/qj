@@ -22,6 +22,7 @@ Compat suites are `#[ignore]` — run them with `--release` after adding feature
 cargo test                                                              # fast: unit + e2e (~5s)
 cargo test --release -- --ignored --nocapture                           # all tests including compat (~50s)
 cargo test --release jq_conformance -- --ignored                        # jq.test pass rate (summary on stderr)
+cargo test --release jq_conformance_ndjson -- --ignored --nocapture     # jq.test via NDJSON path (single vs NDJSON diff)
 cargo test --release jq_conformance_verbose -- --ignored --nocapture    # jq.test with failure details
 cargo test --release conformance_gaps -- --ignored                      # gap tests by category
 cargo test --release gap_label_break -- --ignored                       # run one category
@@ -47,6 +48,8 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 - **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
 - **jq conformance suite** (`#[ignore]`): `tests/jq_conformance.rs` — runs jq's official test
   suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against qj and reports pass rate.
+  Also includes `jq_conformance_ndjson` which runs each object/array test case through both
+  single-doc and NDJSON paths, asserting identical output (catches NDJSON path divergences).
 - **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 43 individual tests for
   currently-failing jq.test cases, categorized by feature (label/break, foreach, destructuring,
   modules, bignum, etc.) with fix suggestions in comments. Run by category to track progress.

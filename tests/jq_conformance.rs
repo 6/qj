@@ -158,6 +158,147 @@ fn jq_conformance() {
     );
 }
 
+/// Run jq conformance cases through the NDJSON code path and compare against
+/// single-doc output. This catches any filter where the NDJSON path diverges
+/// from the normal eval path.
+///
+/// Each test case's input is duplicated to trigger NDJSON detection (which
+/// requires 2+ lines starting with `{`/`[`), and the output is expected to
+/// be the single-doc output repeated twice.
+///
+/// Cases are skipped when:
+/// - Input doesn't start with `{`/`[` (won't trigger NDJSON detection)
+/// - Filter uses `input`/`inputs` (stream-dependent, behaves differently in NDJSON)
+/// - Filter uses `$__loc__` (reports source location, irrelevant)
+///
+/// Run with: cargo test --release jq_conformance_ndjson -- --nocapture --ignored
+#[test]
+#[ignore]
+fn jq_conformance_ndjson() {
+    use std::io::Write;
+    use std::process::Command;
+
+    let test_file =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/jq_compat/jq.test");
+    let content = std::fs::read_to_string(&test_file).expect("failed to read jq.test");
+    let cases = parse_jq_test_file(&content);
+
+    let qj_path = env!("CARGO_BIN_EXE_qj");
+
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut skipped = 0;
+    let mut errored = 0;
+
+    for case in &cases {
+        let input_trimmed = case.input.trim();
+
+        // Skip non-object/non-array inputs — they don't trigger NDJSON detection.
+        if !input_trimmed.starts_with('{') && !input_trimmed.starts_with('[') {
+            skipped += 1;
+            continue;
+        }
+
+        // Skip stream-dependent filters.
+        if case.filter.contains("input")
+            || case.filter.contains("$__loc__")
+            || case.filter.contains("debug")
+            || case.filter.contains("stderr")
+        {
+            skipped += 1;
+            continue;
+        }
+
+        // Skip inputs with non-standard JSON tokens (Infinity, NaN).
+        // simdjson (used by the NDJSON path) strictly follows the JSON spec and
+        // rejects these, while the single-doc path has special handling.
+        if case.input.contains("Infinity")
+            || case.input.contains("NaN")
+            || case.input.contains("nan")
+        {
+            skipped += 1;
+            continue;
+        }
+
+        // Run single-doc mode.
+        let single_out = match common::run_tool(
+            &common::Tool {
+                name: "qj".to_string(),
+                path: qj_path.to_string(),
+            },
+            &case.filter,
+            &case.input,
+            &["-c", "--"],
+        ) {
+            Some(o) => o,
+            None => {
+                errored += 1;
+                continue;
+            }
+        };
+
+        // Build NDJSON input: duplicate the line to trigger NDJSON detection.
+        let ndjson_input = format!("{}\n{}\n", case.input, case.input);
+
+        // Run NDJSON mode.
+        let ndjson_output = Command::new(qj_path)
+            .args(["-c", "--", &case.filter])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(ndjson_input.as_bytes())
+                    .unwrap();
+                child.wait_with_output()
+            });
+
+        let ndjson_out = match ndjson_output {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+            Err(_) => {
+                errored += 1;
+                continue;
+            }
+        };
+
+        // Expected NDJSON output: single-doc output repeated twice.
+        let expected_ndjson = if single_out.is_empty() {
+            String::new()
+        } else {
+            let trimmed = single_out.trim_end_matches('\n');
+            format!("{trimmed}\n{trimmed}\n")
+        };
+
+        if ndjson_out == expected_ndjson {
+            passed += 1;
+        } else {
+            failed += 1;
+            eprintln!("NDJSON DIVERGENCE (line {}): {}", case.line_no, case.filter);
+            eprintln!("  input:          {}", case.input);
+            eprintln!("  single-doc out: {:?}", single_out);
+            eprintln!("  ndjson out:     {:?}", ndjson_out);
+            eprintln!("  expected ndjson:{:?}", expected_ndjson);
+        }
+    }
+
+    let tested = passed + failed + errored;
+    let pct = if tested > 0 {
+        passed as f64 / tested as f64 * 100.0
+    } else {
+        0.0
+    };
+    eprintln!();
+    eprintln!("jq conformance (NDJSON mode): {passed}/{tested} passed ({pct:.1}%)");
+    eprintln!("  passed:  {passed}");
+    eprintln!("  failed:  {failed}");
+    eprintln!("  errored: {errored}");
+    eprintln!("  skipped: {skipped} (non-object input or stream-dependent filter)");
+}
+
 /// Run with: cargo test jq_conformance_verbose -- --nocapture --ignored
 #[test]
 #[ignore]

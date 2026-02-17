@@ -327,10 +327,19 @@ static void emit_number(std::vector<uint8_t>& out,
                          std::string_view raw,
                          ondemand::number num) {
     switch (num.get_number_type()) {
-        case ondemand::number_type::signed_integer:
-            emit_u8(out, TAG_INT);
-            emit_i64(out, num.get_int64());
+        case ondemand::number_type::signed_integer: {
+            int64_t i = num.get_int64();
+            // Detect -0: simdjson classifies it as signed integer 0,
+            // but the raw token starts with '-'.  Emit as TAG_DOUBLE
+            // with f64 = -0.0 to preserve the sign bit through Rust.
+            if (i == 0 && raw.size() > 0 && raw[0] == '-') {
+                emit_double_with_raw(out, -0.0, raw);
+            } else {
+                emit_u8(out, TAG_INT);
+                emit_i64(out, i);
+            }
             break;
+        }
         case ondemand::number_type::unsigned_integer: {
             uint64_t u = num.get_uint64();
             if (u <= static_cast<uint64_t>(INT64_MAX)) {
@@ -526,11 +535,20 @@ static void walk_element(std::vector<uint8_t>& flat,
             break;
         }
         case dom::element_type::INT64: {
+            const char* start = cursor;
             // Skip raw number text in original JSON
             if (*cursor == '-') cursor++;
             while (*cursor >= '0' && *cursor <= '9') cursor++;
-            emit_u8(flat, TAG_INT);
-            emit_i64(flat, elem.get_int64().value());
+            int64_t i = elem.get_int64().value();
+            // Detect -0: DOM parser classifies it as int64(0) but the
+            // raw token starts with '-'.  Emit as double to preserve sign.
+            if (i == 0 && *start == '-') {
+                std::string_view raw(start, cursor - start);
+                emit_double_with_raw(flat, -0.0, raw);
+            } else {
+                emit_u8(flat, TAG_INT);
+                emit_i64(flat, i);
+            }
             break;
         }
         case dom::element_type::UINT64: {

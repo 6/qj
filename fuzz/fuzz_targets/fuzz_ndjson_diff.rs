@@ -17,14 +17,14 @@ fn is_plausible_ndjson(data: &[u8]) -> bool {
     }
     let mut has_content = false;
     for line in data.split(|&b| b == b'\n') {
-        // Trim trailing space/tab/CR, leading space/tab (matching process_line).
+        // Trim trailing space/tab/CR, leading space/tab/CR (matching process_line).
         let end = line
             .iter()
             .rposition(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
             .map_or(0, |p| p + 1);
         let start = line[..end]
             .iter()
-            .position(|&b| !matches!(b, b' ' | b'\t'))
+            .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
             .unwrap_or(end);
         let trimmed = &line[start..end];
         if trimmed.is_empty() {
@@ -153,14 +153,9 @@ const FILTERS: &[&str] = &[
 // Minimal pre-validation: every non-empty line must start with '{' (after
 // trimming). No allocation — just byte scanning. This filters out obviously
 // non-JSON input where the fast path and normal path are known to disagree
-// (see docs/FIX_TODOS.md).
+// (see docs/LIMITATIONS.md).
 //
-// Uses process_ndjson_no_fast_path (direct call) instead of the QJ_NO_FAST_PATH
-// env var to avoid non-deterministic behavior from env var mutation.
-//
-// Only compares when both paths succeed. Known divergences suppressed:
-// - -0 preservation: fast path preserves raw "-0", normal normalizes to "0"
-// - Internal whitespace: raw passthrough vs re-serialization
+// Only compares when both paths succeed.
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() {
         return;
@@ -206,25 +201,16 @@ fuzz_target!(|data: &[u8]| {
         if fast_out != normal_out {
             let fast_s = String::from_utf8_lossy(fast_out);
             let normal_s = String::from_utf8_lossy(normal_out);
-            // Known divergence: -0 preserved by fast path (raw byte passthrough),
-            // normalized to 0 by normal path. See docs/FIX_TODOS.md.
-            // TODO: remove after fixing -0 preservation
-            let fast_normalized = fast_s
-                .replace(":-0}", ":0}")
-                .replace(":-0,", ":0,")
-                .replace(":-0\n", ":0\n");
-            if fast_normalized != *normal_s {
-                panic!(
-                    "Fast path diverged from normal path for filter: {filter_str}\n\
-                     Input ({} bytes): {:?}\n\
-                     Fast output:   {:?}\n\
-                     Normal output: {:?}",
-                    ndjson_data.len(),
-                    String::from_utf8_lossy(ndjson_data),
-                    fast_s,
-                    normal_s,
-                );
-            }
+            panic!(
+                "Fast path diverged from normal path for filter: {filter_str}\n\
+                 Input ({} bytes): {:?}\n\
+                 Fast output:   {:?}\n\
+                 Normal output: {:?}",
+                ndjson_data.len(),
+                String::from_utf8_lossy(ndjson_data),
+                fast_s,
+                normal_s,
+            );
         }
     }
 });

@@ -506,7 +506,9 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
     if f.is_infinite() {
         return w.write_all(b"null");
     }
-    // Normalize negative zero to positive zero (jq behavior)
+    // Normalize computed negative zero to positive zero.
+    // Only affects computed doubles (no raw text) — input -0 is preserved
+    // via the raw text path below.
     let f = if f == 0.0 { 0.0 } else { f };
     // Use raw JSON text when available (literal preservation)
     if let Some(text) = raw {
