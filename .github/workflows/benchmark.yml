@@ -40,9 +40,8 @@ jobs:
 
       - name: Download/generate test data
         run: |
-          bash benches/download_testdata.sh
-          bash benches/gen_large.sh
-          bash benches/generate_ndjson.sh
+          bash benches/download_data.sh --json --gharchive
+          bash benches/generate_data.sh --all
 
       - name: Run benchmarks
         run: cargo run --release --bin bench_tools -- --type json --runs 3 --cooldown 3 --output benches/results_json_ci.md

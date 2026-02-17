@@ -481,7 +481,7 @@ fn resolve_ndjson_file(data_dir: &Path) -> (PathBuf, &'static [BenchFilter]) {
         "Error: no NDJSON test data found in {}/.",
         data_dir.display()
     );
-    eprintln!("Run: bash benches/download_gharchive.sh  OR  bash benches/generate_ndjson.sh");
+    eprintln!("Run: bash benches/download_data.sh --gharchive  OR  bash benches/generate_data.sh --ndjson");
     std::process::exit(1);
 }
 
@@ -525,7 +525,7 @@ fn main() {
                 if !f.exists() {
                     eprintln!("Error: {f:?} not found.");
                     eprintln!(
-                        "Run: bash benches/download_testdata.sh && bash benches/gen_large.sh"
+                        "Run: bash benches/download_data.sh --json && bash benches/generate_data.sh --json"
                     );
                     std::process::exit(1);
                 }

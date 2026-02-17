@@ -1,14 +1,6 @@
 # Benchmarks
 
-## Results
-
-> Run on dedicated local hardware. Not yet populated — run `bash benches/bench.sh` to generate.
-
-## Methodology
-
-`bench.sh` uses [hyperfine](https://github.com/sharkdeveloper/hyperfine) to measure end-to-end wall-clock time (process spawn + read + parse + filter + format + write to /dev/null) across qj, jq, jaq, and gojq on a mix of small and large JSON/JSONL files.
-
-## Reproducing
+## Quick start
 
 Prerequisites:
 
@@ -20,60 +12,99 @@ brew install coreutils    # gtimeout (macOS only, needed by run_compat.sh)
 Generate test data and run:
 
 ```bash
-bash benches/setup_bench_data.sh    # all test data (~1.1GB GH Archive download)
-cargo run --release --bin bench_tools
+bash benches/setup_bench_data.sh    # all test data (includes ~1GB GH Archive download)
+cargo run --release --features bench --bin bench_tools -- --type json
+cargo run --release --features bench --bin bench_tools -- --type ndjson
 ```
 
-Individual data scripts (each is idempotent, run by `setup_bench_data.sh`):
+## End-to-end tool comparison (qj vs jq vs jaq vs gojq)
+
+Uses [hyperfine](https://github.com/sharkdp/hyperfine) for wall-clock measurement (process spawn + read + parse + filter + format + write to /dev/null).
+
+### JSON
 
 ```bash
-bash benches/download_testdata.sh   # twitter.json, citm_catalog.json, canada.json
-bash benches/gen_large.sh           # ~49MB large_twitter.json, large.jsonl
-bash benches/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
-bash benches/download_gharchive.sh  # ~1.1GB gharchive.ndjson, gharchive.json
+bash benches/download_data.sh --json
+bash benches/generate_data.sh --json
+cargo run --release --features bench --bin bench_tools -- --type json
+cargo run --release --features bench --bin bench_tools -- --type json --runs 3 --cooldown 2
 ```
+
+Results: `benches/results_json.md`
+
+### NDJSON
+
+```bash
+bash benches/download_data.sh --medium              # 3.4GB, ~1.2M records (default for benchmarks)
+cargo run --release --features bench --bin bench_tools -- --type ndjson                     # medium (3.4GB)
+cargo run --release --features bench --bin bench_tools -- --type ndjson --size small         # 1.1GB
+cargo run --release --features bench --bin bench_tools -- --type ndjson --size large         # 4.7GB, 3 filters
+```
+
+Results: `benches/results_ndjson_{size}.md`
+
+### Extended NDJSON (stdin, complex filters, slurp)
+
+Tests scenarios where qj's speedup is smaller: stdin (no mmap), complex filters (no on-demand fast path), and slurp mode (no parallelism).
+
+```bash
+bash benches/download_data.sh --xsmall              # 500MB, 1 hour
+cargo run --release --features bench --bin bench_tools -- --type ndjson-extended --size xsmall --runs 1 --cooldown 0
+```
+
+Results: `benches/results_ndjson_extended_{size}.md`
+
+### GH Archive datasets
+
+```bash
+bash benches/download_data.sh --gharchive           # small: ~1.1GB (2 hours)
+bash benches/download_data.sh --xsmall              # xsmall: ~500MB (1 hour)
+bash benches/download_data.sh --medium              # medium: ~3.4GB (6 hours)
+bash benches/download_data.sh --large               # large: ~4.7GB (24 hours)
+```
+
+All from [GH Archive](https://www.gharchive.org/), date: 2024-01-15 (except large: 2026-02-01).
 
 ## Memory usage comparison
 
 Measures peak resident set size (RSS) via `wait4()` rusage:
 
 ```bash
-cargo run --release --bin bench_mem -- --type json     # peak RSS on large_twitter.json
-cargo run --release --bin bench_mem -- --type ndjson    # peak RSS on gharchive.ndjson (or 1m.ndjson)
+cargo run --release --features bench --bin bench_mem -- --type json     # peak RSS on large_twitter.json
+cargo run --release --features bench --bin bench_mem -- --type ndjson    # peak RSS on gharchive.ndjson
 ```
 
-No external tools needed (no hyperfine). Results written to `benches/results_mem_json.md` or `benches/results_mem_ndjson.md`.
+Results: `benches/results_mem_json.md` / `benches/results_mem_ndjson.md`
 
 ## Other benchmarks
 
-### Parse throughput (simdjson vs serde_json)
-
-Microbenchmark comparing raw parse speed without filter evaluation:
+### Regression detection (iai-callgrind, requires valgrind)
 
 ```bash
-bash benches/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
+cargo bench --bench eval_regression
+```
+
+Counts CPU instructions (deterministic, no wall-clock noise). Runs on CI for every PR.
+
+### Parse throughput (simdjson vs serde_json)
+
+```bash
+bash benches/download_data.sh --json
+bash benches/generate_data.sh --ndjson
 cargo bench --bench parse_throughput
 ```
 
 ### C++ baseline (no FFI overhead)
-
-Measures simdjson directly from C++ to quantify FFI overhead:
 
 ```bash
 bash benches/build_cpp_bench.sh
 ./benches/bench_cpp
 ```
 
-### Profiling a single run
-
-```bash
-./target/release/qj --debug-timing -c '.' benches/data/large_twitter.json > /dev/null
-```
-
 ### Ad-hoc comparison
 
 ```bash
-hyperfine --warmup 3 \
+hyperfine --warmup 1 \
   './target/release/qj ".field" test.json' \
   'jq ".field" test.json' \
   'jaq ".field" test.json'

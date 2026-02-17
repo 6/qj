@@ -12,7 +12,7 @@ Benchmarked on M4 MacBook Pro:
 
 ## qj vs jq
 
-**Drop-in replacement.** 95% pass rate on jq's official test suite, with full coverage of everyday filters, builtins, and flags — just faster.
+**Near drop-in replacement.** 95% pass rate on jq's official test suite, with full coverage of everyday filters, builtins, and flags — just faster.
 
 **NDJSON / JSONL pipelines.** qj is 25-191x faster than jq for common streaming filters by combining SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. Note: Stdin and slurp mode (`-s`) see smaller gains since they can't use all optimizations ([see benchmarks](#benchmarks)).
 

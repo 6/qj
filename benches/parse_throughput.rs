@@ -241,7 +241,7 @@ fn main() {
     for &(fname, field) in files {
         let path = data_dir.join(fname);
         if !path.exists() {
-            println!("{fname:<40} SKIPPED (run benches/download_testdata.sh)");
+            println!("{fname:<40} SKIPPED (run benches/download_data.sh --json)");
             continue;
         }
 
@@ -278,7 +278,7 @@ fn main() {
     for &fname in ndjson_files {
         let path = data_dir.join(fname);
         if !path.exists() {
-            println!("{fname:<40} SKIPPED (run benches/generate_ndjson.sh)");
+            println!("{fname:<40} SKIPPED (run benches/generate_data.sh --ndjson)");
             continue;
         }
 

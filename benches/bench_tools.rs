@@ -259,6 +259,25 @@ static NDJSON_FILTERS: &[BenchFilter] = &[
     },
 ];
 
+/// Subset of NDJSON filters for large datasets (jq is too slow for all 6).
+static NDJSON_FILTERS_LARGE: &[BenchFilter] = &[
+    BenchFilter {
+        name: "field",
+        flags: &[],
+        expr: ".actor.login",
+    },
+    BenchFilter {
+        name: "select",
+        flags: &["-c"],
+        expr: r#"select(.type == "PushEvent")"#,
+    },
+    BenchFilter {
+        name: "evaluator",
+        flags: &["-c"],
+        expr: "{type, commits: [.payload.commits[]?.message]}",
+    },
+];
+
 /// Complex NDJSON filters that bypass on-demand fast paths (used by ndjson-extended).
 static NDJSON_COMPLEX_FILTERS: &[BenchFilter] = &[
     BenchFilter {
@@ -1061,6 +1080,7 @@ fn run_stdin_benchmarks(
 fn generate_ndjson_extended_markdown(
     tools: &[Tool],
     ndjson_file: &str,
+    ndjson_filters: &[BenchFilter],
     results: &Results,
     data_dir: &Path,
     runs: u32,
@@ -1152,7 +1172,7 @@ fn generate_ndjson_extended_markdown(
     )
     .unwrap();
     writeln!(md).unwrap();
-    write_table(&mut md, NDJSON_FILTERS, "ndjson");
+    write_table(&mut md, ndjson_filters, "ndjson");
 
     // Section 2: Complex filters
     writeln!(md).unwrap();
@@ -1282,7 +1302,7 @@ fn main() {
         }
         if json_files.is_empty() {
             eprintln!("Error: no JSON test data found in benches/data/.");
-            eprintln!("Run: bash benches/download_testdata.sh && bash benches/gen_large.sh");
+            eprintln!("Run: bash benches/download_data.sh --json && bash benches/generate_data.sh --json");
             std::process::exit(1);
         }
 
@@ -1364,17 +1384,22 @@ fn main() {
         let ndjson_path = data_dir.join(ndjson_file);
         if !ndjson_path.exists() {
             eprintln!("Error: {} not found.", ndjson_path.display());
-            eprintln!("Run: bash benches/download_gharchive.sh{download_flag}");
+            eprintln!("Run: bash benches/download_data.sh --gharchive{download_flag}");
             std::process::exit(1);
         }
 
         let is_extended = args.benchmark_type == "ndjson-extended";
+        let ndjson_filters = if args.size == "large" {
+            NDJSON_FILTERS_LARGE
+        } else {
+            NDJSON_FILTERS
+        };
 
         // Section 1: Streaming file benchmarks
         if args.should_run("ndjson") {
             run_benchmarks(
                 &tools,
-                NDJSON_FILTERS,
+                ndjson_filters,
                 "ndjson",
                 &[ndjson_file],
                 data_dir,
@@ -1451,6 +1476,7 @@ fn main() {
             let md = generate_ndjson_extended_markdown(
                 &tools,
                 ndjson_file,
+                ndjson_filters,
                 &results,
                 data_dir,
                 args.runs,
@@ -1463,7 +1489,7 @@ fn main() {
             let md = generate_ndjson_markdown(
                 &tools,
                 ndjson_file,
-                NDJSON_FILTERS,
+                ndjson_filters,
                 &results,
                 data_dir,
                 args.runs,

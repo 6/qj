@@ -129,8 +129,8 @@ Covers: SIMD parse, flat eval, standard eval, filter parsing.
 
 ### Parse throughput (simdjson vs serde_json)
 ```
-bash benches/download_testdata.sh   # twitter.json, citm_catalog.json, canada.json
-bash benches/generate_ndjson.sh     # 100k.ndjson, 1m.ndjson
+bash benches/download_data.sh --json    # twitter.json, citm_catalog.json, canada.json
+bash benches/generate_data.sh --ndjson  # 100k.ndjson, 1m.ndjson
 cargo bench --bench parse_throughput
 ```
 
@@ -161,10 +161,10 @@ Results written to `benches/results_mem_json.md` / `benches/results_mem_ndjson.m
 
 ### GH Archive data (for NDJSON benchmarks)
 ```
-bash benches/download_gharchive.sh           # gharchive.ndjson (~1.1GB) + .json + .ndjson.gz
-bash benches/download_gharchive.sh --xsmall  # gharchive_xsmall.ndjson (~500MB)
-bash benches/download_gharchive.sh --medium  # gharchive_medium.ndjson (~3.4GB, ~1.2M records)
-bash benches/download_gharchive.sh --large   # gharchive_large.ndjson (~6.2GB)
+bash benches/download_data.sh --gharchive           # gharchive.ndjson (~1.1GB) + .json + .ndjson.gz
+bash benches/download_data.sh --xsmall              # gharchive_xsmall.ndjson (~500MB)
+bash benches/download_data.sh --medium              # gharchive_medium.ndjson (~3.4GB, ~1.2M records)
+bash benches/download_data.sh --large               # gharchive_large.ndjson (~4.7GB)
 ```
 Use `QJ_GHARCHIVE_HOURS=2` for quick testing with fewer hours of data.
 
@@ -214,4 +214,4 @@ qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'  # qj-expanded glob
 qj -s 'add' file1.json.zst file2.json                 # mixed compressed + plain
 ```
 Compressed files are decompressed to memory, then processed through the normal NDJSON/JSON pipeline.
-For benchmarking, `benches/download_gharchive.sh` produces a `.ndjson.gz` alongside the uncompressed files.
+For benchmarking, `benches/download_data.sh --gharchive` produces a `.ndjson.gz` alongside the uncompressed files.
