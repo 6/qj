@@ -9,13 +9,15 @@ Benchmarked on an M4 MacBook Pro:
 
 ## When to use qj instead of jq
 
-**Any time you'd use jq.** Same syntax, same flags — just faster. SIMD parsing makes even small files snappier.
+**Any time you'd use jq.** ~95% compatible syntax and flags — just faster. SIMD parsing makes even small files snappier.
 
-**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. No `xargs` or `parallel` needed.
+**Large JSON files.** 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
-**Streaming and ad-hoc pipelines.** Tailing logs, piping API responses, one-shot transforms — where you'd never fire up DuckDB or convert to Parquet.
+**NDJSON / JSONL pipelines.** 30-150x faster than jq — auto-parallelizes across cores. No `xargs` or `parallel` needed.
 
-**When jq is fine.** If you need modules (`import`/`include`) or arbitrary precision arithmetic.
+**Streaming and ad-hoc pipelines.** Tailing logs, piping API responses, one-shot transforms.
+
+**When jq is fine.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses i64/f64 internally — large numbers are preserved on passthrough but arithmetic loses precision beyond 53 bits.
 
 **Memory tradeoff.** qj trades memory for speed (~64 MB for NDJSON vs jq's ~5 MB). If memory is tight, jq is the safer choice.
 
