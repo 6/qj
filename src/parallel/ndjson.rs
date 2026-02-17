@@ -89,6 +89,112 @@ enum StringPred {
 /// Target size for parallel chunks.
 const CHUNK_TARGET_SIZE: usize = 1024 * 1024;
 
+/// mmap a file for NDJSON processing. Unlike `read_padded_file`, this does not
+/// require simdjson padding — NDJSON lines are parsed individually. Falls back
+/// to `None` if mmap is unavailable (Windows, tiny files, `QJ_NO_MMAP`).
+#[cfg(unix)]
+fn mmap_file_for_ndjson(path: &std::path::Path) -> Result<Option<MmapSlice>> {
+    let meta = std::fs::metadata(path)?;
+    let file_len = meta.len() as usize;
+    if file_len == 0 || std::env::var_os("QJ_NO_MMAP").is_some() {
+        return Ok(None);
+    }
+    let fd = std::fs::File::open(path)?;
+    use std::os::unix::io::AsRawFd;
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            file_len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            fd.as_raw_fd(),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Ok(None);
+    }
+    unsafe {
+        libc::madvise(ptr, file_len, libc::MADV_SEQUENTIAL);
+    }
+    Ok(Some(MmapSlice { ptr, len: file_len }))
+}
+
+/// RAII wrapper for a raw mmap'd region.
+#[cfg(unix)]
+struct MmapSlice {
+    ptr: *mut libc::c_void,
+    len: usize,
+}
+
+#[cfg(unix)]
+impl std::ops::Deref for MmapSlice {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for MmapSlice {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr, self.len);
+        }
+    }
+}
+
+// SAFETY: The mmap'd memory is read-only (PROT_READ) and MAP_PRIVATE. No
+// mutable aliasing is possible. Safe to share the immutable &[u8] across threads.
+#[cfg(unix)]
+unsafe impl Send for MmapSlice {}
+#[cfg(unix)]
+unsafe impl Sync for MmapSlice {}
+
+/// Process an NDJSON file: detect format, mmap, and process with windowed parallelism.
+///
+/// Returns `Ok(Some(had_output))` if the file was NDJSON and was processed.
+/// Returns `Ok(None)` if the file is not NDJSON (caller should handle as single-doc).
+///
+/// Uses mmap for zero-copy I/O with windowed output to bound memory. Falls back
+/// to streaming with `read()` if mmap is unavailable. Works correctly for files
+/// larger than physical RAM — the kernel pages in on demand and evicts clean
+/// file-backed pages under memory pressure.
+pub fn process_ndjson_file<W: Write>(
+    path: &std::path::Path,
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    force_jsonl: bool,
+    out: &mut W,
+) -> Result<Option<bool>> {
+    // Try mmap first (fast path: zero-copy, kernel-managed pages).
+    #[cfg(unix)]
+    if let Some(mmap) = mmap_file_for_ndjson(path)? {
+        if force_jsonl || is_ndjson(&mmap) {
+            let ho = process_ndjson_windowed(&mmap, filter, config, env, out)?;
+            return Ok(Some(ho));
+        }
+        return Ok(None);
+    }
+
+    // Fallback: streaming with read() (non-Unix, mmap disabled, or mmap failed).
+    use std::io::Seek;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("failed to open file: {path:?}"))?;
+    if force_jsonl
+        || detect_ndjson_from_reader(&mut file)
+            .with_context(|| format!("failed to read file: {path:?}"))?
+    {
+        file.seek(std::io::SeekFrom::Start(0))
+            .with_context(|| format!("failed to seek file: {path:?}"))?;
+        let ho = process_ndjson_streaming(&mut file, filter, config, env, out)
+            .with_context(|| format!("failed to process NDJSON: {path:?}"))?;
+        return Ok(Some(ho));
+    }
+    Ok(None)
+}
+
 /// Heuristic: is this buffer NDJSON?
 ///
 /// Checks if the first line is a complete JSON value (starts with `{`/`[`
@@ -271,32 +377,126 @@ pub fn process_ndjson(
     Ok((out, had_output))
 }
 
+/// Process an mmap'd NDJSON buffer in fixed-size windows, writing output per-window.
+///
+/// Combines mmap zero-copy I/O (no read syscalls) with bounded output memory:
+/// only one window's output is buffered at a time. After each window, releases
+/// processed pages via `madvise(MADV_DONTNEED)` so the kernel can reclaim them
+/// immediately — keeps RSS proportional to window size, not file size.
+pub fn process_ndjson_windowed<W: Write>(
+    data: &[u8],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    out: &mut W,
+) -> Result<bool> {
+    let needs_env = if env.is_empty() {
+        false
+    } else {
+        let mut var_refs = HashSet::new();
+        filter.collect_var_refs(&mut var_refs);
+        var_refs.iter().any(|v| env.get_var(v).is_some())
+    };
+    let use_parallel = !needs_env && filter.is_parallel_safe();
+    let fast_path = if use_parallel {
+        detect_fast_path(filter)
+    } else {
+        NdjsonFastPath::None
+    };
+
+    let window_size = window_size(true);
+    let mut had_output = false;
+    let mut offset = 0;
+
+    while offset < data.len() {
+        // Take a window-sized slice, snapping to a newline boundary.
+        let end = (offset + window_size).min(data.len());
+        let process_end = if end == data.len() {
+            end
+        } else {
+            // Find the last newline within the window to avoid splitting lines.
+            match memchr::memrchr(b'\n', &data[offset..end]) {
+                Some(pos) => offset + pos + 1,
+                None => end, // No newline — single line > window, process it all.
+            }
+        };
+
+        let window_data = &data[offset..process_end];
+
+        if use_parallel {
+            let chunks = split_chunks(window_data, CHUNK_TARGET_SIZE);
+            if chunks.len() <= 1 {
+                let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+                out.write_all(&chunk_out)?;
+                had_output |= ho;
+            } else {
+                let shared = SharedFilter::new(filter);
+                let results: Result<Vec<(Vec<u8>, bool)>> = chunks
+                    .par_iter()
+                    .map(|&chunk| {
+                        let empty_env = Env::empty();
+                        process_chunk(chunk, shared.get(), config, &fast_path, &empty_env)
+                    })
+                    .collect();
+                let results = results?;
+                for (chunk_out, ho) in results {
+                    out.write_all(&chunk_out)?;
+                    had_output |= ho;
+                }
+            }
+        } else {
+            let (chunk_out, ho) = process_chunk(window_data, filter, config, &fast_path, env)?;
+            out.write_all(&chunk_out)?;
+            had_output |= ho;
+        }
+
+        offset = process_end;
+    }
+
+    Ok(had_output)
+}
+
 /// Minimum window size for streaming NDJSON processing (8 MiB).
 /// Low enough for memory-constrained devices (Raspberry Pi, small containers).
 const MIN_WINDOW_SIZE: usize = 8 * 1024 * 1024;
 
-/// Maximum window size (64 MiB). Prevents excessive memory on many-core
-/// machines (e.g. 128 cores → 256 MB uncapped). Cores may briefly idle
-/// at window boundaries but the next window starts immediately.
-const MAX_WINDOW_SIZE: usize = 64 * 1024 * 1024;
+/// Maximum window size for streaming (stdin/pipe) path (64 MiB).
+/// The window IS the heap buffer, so we cap conservatively.
+const MAX_WINDOW_SIZE_STREAMING: usize = 64 * 1024 * 1024;
 
-/// Compute window size based on available parallelism.
-/// Targets 2x oversubscription (2 chunks per core) so Rayon always has
-/// work to schedule. Clamped to 8–64 MB range.
+/// Maximum window size for mmap'd file path (256 MiB).
+/// Input is kernel-managed virtual memory (not heap), so only output is
+/// buffered per window. Larger windows = more parallelism = less overhead.
+const MAX_WINDOW_SIZE_MMAP: usize = 256 * 1024 * 1024;
+
+/// Compute window size based on available parallelism and whether input is mmap'd.
 /// Override with `QJ_WINDOW_SIZE` env var (in megabytes, e.g. `QJ_WINDOW_SIZE=128`).
-fn streaming_window_size() -> usize {
+///
+/// For mmap'd files: input memory is kernel-managed (not heap), so we use large
+/// windows (256 MB) to maximize parallelism. Only output is buffered per window.
+///
+/// For streaming (stdin/pipe): the window IS the heap buffer, so we size it
+/// conservatively at 2 chunks per core, clamped to 8–64 MB.
+fn window_size(mmap: bool) -> usize {
     if let Some(val) = std::env::var_os("QJ_WINDOW_SIZE")
         && let Some(mb) = val.to_str().and_then(|s| s.parse::<usize>().ok())
     {
         return (mb * 1024 * 1024).max(MIN_WINDOW_SIZE);
     }
-    let num_threads = rayon::current_num_threads();
-    (num_threads * CHUNK_TARGET_SIZE * 2).clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE)
+    if mmap {
+        // Large windows for mmap: input is virtual memory, only output is heap.
+        // 256 MB gives ~256 chunks per window — plenty for any core count.
+        MAX_WINDOW_SIZE_MMAP
+    } else {
+        // Conservative for streaming: window is heap-allocated.
+        let num_threads = rayon::current_num_threads();
+        (num_threads * CHUNK_TARGET_SIZE * 2).clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE_STREAMING)
+    }
 }
 
 /// Process NDJSON from a reader in fixed-size windows, writing output per-window.
 ///
-/// Reads `streaming_window_size()` bytes at a time, processes each window's chunks in
+/// Reads `window_size(false)` bytes at a time, processes each window's chunks in
 /// parallel, and writes output directly to `out`. Lines spanning window
 /// boundaries are carried to the next window. Memory usage is O(window_size)
 /// instead of O(file_size).
@@ -323,7 +523,7 @@ pub fn process_ndjson_streaming<R: Read, W: Write>(
         NdjsonFastPath::None
     };
 
-    let window_size = streaming_window_size();
+    let window_size = window_size(false);
     let mut buf = vec![0u8; window_size];
     let mut carry_len: usize = 0;
     let mut had_output = false;

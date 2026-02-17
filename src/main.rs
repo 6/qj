@@ -1047,35 +1047,25 @@ fn process_file(
 
     // ---- Uncompressed file handling ----
 
-    // Streaming NDJSON path: peek header to detect NDJSON, then stream from
-    // the file descriptor in fixed-size windows. Avoids loading the full file
-    // into memory — O(window_size) instead of O(file_size).
-    // Skip when debug-timing so we get the full pipeline breakdown.
-    if !ctx.debug_timing {
-        use std::io::Seek;
-
-        let mut file =
-            std::fs::File::open(path).with_context(|| format!("failed to open file: {path}"))?;
-
-        // Detect NDJSON by peeking at the start of the file, then stream it
-        // in fixed-size windows to keep memory O(window_size) not O(file_size).
-        // force_jsonl skips detection (user asserted NDJSON via --jsonl).
-        if ctx.force_jsonl
-            || qj::parallel::ndjson::detect_ndjson_from_reader(&mut file)
-                .with_context(|| format!("failed to read file: {path}"))?
-        {
-            file.seek(std::io::SeekFrom::Start(0))
-                .with_context(|| format!("failed to seek file: {path}"))?;
-            let ho = qj::parallel::ndjson::process_ndjson_streaming(
-                &mut file, ctx.filter, ctx.config, ctx.env, out,
-            )
-            .with_context(|| format!("failed to process NDJSON: {path}"))?;
-            *had_output |= ho;
-            return Ok(());
-        }
+    // NDJSON: mmap the file directly (no simdjson padding needed) and process
+    // in parallel windows. Falls back to streaming read() if mmap is unavailable.
+    // Works for files larger than physical RAM — kernel pages in on demand.
+    if !ctx.debug_timing
+        && let Some(ho) = qj::parallel::ndjson::process_ndjson_file(
+            std::path::Path::new(path),
+            ctx.filter,
+            ctx.config,
+            ctx.env,
+            ctx.force_jsonl,
+            out,
+        )
+        .with_context(|| format!("failed to process NDJSON: {path}"))?
+    {
+        *had_output |= ho;
+        return Ok(());
     }
 
-    // Non-NDJSON: load the full file for single-doc processing
+    // Non-NDJSON: load via read_padded_file (mmap with simdjson padding).
     let t0 = Instant::now();
     let (padded, json_len) = qj::simdjson::read_padded_file(std::path::Path::new(path))
         .with_context(|| format!("failed to read file: {path}"))?;
