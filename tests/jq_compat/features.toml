@@ -1215,12 +1215,6 @@ name = "IN"
 tests = [
   { filter = '3 | IN(1, 2, 3)', input = 'null', expected = 'true' },
   { filter = '5 | IN(1, 2, 3)', input = 'null', expected = 'false' },
-]
-
-[[features]]
-category = "SQL-style operators"
-name = "IN (stream form)"
-tests = [
   { filter = '[.[] | select(IN(1, 3, 5))]', input = '[1,2,3,4,5]', expected = '[1,3,5]' },
 ]
 
@@ -1251,9 +1245,10 @@ tests = [
 
 [[features]]
 category = "CLI flags"
-name = "Raw output"
+name = "Raw output (-r/--raw-output0)"
 tests = [
   { filter = '.name', input = '{"name":"hello"}', flags = '-r', expected = 'hello' },
+  # --raw-output0 NUL-byte tests are in hardcoded_tests() (can't express NUL in TOML)
 ]
 
 [[features]]
@@ -1272,15 +1267,9 @@ tests = [
 
 [[features]]
 category = "CLI flags"
-name = "Tab indentation"
+name = "Indentation (--tab/--indent)"
 tests = [
   { filter = '. + 1', input = '1', flags = '--tab --', expected = '2' },
-]
-
-[[features]]
-category = "CLI flags"
-name = "Indent"
-tests = [
   { filter = '. + 1', input = '1', flags = '--indent 4 --', expected = '2' },
 ]
 
@@ -1314,23 +1303,18 @@ tests = [
 
 [[features]]
 category = "CLI flags"
-name = "--arg"
+name = "--arg/--argjson"
 tests = [
   { filter = '{name: $name}', input = 'null', flags = '-c --arg name alice', expected = '{"name":"alice"}' },
-]
-
-[[features]]
-category = "CLI flags"
-name = "--argjson"
-tests = [
   { filter = '{val: $n}', input = 'null', flags = '-c --argjson n 42', expected = '{"val":42}' },
 ]
 
 [[features]]
 category = "CLI flags"
-name = "Monochrome output"
+name = "Color control (-C/-M)"
 tests = [
   { filter = '.', input = '{"a":1}', flags = '-Mc --', expected = '{"a":1}' },
+  # -C (color) tests with ANSI escapes are in hardcoded_tests() (raw_compare needed)
 ]
 
 [[features]]
@@ -1348,13 +1332,6 @@ tests = [
   { filter = '.', input = '"\u0041"', flags = '-a --', expected = '"A"' },
 ]
 
-[[features]]
-category = "CLI flags"
-name = "Color output"
-tests = [
-  { filter = '.', input = '1', flags = '-C --', expected = "\u001b[0;39m1\u001b[0m\n", raw_compare = true },
-  { filter = '.', input = '"hi"', flags = '-C --', expected = "\u001b[0;32m\"hi\"\u001b[0m\n", raw_compare = true },
-]
 
 [[features]]
 category = "CLI flags"
@@ -1374,16 +1351,10 @@ tests = [
 
 [[features]]
 category = "CLI flags"
-name = "--args"
+name = "--args/--jsonargs"
 tests = [
   { filter = '$ARGS.positional | length', input = 'null', flags = '-n', post_args = '--args a b', expected = '2' },
   { filter = '$ARGS.positional[0]', input = 'null', flags = '-n', post_args = '--args hello', expected = '"hello"' },
-]
-
-[[features]]
-category = "CLI flags"
-name = "--jsonargs"
-tests = [
   { filter = '$ARGS.positional | length', input = 'null', flags = '-n', post_args = '--jsonargs 1', expected = '1' },
   { filter = '$ARGS.positional[0]', input = 'null', flags = '-n', post_args = '--jsonargs 42', expected = '42' },
 ]

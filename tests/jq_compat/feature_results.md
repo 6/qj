@@ -72,26 +72,21 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | Feature | Tests | **qj** | jq | jaq | gojq |
 |---------|------:|-----:|-----:|-----:|-----:|
 | Compact output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Raw output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| Raw output (-r/--raw-output0) | 3 | **3/3 Y** | 3/3 Y | 1/3 ~ | 3/3 Y |
 | Null input | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | Exit status | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Tab indentation | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Indent | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| Indentation (--tab/--indent) | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | Slurp | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | Sort keys | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 0/1 N |
 | Raw input | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | Join output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| --arg | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| --argjson | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
-| Monochrome output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
+| --arg/--argjson | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| Color control (-C/-M) | 3 | **3/3 Y** | 3/3 Y | 1/3 ~ | 1/3 ~ |
 | --stream | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
 | ASCII output | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 0/2 N |
-| Color output | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 0/2 N |
 | --slurpfile | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | --rawfile | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
-| --args | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
-| --jsonargs | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 2/2 Y |
-| --raw-output0 | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 2/2 Y |
+| --args/--jsonargs | 4 | **4/4 Y** | 4/4 Y | 2/4 ~ | 4/4 Y |
 | --from-file | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 
 ### Control flow
@@ -216,8 +211,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Feature | Tests | **qj** | jq | jaq | gojq |
 |---------|------:|-----:|-----:|-----:|-----:|
-| IN | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 2/2 Y |
-| IN (stream form) | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
+| IN | 3 | **3/3 Y** | 3/3 Y | 0/3 N | 3/3 Y |
 | INDEX | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
 | GROUP_BY | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 
@@ -282,9 +276,9 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **qj** | **175** | **0** | **7** | **96.2%** |
-| jq | 182 | 0 | 0 | 100.0% |
-| jaq | 158 | 4 | 20 | 87.9% |
-| gojq | 177 | 1 | 4 | 97.5% |
+| **qj** | **169** | **0** | **7** | **96.0%** |
+| jq | 176 | 0 | 0 | 100.0% |
+| jaq | 153 | 7 | 16 | 88.9% |
+| gojq | 171 | 2 | 3 | 97.7% |
 
 Score = (Y + 0.5 × ~) / total × 100

@@ -149,7 +149,7 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
     let tests: Vec<HardcodedTest> = vec![
         HardcodedTest {
             category: "CLI flags".into(),
-            name: "--raw-output0".into(),
+            name: "Raw output (-r/--raw-output0)".into(),
             cases: vec![
                 (
                     "NUL-separated string output".into(),
@@ -252,6 +252,52 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                         let _ = std::fs::remove_file(&filter_path);
                         match output {
                             Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "[2,4,6]",
+                            Err(_) => false,
+                        }
+                    }),
+                ),
+            ],
+        },
+        HardcodedTest {
+            category: "CLI flags".into(),
+            name: "Color control (-C/-M)".into(),
+            cases: vec![
+                (
+                    "Color output for number".into(),
+                    Box::new(|tool: &common::Tool| {
+                        let mut cmd = Command::new(&tool.path);
+                        cmd.args(["-C", "--", "."]);
+                        let output = cmd
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut child| {
+                                child.stdin.take().unwrap().write_all(b"1").unwrap();
+                                child.wait_with_output()
+                            });
+                        match output {
+                            Ok(o) => o.stdout == b"\x1b[0;39m1\x1b[0m\n",
+                            Err(_) => false,
+                        }
+                    }),
+                ),
+                (
+                    "Color output for string".into(),
+                    Box::new(|tool: &common::Tool| {
+                        let mut cmd = Command::new(&tool.path);
+                        cmd.args(["-C", "--", "."]);
+                        let output = cmd
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut child| {
+                                child.stdin.take().unwrap().write_all(b"\"hi\"").unwrap();
+                                child.wait_with_output()
+                            });
+                        match output {
+                            Ok(o) => o.stdout == b"\x1b[0;32m\"hi\"\x1b[0m\n",
                             Err(_) => false,
                         }
                     }),
@@ -403,20 +449,35 @@ fn run_all(verbose: bool) {
     }
     common::save_cache("feature_compat", &cache);
 
-    // --- Append hardcoded tests (binary output, stdin conflicts, etc.) ---
+    // --- Merge hardcoded tests (binary output, stdin conflicts, etc.) ---
+    // Hardcoded tests with matching (category, name) are merged into the TOML feature;
+    // unmatched ones are appended as new features.
     let (extra_features, extra_results) = hardcoded_tests(&tools, verbose);
     let mut all_features: Vec<&Feature> = test_file.features.iter().collect();
-    for f in &extra_features {
-        all_features.push(f);
-    }
-    // Merge extra results into main results
-    for (ti, tool_extra) in extra_results.into_iter().enumerate() {
-        for feature_results in tool_extra {
-            results[ti].push(feature_results);
+
+    for (ei, ef) in extra_features.iter().enumerate() {
+        // Find matching TOML feature by (category, name)
+        let existing = all_features
+            .iter()
+            .position(|f| f.category == ef.category && f.name == ef.name);
+        if let Some(fi) = existing {
+            // Merge: append extra test results to existing feature results
+            for (ti, _tool) in tools.iter().enumerate() {
+                results[ti][fi].extend_from_slice(&extra_results[ti][ei]);
+            }
+            // Update the feature's test count by replacing with a combined feature
+            // (we track via results, but test_count comes from feature.tests.len())
+            // We need a mutable owned feature with combined tests
+        } else {
+            // New feature — append
+            all_features.push(ef);
+            for (ti, _tool) in tools.iter().enumerate() {
+                results[ti].push(extra_results[ti][ei].clone());
+            }
         }
     }
 
-    // Sort features by category to group hardcoded tests with TOML tests.
+    // Sort features by category to group related tests together.
     // Build index permutation so results arrays stay in sync.
     let mut order: Vec<usize> = (0..all_features.len()).collect();
     order.sort_by_key(|&i| &all_features[i].category);
@@ -458,7 +519,8 @@ fn run_all(verbose: bool) {
             md.push_str(&format!("{header}\n{sep}\n"));
         }
 
-        let test_count = feature.tests.len();
+        // Use results length (accounts for merged hardcoded tests)
+        let test_count = results[0][fi].len();
         let mut row = format!("| {} | {} |", feature.name, test_count);
 
         for (ti, tool) in tools.iter().enumerate() {
@@ -505,7 +567,7 @@ fn run_all(verbose: bool) {
             }
             scored_features += 1;
             let pass_count = results[ti][fi].iter().filter(|&&p| p).count();
-            let total = feature.tests.len();
+            let total = results[ti][fi].len();
             if pass_count == total && total > 0 {
                 y_count += 1;
             } else if pass_count > 0 {
