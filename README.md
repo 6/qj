@@ -1,6 +1,6 @@
 # qj
 
-`qj` is Quick JSON, a `jq`-compatible processor. SIMD parsing and automatic parallelization across cores.
+`qj` is Quick JSON, a `jq`-compatible processor with [simdjson](https://github.com/simdjson/simdjson) parsing and automatic parallelization across cores.
 
 - **NDJSON:** 28-150x faster than jq, 25-67x faster than jaq. Single-threaded: 5-67x faster than jq.
 - **JSON:** 2-29x faster than jq, ~2x faster than jaq (SIMD parsing, no parallelism).
@@ -13,21 +13,34 @@
 
 **When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
 
-**Memory tradeoff.** qj trades memory for speed. jq streams one line at a time (~5 MB for any size NDJSON). qj streams in parallel windows — ~64 MB for NDJSON regardless of file size, or ~19 MB single-threaded. For single-document JSON, all tools load the full file. If memory is tight (small containers, embedded), jq is the safer choice.
+**Memory tradeoff.** qj trades memory for speed (~64 MB for NDJSON vs jq's ~5 MB). If memory is tight, jq is the safer choice.
 
 ## Quick start
 
+Work in progress. For now:
+
 ```bash
-cargo build --release
-./target/release/qj '.name' data.json
-cat logs.jsonl | ./target/release/qj -c 'select(.level == "ERROR")'
-./target/release/qj '.items[] | {id, name}' large.json
+git clone https://github.com/6/qj
+cd qj
+cargo install --path .
+```
 
-# Compressed files — transparent gzip/zstd decompression
-./target/release/qj '.actor.login' gharchive-2024-01-15-*.json.gz
+Usage:
 
-# Glob patterns (quote to let qj expand instead of shell)
-./target/release/qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
+```bash
+# Extract fields
+qj '.name' data.json
+qj '.items[] | {id, name}' large.json
+
+# Extract from streaming logs
+tail -f logs.jsonl | qj -c 'select(.level == "ERROR") | {ts: .timestamp, msg: .message}'
+
+# Slurp NDJSON into array
+qj -s 'sort_by(.age) | reverse | .[0]' users.jsonl
+  
+# Compressed files
+qj '.actor.login' gharchive-*.json.gz
+qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 ```
 
 ## Benchmarks
