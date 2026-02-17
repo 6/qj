@@ -1,20 +1,20 @@
 # GH Archive Benchmark
 
-> Generated: 2026-02-17T04:21:22Z on `Apple M4 Pro (48 GB)` (total time: 784s)
+> Generated: 2026-02-17T04:51:19Z on `Apple M4 Pro (48 GB)` (total time: 806s)
 > 3 runs, 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine).
 
 ### NDJSON (gharchive.ndjson, 1130MB, parallel processing)
 
 | Filter | **qj** | vs jq | qj (1T) | vs jq | jq | jaq | gojq |
 |--------|------:|------:|------:|------:|------:|------:|------:|
-| `'.actor.login'` | **79.3ms** | **91.7x** | 348.6ms | 20.8x | 7.27s | 2.78s | 9.21s |
-| `-c 'length'` | **295.6ms** | **24.1x** | 898.3ms | 7.9x | 7.12s | 2.69s | 6.90s |
-| `-c 'keys'` | **122.2ms** | **62.5x** | 740.2ms | 10.3x | 7.64s | 2.82s | 6.69s |
-| `-c 'type'` | **51.1ms** | **138.6x** | 103.1ms | 68.7x | 7.08s | 3.12s | 6.51s |
-| `-c 'has("actor")'` | **93.3ms** | **75.6x** | 569.1ms | 12.4x | 7.05s | 2.67s | 6.62s |
-| `-c 'select(.type == "PushEvent")'` | **82.2ms** | **154.5x** | 358.6ms | 35.4x | 12.70s | 3.44s | 7.61s |
-| `-c 'select(.type == "PushEvent") | .payload.size'` | **48.0ms** | **154.7x** | 387.5ms | 19.2x | 7.42s | 2.90s | 7.17s |
-| `-c '{type, repo: .repo.name, actor: .actor.login}'` | **126.1ms** | **61.8x** | 780.8ms | 10.0x | 7.79s | 3.16s | 6.72s |
-| `-c '{type, commits: [.payload.commits[]?.message]}'` | **273.5ms** | **28.6x** | 1.63s | 4.8x | 7.83s | 3.05s | 6.76s |
-| `-c '{type, commits: (.payload.commits // [] | length)}'` | **259.4ms** | **28.8x** | 1.54s | 4.8x | 7.48s | 3.04s | 6.75s |
+| `'.actor.login'` | **75.9ms** | **96.4x** | 354.6ms | 20.6x | 7.32s | 2.75s | 6.65s |
+| `-c 'length'` | **101.2ms** | **70.3x** | 589.5ms | 12.1x | 7.11s | 2.87s | 7.17s |
+| `-c 'keys'` | **122.9ms** | **62.4x** | 739.9ms | 10.4x | 7.67s | 2.81s | 6.62s |
+| `-c 'type'` | **52.5ms** | **136.0x** | 102.6ms | 69.7x | 7.15s | 3.15s | 6.57s |
+| `-c 'has("actor")'` | **95.5ms** | **73.7x** | 560.1ms | 12.6x | 7.04s | 2.64s | 6.56s |
+| `-c 'select(.type == "PushEvent")'` | **76.4ms** | **166.3x** | 345.5ms | 36.8x | 12.70s | 3.46s | 7.49s |
+| `-c 'select(.type == "PushEvent") | .payload.size'` | **79.8ms** | **89.4x** | 426.0ms | 16.7x | 7.13s | 2.91s | 6.60s |
+| `-c '{type, repo: .repo.name, actor: .actor.login}'` | **127.7ms** | **61.1x** | 751.4ms | 10.4x | 7.80s | 3.21s | 6.74s |
+| `-c '{type, commits: [.payload.commits[]?.message]}'` | **269.9ms** | **29.1x** | 1.63s | 4.8x | 7.84s | 3.06s | 6.83s |
+| `-c '{type, commits: (.payload.commits // [] | length)}'` | **263.5ms** | **28.5x** | 1.54s | 4.9x | 7.50s | 3.02s | 6.76s |
 

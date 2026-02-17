@@ -748,8 +748,8 @@ fn generate_json_markdown(
     writeln!(md, "### Summary (times faster than jq)").unwrap();
     writeln!(md).unwrap();
 
-    let mut sum_header = String::from("| Category |");
-    let mut sum_sep = String::from("|----------|");
+    let mut sum_header = String::from("|");
+    let mut sum_sep = String::from("|");
     for tool in tools {
         if tool.name == "jq" {
             continue;
@@ -766,7 +766,7 @@ fn generate_json_markdown(
 
     // JSON category (use largest file)
     let json_file = json_files.last().unwrap();
-    let mut json_row = format!("| JSON ({json_file}) |");
+    let mut json_row = String::from("|");
     for tool in tools {
         if tool.name == "jq" {
             continue;

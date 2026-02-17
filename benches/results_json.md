@@ -51,8 +51,8 @@ Peak parse throughput (`-c '.'`, 49MB):
 
 ### Summary (times faster than jq)
 
-| Category | **qj** | qj (1T) | jaq | gojq |
-|----------|------|------|------|------|
-| JSON | **4.8x** | 4.8x | 2.5x | 1.4x |
+| **qj** | qj (1T) | jaq | gojq |
+|------|------|------|------|
+| **4.8x** | 4.8x | 2.5x | 1.4x |
 
 Geometric mean of per-filter speedups (median time). Higher is better.

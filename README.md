@@ -4,7 +4,7 @@
 
 Benchmarked on an M4 MacBook Pro:
 
-- **NDJSON (1.1 GB):** `select(.type == "PushEvent")` in 82 ms vs jq's 12.7 s — **155x faster**
+- **NDJSON (1.1 GB):** `select(.type == "PushEvent")` in 76 ms vs jq's 12.7 s — **166x faster**
 - **JSON (49 MB):** `.statuses | map({user, text})` in 60 ms vs jq's 706 ms — **12x faster**
 
 ## When to use qj instead of jq
@@ -13,7 +13,7 @@ Benchmarked on an M4 MacBook Pro:
 
 **Large JSON files.** 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
-**NDJSON / JSONL pipelines.** 30-150x faster than jq — auto-parallelizes across cores. No `xargs` or `parallel` needed.
+**NDJSON / JSONL pipelines.** 28-166x faster than jq — auto-parallelizes across cores. No `xargs` or `parallel` needed.
 
 **When jq is fine.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses i64/f64 internally — large numbers are preserved on passthrough but arithmetic loses precision beyond 53 bits.
 
@@ -55,16 +55,16 @@ M4 MacBook Pro via [hyperfine](https://github.com/sharkdp/hyperfine). Compared a
 
 | Workload | qj (parallel by default) | qj (1 thread) | jq | jaq | gojq |
 |----------|---:|---------------:|---:|----:|----:|
-| `.actor.login` | **77 ms** | 371 ms | 7.3 s | 2.8 s | 9.0 s |
-| `length` | **110 ms** | 910 ms | 7.1 s | 2.7 s | 7.1 s |
-| `keys` | **122 ms** | 738 ms | 7.7 s | 2.8 s | 6.7 s |
-| `select(.type == "PushEvent")` | **82 ms** | 358 ms | 12.7 s | 3.4 s | 7.6 s |
-| `select(…) \| .payload.size` | **48 ms** | 391 ms | 7.4 s | 2.9 s | 7.2 s |
-| `{type, repo, actor}` | **126 ms** | 873 ms | 7.8 s | 3.2 s | 6.7 s |
-| `{type, commits: [….message]}` | **276 ms** | 1.63 s | 7.8 s | 3.1 s | 6.8 s |
-| `{type, commits: (… \| length)}` | **259 ms** | 1.54 s | 7.5 s | 3.1 s | 6.7 s |
+| `.actor.login` | **76 ms** | 355 ms | 7.3 s | 2.8 s | 6.7 s |
+| `length` | **101 ms** | 590 ms | 7.1 s | 2.9 s | 7.2 s |
+| `keys` | **123 ms** | 740 ms | 7.7 s | 2.8 s | 6.6 s |
+| `select(.type == "PushEvent")` | **76 ms** | 346 ms | 12.7 s | 3.5 s | 7.5 s |
+| `select(…) \| .payload.size` | **80 ms** | 426 ms | 7.1 s | 2.9 s | 6.6 s |
+| `{type, repo, actor}` | **128 ms** | 751 ms | 7.8 s | 3.2 s | 6.7 s |
+| `{type, commits: [….message]}` | **270 ms** | 1.63 s | 7.8 s | 3.1 s | 6.8 s |
+| `{type, commits: (… \| length)}` | **264 ms** | 1.54 s | 7.5 s | 3.0 s | 6.8 s |
 
-On single JSON files (49 MB) with no parallelism, qj is 2-29x faster than jq, 1-8x faster than jaq, and 2-12x faster than gojq.
+On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq.
 
 ## How it works
 
