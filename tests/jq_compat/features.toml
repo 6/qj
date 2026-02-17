@@ -1374,10 +1374,17 @@ tests = [
 category = "Bignum"
 name = "Large integer precision"
 tests = [
-  # 13911860366432393 - 10: correct answer is ...383, but jq (f64) gives ...382.
-  # Expected value matches jq since this is a compat suite.
-  { filter = '. - 10', input = '13911860366432393', expected = '13911860366432382' },
-  { filter = '.[0] | tostring', input = '[9007199254740993]', expected = '"9007199254740993"' },
+  # i64-range: jq loses precision (f64), qj preserves it (i64).
+  # Expected matches jq output for compat scoring.
+  { filter = '.[0] - 10', input = '[9007199254740993]', expected = '9007199254740982' },
+]
+
+[[features]]
+category = "Bignum"
+name = "Large integer arithmetic"
+tests = [
+  # Beyond-i64 literals in filters: qj fails to parse, jq handles as f64.
+  { filter = '100000000000000000000 + 1', input = 'null', expected = '1e+20' },
 ]
 
 # =============================================================================
