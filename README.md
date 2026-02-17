@@ -4,20 +4,20 @@
 
 Benchmarked on an M4 MacBook Pro:
 
-- **NDJSON (3.4 GB, 1.2M records):** `select(.type == "PushEvent")` in 194 ms vs jq's 36.8 s (**190x faster**)
+- **NDJSON (3.4 GB, 1.2M records):** `select(.type == "PushEvent")` in 190 ms vs jq's 36.4 s (**191x faster**)
 - **JSON (49 MB):** `.statuses | map({user, text})` in 58 ms vs jq's 695 ms (**12x faster**)
 
 ## qj vs jq
 
 **Drop-in replacement.** qj is ~95% compatible with jq's syntax and flags, just faster. SIMD parsing makes even small files snappier.
 
-**NDJSON / JSONL pipelines.** qj is 28-166x faster than jq by combining SIMD parsing, mmap, automatic parallelism (no `xargs` or `parallel` needed), and on-demand field extraction. Output order matches input order.
+**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism (no `xargs` or `parallel` needed), and on-demand field extraction. Output order matches input order.
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
 **Where jq is better.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses 64-bit integers and floats, so large numbers pass through unchanged but arithmetic may lose precision.
 
-**Memory tradeoff.** qj trades memory for speed. It uses a sliding window so peak RSS is bounded regardless of file size (~174 MB on a 10-core machine), but jq streams one record at a time (~5 MB). For regular JSON files qj uses ~1.7x jq's RSS.
+**Memory tradeoff.** qj trades memory for speed. It uses a sliding window so peak RSS stays well below file size (~300 MB for a 3.4 GB file), but jq streams one record at a time (~5 MB). For regular JSON files qj uses ~1.7x jq's RSS.
 
 ## Quick start
 
@@ -51,25 +51,21 @@ qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 
 M4 MacBook Pro via [hyperfine](https://github.com/sharkdp/hyperfine). Compared against [jq](https://github.com/jqlang/jq) and two popular reimplementations: [jaq](https://github.com/01mf02/jaq) and [gojq](https://github.com/itchyny/gojq). See [benches/](benches/) for full results.
 
-**NDJSON** (1.1 GB GitHub Archive, parallel by default):
+**NDJSON** (3.4 GB GitHub Archive, 1.2M records):
 
 | Workload | qj (parallel by default) | qj (1 thread) | jq | jaq | gojq |
 |----------|---:|---------------:|---:|----:|----:|
-| `.actor.login` | **76 ms** | 355 ms | 7.3 s | 2.8 s | 6.7 s |
-| `length` | **101 ms** | 590 ms | 7.1 s | 2.9 s | 7.2 s |
-| `keys` | **123 ms** | 740 ms | 7.7 s | 2.8 s | 6.6 s |
-| `select(.type == "PushEvent")` | **76 ms** | 346 ms | 12.7 s | 3.5 s | 7.5 s |
-| `select(…) \| .payload.size` | **80 ms** | 426 ms | 7.1 s | 2.9 s | 6.6 s |
-| `{type, repo, actor}` | **128 ms** | 751 ms | 7.8 s | 3.2 s | 6.7 s |
-| `{type, commits: [….message]}` | **270 ms** | 1.63 s | 7.8 s | 3.1 s | 6.8 s |
-| `{type, commits: (… \| length)}` | **264 ms** | 1.54 s | 7.5 s | 3.0 s | 6.8 s |
+| `.actor.login` | **196 ms** | 1.02 s | 21.7 s | 8.2 s | 20.3 s |
+| `select(.type == "PushEvent")` | **190 ms** | 1.03 s | 36.4 s | 10.4 s | 22.8 s |
+| `{type, repo: .repo.name, actor: .actor.login}` | **332 ms** | 2.26 s | 23.4 s | 9.5 s | 20.7 s |
+| `{type, commits: [.payload.commits[]?.message]}` | **801 ms** | 4.84 s | 23.8 s | 9.2 s | 20.9 s |
 
 On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq.
 
 ## How it works
 
 - **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
-- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~174 MB for a 1.1 GB file). Falls back to streaming read() for stdin/pipes.
+- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~300 MB for a 3.4 GB file). Falls back to streaming read() for stdin/pipes.
 - **Apple Silicon tuning.** Uses only P-cores, avoiding E-cores whose ~3x slower throughput creates stragglers that bottleneck the parallel pipeline.
 - **Zero-copy I/O.** mmap for single-document JSON — no heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
