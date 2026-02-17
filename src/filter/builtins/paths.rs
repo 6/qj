@@ -3,7 +3,7 @@ use crate::value::Value;
 
 use super::super::eval::eval;
 use super::super::value_ops::{
-    del_path, enum_leaf_paths, enum_paths, path_of, set_path, values_order,
+    del_path, enum_leaf_paths, enum_paths, path_of_env, set_path, values_order,
 };
 use super::set_error;
 
@@ -100,7 +100,7 @@ pub(super) fn eval_paths(
         }
         "path" => {
             if let Some(f) = args.first() {
-                path_of(f, input, &mut Vec::new(), output);
+                path_of_env(f, input, &mut Vec::new(), env, output);
             }
         }
         _ => {}

@@ -5267,11 +5267,11 @@ fn array_construct_suppresses_on_error() {
     // [.a,.a] on boolean should error, not produce []
     let (code, stdout, stderr) = qj_exit(&["-c", "[.a,.a]"], "true");
     assert_ne!(code, 0);
-    assert!(stdout.trim().is_empty(), "expected no output, got: {stdout}");
     assert!(
-        stderr.contains("Cannot index boolean"),
-        "stderr: {stderr}"
+        stdout.trim().is_empty(),
+        "expected no output, got: {stdout}"
     );
+    assert!(stderr.contains("Cannot index boolean"), "stderr: {stderr}");
 }
 
 #[test]
@@ -5299,10 +5299,7 @@ fn as_binding_in_assignment() {
 #[test]
 fn as_binding_in_update() {
     // (.a as $x | .b) |= . + 1
-    assert_jq_compat(
-        "(.a as $x | .b) |= . + 1",
-        r#"{"a":10,"b":5}"#,
-    );
+    assert_jq_compat("(.a as $x | .b) |= . + 1", r#"{"a":10,"b":5}"#);
 }
 
 // ---------------------------------------------------------------------------
@@ -5338,5 +5335,77 @@ fn path_invalid_with_iterate() {
     assert_jq_compat(
         "try path(.a | map(select(.b == 0)) | .[]) catch .",
         r#"{"a":[{"b":0}]}"#,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Assignment path errors propagate through try/catch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn assignment_path_error_map_select() {
+    assert_jq_compat(
+        "try ((map(select(.a == 1))[].b) = 10) catch .",
+        r#"[{"a":0},{"a":1}]"#,
+    );
+}
+
+#[test]
+fn update_path_error_map_select() {
+    assert_jq_compat(
+        "try ((map(select(.a == 1))[].a) |= .+1) catch .",
+        r#"[{"a":0},{"a":1}]"#,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// User-defined function as path in assignment
+// ---------------------------------------------------------------------------
+
+#[test]
+fn def_as_path_in_assignment() {
+    assert_jq_compat("def x: .[1,2]; x=10", "[0,1,2]");
+}
+
+#[test]
+fn def_nonpath_in_assignment_error() {
+    assert_jq_compat("try (def x: reverse; x=10) catch .", "[0,1,2]");
+}
+
+// ---------------------------------------------------------------------------
+// $param sugar: generator arguments produce Cartesian product
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dollar_param_generator_cartesian() {
+    assert_jq_compat(
+        "def y($a;$b): [$a,$b]; [y(.[];.[]*2)]",
+        "[1,2,3]",
+    );
+}
+
+#[test]
+fn dollar_param_generator_equivalence() {
+    // def x(a;b) with explicit `as` binding should equal def y($a;$b)
+    assert_jq_compat(
+        "def x(a;b): a as $a | b as $b | $a + $b; def y($a;$b): $a + $b; def check(a;b): [x(a;b)] == [y(a;b)]; check(.[];.[]*2)",
+        "[1,2,3]",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// getpath in update assignment position
+// ---------------------------------------------------------------------------
+
+#[test]
+fn getpath_update_assignment() {
+    assert_jq_compat(r#"getpath(["a",0,"b"]) |= 5"#, r#"{"a":[{"c":3}]}"#);
+}
+
+#[test]
+fn getpath_update_error_propagation() {
+    assert_jq_compat(
+        r#".[] | try (getpath(["a",0,"b"]) |= 5) catch ."#,
+        r#"[{"a":0},{"a":[0,1]}]"#,
     );
 }

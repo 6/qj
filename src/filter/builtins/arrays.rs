@@ -403,11 +403,17 @@ pub(super) fn eval_arrays(
             if let Some(path_f) = args.first() {
                 // Collect all paths to delete, resolving negative indices
                 let mut paths: Vec<Vec<Value>> = Vec::new();
-                super::super::value_ops::path_of(path_f, input, &mut Vec::new(), &mut |path_val| {
-                    if let Value::Array(arr) = path_val {
-                        paths.push(arr.as_ref().clone());
-                    }
-                });
+                super::super::value_ops::path_of_env(
+                    path_f,
+                    input,
+                    &mut Vec::new(),
+                    env,
+                    &mut |path_val| {
+                        if let Value::Array(arr) = path_val {
+                            paths.push(arr.as_ref().clone());
+                        }
+                    },
+                );
                 if paths.is_empty() {
                     output(input.clone());
                     return;
@@ -865,21 +871,27 @@ pub(super) fn eval_arrays(
                 // Use path() to get paths, then copy values via setpath
                 let mut acc = Value::Null;
                 let mut had_error = false;
-                super::super::value_ops::path_of(path_f, input, &mut Vec::new(), &mut |path_val| {
-                    if had_error {
-                        return;
-                    }
-                    if let Value::Array(path_arr) = &path_val {
-                        let val = super::super::value_ops::get_path(input, path_arr);
-                        match super::super::value_ops::set_path(&acc, path_arr, &val) {
-                            Ok(v) => acc = v,
-                            Err(msg) => {
-                                set_error(msg);
-                                had_error = true;
+                super::super::value_ops::path_of_env(
+                    path_f,
+                    input,
+                    &mut Vec::new(),
+                    env,
+                    &mut |path_val| {
+                        if had_error {
+                            return;
+                        }
+                        if let Value::Array(path_arr) = &path_val {
+                            let val = super::super::value_ops::get_path(input, path_arr);
+                            match super::super::value_ops::set_path(&acc, path_arr, &val) {
+                                Ok(v) => acc = v,
+                                Err(msg) => {
+                                    set_error(msg);
+                                    had_error = true;
+                                }
                             }
                         }
-                    }
-                });
+                    },
+                );
                 if !had_error {
                     output(acc);
                 }

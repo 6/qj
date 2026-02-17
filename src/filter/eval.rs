@@ -922,27 +922,76 @@ fn eval_user_func(
         body_env = body_env.bind_func(func_name.to_string(), func_arity, self_func);
     }
 
-    // Bind each parameter
-    for (param_name, arg_filter) in func.params.iter().zip(args.iter()) {
-        if param_name.starts_with('$') {
-            // $param sugar: evaluate the arg once, bind as a variable
-            let mut val = Value::Null;
-            eval(arg_filter, input, caller_env, &mut |v| val = v);
-            body_env = body_env.bind_var(param_name.clone(), val);
-        } else {
-            // Filter parameter: bind as a zero-arg function in the body environment.
-            // The function's body is the arg filter, and its closure is the caller's env.
-            let param_func = super::UserFunc {
-                params: vec![],
-                body: arg_filter.clone(),
-                closure_env: caller_env.clone(),
-                is_def: false,
-            };
-            body_env = body_env.bind_func(param_name.clone(), 0, param_func);
-        }
+    // Bind parameters and evaluate body.
+    // $param sugar (def f($a;$b): body) desugars to generator iteration:
+    // each $param iterates over all values from its argument expression,
+    // producing the Cartesian product when multiple generators are used.
+    bind_params_and_eval(
+        &func.params,
+        args,
+        input,
+        caller_env,
+        body_env,
+        &func.body,
+        output,
+    );
+}
+
+/// Recursively bind parameters: for `$param` sugar, iterate over all generator
+/// values; for filter params, bind as zero-arg functions. When all params are
+/// bound, evaluate the function body.
+fn bind_params_and_eval(
+    params: &[String],
+    args: &[Filter],
+    input: &Value,
+    caller_env: &Env,
+    body_env: Env,
+    body: &Filter,
+    output: &mut dyn FnMut(Value),
+) {
+    if params.is_empty() {
+        eval(body, input, &body_env, output);
+        return;
     }
 
-    eval(&func.body, input, &body_env, output);
+    let param_name = &params[0];
+    let arg_filter = &args[0];
+    let rest_params = &params[1..];
+    let rest_args = &args[1..];
+
+    if param_name.starts_with('$') {
+        // $param sugar: iterate over all generator values (Cartesian product)
+        eval(arg_filter, input, caller_env, &mut |val| {
+            let new_env = body_env.bind_var(param_name.clone(), val);
+            bind_params_and_eval(
+                rest_params,
+                rest_args,
+                input,
+                caller_env,
+                new_env,
+                body,
+                output,
+            );
+        });
+    } else {
+        // Filter parameter: bind as a zero-arg function in the body environment.
+        let param_func = super::UserFunc {
+            params: vec![],
+            body: arg_filter.clone(),
+            closure_env: caller_env.clone(),
+            is_def: false,
+        };
+        let new_env = body_env.bind_func(param_name.clone(), 0, param_func);
+        bind_params_and_eval(
+            rest_params,
+            rest_args,
+            input,
+            caller_env,
+            new_env,
+            body,
+            output,
+        );
+    }
 }
 
 /// Evaluate an assignment expression: `path_filter op= rhs`.
@@ -967,7 +1016,7 @@ fn eval_assign(
                     output(result);
                 }
             } else {
-                eval_assign_via_paths(path_filter, input, &set_updater, output);
+                eval_assign_via_paths(path_filter, input, env, &set_updater, output);
             }
         }
         return;
@@ -1039,7 +1088,7 @@ fn eval_assign(
     }
 
     // Slow path: collect paths, apply updates one by one (O(N²) for iterators).
-    eval_assign_via_paths(path_filter, input, &*updater, output);
+    eval_assign_via_paths(path_filter, input, env, &*updater, output);
 }
 
 /// Check if a path filter can be handled by the fast recursive update.
@@ -1397,17 +1446,23 @@ fn update_recursive(
 fn eval_assign_via_paths(
     path_filter: &Filter,
     input: &Value,
+    env: &Env,
     updater: &dyn Fn(&Value) -> Option<Value>,
     output: &mut dyn FnMut(Value),
 ) {
     use super::value_ops;
 
     let mut paths: Vec<Vec<Value>> = Vec::new();
-    value_ops::path_of(path_filter, input, &mut Vec::new(), &mut |p| {
+    value_ops::path_of_env(path_filter, input, &mut Vec::new(), env, &mut |p| {
         if let Value::Array(arr) = p {
             paths.push(arr.as_ref().clone());
         }
     });
+
+    // If path_of failed with an error (invalid path expression), don't output
+    if paths.is_empty() && has_last_error() {
+        return;
+    }
 
     let mut result = input.clone();
     let mut deletions: Vec<Vec<Value>> = Vec::new();

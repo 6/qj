@@ -279,6 +279,11 @@ pub(super) fn set_path(value: &Value, path: &[Value], new_val: &Value) -> Result
         (Value::Object(_), Value::Int(_)) => Err("Cannot index object with number".to_string()),
         (Value::Array(_), Value::String(_)) => Err("Cannot index array with string".to_string()),
         (_, Value::Array(_)) => Err("Cannot update field at array index of array".to_string()),
+        (_, Value::String(s)) => Err(format!(
+            "Cannot index {} with string \"{}\"",
+            value.type_name(),
+            s
+        )),
         _ => Err(format!(
             "Cannot index {} with {}",
             value.type_name(),
@@ -436,13 +441,16 @@ pub(super) fn enum_leaf_paths(
     }
 }
 
-pub(super) fn path_of(
+/// Compute path(s) for a filter expression.
+///
+/// When `env` is provided, user-defined functions are resolved to their body.
+pub(super) fn path_of_env(
     filter: &Filter,
     input: &Value,
     current: &mut Vec<Value>,
+    env: &Env,
     output: &mut dyn FnMut(Value),
 ) {
-    let env = Env::empty();
     match filter {
         Filter::Field(name) => {
             current.push(Value::String(name.clone()));
@@ -450,7 +458,7 @@ pub(super) fn path_of(
             current.pop();
         }
         Filter::Index(idx_f) => {
-            eval(idx_f, input, &env, &mut |idx| {
+            eval(idx_f, input, env, &mut |idx| {
                 current.push(idx);
                 output(Value::Array(Arc::new(current.clone())));
                 current.pop();
@@ -470,7 +478,7 @@ pub(super) fn path_of(
                     .as_ref()
                     .map(|sf| {
                         let mut v = 0i64;
-                        eval(sf, input, &env, &mut |sv| {
+                        eval(sf, input, env, &mut |sv| {
                             if let Some(n) = val_to_i64(&sv) {
                                 v = n;
                             }
@@ -482,7 +490,7 @@ pub(super) fn path_of(
                     .as_ref()
                     .map(|ef| {
                         let mut v = len;
-                        eval(ef, input, &env, &mut |ev| {
+                        eval(ef, input, env, &mut |ev| {
                             if let Some(n) = val_to_i64(&ev) {
                                 v = n;
                             }
@@ -520,52 +528,69 @@ pub(super) fn path_of(
             let saved_len = current.len();
             // Collect all paths from LHS, navigate to each, then resolve RHS paths
             let mut lhs_paths: Vec<Vec<Value>> = Vec::new();
-            path_of(a, input, current, &mut |p| {
+            path_of_env(a, input, current, env, &mut |p| {
                 if let Value::Array(arr) = p {
                     lhs_paths.push(arr.as_ref().clone());
                 }
             });
             if lhs_paths.is_empty() && super::eval::has_last_error() {
-                // LHS was an invalid path expression. Check if RHS describes
-                // a specific navigation attempt and generate a more descriptive error.
-                // Re-evaluate LHS to get its result value for the error message.
-                let _ = super::eval::take_last_error();
-                let mut lhs_vals = Vec::new();
-                eval(a, input, &env, &mut |v| lhs_vals.push(v));
-                if let Some(val) = lhs_vals.first() {
-                    let formatted = crate::output::format_compact(val);
-                    let msg = match b.as_ref() {
-                        Filter::Field(name) => format!(
-                            "Invalid path expression near attempt to access element \"{}\" of {}",
-                            name, formatted
-                        ),
-                        Filter::Index(idx_f) => {
-                            let mut idx_vals = Vec::new();
-                            eval(idx_f, val, &env, &mut |v| idx_vals.push(v));
-                            if let Some(idx) = idx_vals.first() {
-                                let idx_str = crate::output::format_compact(idx);
-                                format!(
-                                    "Invalid path expression near attempt to access element {} of {}",
-                                    idx_str, formatted
-                                )
-                            } else {
-                                format!("Invalid path expression with result {}", formatted)
-                            }
+                // LHS was an invalid path expression. Check if the error is
+                // already specific ("near attempt to...") — if so, keep it.
+                // Otherwise, refine it based on what RHS was trying to do.
+                let existing = super::eval::take_last_error();
+                let already_specific = existing
+                    .as_ref()
+                    .and_then(|e| {
+                        if let Value::String(s) = e {
+                            Some(s.contains("near attempt to"))
+                        } else {
+                            None
                         }
-                        Filter::Iterate => format!(
-                            "Invalid path expression near attempt to iterate through {}",
-                            formatted
-                        ),
-                        _ => format!("Invalid path expression with result {}", formatted),
-                    };
-                    super::eval::set_last_error(Value::String(msg));
+                    })
+                    .unwrap_or(false);
+                if already_specific {
+                    // Preserve the more specific inner error
+                    if let Some(err) = existing {
+                        super::eval::set_last_error(err);
+                    }
+                } else {
+                    let mut lhs_vals = Vec::new();
+                    eval(a, input, env, &mut |v| lhs_vals.push(v));
+                    if let Some(val) = lhs_vals.first() {
+                        let formatted = crate::output::format_compact(val);
+                        let msg = match b.as_ref() {
+                            Filter::Field(name) => format!(
+                                "Invalid path expression near attempt to access element \"{}\" of {}",
+                                name, formatted
+                            ),
+                            Filter::Index(idx_f) => {
+                                let mut idx_vals = Vec::new();
+                                eval(idx_f, val, env, &mut |v| idx_vals.push(v));
+                                if let Some(idx) = idx_vals.first() {
+                                    let idx_str = crate::output::format_compact(idx);
+                                    format!(
+                                        "Invalid path expression near attempt to access element {} of {}",
+                                        idx_str, formatted
+                                    )
+                                } else {
+                                    format!("Invalid path expression with result {}", formatted)
+                                }
+                            }
+                            Filter::Iterate => format!(
+                                "Invalid path expression near attempt to iterate through {}",
+                                formatted
+                            ),
+                            _ => format!("Invalid path expression with result {}", formatted),
+                        };
+                        super::eval::set_last_error(Value::String(msg));
+                    }
                 }
             } else {
                 for lhs_path in &lhs_paths {
                     current.truncate(saved_len);
                     current.extend_from_slice(lhs_path);
                     let next = get_path(input, lhs_path);
-                    path_of(b, &next, current, output);
+                    path_of_env(b, &next, current, env, output);
                 }
             }
             current.truncate(saved_len);
@@ -575,7 +600,7 @@ pub(super) fn path_of(
         }
         Filter::Select(cond) => {
             let mut is_match = false;
-            eval(cond, input, &env, &mut |v| {
+            eval(cond, input, env, &mut |v| {
                 if v.is_truthy() {
                     is_match = true;
                 }
@@ -586,7 +611,7 @@ pub(super) fn path_of(
         }
         Filter::Comma(items) => {
             for item in items {
-                path_of(item, input, current, output);
+                path_of_env(item, input, current, env, output);
             }
         }
         Filter::Recurse => {
@@ -619,11 +644,23 @@ pub(super) fn path_of(
         Filter::PostfixIndex(base, idx) => {
             // PostfixIndex(base, idx) — same as Pipe(base, Index(idx)) for path purposes
             let pipe = Filter::Pipe(base.clone(), Box::new(Filter::Index(idx.clone())));
-            path_of(&pipe, input, current, output);
+            path_of_env(&pipe, input, current, env, output);
         }
         Filter::PostfixSlice(base, s, e) => {
             let pipe = Filter::Pipe(base.clone(), Box::new(Filter::Slice(s.clone(), e.clone())));
-            path_of(&pipe, input, current, output);
+            path_of_env(&pipe, input, current, env, output);
+        }
+        Filter::Builtin(name, args) if name == "getpath" && args.len() == 1 => {
+            // getpath(path_expr) — the path IS the argument value
+            eval(&args[0], input, env, &mut |path_val| {
+                if let Value::Array(path_arr) = path_val {
+                    for seg in path_arr.iter() {
+                        current.push(seg.clone());
+                    }
+                    output(Value::Array(Arc::new(current.clone())));
+                    current.truncate(current.len() - path_arr.len());
+                }
+            });
         }
         Filter::Builtin(name, args) if args.is_empty() => {
             match name.as_str() {
@@ -644,15 +681,20 @@ pub(super) fn path_of(
                     }
                 }
                 _ => {
-                    // Unsupported builtin in path expression
-                    let mut results = Vec::new();
-                    eval(filter, input, &env, &mut |v| results.push(v));
-                    if let Some(val) = results.first() {
-                        let formatted = crate::output::format_compact(val);
-                        super::eval::set_last_error(Value::String(format!(
-                            "Invalid path expression with result {}",
-                            formatted
-                        )));
+                    // Check if this is a user-defined function — resolve its body
+                    if let Some(func) = env.get_func(name, 0) {
+                        path_of_env(&func.body, input, current, env, output);
+                    } else {
+                        // Unsupported builtin in path expression
+                        let mut results = Vec::new();
+                        eval(filter, input, env, &mut |v| results.push(v));
+                        if let Some(val) = results.first() {
+                            let formatted = crate::output::format_compact(val);
+                            super::eval::set_last_error(Value::String(format!(
+                                "Invalid path expression with result {}",
+                                formatted
+                            )));
+                        }
                     }
                 }
             }
@@ -660,7 +702,7 @@ pub(super) fn path_of(
         _ => {
             // Unsupported filter in path expression — evaluate and report error
             let mut results = Vec::new();
-            eval(filter, input, &env, &mut |v| results.push(v));
+            eval(filter, input, env, &mut |v| results.push(v));
             if let Some(val) = results.first() {
                 let formatted = crate::output::format_compact(val);
                 super::eval::set_last_error(Value::String(format!(
