@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Shared test utilities for jq compatibility runners.
 ///
 /// Provides tool discovery, JSON-aware comparison, process spawning,
