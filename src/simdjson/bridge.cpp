@@ -13,6 +13,22 @@
 
 using namespace simdjson;
 
+/// Count UTF-8 codepoints in a string_view (not bytes).
+/// Walks lead-byte patterns: 0xxxxxxx (1-byte), 110xxxxx (2-byte),
+/// 1110xxxx (3-byte), 11110xxx (4-byte).
+static int64_t utf8_codepoint_count(std::string_view sv) {
+    int64_t count = 0;
+    for (size_t i = 0; i < sv.size(); ) {
+        unsigned char c = static_cast<unsigned char>(sv[i]);
+        if (c < 0x80) i += 1;
+        else if ((c >> 5) == 0x06) i += 2;
+        else if ((c >> 4) == 0x0E) i += 3;
+        else i += 4;
+        count++;
+    }
+    return count;
+}
+
 // Opaque handle holding both the parser and the most recent document.
 // The document borrows internal parser buffers, so they must live together.
 struct JxParser {
@@ -821,7 +837,7 @@ int jx_dom_field_length(
                 length = static_cast<int64_t>(dom::object(result).size());
                 break;
             case dom::element_type::STRING:
-                length = static_cast<int64_t>(result.get_string().value().size());
+                length = utf8_codepoint_count(result.get_string().value());
                 break;
             case dom::element_type::NULL_VALUE:
                 length = 0;
@@ -1424,7 +1440,7 @@ int jx_dom_array_map_builtin(
                         case dom::element_type::STRING: {
                             std::string_view sv;
                             if (!elem.get(sv)) {
-                                out += std::to_string(sv.size());
+                                out += std::to_string(utf8_codepoint_count(sv));
                             } else {
                                 return -2;
                             }

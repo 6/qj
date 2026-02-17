@@ -1300,6 +1300,26 @@ fn process_padded(
             qj::value::Value::from(serde_val)
         }
         Err(e) => {
+            // Try special float preprocessing (NaN, Infinity, nan, inf)
+            let raw = &padded[..json_len];
+            if qj::input::has_special_float_tokens_pub(raw) {
+                let pp = qj::input::preprocess_special_floats_pub(raw);
+                let pp_padded = qj::simdjson::pad_buffer(&pp);
+                if let Ok(val) = qj::simdjson::dom_parse_to_value_fast(&pp_padded, pp.len()) {
+                    let input = qj::input::fixup_special_float_sentinels_pub(val);
+                    eval_and_output(
+                        filter,
+                        &input,
+                        env,
+                        out,
+                        config,
+                        had_output,
+                        had_error,
+                        last_was_falsy,
+                    );
+                    return Ok(());
+                }
+            }
             // Try multi-doc fallback: serde_json's StreamDeserializer handles
             // concatenated JSON like {"a":1}{"b":2} and whitespace-separated values.
             let text = match std::str::from_utf8(&padded[..json_len]) {

@@ -5113,3 +5113,141 @@ fn glob_slurp() {
     assert_eq!(stdout.trim(), "30");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// String length: Unicode codepoint counting
+// ---------------------------------------------------------------------------
+
+#[test]
+fn string_length_ascii() {
+    assert_jq_compat("length", "\"hello\"");
+}
+
+#[test]
+fn string_length_unicode_2byte() {
+    // é is 2 UTF-8 bytes but 1 codepoint
+    assert_jq_compat("length", "\"é\"");
+}
+
+#[test]
+fn string_length_unicode_3byte() {
+    // 中 is 3 UTF-8 bytes but 1 codepoint
+    assert_jq_compat("length", "\"中\"");
+}
+
+#[test]
+fn string_length_unicode_4byte() {
+    // 𝕳 is 4 UTF-8 bytes but 1 codepoint
+    assert_jq_compat("length", "\"𝕳\"");
+}
+
+#[test]
+fn string_length_mixed_unicode() {
+    // "aé中𝕳" = 4 codepoints (1+1+1+1)
+    assert_jq_compat("length", "\"aé中𝕳\"");
+}
+
+#[test]
+fn string_length_emoji() {
+    // 🎉 is 4 UTF-8 bytes but 1 codepoint
+    assert_jq_compat("length", "\"🎉\"");
+}
+
+// ---------------------------------------------------------------------------
+// NaN/Infinity modulo
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inf_modulo_finite() {
+    // infinite % 1 → 0
+    let out = qj_compact("infinite % 1", "null");
+    assert_eq!(out.trim(), "0");
+}
+
+#[test]
+fn neg_inf_modulo_finite() {
+    // -infinite % 1 → 0
+    let out = qj_compact("(-infinite) % 1", "null");
+    assert_eq!(out.trim(), "0");
+}
+
+#[test]
+fn inf_modulo_inf() {
+    // infinite % infinite → 0
+    let out = qj_compact("infinite % infinite", "null");
+    assert_eq!(out.trim(), "0");
+}
+
+// ---------------------------------------------------------------------------
+// implode error messages
+// ---------------------------------------------------------------------------
+
+#[test]
+fn implode_error_non_array() {
+    assert_jq_compat("try (123 | implode) catch .", "null");
+}
+
+#[test]
+fn implode_error_string_element() {
+    assert_jq_compat("[\"a\"] | try implode catch .", "null");
+}
+
+#[test]
+fn implode_error_null_element() {
+    assert_jq_compat("[null] | try implode catch .", "null");
+}
+
+#[test]
+fn implode_error_bool_element() {
+    assert_jq_compat("[true] | try implode catch .", "null");
+}
+
+// ---------------------------------------------------------------------------
+// Special float input parsing (NaN, Infinity)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_nan_in_input() {
+    // {"a":nan} → tojson → {"a":null}
+    let out = qj_compact("tojson | fromjson", "{\"a\":nan}");
+    assert_eq!(out.trim(), "{\"a\":null}");
+}
+
+#[test]
+fn parse_special_floats_iterate_assign() {
+    // .[] = 1 on array with special floats
+    let out = qj_compact(".[] = 1", "[1,null,Infinity,-Infinity,NaN,-NaN]");
+    assert_eq!(out.trim(), "[1,1,1,1,1,1]");
+}
+
+#[test]
+fn parse_nan_isnan() {
+    // NaN parsed from input should be recognized by isnan
+    let out = qj_compact(".[0] | isnan", "[NaN,1]");
+    assert_eq!(out.trim(), "true");
+}
+
+#[test]
+fn parse_nan_in_string_preserved() {
+    // "NaN" inside a JSON string should NOT be replaced
+    let out = qj_compact(".", "{\"key\":\"NaN\"}");
+    assert_eq!(out.trim(), "{\"key\":\"NaN\"}");
+}
+
+// ---------------------------------------------------------------------------
+// try input catch . (break signal)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn try_input_catch_break() {
+    assert_jq_compat("try input catch .", "null");
+}
+
+// ---------------------------------------------------------------------------
+// tostring preserves raw text for large numbers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tostring_large_number_preserves_raw() {
+    assert_jq_compat("tostring", "100000000000000000000");
+}

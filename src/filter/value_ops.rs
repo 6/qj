@@ -899,9 +899,31 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                 "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
                 value_desc(left)
             )),
-            (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a % b, None)),
-            (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 % b, None)),
-            (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a % *b as f64, None)),
+            (Value::Double(a, _), Value::Double(b, _)) => {
+                let r = a % b;
+                // jq: inf % n → 0 (NaN result from non-NaN operands becomes 0)
+                if r.is_nan() && !a.is_nan() && !b.is_nan() {
+                    Ok(Value::Double(0.0, None))
+                } else {
+                    Ok(Value::Double(r, None))
+                }
+            }
+            (Value::Int(a), Value::Double(b, _)) => {
+                let r = *a as f64 % b;
+                if r.is_nan() && !b.is_nan() {
+                    Ok(Value::Double(0.0, None))
+                } else {
+                    Ok(Value::Double(r, None))
+                }
+            }
+            (Value::Double(a, _), Value::Int(b)) => {
+                let r = a % *b as f64;
+                if r.is_nan() && !a.is_nan() {
+                    Ok(Value::Double(0.0, None))
+                } else {
+                    Ok(Value::Double(r, None))
+                }
+            }
             _ => Err(format!(
                 "{} and {} cannot be divided (remainder)",
                 left.type_name(),

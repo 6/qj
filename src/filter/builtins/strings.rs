@@ -360,9 +360,18 @@ pub(super) fn eval_strings(
                         Value::Int(n) => *n,
                         Value::Double(f, _) if f.is_finite() => *f as i64,
                         _ => {
+                            // jq format: "<type> (<value>) can't be imploded, ..."
+                            // NaN/Infinity doubles display as "null" in jq
+                            let desc = match v {
+                                Value::Double(f, _) if f.is_nan() || f.is_infinite() => {
+                                    "null".to_string()
+                                }
+                                _ => v.short_desc(),
+                            };
                             set_error(format!(
-                                "string ({}) can't be imploded, unicode codepoint needs to be numeric",
-                                v.short_desc()
+                                "{} ({}) can't be imploded, unicode codepoint needs to be numeric",
+                                v.type_name(),
+                                desc
                             ));
                             return;
                         }
