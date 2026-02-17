@@ -403,11 +403,19 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                 }
                 NavResult::FlatMany(children) => {
                     for child in children {
+                        // Stop if an error was raised (match regular eval behavior)
+                        if crate::filter::eval::has_last_error() {
+                            return;
+                        }
                         eval_flat(right, child, env, output);
                     }
                 }
                 NavResult::Values(values) => {
                     for v in &values {
+                        // Stop if an error was raised (match regular eval behavior)
+                        if crate::filter::eval::has_last_error() {
+                            return;
+                        }
                         crate::filter::eval::eval_filter_with_env(right, v, env, output);
                     }
                 }
@@ -424,7 +432,11 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
         Filter::ArrayConstruct(inner) => {
             let mut arr = Vec::new();
             eval_flat(inner, flat, env, &mut |v| arr.push(v));
-            output(Value::Array(Arc::new(arr)));
+            // If an error occurred during collection, don't produce the array
+            // (let the error propagate to try/catch)
+            if !crate::filter::eval::has_last_error() {
+                output(Value::Array(Arc::new(arr)));
+            }
         }
 
         Filter::Iterate => {

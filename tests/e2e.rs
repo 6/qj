@@ -5251,3 +5251,92 @@ fn try_input_catch_break() {
 fn tostring_large_number_preserves_raw() {
     assert_jq_compat("tostring", "100000000000000000000");
 }
+
+// ---------------------------------------------------------------------------
+// Try/? operator on array construction (flat_eval error propagation)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn try_postfix_array_construct() {
+    // ? on array construction should suppress errors and produce no output
+    assert_jq_compat("[[.[]|[.a,.a]]?]", r#"[null,true,{"a":1}]"#);
+}
+
+#[test]
+fn array_construct_suppresses_on_error() {
+    // [.a,.a] on boolean should error, not produce []
+    let (code, stdout, stderr) = qj_exit(&["-c", "[.a,.a]"], "true");
+    assert_ne!(code, 0);
+    assert!(stdout.trim().is_empty(), "expected no output, got: {stdout}");
+    assert!(
+        stderr.contains("Cannot index boolean"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn try_array_construct_suppresses_error() {
+    // try [.a,.a] on boolean should produce no output (not [])
+    assert_jq_compat("try [.a,.a]", "true");
+}
+
+#[test]
+fn array_construct_success_still_works() {
+    // Normal array construction should still work
+    assert_jq_compat("[.a,.b]", r#"{"a":1,"b":2}"#);
+}
+
+// ---------------------------------------------------------------------------
+// `as` binding in assignment paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn as_binding_in_assignment() {
+    // (.a as $x | .b) = "b" — as binding should work in path position
+    assert_jq_compat(r#"(.a as $x | .b) = "b""#, r#"{"a":null,"b":null}"#);
+}
+
+#[test]
+fn as_binding_in_update() {
+    // (.a as $x | .b) |= . + 1
+    assert_jq_compat(
+        "(.a as $x | .b) |= . + 1",
+        r#"{"a":10,"b":5}"#,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Invalid path expression errors
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_invalid_map_expression() {
+    assert_jq_compat(
+        "try path(.a | map(select(.b == 0))) catch .",
+        r#"{"a":[{"b":0}]}"#,
+    );
+}
+
+#[test]
+fn path_invalid_with_index_access() {
+    assert_jq_compat(
+        "try path(.a | map(select(.b == 0)) | .[0]) catch .",
+        r#"{"a":[{"b":0}]}"#,
+    );
+}
+
+#[test]
+fn path_invalid_with_field_access() {
+    assert_jq_compat(
+        "try path(.a | map(select(.b == 0)) | .c) catch .",
+        r#"{"a":[{"b":0}]}"#,
+    );
+}
+
+#[test]
+fn path_invalid_with_iterate() {
+    assert_jq_compat(
+        "try path(.a | map(select(.b == 0)) | .[]) catch .",
+        r#"{"a":[{"b":0}]}"#,
+    );
+}

@@ -142,6 +142,11 @@ pub fn set_last_error(err: Value) {
     LAST_ERROR.with(|e| *e.borrow_mut() = Some(err));
 }
 
+/// Check if a runtime error is currently set (non-consuming).
+pub fn has_last_error() -> bool {
+    LAST_ERROR.with(|e| e.borrow().is_some())
+}
+
 /// Set the input queue for `input`/`inputs` builtins.
 pub fn set_input_queue(values: VecDeque<Value>) {
     INPUT_QUEUE.with(|q| *q.borrow_mut() = values);
@@ -1045,6 +1050,7 @@ fn is_update_path_supported(f: &Filter) -> bool {
         Filter::PostfixIndex(a, _) | Filter::PostfixSlice(a, _, _) => is_update_path_supported(a),
         Filter::Pipe(a, b) => is_update_path_supported(a) && is_update_path_supported(b),
         Filter::Comma(items) => items.iter().all(is_update_path_supported),
+        Filter::Bind(_, _, body) => is_update_path_supported(body),
         _ => false,
     }
 }
@@ -1367,6 +1373,19 @@ fn update_recursive(
                     result = updated;
                 }
             }
+            Some(result)
+        }
+
+        Filter::Bind(source, pattern, body) => {
+            // Evaluate source, bind to pattern, then update through body
+            let mut result = input.clone();
+            eval(source, input, env, &mut |val| {
+                if let Some(new_env) = match_pattern(pattern, &val, env)
+                    && let Some(updated) = update_recursive(body, &result, &new_env, updater)
+                {
+                    result = updated;
+                }
+            });
             Some(result)
         }
 

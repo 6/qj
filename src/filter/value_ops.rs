@@ -525,11 +525,48 @@ pub(super) fn path_of(
                     lhs_paths.push(arr.as_ref().clone());
                 }
             });
-            for lhs_path in &lhs_paths {
-                current.truncate(saved_len);
-                current.extend_from_slice(lhs_path);
-                let next = get_path(input, lhs_path);
-                path_of(b, &next, current, output);
+            if lhs_paths.is_empty() && super::eval::has_last_error() {
+                // LHS was an invalid path expression. Check if RHS describes
+                // a specific navigation attempt and generate a more descriptive error.
+                // Re-evaluate LHS to get its result value for the error message.
+                let _ = super::eval::take_last_error();
+                let mut lhs_vals = Vec::new();
+                eval(a, input, &env, &mut |v| lhs_vals.push(v));
+                if let Some(val) = lhs_vals.first() {
+                    let formatted = crate::output::format_compact(val);
+                    let msg = match b.as_ref() {
+                        Filter::Field(name) => format!(
+                            "Invalid path expression near attempt to access element \"{}\" of {}",
+                            name, formatted
+                        ),
+                        Filter::Index(idx_f) => {
+                            let mut idx_vals = Vec::new();
+                            eval(idx_f, val, &env, &mut |v| idx_vals.push(v));
+                            if let Some(idx) = idx_vals.first() {
+                                let idx_str = crate::output::format_compact(idx);
+                                format!(
+                                    "Invalid path expression near attempt to access element {} of {}",
+                                    idx_str, formatted
+                                )
+                            } else {
+                                format!("Invalid path expression with result {}", formatted)
+                            }
+                        }
+                        Filter::Iterate => format!(
+                            "Invalid path expression near attempt to iterate through {}",
+                            formatted
+                        ),
+                        _ => format!("Invalid path expression with result {}", formatted),
+                    };
+                    super::eval::set_last_error(Value::String(msg));
+                }
+            } else {
+                for lhs_path in &lhs_paths {
+                    current.truncate(saved_len);
+                    current.extend_from_slice(lhs_path);
+                    let next = get_path(input, lhs_path);
+                    path_of(b, &next, current, output);
+                }
             }
             current.truncate(saved_len);
         }
@@ -606,10 +643,32 @@ pub(super) fn path_of(
                         current.pop();
                     }
                 }
-                _ => {}
+                _ => {
+                    // Unsupported builtin in path expression
+                    let mut results = Vec::new();
+                    eval(filter, input, &env, &mut |v| results.push(v));
+                    if let Some(val) = results.first() {
+                        let formatted = crate::output::format_compact(val);
+                        super::eval::set_last_error(Value::String(format!(
+                            "Invalid path expression with result {}",
+                            formatted
+                        )));
+                    }
+                }
             }
         }
-        _ => {}
+        _ => {
+            // Unsupported filter in path expression — evaluate and report error
+            let mut results = Vec::new();
+            eval(filter, input, &env, &mut |v| results.push(v));
+            if let Some(val) = results.first() {
+                let formatted = crate::output::format_compact(val);
+                super::eval::set_last_error(Value::String(format!(
+                    "Invalid path expression with result {}",
+                    formatted
+                )));
+            }
+        }
     }
 }
 

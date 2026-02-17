@@ -99,6 +99,18 @@ impl Default for OutputConfig {
     }
 }
 
+/// Format a value as compact JSON (for error messages, etc).
+pub fn format_compact(value: &Value) -> String {
+    let config = OutputConfig {
+        mode: OutputMode::Compact,
+        ..Default::default()
+    };
+    let mut buf = Vec::new();
+    write_value(&mut buf, value, &config).unwrap();
+    // Trim trailing newline
+    String::from_utf8(buf).unwrap().trim_end().to_string()
+}
+
 /// Write a value to the output sink, followed by a newline (unless join_output).
 pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) -> io::Result<()> {
     match config.mode {
