@@ -2,16 +2,20 @@
 
 `qj` is Quick JSON, a `jq`-compatible processor with [simdjson](https://github.com/simdjson/simdjson) parsing and automatic parallelization across cores.
 
-- **NDJSON:** 28-150x faster than jq, 25-67x faster than jaq. Single-threaded: 5-67x faster than jq.
-- **JSON:** 2-29x faster than jq, ~2x faster than jaq (SIMD parsing, no parallelism).
+Benchmarked on an M4 MacBook Pro:
+
+- **NDJSON (1.1 GB):** `select(.type == "PushEvent")` in 101 ms vs jq's 13.5 s — **133x faster**
+- **JSON (49 MB):** `.statuses | map({user, text})` in 60 ms vs jq's 706 ms — **12x faster**
 
 ## When to use qj instead of jq
 
-**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. On 1.1 GB NDJSON: `select(.type == "PushEvent")` takes 101 ms vs jq's 13.5 s (133x). No `xargs` or `parallel` needed.
+**Any time you'd use jq.** Same syntax, same flags — just faster. SIMD parsing makes even small files snappier.
 
-**Large JSON files (>10 MB).** qj parses with SIMD (simdjson via FFI). On a 49 MB file, `length` takes 34 ms vs jq's 361 ms (11x). Simple operations like `length`, `keys`, and `map` are 10-12x faster; `group_by` and `sort_by` are the slowest at ~2x.
+**NDJSON / JSONL pipelines.** qj auto-parallelizes across all cores. No `xargs` or `parallel` needed.
 
-**When jq is fine.** Small files (<1 MB), complex multi-page scripts, or when you need 100% jq compatibility. qj covers 98.5% of jq's feature surface but doesn't support modules or arbitrary precision arithmetic.
+**Streaming and ad-hoc pipelines.** Tailing logs, piping API responses, one-shot transforms — where you'd never fire up DuckDB or convert to Parquet.
+
+**When jq is fine.** If you need modules (`import`/`include`) or arbitrary precision arithmetic.
 
 **Memory tradeoff.** qj trades memory for speed (~64 MB for NDJSON vs jq's ~5 MB). If memory is tight, jq is the safer choice.
 
