@@ -3,11 +3,14 @@ name = "qj"
 version = "0.1.0"
 edition = "2024"
 autobenches = false
-description = "A faster jq — jq-compatible JSON processor using SIMD and parallel NDJSON. Quick JSON."
+description = "A fast, jq-compatible JSON processor powered by simdjson"
 license = "MIT"
 keywords = ["json", "jq", "simd", "jsonl", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 repository = "https://github.com/6/qj"
+
+[features]
+bench = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -55,12 +58,15 @@ harness = false
 [[bin]]
 name = "gen_ndjson"
 path = "benches/gen_ndjson.rs"
+required-features = ["bench"]
 
 [[bin]]
 name = "bench_tools"
 path = "benches/bench_tools.rs"
+required-features = ["bench"]
 
 [[bin]]
 name = "bench_mem"
 path = "benches/bench_mem.rs"
 test = false
+required-features = ["bench"]

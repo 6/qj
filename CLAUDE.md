@@ -140,17 +140,17 @@ bash benches/build_cpp_bench.sh
 ### End-to-end tool comparison (qj vs jq vs jaq vs gojq)
 ```
 bash benches/setup_bench_data.sh    # all test data (includes ~1GB GH Archive download)
-cargo run --release --bin bench_tools -- --type json                    # JSON (large_twitter.json)
-cargo run --release --bin bench_tools -- --type ndjson                  # NDJSON (gharchive_medium.ndjson, 3.4GB)
-cargo run --release --bin bench_tools -- --type ndjson --size small     # NDJSON (gharchive.ndjson, 1.1GB)
-cargo run --release --bin bench_tools -- --type ndjson --size large     # NDJSON (gharchive_large.ndjson, 6.2GB)
-cargo run --release --bin bench_tools -- --type json --runs 3 --cooldown 2  # quick JSON run
+cargo run --release --features bench --bin bench_tools -- --type json                    # JSON (large_twitter.json)
+cargo run --release --features bench --bin bench_tools -- --type ndjson                  # NDJSON (gharchive_medium.ndjson, 3.4GB)
+cargo run --release --features bench --bin bench_tools -- --type ndjson --size small     # NDJSON (gharchive.ndjson, 1.1GB)
+cargo run --release --features bench --bin bench_tools -- --type ndjson --size large     # NDJSON (gharchive_large.ndjson, 6.2GB)
+cargo run --release --features bench --bin bench_tools -- --type json --runs 3 --cooldown 2  # quick JSON run
 ```
 
 ### Memory usage comparison (qj vs jq vs jaq vs gojq)
 ```
-cargo run --release --bin bench_mem -- --type json     # JSON (large_twitter.json)
-cargo run --release --bin bench_mem -- --type ndjson    # NDJSON (gharchive.ndjson or 1m.ndjson)
+cargo run --release --features bench --bin bench_mem -- --type json     # JSON (large_twitter.json)
+cargo run --release --features bench --bin bench_mem -- --type ndjson    # NDJSON (gharchive.ndjson or 1m.ndjson)
 ```
 Measures peak RSS via `wait4()` rusage. No external tools needed (no hyperfine).
 Results written to `benches/results_mem_json.md` / `benches/results_mem_ndjson.md`.
