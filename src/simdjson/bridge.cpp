@@ -766,6 +766,16 @@ static int navigate_fields_raw(
     auto raw_result = current.raw_json();
     if (raw_result.error()) return 2;
     raw = raw_result.value();
+    // On-demand parsing is lazy — it may extract syntactically invalid values
+    // from malformed JSON (e.g. unquoted strings). Quick-reject by checking the
+    // first byte is a valid JSON value start.
+    if (!raw.empty()) {
+        char c = raw.front();
+        if (c != '"' && c != '{' && c != '[' && c != 't' && c != 'f' &&
+            c != 'n' && c != '-' && !(c >= '0' && c <= '9')) {
+            return 2;
+        }
+    }
     return 0;
 }
 
@@ -1047,10 +1057,12 @@ int jx_dom_find_fields_raw_reuse(
             int nav = navigate_fields_raw(p->ondemand, buf, len,
                                            chains[i], chain_lens[i],
                                            chain_counts[i], raw);
+            if (nav == 2) return -1; // parse error — propagate
             std::string_view val;
             if (nav == 0) {
                 val = trim_raw_json(raw);
             } else {
+                // nav == 1: field not found → null
                 val = std::string_view("null", 4);
             }
             uint32_t slen = static_cast<uint32_t>(val.size());
