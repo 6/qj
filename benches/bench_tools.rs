@@ -298,11 +298,6 @@ static NDJSON_FILTERS_SHORT: &[BenchFilter] = &[
         flags: &["-c"],
         expr: "{type, commits: [.payload.commits[]?.message]}",
     },
-    BenchFilter {
-        name: "evaluator (complex)",
-        flags: &["-c"],
-        expr: "{type, commits: (.payload.commits // [] | length)}",
-    },
 ];
 
 // --- Tool discovery ---
