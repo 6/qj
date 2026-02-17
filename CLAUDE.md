@@ -135,7 +135,9 @@ bash benches/build_cpp_bench.sh
 ```
 bash benches/setup_bench_data.sh    # all test data (includes ~1GB GH Archive download)
 cargo run --release --bin bench_tools -- --type json                    # JSON (large_twitter.json)
-cargo run --release --bin bench_tools -- --type ndjson                  # NDJSON (gharchive.ndjson)
+cargo run --release --bin bench_tools -- --type ndjson                  # NDJSON (gharchive_medium.ndjson, 3.4GB)
+cargo run --release --bin bench_tools -- --type ndjson --size small     # NDJSON (gharchive.ndjson, 1.1GB)
+cargo run --release --bin bench_tools -- --type ndjson --size large     # NDJSON (gharchive_large.ndjson, 6.2GB)
 cargo run --release --bin bench_tools -- --type json --runs 3 --cooldown 2  # quick JSON run
 ```
 
@@ -149,8 +151,9 @@ Results written to `benches/results_mem_json.md` / `benches/results_mem_ndjson.m
 
 ### GH Archive data (for NDJSON benchmarks)
 ```
-bash benches/download_gharchive.sh           # gharchive.ndjson (~1.1GB), gharchive.json (~1.1GB)
-bash benches/download_gharchive.sh --large   # gharchive_large.ndjson (~6.2GB), gharchive_large.json (~6.2GB)
+bash benches/download_gharchive.sh           # gharchive.ndjson (~1.1GB) + .json + .ndjson.gz
+bash benches/download_gharchive.sh --medium  # gharchive_medium.ndjson (~3.4GB, ~1.2M records)
+bash benches/download_gharchive.sh --large   # gharchive_large.ndjson (~6.2GB)
 ```
 Use `QJ_GHARCHIVE_HOURS=2` for quick testing with fewer hours of data.
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Download GH Archive hourly dumps and produce NDJSON + JSON array files.
+# Download GH Archive hourly dumps and produce NDJSON files.
 # Source: https://www.gharchive.org/
 #
 # Default (no flags):
-#   2024-01-15, 2 hours -> gharchive.ndjson (~1.1GB), gharchive.json (~1.1GB)
+#   2024-01-15, 2 hours -> gharchive.ndjson (~1.1GB), gharchive.json, gharchive.ndjson.gz
+#
+# --medium:
+#   2024-01-15, 6 hours -> gharchive_medium.ndjson (~3.4GB, ~1.2M records)
 #
 # --large:
-#   2026-02-01, 24 hours -> gharchive_large.ndjson (~6.2GB), gharchive_large.json (~6.2GB)
+#   2026-02-01, 24 hours -> gharchive_large.ndjson (~6.2GB)
 #
 # Set QJ_GHARCHIVE_HOURS to override the hour count.
 #   QJ_GHARCHIVE_HOURS=2 bash benches/download_gharchive.sh
@@ -19,6 +22,10 @@ if [ "${1:-}" = "--large" ]; then
     HOURS="${QJ_GHARCHIVE_HOURS:-24}"
     DATE="2026-02-01"
     SUFFIX="_large"
+elif [ "${1:-}" = "--medium" ]; then
+    HOURS="${QJ_GHARCHIVE_HOURS:-6}"
+    DATE="2024-01-15"
+    SUFFIX="_medium"
 else
     HOURS="${QJ_GHARCHIVE_HOURS:-2}"
     DATE="2024-01-15"
@@ -26,17 +33,11 @@ else
 fi
 
 NDJSON="$DIR/gharchive${SUFFIX}.ndjson"
-JSON="$DIR/gharchive${SUFFIX}.json"
 TMPDIR="$DIR/.gharchive${SUFFIX}_tmp"
 
-# --- Skip if files already exist with >1MB ---
-NDJSON_GZ="$DIR/gharchive${SUFFIX}.ndjson.gz"
-if [ -f "$NDJSON" ] && [ "$(wc -c < "$NDJSON" | tr -d ' ')" -gt 1000000 ] \
-   && [ -f "$JSON" ] && [ "$(wc -c < "$JSON" | tr -d ' ')" -gt 1000000 ] \
-   && [ -f "$NDJSON_GZ" ] && [ "$(wc -c < "$NDJSON_GZ" | tr -d ' ')" -gt 1000 ]; then
-    echo "gharchive.ndjson already exists ($(wc -c < "$NDJSON" | tr -d ' ') bytes)"
-    echo "gharchive.json already exists ($(wc -c < "$JSON" | tr -d ' ') bytes)"
-    echo "gharchive.ndjson.gz already exists ($(wc -c < "$NDJSON_GZ" | tr -d ' ') bytes)"
+# --- Skip if NDJSON already exists with >1MB ---
+if [ -f "$NDJSON" ] && [ "$(wc -c < "$NDJSON" | tr -d ' ')" -gt 1000000 ]; then
+    echo "gharchive${SUFFIX}.ndjson already exists ($(wc -c < "$NDJSON" | tr -d ' ') bytes)"
     echo "Done. Delete to re-download."
     exit 0
 fi
@@ -59,7 +60,7 @@ for h in $(seq 0 $((HOURS - 1))); do
 done
 
 # --- Concatenate into NDJSON ---
-echo "Building gharchive.ndjson..."
+echo "Building gharchive${SUFFIX}.ndjson..."
 : > "$NDJSON"
 for h in $(seq 0 $((HOURS - 1))); do
     GZ="$TMPDIR/${DATE}-${h}.json.gz"
@@ -70,20 +71,23 @@ done
 NDJSON_SIZE=$(wc -c < "$NDJSON" | tr -d ' ')
 echo "  $NDJSON_SIZE bytes ($(( NDJSON_SIZE / 1024 / 1024 ))MB)"
 
-# --- Convert NDJSON to JSON array ---
-echo "Building gharchive.json (NDJSON -> JSON array)..."
-awk 'BEGIN { printf "[" }
-     NR > 1 { printf "," }
-     { printf "%s", $0 }
-     END { printf "]\n" }' "$NDJSON" > "$JSON"
-JSON_SIZE=$(wc -c < "$JSON" | tr -d ' ')
-echo "  $JSON_SIZE bytes ($(( JSON_SIZE / 1024 / 1024 ))MB)"
+# --- Default variant also gets JSON array + gzip for benchmarks ---
+if [ -z "${SUFFIX:-}" ]; then
+    JSON="$DIR/gharchive.json"
+    echo "Building gharchive.json (NDJSON -> JSON array)..."
+    awk 'BEGIN { printf "[" }
+         NR > 1 { printf "," }
+         { printf "%s", $0 }
+         END { printf "]\n" }' "$NDJSON" > "$JSON"
+    JSON_SIZE=$(wc -c < "$JSON" | tr -d ' ')
+    echo "  $JSON_SIZE bytes ($(( JSON_SIZE / 1024 / 1024 ))MB)"
 
-# --- Keep compressed NDJSON for benchmarking decompression ---
-echo "Building gharchive.ndjson.gz..."
-gzip -c "$NDJSON" > "$NDJSON_GZ"
-GZ_SIZE=$(wc -c < "$NDJSON_GZ" | tr -d ' ')
-echo "  $GZ_SIZE bytes ($(( GZ_SIZE / 1024 / 1024 ))MB)"
+    NDJSON_GZ="$DIR/gharchive.ndjson.gz"
+    echo "Building gharchive.ndjson.gz..."
+    gzip -c "$NDJSON" > "$NDJSON_GZ"
+    GZ_SIZE=$(wc -c < "$NDJSON_GZ" | tr -d ' ')
+    echo "  $GZ_SIZE bytes ($(( GZ_SIZE / 1024 / 1024 ))MB)"
+fi
 
 # --- Cleanup temp files ---
 rm -rf "$TMPDIR"

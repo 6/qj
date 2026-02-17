@@ -36,6 +36,10 @@ struct Args {
     /// Skip the correctness check phase
     #[arg(long)]
     skip_correctness: bool,
+
+    /// NDJSON dataset size: "small" (1.1GB), "medium" (3.4GB), "large" (6.2GB)
+    #[arg(long, default_value = "medium")]
+    size: String,
 }
 
 impl Args {
@@ -48,7 +52,7 @@ impl Args {
             p.clone()
         } else {
             match self.benchmark_type.as_str() {
-                "ndjson" => PathBuf::from("benches/results_ndjson.md"),
+                "ndjson" => PathBuf::from(format!("benches/results_ndjson_{}.md", self.size)),
                 _ => PathBuf::from("benches/results_json.md"),
             }
         }
@@ -254,6 +258,35 @@ static NDJSON_FILTERS: &[BenchFilter] = &[
         name: "select+field",
         flags: &["-c"],
         expr: r#"select(.type == "PushEvent") | .payload.size"#,
+    },
+    BenchFilter {
+        name: "reshape",
+        flags: &["-c"],
+        expr: "{type, repo: .repo.name, actor: .actor.login}",
+    },
+    BenchFilter {
+        name: "evaluator",
+        flags: &["-c"],
+        expr: "{type, commits: [.payload.commits[]?.message]}",
+    },
+    BenchFilter {
+        name: "evaluator (complex)",
+        flags: &["-c"],
+        expr: "{type, commits: (.payload.commits // [] | length)}",
+    },
+];
+
+/// Subset of NDJSON filters for medium/large datasets (faster to run).
+static NDJSON_FILTERS_SHORT: &[BenchFilter] = &[
+    BenchFilter {
+        name: "field",
+        flags: &[],
+        expr: ".actor.login",
+    },
+    BenchFilter {
+        name: "select",
+        flags: &["-c"],
+        expr: r#"select(.type == "PushEvent")"#,
     },
     BenchFilter {
         name: "reshape",
@@ -817,6 +850,7 @@ fn generate_json_markdown(
 fn generate_ndjson_markdown(
     tools: &[Tool],
     ndjson_file: &str,
+    filters: &[BenchFilter],
     results: &Results,
     data_dir: &Path,
     runs: u32,
@@ -828,6 +862,11 @@ fn generate_ndjson_markdown(
     let file_path = data_dir.join(ndjson_file);
     let file_bytes = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
     let file_mb = file_bytes / (1024 * 1024);
+    let file_size_str = if file_mb >= 1024 {
+        format!("{:.1}GB", file_mb as f64 / 1024.0)
+    } else {
+        format!("{file_mb}MB")
+    };
 
     writeln!(md, "# GH Archive Benchmark").unwrap();
     writeln!(md).unwrap();
@@ -844,7 +883,7 @@ fn generate_ndjson_markdown(
     writeln!(md).unwrap();
     writeln!(
         md,
-        "### NDJSON ({ndjson_file}, {file_mb}MB, parallel processing)"
+        "### NDJSON ({ndjson_file}, {file_size_str}, parallel processing)"
     )
     .unwrap();
     writeln!(md).unwrap();
@@ -868,7 +907,7 @@ fn generate_ndjson_markdown(
     writeln!(md, "{separator}").unwrap();
 
     let mut has_failures = false;
-    for (i, filter) in NDJSON_FILTERS.iter().enumerate() {
+    for (i, filter) in filters.iter().enumerate() {
         let filter_key = format!("ndjson_{i}");
         let display = filter_display(filter);
         let mut row = format!("| `{display}` |");
@@ -943,8 +982,9 @@ fn main() {
     let output_path = args.output_path();
 
     eprintln!(
-        "Settings: --type {} --cooldown {} --runs {} --output {}",
+        "Settings: --type {} --size {} --cooldown {} --runs {} --output {}",
         args.benchmark_type,
+        args.size,
         args.cooldown,
         args.runs,
         output_path.display()
@@ -1061,17 +1101,30 @@ fn main() {
         fs::write(&output_path, &md).unwrap();
     } else {
         // --- NDJSON benchmarks ---
-        let ndjson_file = "gharchive.ndjson";
+        let (ndjson_file, download_flag) = match args.size.as_str() {
+            "small" => ("gharchive.ndjson", ""),
+            "medium" => ("gharchive_medium.ndjson", " --medium"),
+            "large" => ("gharchive_large.ndjson", " --large"),
+            other => {
+                eprintln!("Error: unknown --size '{other}'. Use 'small', 'medium', or 'large'.");
+                std::process::exit(1);
+            }
+        };
         let ndjson_path = data_dir.join(ndjson_file);
         if !ndjson_path.exists() {
             eprintln!("Error: {} not found.", ndjson_path.display());
-            eprintln!("Run: bash benches/download_gharchive.sh");
+            eprintln!("Run: bash benches/download_gharchive.sh{download_flag}");
             std::process::exit(1);
         }
 
+        let ndjson_filters = match args.size.as_str() {
+            "small" => NDJSON_FILTERS,
+            _ => NDJSON_FILTERS_SHORT,
+        };
+
         run_benchmarks(
             &tools,
-            NDJSON_FILTERS,
+            ndjson_filters,
             "ndjson",
             &[ndjson_file],
             data_dir,
@@ -1086,6 +1139,7 @@ fn main() {
         let md = generate_ndjson_markdown(
             &tools,
             ndjson_file,
+            ndjson_filters,
             &results,
             data_dir,
             args.runs,

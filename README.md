@@ -4,14 +4,14 @@
 
 Benchmarked on an M4 MacBook Pro:
 
-- **NDJSON (1.1 GB):** `select(.type == "PushEvent")` in 76 ms vs jq's 12.7 s (**166x faster**)
+- **NDJSON (3.4 GB, 1.2M records):** `select(.type == "PushEvent")` in 194 ms vs jq's 36.8 s (**190x faster**)
 - **JSON (49 MB):** `.statuses | map({user, text})` in 58 ms vs jq's 695 ms (**12x faster**)
 
 ## qj vs jq
 
 **Drop-in replacement.** qj is ~95% compatible with jq's syntax and flags, just faster. SIMD parsing makes even small files snappier.
 
-**NDJSON / JSONL pipelines.** qj is 28-166x faster than jq by combining SIMD parsing, mmap, automatic parallelism (no `xargs` or `parallel` needed), and on-demand field extraction.
+**NDJSON / JSONL pipelines.** qj is 28-166x faster than jq by combining SIMD parsing, mmap, automatic parallelism (no `xargs` or `parallel` needed), and on-demand field extraction. Output order matches input order.
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
@@ -69,7 +69,8 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 ## How it works
 
 - **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
-- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Files are mmap'd with progressive munmap — the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~174 MB for a 1.1 GB file). Falls back to streaming read() for stdin/pipes. On Apple Silicon, uses only performance cores to avoid E-core contention.
+- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~174 MB for a 1.1 GB file). Falls back to streaming read() for stdin/pipes.
+- **Apple Silicon tuning.** Uses only P-cores, avoiding E-cores whose ~3x slower throughput creates stragglers that bottleneck the parallel pipeline.
 - **Zero-copy I/O.** mmap for single-document JSON — no heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
 - **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed automatically based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).
