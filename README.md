@@ -2,6 +2,9 @@
 
 `qj` is a fast, [`jq`](https://github.com/jqlang/jq)-compatible JSON processor powered by [simdjson](https://github.com/simdjson/simdjson).
 
+> [!NOTE]
+> Work in progress!
+
 Benchmarked on an M4 MacBook Pro:
 
 - **NDJSON (3.4 GB, 1.2M records):** `qj 'select(.type == "PushEvent")'` runs in 190 ms vs jq's 36.4 s (**191x faster**)
