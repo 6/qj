@@ -55,7 +55,7 @@ Tested different window sizes with mmap + windowed processing (no MADV_DONTNEED)
 
 Diminishing returns after 256 MB. At 256 MB the overhead is within noise of all-at-once.
 
-### 4. Final design: dedicated mmap + windowed (current)
+### 4. Full-file mmap + windowed (reverted — RSS too high)
 
 **`process_ndjson_file()`** — unified entry point for NDJSON file processing:
 
@@ -64,36 +64,71 @@ Diminishing returns after 256 MB. At 256 MB the overhead is within noise of all-
 3. Process through **`process_ndjson_windowed()`** with 256 MB windows
 4. If mmap fails or is unavailable (non-Unix, `QJ_NO_MMAP=1`): fall back to `process_ndjson_streaming()` with `read()` and conservative 8-64 MB windows
 
-Key design choices:
-- **mmap window: 256 MB fixed** — input memory is kernel-managed virtual memory (not heap), so only output is buffered per window. 256 MB gives ~256 chunks, plenty for any core count.
-- **Streaming window: `num_cores × 2 MB`, clamped 8-64 MB** — the window IS the heap buffer, so we cap conservatively.
-- **No `read_padded_file` for NDJSON** — avoids the heap fallback that would OOM on files >> RAM.
-- **`MADV_SEQUENTIAL`** on the mmap to hint read-ahead and evict-behind.
-
 Results:
 - **Speed**: 68 ms (matches pre-streaming performance)
 - **RSS**: ~1.2 GB on 1.1 GB file (mmap'd pages, kernel-managed)
-- **Files >> RAM**: Works correctly. mmap is virtual address space, not physical memory. Windowed access means only ~256 MB of pages are actively touched. The kernel pages in on demand and evicts clean file-backed pages under pressure. This is how databases handle files larger than RAM.
+- **Heap**: ~43 MB (actual allocation)
+- **Reverted**: 1.2 GB RSS on a 1.1 GB file is too high for a CLI tool, even though the pages are clean file-backed memory. Users see the RSS number and think the tool uses that much memory.
 
-## RSS vs actual memory pressure
+### 5. Per-window mmap (reverted — too slow)
 
-The ~1.2 GB RSS for a 1.1 GB file looks high but is misleading for mmap:
-- These are **clean, file-backed pages** — the kernel evicts them instantly when anything else needs memory (no writeback needed)
-- Under memory pressure, the working set is just the current 256 MB window + output buffer
-- `MADV_SEQUENTIAL` tells the kernel to optimize for forward access
-- Tools like `/usr/bin/time -l` report peak RSS including mmap'd pages, which overstates actual memory pressure
+Map each 256 MB window independently via `mmap(fd, offset, len)`, process it, then `munmap` before mapping the next window. Zero-copy I/O with RSS bounded to ~window_size.
+
+Results with different window sizes on 1.1 GB file:
+
+| Window | Time | RSS |
+|--------|-----:|----:|
+| 64 MB | 190 ms | 111 MB |
+| 128 MB | 120 ms | 171 MB |
+| 256 MB | 100 ms | 299 MB |
+| 512 MB | 80 ms | 556 MB |
+
+- **Reverted**: 100ms at 256 MB is a 47% regression vs full-file mmap (70ms). The overhead comes from losing kernel read-ahead context between windows — each `mmap_window` starts cold, unlike a single MADV_SEQUENTIAL mmap that gives the kernel full file context.
+
+### 6. Full-file mmap + progressive munmap (current)
+
+Combines the speed of full-file mmap with the RSS control of per-window mmap:
+
+1. **mmap the entire file** in one call with `MADV_SEQUENTIAL` — kernel has full context for aggressive read-ahead
+2. **Process in 128 MB windows** with rayon parallelism
+3. **`munmap` each processed region** (page-aligned) before moving to the next window — releases pages to bound RSS
+
+This avoids the two problems of previous approaches:
+- Full-file mmap had ~1.2 GB RSS because all pages stayed mapped
+- Per-window mmap was slow (100ms) because each window lost read-ahead context
+
+With progressive munmap, the single mmap + MADV_SEQUENTIAL gives the kernel full read-ahead context (fast), while the per-window munmap releases processed pages (low RSS).
+
+Window size testing (progressive munmap, 1.1 GB gharchive):
+
+| Window | Time | RSS |
+|--------|-----:|----:|
+| 64 MB | 80 ms | 107 MB |
+| 128 MB | 70 ms | 172 MB |
+| 256 MB | 70 ms | 301 MB |
+| 512 MB | 70 ms | 556 MB |
+
+128 MB is the smallest window that matches full speed. Larger windows only increase RSS
+without improving throughput, so the cap is set to 128 MB. Users can override via
+`QJ_WINDOW_SIZE=256` if desired. For very large files (20 GB+), the extra rayon barriers
+from more windows add ~microseconds each — negligible.
+
+Results:
+- **Speed**: 70 ms (matches pre-streaming and full-file mmap)
+- **RSS**: ~174 MB on 1.1 GB file (current window + read-ahead)
+- **Heap**: ~42 MB (actual allocation)
+- **Files >> RAM**: Works correctly — kernel pages in on demand, and progressive munmap ensures only the current window's pages are resident.
 
 ## Memory profile by path
 
-| Input source | Method | Input memory | Output memory | Peak working set |
+| Input source | Method | Input memory | Output memory | Peak RSS |
 |---|---|---|---|---|
-| File (Unix) | mmap + windowed | Kernel-managed (virtual) | ~window output | ~256 MB + output |
-| File (non-Unix) | streaming read() | window heap buffer | ~window output | ~64 MB + output |
-| stdin/pipe | streaming read() | window heap buffer | ~window output | ~64 MB + output |
-| Compressed file | decompress + streaming | window heap buffer | ~window output | ~64 MB + output |
+| File (Unix) | mmap + progressive munmap | Kernel-managed | ~window output | ~174 MB |
+| File (non-Unix) | streaming read() | window heap buffer | ~window output | ~128 MB |
+| stdin/pipe | streaming read() | window heap buffer | ~window output | ~128 MB |
+| Compressed file | decompress + streaming | window heap buffer | ~window output | ~128 MB |
 
 ## Open questions
 
-- Should we add `MADV_DONTNEED` after each window on Linux (where it's stronger than macOS)?
-- Should the mmap window size be configurable separately from the streaming window size via env var? Currently `QJ_WINDOW_SIZE` overrides both.
+- Should we add `MADV_DONTNEED` after each window on Linux (where it's stronger than macOS) as an alternative to munmap?
 - For extremely large output (e.g., `.` on a 24 GB file = 24 GB output), per-window output buffering still means ~256 MB of output buffered at a time. Could flush more aggressively per-chunk, but that would require changing the rayon collect pattern.

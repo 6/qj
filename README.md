@@ -17,7 +17,7 @@ Benchmarked on an M4 MacBook Pro:
 
 **When jq is fine.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses i64/f64 internally — large numbers are preserved on passthrough but arithmetic loses precision beyond 53 bits.
 
-**Memory tradeoff.** qj trades memory for speed (~64 MB for NDJSON vs jq's ~5 MB). If memory is tight, jq is the safer choice.
+**Memory tradeoff.** NDJSON processing uses a sliding window (32–128 MB, scaled to core count) so peak RSS is bounded regardless of file size. This means qj uses ~174 MB on a 10-core machine, ~50 MB on a single-core. jq uses ~5 MB on the same workload.
 
 ## Quick start
 
@@ -69,7 +69,7 @@ On single JSON files (49 MB) with no parallelism, qj is 2-29x faster than jq, 1-
 ## How it works
 
 - **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
-- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Streams in fixed-size windows (8–64 MB, scaled to core count) so memory stays flat regardless of file size. On Apple Silicon, uses only performance cores to avoid E-core contention.
+- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Files are mmap'd with progressive munmap — the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~174 MB for a 1.1 GB file). Falls back to streaming read() for stdin/pipes. On Apple Silicon, uses only performance cores to avoid E-core contention.
 - **Zero-copy I/O.** mmap for single-document JSON — no heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
 - **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed automatically based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).
