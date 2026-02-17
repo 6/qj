@@ -5,7 +5,7 @@
 > [!NOTE]
 > Work in progress!
 
-Benchmarked on an M4 MacBook Pro:
+Benchmarked on M4 MacBook Pro:
 
 - **NDJSON (3.4 GB, 1.2M records):** `qj 'select(.type == "PushEvent")'` runs in 190 ms vs jq's 36.4 s (**191x faster**)
 - **JSON (49 MB):** `qj '.statuses | map({user, text})'` runs in 58 ms vs jq's 695 ms (**12x faster**)
@@ -52,7 +52,7 @@ qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 
 ## Benchmarks
 
-M4 MacBook Pro via [hyperfine](https://github.com/sharkdp/hyperfine). Compared against [jq](https://github.com/jqlang/jq) and two popular reimplementations: [jaq](https://github.com/01mf02/jaq) and [gojq](https://github.com/itchyny/gojq). See [benches/](benches/) for full results.
+Benchmarked on M4 MacBook Pro [hyperfine](https://github.com/sharkdp/hyperfine) and compared against [jq](https://github.com/jqlang/jq) as well as two popular reimplementations: [jaq](https://github.com/01mf02/jaq) and [gojq](https://github.com/itchyny/gojq).
 
 **NDJSON** (3.4 GB GitHub Archive, 1.2M records):
 
@@ -63,7 +63,7 @@ M4 MacBook Pro via [hyperfine](https://github.com/sharkdp/hyperfine). Compared a
 | `{type, repo: .repo.name, actor: .actor.login}` | **332 ms** | 2.26 s | 23.4 s | 9.5 s | 20.7 s |
 | `{type, commits: [.payload.commits[]?.message]}` | **801 ms** | 4.84 s | 23.8 s | 9.2 s | 20.9 s |
 
-On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq.
+On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq. See [benches/](benches/) for full results.
 
 ## How it works
 
