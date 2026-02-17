@@ -63,6 +63,12 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 - **When adding new jq builtins or language features**, always:
   1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
   2. Run `cargo test --release jq_compat -- --ignored --nocapture` and update jq compat % in `README.md`
+- **When adding or modifying NDJSON fast-path variants** (`NdjsonFastPath` enum in
+  `src/parallel/ndjson.rs`), always:
+  1. Add a filter for the new variant in `all_fast_path_test_filters()` (same file) —
+     the exhaustive match will cause a compile error if you forget
+  2. Add the filter to `FILTERS` in `fuzz/fuzz_targets/fuzz_ndjson_diff.rs`
+  3. Run `cargo +nightly fuzz run fuzz_ndjson_diff -s none -- -max_total_time=120`
 - **Cache:** External tool results (jq, jaq, gojq) are cached in `tests/jq_compat/.cache/`.
   Cache auto-invalidates when test definitions or tool versions (`mise.toml`) change.
   Delete to force full re-run: `rm -rf tests/jq_compat/.cache/`
