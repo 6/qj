@@ -2,8 +2,8 @@
 
 `qj` is Quick JSON, a `jq`-compatible processor. SIMD parsing and automatic parallelization across cores.
 
-- **Single-threaded:** 4-60x faster on NDJSON, 2-13x on JSON.
-- **Parallel:** 28-150x faster on NDJSON.
+- **NDJSON:** 28-150x faster than jq, 25-67x faster than jaq. Single-threaded: 5-67x faster than jq.
+- **JSON:** 2-29x faster than jq, ~2x faster than jaq (SIMD parsing, no parallelism).
 
 ## When to use qj instead of jq
 
@@ -32,22 +32,22 @@ cat logs.jsonl | ./target/release/qj -c 'select(.level == "ERROR")'
 
 ## Benchmarks
 
-All benchmarks on M4 Pro MacBook Pro, 1.1 GB GitHub Archive NDJSON, 3 runs + 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine). Hyperfine discards stdout by default, so we measure compute + formatting, not terminal IO. See [benches/](benches/) for methodology.
+M4 Pro (10 cores) via [hyperfine](https://github.com/sharkdp/hyperfine). See [benches/](benches/) for full results.
 
-Filters on the SIMD fast path show 66-150x gains. Evaluator-bound expressions show 28-29x. The single-threaded column shows qj's SIMD/fast-path gains without parallelism.
+**NDJSON** (1.1 GB GitHub Archive, parallel by default):
 
-| Workload | qj (parallel) | qj (1 thread) | jq | Speedup |
-|----------|----|----|---------|-----|
-| `.actor.login` | **66 ms** | 338 ms | 7.2 s | **109x** |
-| `length` | **108 ms** | 593 ms | 7.2 s | **66x** |
-| `keys` | **109 ms** | 737 ms | 7.7 s | **70x** |
-| `select(.type == "PushEvent")` | **101 ms** | 406 ms | 13.5 s | **133x** |
-| `select(.type == "PushEvent") \| .payload.size` | **77 ms** | 428 ms | 7.2 s | **94x** |
-| `{type, repo: .repo.name, actor: .actor.login}` | **116 ms** | 779 ms | 7.9 s | **68x** |
-| `{type, commits: [.payload.commits[]?.message]}` | **268 ms** | 1.72 s | 8.0 s | **29x** |
-| `{type, commits: (.payload.commits // [] \| length)}` | **262 ms** | 1.54 s | 7.5 s | **28x** |
+| Workload | qj (parallel by default) | qj (1 thread) | jq | jaq |
+|----------|---:|---------------:|---:|----:|
+| `.actor.login` | **66 ms** | 338 ms | 7.2 s | 2.9 s |
+| `length` | **108 ms** | 593 ms | 7.2 s | 2.7 s |
+| `keys` | **109 ms** | 737 ms | 7.7 s | 2.9 s |
+| `select(.type == "PushEvent")` | **101 ms** | 406 ms | 13.5 s | 3.5 s |
+| `select(…) \| .payload.size` | **77 ms** | 428 ms | 7.2 s | 2.9 s |
+| `{type, repo, actor}` | **116 ms** | 779 ms | 7.9 s | 3.3 s |
+| `{type, commits: [….message]}` | **268 ms** | 1.72 s | 8.0 s | 3.2 s |
+| `{type, commits: (… \| length)}` | **262 ms** | 1.54 s | 7.5 s | 3.1 s |
 
-[Full results with jaq and gojq](benches/results_ndjson.md).
+On single JSON files (49 MB), qj is 2-29x faster than jq and ~2x faster than jaq — SIMD parsing, no parallelism needed. [Full JSON results](benches/results_json.md).
 
 ## How it works
 
