@@ -5,19 +5,19 @@
 Benchmarked on an M4 MacBook Pro:
 
 - **NDJSON (1.1 GB):** `select(.type == "PushEvent")` in 76 ms vs jq's 12.7 s — **166x faster**
-- **JSON (49 MB):** `.statuses | map({user, text})` in 60 ms vs jq's 706 ms — **12x faster**
+- **JSON (49 MB):** `.statuses | map({user, text})` in 58 ms vs jq's 695 ms — **12x faster**
 
-## When to use qj instead of jq
+## qj vs jq
 
-**Any time you'd use jq.** ~95% compatible syntax and flags — just faster. SIMD parsing makes even small files snappier.
+**Drop-in replacement.** qj is ~95% compatible with jq's syntax and flags, just faster. SIMD parsing makes even small files snappier.
 
-**Large JSON files.** 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
+**NDJSON / JSONL pipelines.** qj is 28-166x faster than jq by auto-parallelizing across cores. No `xargs` or `parallel` needed.
 
-**NDJSON / JSONL pipelines.** 28-166x faster than jq — auto-parallelizes across cores. No `xargs` or `parallel` needed.
+**Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
-**When jq is fine.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses i64/f64 internally — large numbers are preserved on passthrough but arithmetic loses precision beyond 53 bits.
+**Where jq is better.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses 64-bit integers and floats, so large numbers pass through unchanged but arithmetic may lose precision.
 
-**Memory tradeoff.** qj uses more memory than jq. It uses a sliding window so peak RSS is bounded regardless of file size (~174 MB on a 10-core machine), but jq streams one record at a time (~5 MB). For regular JSON files it uses ~1.7x jq's RSS.
+**Memory tradeoff.** qj trades memory for speed. It uses a sliding window so peak RSS is bounded regardless of file size (~174 MB on a 10-core machine), but jq streams one record at a time (~5 MB). For regular JSON files qj uses ~1.7x jq's RSS.
 
 ## Quick start
 
