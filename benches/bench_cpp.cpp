@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
     printf("=== C++ simdjson benchmark (no FFI) ===\n\n");
 
     // Single-file benchmarks
-    const char* files[] = {"twitter.json", "citm_catalog.json", "canada.json"};
+    const char* files[] = {"twitter.json"};
     for (auto fname : files) {
         std::string path = std::string(data_dir) + "/" + fname;
         padded_string data;
@@ -153,7 +153,7 @@ int main(int argc, char** argv) {
     }
 
     // NDJSON benchmarks
-    const char* ndjson_files[] = {"100k.ndjson", "1m.ndjson"};
+    const char* ndjson_files[] = {"gharchive.ndjson"};
     for (auto fname : ndjson_files) {
         std::string path = std::string(data_dir) + "/" + fname;
         padded_string data;
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
         }
         printf("%s (%zu bytes):\n", fname, data.size());
         bench_iterate_many_count("iterate_many count", data);
-        bench_iterate_many_extract("iterate_many extract(\"name\")", data, "name");
+        bench_iterate_many_extract("iterate_many extract(\"type\")", data, "type");
         printf("\n");
     }
 

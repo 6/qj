@@ -56,11 +56,6 @@ name = "eval_regression"
 harness = false
 
 [[bin]]
-name = "gen_ndjson"
-path = "benches/gen_ndjson.rs"
-required-features = ["bench"]
-
-[[bin]]
 name = "bench_tools"
 path = "benches/bench_tools.rs"
 required-features = ["bench"]

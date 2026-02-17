@@ -2,7 +2,7 @@
 # Download benchmark data files.
 #
 # Flags:
-#   --json        Standard JSON files (twitter.json, citm_catalog.json, canada.json)
+#   --json        twitter.json (base file for generating large_twitter.json)
 #   --gharchive   GH Archive NDJSON (default: 2 hours, ~1.1GB)
 #     Size variants (combine with --gharchive):
 #     --xsmall    1 hour  -> gharchive_xsmall.ndjson (~500MB)
@@ -40,32 +40,20 @@ done
 # --- JSON benchmark files ---
 if $DO_JSON; then
     SIMDJSON="https://raw.githubusercontent.com/simdjson/simdjson/master/jsonexamples"
-    # canada.json was removed from simdjson repo; use nativejson-benchmark instead.
-    NATIVEJSON="https://raw.githubusercontent.com/miloyip/nativejson-benchmark/master/data"
 
-    download() {
-        local url="$1"
-        local dest="$2"
-        local name
-        name="$(basename "$dest")"
-        if [ -f "$dest" ] && [ "$(wc -c < "$dest" | tr -d ' ')" -gt 100 ]; then
-            echo "$name already exists ($(wc -c < "$dest" | tr -d ' ') bytes)"
+    TWITTER="$DIR/twitter.json"
+    if [ -f "$TWITTER" ] && [ "$(wc -c < "$TWITTER" | tr -d ' ')" -gt 100 ]; then
+        echo "twitter.json already exists ($(wc -c < "$TWITTER" | tr -d ' ') bytes)"
+    else
+        echo "Downloading twitter.json..."
+        curl -sL "$SIMDJSON/twitter.json" -o "$TWITTER"
+        SIZE="$(wc -c < "$TWITTER" | tr -d ' ')"
+        if [ "$SIZE" -lt 100 ]; then
+            echo "  WARNING: download may have failed ($SIZE bytes)"
         else
-            echo "Downloading $name..."
-            curl -sL "$url" -o "$dest"
-            local size
-            size="$(wc -c < "$dest" | tr -d ' ')"
-            if [ "$size" -lt 100 ]; then
-                echo "  WARNING: download may have failed ($size bytes)"
-            else
-                echo "  $size bytes"
-            fi
+            echo "  $SIZE bytes"
         fi
-    }
-
-    download "$SIMDJSON/twitter.json" "$DIR/twitter.json"
-    download "$SIMDJSON/citm_catalog.json" "$DIR/citm_catalog.json"
-    download "$NATIVEJSON/canada.json" "$DIR/canada.json"
+    fi
     echo "Done. JSON test data in $DIR/"
     echo
 fi
@@ -127,17 +115,8 @@ if $DO_GHARCHIVE; then
         NDJSON_SIZE=$(wc -c < "$NDJSON" | tr -d ' ')
         echo "  $NDJSON_SIZE bytes ($(( NDJSON_SIZE / 1024 / 1024 ))MB)"
 
-        # Default variant also gets JSON array + gzip for benchmarks
+        # Default variant also gets gzip for compressed-file benchmarks
         if [ -z "${SUFFIX:-}" ]; then
-            JSON="$DIR/gharchive.json"
-            echo "Building gharchive.json (NDJSON -> JSON array)..."
-            awk 'BEGIN { printf "[" }
-                 NR > 1 { printf "," }
-                 { printf "%s", $0 }
-                 END { printf "]\n" }' "$NDJSON" > "$JSON"
-            JSON_SIZE=$(wc -c < "$JSON" | tr -d ' ')
-            echo "  $JSON_SIZE bytes ($(( JSON_SIZE / 1024 / 1024 ))MB)"
-
             NDJSON_GZ="$DIR/gharchive.ndjson.gz"
             echo "Building gharchive.ndjson.gz..."
             gzip -c "$NDJSON" > "$NDJSON_GZ"

@@ -129,8 +129,7 @@ Covers: SIMD parse, flat eval, standard eval, filter parsing.
 
 ### Parse throughput (simdjson vs serde_json)
 ```
-bash benches/download_data.sh --json    # twitter.json, citm_catalog.json, canada.json
-bash benches/generate_data.sh --ndjson  # 100k.ndjson, 1m.ndjson
+bash benches/download_data.sh --json --gharchive  # twitter.json + gharchive.ndjson
 cargo bench --bench parse_throughput
 ```
 
@@ -154,14 +153,14 @@ cargo run --release --features bench --bin bench_tools -- --type json --runs 3 -
 ### Memory usage comparison (qj vs jq vs jaq vs gojq)
 ```
 cargo run --release --features bench --bin bench_mem -- --type json     # JSON (large_twitter.json)
-cargo run --release --features bench --bin bench_mem -- --type ndjson    # NDJSON (gharchive.ndjson or 1m.ndjson)
+cargo run --release --features bench --bin bench_mem -- --type ndjson    # NDJSON (gharchive.ndjson)
 ```
 Measures peak RSS via `wait4()` rusage. No external tools needed (no hyperfine).
 Results written to `benches/results_mem_json.md` / `benches/results_mem_ndjson.md`.
 
 ### GH Archive data (for NDJSON benchmarks)
 ```
-bash benches/download_data.sh --gharchive           # gharchive.ndjson (~1.1GB) + .json + .ndjson.gz
+bash benches/download_data.sh --gharchive           # gharchive.ndjson (~1.1GB) + .ndjson.gz
 bash benches/download_data.sh --xsmall              # gharchive_xsmall.ndjson (~500MB)
 bash benches/download_data.sh --medium              # gharchive_medium.ndjson (~3.4GB, ~1.2M records)
 bash benches/download_data.sh --large               # gharchive_large.ndjson (~4.7GB)

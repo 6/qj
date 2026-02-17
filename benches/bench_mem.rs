@@ -26,6 +26,10 @@ struct Args {
     /// Override the input file path
     #[arg(long)]
     file: Option<PathBuf>,
+
+    /// Skip the single-thread (1T) qj variant (useful on single-core CI runners)
+    #[arg(long)]
+    no_1t: bool,
 }
 
 impl Args {
@@ -100,25 +104,6 @@ static NDJSON_GHARCHIVE_FILTERS: &[BenchFilter] = &[
     },
 ];
 
-// synthetic 1m.ndjson fields (from gen_ndjson.rs)
-static NDJSON_SYNTHETIC_FILTERS: &[BenchFilter] = &[
-    BenchFilter {
-        name: "field",
-        flags: &["-c"],
-        expr: ".name",
-    },
-    BenchFilter {
-        name: "select + field",
-        flags: &["-c"],
-        expr: r#"select(.age > 50) | .city"#,
-    },
-    BenchFilter {
-        name: "reshape",
-        flags: &["-c"],
-        expr: "{name, city, score}",
-    },
-];
-
 // --- Tool discovery ---
 
 struct Tool {
@@ -138,19 +123,19 @@ fn find_tool(name: &str) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-fn discover_tools(qj_path: &str) -> Vec<Tool> {
-    let mut tools = vec![
-        Tool {
-            name: "qj".into(),
-            path: qj_path.into(),
-            extra_args: vec![],
-        },
-        Tool {
+fn discover_tools(qj_path: &str, include_1t: bool) -> Vec<Tool> {
+    let mut tools = vec![Tool {
+        name: "qj".into(),
+        path: qj_path.into(),
+        extra_args: vec![],
+    }];
+    if include_1t {
+        tools.push(Tool {
             name: "qj (1T)".into(),
             path: qj_path.into(),
             extra_args: vec!["--threads".into(), "1".into()],
-        },
-    ];
+        });
+    }
     match find_tool("jq") {
         Some(path) => tools.push(Tool {
             name: "jq".into(),
@@ -469,21 +454,11 @@ fn resolve_ndjson_file(data_dir: &Path) -> (PathBuf, &'static [BenchFilter]) {
     if gharchive.exists() {
         return (gharchive, NDJSON_GHARCHIVE_FILTERS);
     }
-    let synthetic = data_dir.join("1m.ndjson");
-    if synthetic.exists() {
-        return (synthetic, NDJSON_SYNTHETIC_FILTERS);
-    }
-    let small_synthetic = data_dir.join("100k.ndjson");
-    if small_synthetic.exists() {
-        return (small_synthetic, NDJSON_SYNTHETIC_FILTERS);
-    }
     eprintln!(
-        "Error: no NDJSON test data found in {}/.",
+        "Error: gharchive.ndjson not found in {}/.",
         data_dir.display()
     );
-    eprintln!(
-        "Run: bash benches/download_data.sh --gharchive  OR  bash benches/generate_data.sh --ndjson"
-    );
+    eprintln!("Run: bash benches/download_data.sh --gharchive");
     std::process::exit(1);
 }
 
@@ -500,7 +475,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let tools = discover_tools(qj_path);
+    let tools = discover_tools(qj_path, !args.no_1t);
     eprintln!(
         "Tools: {}",
         tools
@@ -537,13 +512,7 @@ fn main() {
         }
         "ndjson" => {
             let (file, ndjson_filters) = if let Some(ref f) = args.file {
-                // User-specified file: detect filter set by filename
-                let filters = if f.to_string_lossy().contains("gharchive") {
-                    NDJSON_GHARCHIVE_FILTERS
-                } else {
-                    NDJSON_SYNTHETIC_FILTERS
-                };
-                (f.clone(), filters)
+                (f.clone(), NDJSON_GHARCHIVE_FILTERS)
             } else {
                 resolve_ndjson_file(&data_dir)
             };

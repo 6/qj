@@ -37,6 +37,10 @@ struct Args {
     #[arg(long)]
     skip_correctness: bool,
 
+    /// Skip the single-thread (1T) qj variant (useful on single-core CI runners)
+    #[arg(long)]
+    no_1t: bool,
+
     /// NDJSON dataset size: "xsmall" (~500MB), "small" (1.1GB), "medium" (3.4GB), "large" (6.2GB)
     #[arg(long, default_value = "medium")]
     size: String,
@@ -349,19 +353,19 @@ fn find_tool(name: &str) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-fn discover_tools(qj_path: &str) -> Vec<Tool> {
-    let mut tools = vec![
-        Tool {
-            name: "qj".into(),
-            path: qj_path.into(),
-            extra_args: vec![],
-        },
-        Tool {
+fn discover_tools(qj_path: &str, include_1t: bool) -> Vec<Tool> {
+    let mut tools = vec![Tool {
+        name: "qj".into(),
+        path: qj_path.into(),
+        extra_args: vec![],
+    }];
+    if include_1t {
+        tools.push(Tool {
             name: "qj (1T)".into(),
             path: qj_path.into(),
             extra_args: vec!["--threads".into(), "1".into()],
-        },
-    ];
+        });
+    }
     match find_tool("jq") {
         Some(path) => tools.push(Tool {
             name: "jq".into(),
@@ -1246,7 +1250,7 @@ fn main() {
     }
     fs::create_dir_all(results_dir).unwrap();
 
-    let tools = discover_tools(qj_path);
+    let tools = discover_tools(qj_path, !args.no_1t);
     let output_path = args.output_path();
 
     eprintln!(

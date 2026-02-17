@@ -233,9 +233,7 @@ fn main() {
     // --- Single-file benchmarks ---
     // (field, None) = no top-level string field to test find_field_str against.
     let files: &[(&str, Option<&str>)] = &[
-        ("twitter.json", None),        // top-level fields are objects
-        ("citm_catalog.json", None),   // top-level fields are objects
-        ("canada.json", Some("type")), // "type": "FeatureCollection"
+        ("twitter.json", None), // top-level fields are objects
     ];
 
     for &(fname, field) in files {
@@ -273,12 +271,12 @@ fn main() {
     }
 
     // --- NDJSON benchmarks ---
-    let ndjson_files = &["100k.ndjson", "1m.ndjson"];
+    let ndjson_files = &["gharchive.ndjson"];
 
     for &fname in ndjson_files {
         let path = data_dir.join(fname);
         if !path.exists() {
-            println!("{fname:<40} SKIPPED (run benches/generate_data.sh --ndjson)");
+            println!("{fname:<40} SKIPPED (run benches/download_data.sh --gharchive)");
             continue;
         }
 
@@ -289,27 +287,27 @@ fn main() {
         println!("{fname} ({json_len} bytes):");
         if let Some(ref jq) = jq_path {
             bench_external_tool(
-                "jq '.name' (end-to-end)",
+                "jq '.type' (end-to-end)",
                 jq,
-                ".name",
+                ".type",
                 &path,
                 json_len as u64,
             );
         }
         if let Some(ref jaq) = jaq_path {
             bench_external_tool(
-                "jaq '.name' (end-to-end)",
+                "jaq '.type' (end-to-end)",
                 jaq,
-                ".name",
+                ".type",
                 &path,
                 json_len as u64,
             );
         }
         if let Some(ref gojq) = gojq_path {
             bench_external_tool(
-                "gojq '.name' (end-to-end)",
+                "gojq '.type' (end-to-end)",
                 gojq,
-                ".name",
+                ".type",
                 &path,
                 json_len as u64,
             );
@@ -317,10 +315,10 @@ fn main() {
         bench_serde_json_ndjson_parse("serde_json NDJSON line-by-line", &raw);
         bench_iterate_many_count("iterate_many count (FFI)", &padded, json_len);
         bench_iterate_many_extract(
-            "iterate_many extract(\"name\") (FFI)",
+            "iterate_many extract(\"type\") (FFI)",
             &padded,
             json_len,
-            "name",
+            "type",
         );
         println!();
     }
