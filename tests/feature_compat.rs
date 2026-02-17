@@ -227,9 +227,7 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                             });
                         let _ = std::fs::remove_file(&filter_path);
                         match output {
-                            Ok(o) => {
-                                String::from_utf8_lossy(&o.stdout).trim() == "42"
-                            }
+                            Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "42",
                             Err(_) => false,
                         }
                     }),
@@ -248,19 +246,12 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                             .stderr(std::process::Stdio::piped())
                             .spawn()
                             .and_then(|mut child| {
-                                child
-                                    .stdin
-                                    .take()
-                                    .unwrap()
-                                    .write_all(b"[1,2,3]")
-                                    .unwrap();
+                                child.stdin.take().unwrap().write_all(b"[1,2,3]").unwrap();
                                 child.wait_with_output()
                             });
                         let _ = std::fs::remove_file(&filter_path);
                         match output {
-                            Ok(o) => {
-                                String::from_utf8_lossy(&o.stdout).trim() == "[2,4,6]"
-                            }
+                            Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "[2,4,6]",
                             Err(_) => false,
                         }
                     }),
@@ -424,6 +415,16 @@ fn run_all(verbose: bool) {
             results[ti].push(feature_results);
         }
     }
+
+    // Sort features by category to group hardcoded tests with TOML tests.
+    // Build index permutation so results arrays stay in sync.
+    let mut order: Vec<usize> = (0..all_features.len()).collect();
+    order.sort_by_key(|&i| &all_features[i].category);
+    let all_features: Vec<&Feature> = order.iter().map(|&i| all_features[i]).collect();
+    let results: Vec<Vec<Vec<bool>>> = results
+        .into_iter()
+        .map(|tool_res| order.iter().map(|&i| tool_res[i].clone()).collect())
+        .collect();
 
     println!();
 
