@@ -11,7 +11,7 @@ Benchmarked on an M4 MacBook Pro:
 
 **Drop-in replacement.** 95% pass rate on jq's official test suite, with full coverage of everyday filters, builtins, and flags — just faster.
 
-**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism (no `xargs` or `parallel` needed), and on-demand field extraction. Output order matches input order.
+**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction.
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
@@ -65,7 +65,7 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 ## How it works
 
 - **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
-- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~300 MB for a 3.4 GB file). Falls back to streaming read() for stdin/pipes.
+- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks. Output order always matches input order despite parallel processing. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~300 MB for a 3.4 GB file). Falls back to streaming read() for stdin/pipes.
 - **Apple Silicon tuning.** Uses only P-cores, avoiding E-cores whose ~3x slower throughput creates stragglers that bottleneck the parallel pipeline.
 - **Zero-copy I/O.** mmap for single-document JSON — no heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
