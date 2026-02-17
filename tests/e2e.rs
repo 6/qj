@@ -5378,10 +5378,7 @@ fn def_nonpath_in_assignment_error() {
 
 #[test]
 fn dollar_param_generator_cartesian() {
-    assert_jq_compat(
-        "def y($a;$b): [$a,$b]; [y(.[];.[]*2)]",
-        "[1,2,3]",
-    );
+    assert_jq_compat("def y($a;$b): [$a,$b]; [y(.[];.[]*2)]", "[1,2,3]");
 }
 
 #[test]
@@ -5407,5 +5404,27 @@ fn getpath_update_error_propagation() {
     assert_jq_compat(
         r#".[] | try (getpath(["a",0,"b"]) |= 5) catch ."#,
         r#"[{"a":0},{"a":[0,1]}]"#,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// def in expression positions (after comma, after pipe, inside arrays)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn def_after_comma() {
+    assert_jq_compat("def f: 1; f, def f: 2; f", "null");
+}
+
+#[test]
+fn def_after_comma_in_array() {
+    assert_jq_compat("[1, def f: 2; f, f]", "null");
+}
+
+#[test]
+fn def_in_expression_complex() {
+    assert_jq_compat(
+        "def f: 1; def g: f, def f: 2; def g: 3; f, def f: g; f, g; def f: 4; [f, def f: g; def g: 5; f, g]+[f,g]",
+        "null",
     );
 }

@@ -312,16 +312,24 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // comma = alternative ("," alternative)*
+    // comma = (def | alternative) ("," (def | alternative))*
     fn parse_comma(&mut self) -> Result<Filter> {
-        let first = self.parse_assign()?;
+        let first = if self.peek() == Some(&Token::Def) {
+            self.parse_def()?
+        } else {
+            self.parse_assign()?
+        };
         if self.peek() != Some(&Token::Comma) {
             return Ok(first);
         }
         let mut items = vec![first];
         while self.peek() == Some(&Token::Comma) {
             self.advance();
-            items.push(self.parse_assign()?);
+            if self.peek() == Some(&Token::Def) {
+                items.push(self.parse_def()?);
+            } else {
+                items.push(self.parse_assign()?);
+            }
         }
         Ok(Filter::Comma(items))
     }
