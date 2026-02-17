@@ -89,37 +89,6 @@ enum StringPred {
 /// Target size for parallel chunks.
 const CHUNK_TARGET_SIZE: usize = 1024 * 1024;
 
-/// mmap a file for NDJSON processing. Unlike `read_padded_file`, this does not
-/// require simdjson padding — NDJSON lines are parsed individually. Falls back
-/// to `None` if mmap is unavailable (Windows, tiny files, `QJ_NO_MMAP`).
-#[cfg(unix)]
-fn mmap_file_for_ndjson(path: &std::path::Path) -> Result<Option<MmapSlice>> {
-    let meta = std::fs::metadata(path)?;
-    let file_len = meta.len() as usize;
-    if file_len == 0 || std::env::var_os("QJ_NO_MMAP").is_some() {
-        return Ok(None);
-    }
-    let fd = std::fs::File::open(path)?;
-    use std::os::unix::io::AsRawFd;
-    let ptr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            file_len,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE,
-            fd.as_raw_fd(),
-            0,
-        )
-    };
-    if ptr == libc::MAP_FAILED {
-        return Ok(None);
-    }
-    unsafe {
-        libc::madvise(ptr, file_len, libc::MADV_SEQUENTIAL);
-    }
-    Ok(Some(MmapSlice { ptr, len: file_len }))
-}
-
 /// RAII wrapper for a raw mmap'd region.
 #[cfg(unix)]
 struct MmapSlice {
@@ -151,15 +120,40 @@ unsafe impl Send for MmapSlice {}
 #[cfg(unix)]
 unsafe impl Sync for MmapSlice {}
 
-/// Process an NDJSON file: detect format, mmap, and process with windowed parallelism.
+/// mmap a window of a file. Returns None if mmap fails or is disabled.
+#[cfg(unix)]
+fn mmap_window(fd: std::os::unix::io::RawFd, offset: usize, len: usize) -> Option<MmapSlice> {
+    if len == 0 {
+        return None;
+    }
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            fd,
+            offset as libc::off_t,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return None;
+    }
+    unsafe {
+        libc::madvise(ptr, len, libc::MADV_SEQUENTIAL);
+    }
+    Some(MmapSlice { ptr, len })
+}
+
+/// Process an NDJSON file: detect format, mmap per-window, process in parallel.
 ///
 /// Returns `Ok(Some(had_output))` if the file was NDJSON and was processed.
 /// Returns `Ok(None)` if the file is not NDJSON (caller should handle as single-doc).
 ///
-/// Uses mmap for zero-copy I/O with windowed output to bound memory. Falls back
-/// to streaming with `read()` if mmap is unavailable. Works correctly for files
-/// larger than physical RAM — the kernel pages in on demand and evicts clean
-/// file-backed pages under memory pressure.
+/// Maps each window independently via mmap, processes it, then unmaps before the
+/// next window. This gives zero-copy I/O (no read() syscalls) with RSS bounded
+/// to ~window_size instead of file_size. Falls back to streaming read() on
+/// non-Unix or when mmap is disabled.
 pub fn process_ndjson_file<W: Write>(
     path: &std::path::Path,
     filter: &Filter,
@@ -168,17 +162,150 @@ pub fn process_ndjson_file<W: Write>(
     force_jsonl: bool,
     out: &mut W,
 ) -> Result<Option<bool>> {
-    // Try mmap first (fast path: zero-copy, kernel-managed pages).
     #[cfg(unix)]
-    if let Some(mmap) = mmap_file_for_ndjson(path)? {
-        if force_jsonl || is_ndjson(&mmap) {
-            let ho = process_ndjson_windowed(&mmap, filter, config, env, out)?;
-            return Ok(Some(ho));
-        }
-        return Ok(None);
+    if std::env::var_os("QJ_NO_MMAP").is_none() {
+        return process_ndjson_file_mmap(path, filter, config, env, force_jsonl, out);
     }
 
-    // Fallback: streaming with read() (non-Unix, mmap disabled, or mmap failed).
+    // Fallback: streaming with read() (non-Unix, mmap disabled).
+    process_ndjson_file_streaming(path, filter, config, env, force_jsonl, out)
+}
+
+/// mmap-per-window file processing. Maps each window independently so RSS stays
+/// bounded to ~window_size. Each window is munmap'd before the next is mapped.
+#[cfg(unix)]
+fn process_ndjson_file_mmap<W: Write>(
+    path: &std::path::Path,
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    force_jsonl: bool,
+    out: &mut W,
+) -> Result<Option<bool>> {
+    use std::os::unix::io::AsRawFd;
+
+    let file =
+        std::fs::File::open(path).with_context(|| format!("failed to open file: {path:?}"))?;
+    let file_len = file.metadata()?.len() as usize;
+    if file_len == 0 {
+        return Ok(None);
+    }
+    let fd = file.as_raw_fd();
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+
+    // Detect NDJSON by peeking at the first window.
+    let peek_len = file_len.min(64 * 1024);
+    let peek = match mmap_window(fd, 0, peek_len) {
+        Some(m) => m,
+        None => return process_ndjson_file_streaming(path, filter, config, env, force_jsonl, out),
+    };
+    if !force_jsonl && !is_ndjson(&peek) {
+        return Ok(None);
+    }
+    drop(peek);
+
+    // Set up filter analysis (same as process_ndjson_windowed).
+    let needs_env = if env.is_empty() {
+        false
+    } else {
+        let mut var_refs = HashSet::new();
+        filter.collect_var_refs(&mut var_refs);
+        var_refs.iter().any(|v| env.get_var(v).is_some())
+    };
+    let use_parallel = !needs_env && filter.is_parallel_safe();
+    let fast_path = if use_parallel {
+        detect_fast_path(filter)
+    } else {
+        NdjsonFastPath::None
+    };
+
+    let ws = window_size();
+    let mut had_output = false;
+    let mut file_offset: usize = 0;
+
+    while file_offset < file_len {
+        // Determine how many bytes to map. Align the end to a page boundary
+        // (mmap requires page-aligned offset; length can extend past file end
+        // but we only access up to file_len).
+        let raw_end = (file_offset + ws).min(file_len);
+        let map_len = raw_end - file_offset;
+
+        // mmap this window. Offset must be page-aligned — file_offset is always
+        // either 0 or the byte after a newline snapped to a page boundary below.
+        let aligned_offset = file_offset & !(page_size - 1);
+        let prefix = file_offset - aligned_offset;
+        let aligned_len = map_len + prefix;
+
+        let mmap = match mmap_window(fd, aligned_offset, aligned_len) {
+            Some(m) => m,
+            None => {
+                // mmap failed mid-file — fall back to streaming for the rest.
+                use std::io::Seek;
+                let mut f = std::fs::File::open(path)?;
+                f.seek(std::io::SeekFrom::Start(file_offset as u64))?;
+                let ho = process_ndjson_streaming(&mut f, filter, config, env, out)?;
+                had_output |= ho;
+                return Ok(Some(had_output));
+            }
+        };
+        let window_data = &mmap[prefix..];
+
+        // Find the last newline to avoid splitting lines (unless at EOF).
+        let at_eof = raw_end == file_len;
+        let process_len = if at_eof {
+            window_data.len()
+        } else {
+            match memchr::memrchr(b'\n', window_data) {
+                Some(pos) => pos + 1,
+                None => window_data.len(), // Single line > window — process it all.
+            }
+        };
+        let to_process = &window_data[..process_len];
+
+        if use_parallel {
+            let chunks = split_chunks(to_process, CHUNK_TARGET_SIZE);
+            if chunks.len() <= 1 {
+                let (chunk_out, ho) = process_chunk(to_process, filter, config, &fast_path, env)?;
+                out.write_all(&chunk_out)?;
+                had_output |= ho;
+            } else {
+                let shared = SharedFilter::new(filter);
+                let results: Result<Vec<(Vec<u8>, bool)>> = chunks
+                    .par_iter()
+                    .map(|&chunk| {
+                        let empty_env = Env::empty();
+                        process_chunk(chunk, shared.get(), config, &fast_path, &empty_env)
+                    })
+                    .collect();
+                let results = results?;
+                for (chunk_out, ho) in results {
+                    out.write_all(&chunk_out)?;
+                    had_output |= ho;
+                }
+            }
+        } else {
+            let (chunk_out, ho) = process_chunk(to_process, filter, config, &fast_path, env)?;
+            out.write_all(&chunk_out)?;
+            had_output |= ho;
+        }
+
+        // Advance past the processed bytes. The mmap is dropped here,
+        // releasing the pages before the next window is mapped.
+        file_offset += process_len;
+        drop(mmap);
+    }
+
+    Ok(Some(had_output))
+}
+
+fn process_ndjson_file_streaming<W: Write>(
+    path: &std::path::Path,
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+    force_jsonl: bool,
+    out: &mut W,
+) -> Result<Option<bool>> {
     use std::io::Seek;
     let mut file =
         std::fs::File::open(path).with_context(|| format!("failed to open file: {path:?}"))?;
