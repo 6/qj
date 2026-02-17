@@ -413,7 +413,6 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "qj",
- "serde_json",
 ]
 
 [[package]]

@@ -1646,6 +1646,91 @@ fn exhaustive_fast_path_vs_normal() {
     }
 }
 
+// --- Leading whitespace handling ---
+
+/// NDJSON lines with leading whitespace should produce the same output as
+/// lines without (the fast path trims leading whitespace before processing).
+#[test]
+fn ndjson_leading_whitespace_trimmed() {
+    // Input with leading spaces and tabs before the JSON objects.
+    let input_with_ws = "  {\"name\":\"alice\",\"type\":\"PushEvent\"}\n\t{\"name\":\"bob\",\"type\":\"WatchEvent\"}\n";
+    let input_clean =
+        "{\"name\":\"alice\",\"type\":\"PushEvent\"}\n{\"name\":\"bob\",\"type\":\"WatchEvent\"}\n";
+
+    // Both should produce identical output for all fast-path-eligible filters.
+    for filter in &[
+        ".name",
+        "select(.type == \"PushEvent\")",
+        "{name: .name}",
+        "[.name]",
+        "length",
+        "keys",
+        "type",
+    ] {
+        let out_ws = qj_stdin(&["-c", filter], input_with_ws);
+        let out_clean = qj_stdin(&["-c", filter], input_clean);
+        assert_eq!(
+            out_ws, out_clean,
+            "Leading whitespace caused different output for filter: {filter}"
+        );
+    }
+}
+
+/// The select fast path should not include leading whitespace in its raw
+/// passthrough output.
+#[test]
+fn ndjson_select_no_leading_whitespace_in_output() {
+    let input = "  {\"type\":\"PushEvent\"}\n";
+    let out = qj_stdin(&["-c", "select(.type == \"PushEvent\")"], input);
+    assert_eq!(out, "{\"type\":\"PushEvent\"}\n");
+    assert!(
+        !out.starts_with(' '),
+        "Output should not have leading whitespace"
+    );
+}
+
+// --- process_ndjson_no_fast_path parity ---
+
+/// `process_ndjson_no_fast_path` must produce the same output as the normal
+/// evaluator path for valid compact NDJSON objects.
+#[test]
+fn process_ndjson_no_fast_path_matches_normal_eval() {
+    use qj::filter::{self, Env};
+    use qj::output::{OutputConfig, OutputMode};
+    use qj::parallel::ndjson::{process_ndjson, process_ndjson_no_fast_path};
+
+    let data = b"{\"name\":\"alice\",\"type\":\"PushEvent\",\"count\":42}\n{\"name\":\"bob\",\"type\":\"WatchEvent\",\"count\":7}\n";
+    let config = OutputConfig {
+        mode: OutputMode::Compact,
+        ..OutputConfig::default()
+    };
+    let env = Env::empty();
+
+    for filter_str in &[
+        ".name",
+        "select(.type == \"PushEvent\")",
+        "{name: .name, count: .count}",
+        "[.name, .count]",
+        "length",
+        "keys",
+        "keys_unsorted",
+        "type",
+        "has(\"name\")",
+        "select(.name | contains(\"ali\"))",
+    ] {
+        let filter = filter::parse(filter_str).unwrap();
+        let fast = process_ndjson(data, &filter, &config, &env).unwrap();
+        let normal = process_ndjson_no_fast_path(data, &filter, &config, &env).unwrap();
+        assert_eq!(
+            fast.0,
+            normal.0,
+            "process_ndjson vs process_ndjson_no_fast_path diverged for filter: {filter_str}\n  fast:   {:?}\n  normal: {:?}",
+            String::from_utf8_lossy(&fast.0),
+            String::from_utf8_lossy(&normal.0),
+        );
+    }
+}
+
 // --- Key-order preservation ---
 
 #[test]

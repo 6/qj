@@ -476,6 +476,19 @@ pub fn process_ndjson(
     Ok((out, had_output))
 }
 
+/// Like [`process_ndjson`], but forces the normal (non-fast-path) evaluator.
+/// Used by the differential fuzzer to compare fast path vs normal output without
+/// env var mutation (which is unsafe in a long-running fuzzer process).
+#[doc(hidden)]
+pub fn process_ndjson_no_fast_path(
+    data: &[u8],
+    filter: &Filter,
+    config: &OutputConfig,
+    env: &Env,
+) -> Result<(Vec<u8>, bool)> {
+    process_chunk(data, filter, config, &NdjsonFastPath::None, env)
+}
+
 /// Process an NDJSON buffer in fixed-size windows, writing output per-window.
 ///
 /// Only one window's output is buffered at a time, bounding memory to
@@ -966,12 +979,16 @@ fn process_line(
     scratch: &mut Vec<u8>,
     dom_parser: &mut Option<simdjson::DomParser>,
 ) -> Result<()> {
-    // Trim trailing whitespace
+    // Trim leading and trailing whitespace
     let end = line
         .iter()
         .rposition(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
         .map_or(0, |p| p + 1);
-    let trimmed = &line[..end];
+    let start = line[..end]
+        .iter()
+        .position(|&b| !matches!(b, b' ' | b'\t'))
+        .unwrap_or(end);
+    let trimmed = &line[start..end];
 
     if trimmed.is_empty() {
         return Ok(());
