@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 #[derive(Parser)]
 #[command(about = "Benchmark qj vs jq vs jaq vs gojq. Writes results to markdown.")]
 struct Args {
-    /// Benchmark type: "json" (single-file) or "ndjson" (GH Archive parallel)
+    /// Benchmark type: "json", "ndjson", or "ndjson-extended" (streaming + stdin + slurp)
     #[arg(long = "type")]
     benchmark_type: String,
 
@@ -37,7 +37,7 @@ struct Args {
     #[arg(long)]
     skip_correctness: bool,
 
-    /// NDJSON dataset size: "small" (1.1GB), "medium" (3.4GB), "large" (6.2GB)
+    /// NDJSON dataset size: "xsmall" (~500MB), "small" (1.1GB), "medium" (3.4GB), "large" (6.2GB)
     #[arg(long, default_value = "medium")]
     size: String,
 }
@@ -53,6 +53,9 @@ impl Args {
         } else {
             match self.benchmark_type.as_str() {
                 "ndjson" => PathBuf::from(format!("benches/results_ndjson_{}.md", self.size)),
+                "ndjson-extended" => {
+                    PathBuf::from(format!("benches/results_ndjson_extended_{}.md", self.size))
+                }
                 _ => PathBuf::from("benches/results_json.md"),
             }
         }
@@ -256,6 +259,57 @@ static NDJSON_FILTERS: &[BenchFilter] = &[
     },
 ];
 
+/// Complex NDJSON filters that bypass on-demand fast paths (used by ndjson-extended).
+static NDJSON_COMPLEX_FILTERS: &[BenchFilter] = &[
+    BenchFilter {
+        name: "def + select",
+        flags: &["-c"],
+        expr: r#"def is_push: .type == "PushEvent"; select(is_push)"#,
+    },
+    BenchFilter {
+        name: "reduce",
+        flags: &["-c"],
+        expr: r#"reduce .payload.commits[]? as $c (""; . + $c.message[0:1])"#,
+    },
+];
+
+/// Stdin benchmark filters (subset of streaming filters, used by ndjson-extended).
+static NDJSON_STDIN_FILTERS: &[BenchFilter] = &[
+    BenchFilter {
+        name: "field (stdin)",
+        flags: &[],
+        expr: ".actor.login",
+    },
+    BenchFilter {
+        name: "select (stdin)",
+        flags: &["-c"],
+        expr: r#"select(.type == "PushEvent")"#,
+    },
+    BenchFilter {
+        name: "reshape (stdin)",
+        flags: &["-c"],
+        expr: "{type, repo: .repo.name, actor: .actor.login}",
+    },
+];
+
+/// Slurp benchmark filters (used by ndjson-extended).
+static NDJSON_SLURP_FILTERS: &[BenchFilter] = &[
+    BenchFilter {
+        name: "slurp length",
+        flags: &["-s"],
+        expr: "length",
+    },
+    BenchFilter {
+        name: "slurp group_by",
+        flags: &["-s"],
+        expr: "group_by(.type) | map({type: .[0].type, count: length})",
+    },
+    BenchFilter {
+        name: "slurp top-10 users",
+        flags: &["-s"],
+        expr: "map(.actor.login) | group_by(.) | map({user: .[0], events: length}) | sort_by(.events) | reverse | .[:10]",
+    },
+];
 
 // --- Tool discovery ---
 
@@ -336,6 +390,19 @@ fn build_cmd(tool: &Tool, flags: &[&str], expr: &str, file: &str) -> String {
         write!(cmd, " {flag}").unwrap();
     }
     write!(cmd, " '{expr}' '{file}'").unwrap();
+    cmd
+}
+
+/// Build a shell command that pipes file via stdin: `cat file | tool flags 'expr'`
+fn build_cmd_stdin(tool: &Tool, flags: &[&str], expr: &str, file: &str) -> String {
+    let mut cmd = format!("cat '{file}' | {}", tool.path);
+    for arg in &tool.extra_args {
+        write!(cmd, " {arg}").unwrap();
+    }
+    for flag in flags {
+        write!(cmd, " {flag}").unwrap();
+    }
+    write!(cmd, " '{expr}'").unwrap();
     cmd
 }
 
@@ -905,6 +972,233 @@ fn generate_ndjson_markdown(
     md
 }
 
+// --- Stdin benchmark runner ---
+
+#[allow(clippy::too_many_arguments)]
+fn run_stdin_benchmarks(
+    tools: &[Tool],
+    filters: &[BenchFilter],
+    key_prefix: &str,
+    ndjson_file: &str,
+    data_dir: &Path,
+    results_dir: &Path,
+    args: &Args,
+    results: &mut Results,
+) {
+    let file_path = data_dir.join(ndjson_file);
+
+    for (i, filter) in filters.iter().enumerate() {
+        let filter_key = format!("{key_prefix}_{i}");
+        let file_stem = ndjson_file.strip_suffix(".ndjson").unwrap_or(ndjson_file);
+        let json_file = results_dir.join(format!("{key_prefix}-run-{i}-{file_stem}.json"));
+
+        let mut cmds = Vec::new();
+        let mut cmd_tools: Vec<&str> = Vec::new();
+
+        for tool in tools {
+            cmds.push(build_cmd_stdin(
+                tool,
+                filter.flags,
+                filter.expr,
+                file_path.to_str().unwrap(),
+            ));
+            cmd_tools.push(&tool.name);
+        }
+
+        if cmds.len() < 2 {
+            continue;
+        }
+
+        eprintln!("--- {} ---", filter.name);
+
+        let (program, mut prefix_args) = if is_macos() {
+            ("caffeinate", vec!["-dims", "hyperfine"])
+        } else {
+            ("hyperfine", vec![])
+        };
+        prefix_args.extend(["--warmup", "1", "--runs"]);
+
+        let mut hyperfine = Command::new(program);
+        for arg in &prefix_args {
+            hyperfine.arg(arg);
+        }
+        hyperfine
+            .arg(args.runs.to_string())
+            .arg("--export-json")
+            .arg(&json_file)
+            .arg("--ignore-failure");
+        for cmd in &cmds {
+            hyperfine.arg(cmd);
+        }
+        let status = hyperfine.status().expect("failed to run hyperfine");
+        if !status.success() {
+            eprintln!("  hyperfine failed for '{}'", filter.name);
+            continue;
+        }
+        eprintln!();
+
+        let json_content = fs::read_to_string(&json_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_content).unwrap();
+        for (t, tool_name) in cmd_tools.iter().enumerate() {
+            if let Some(median) = parsed["results"][t]["median"].as_f64() {
+                let failed = parsed["results"][t]["exit_codes"]
+                    .as_array()
+                    .is_some_and(|codes| codes.iter().any(|c| c.as_i64() != Some(0)));
+                results.insert(
+                    result_key(&filter_key, ndjson_file, tool_name),
+                    (median, failed),
+                );
+            }
+        }
+
+        thread::sleep(Duration::from_secs(args.cooldown));
+    }
+}
+
+// --- Markdown generation: NDJSON extended ---
+
+#[allow(clippy::too_many_arguments)]
+fn generate_ndjson_extended_markdown(
+    tools: &[Tool],
+    ndjson_file: &str,
+    results: &Results,
+    data_dir: &Path,
+    runs: u32,
+    platform: &str,
+    date: &str,
+    elapsed: Duration,
+) -> String {
+    let mut md = String::new();
+    let file_path = data_dir.join(ndjson_file);
+    let file_bytes = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+    let file_mb = file_bytes / (1024 * 1024);
+    let file_size_str = if file_mb >= 1024 {
+        format!("{:.1}GB", file_mb as f64 / 1024.0)
+    } else {
+        format!("{file_mb}MB")
+    };
+
+    writeln!(md, "# Extended NDJSON Benchmarks").unwrap();
+    writeln!(md).unwrap();
+    writeln!(
+        md,
+        "> Generated: {date} on `{platform}` (total time: {elapsed:.0?})"
+    )
+    .unwrap();
+    writeln!(
+        md,
+        "> {runs} runs, 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
+    )
+    .unwrap();
+    writeln!(md, "> Dataset: {ndjson_file} ({file_size_str})").unwrap();
+    writeln!(md).unwrap();
+
+    // Helper closure to write a results table
+    let write_table = |md: &mut String, filters: &[BenchFilter], prefix: &str| {
+        let mut header = String::from("| Filter |");
+        let mut separator = String::from("|--------|");
+        for tool in tools {
+            if tool.name == "qj" {
+                write!(header, " **{}** |", tool.name).unwrap();
+            } else {
+                write!(header, " {} |", tool.name).unwrap();
+            }
+            write!(separator, "------:|").unwrap();
+            if tool.name.starts_with("qj") {
+                header.push_str(" vs jq |");
+                write!(separator, "------:|").unwrap();
+            }
+        }
+        writeln!(md, "{header}").unwrap();
+        writeln!(md, "{separator}").unwrap();
+
+        for (i, filter) in filters.iter().enumerate() {
+            let filter_key = format!("{prefix}_{i}");
+            let display = filter_display(filter);
+            let mut row = format!("| `{display}` |");
+            let jq_val = results.get(&result_key(&filter_key, ndjson_file, "jq"));
+            for tool in tools {
+                let val = results.get(&result_key(&filter_key, ndjson_file, &tool.name));
+                let formatted = format_result(val);
+                if tool.name == "qj" {
+                    write!(row, " **{formatted}** |").unwrap();
+                } else {
+                    write!(row, " {formatted} |").unwrap();
+                }
+                if tool.name.starts_with("qj") {
+                    let speedup = match (jq_val, val) {
+                        (Some(&(jq_t, _)), Some(&(tool_t, _))) if jq_t > 0.0 && tool_t > 0.0 => {
+                            format!("{:.1}x", jq_t / tool_t)
+                        }
+                        _ => "-".to_string(),
+                    };
+                    if tool.name == "qj" {
+                        write!(row, " **{speedup}** |").unwrap();
+                    } else {
+                        write!(row, " {speedup} |").unwrap();
+                    }
+                }
+            }
+            writeln!(md, "{row}").unwrap();
+        }
+    };
+
+    // Section 1: Streaming file
+    writeln!(md, "## Streaming (file)").unwrap();
+    writeln!(md).unwrap();
+    writeln!(
+        md,
+        "Standard NDJSON filters with mmap + parallelism + on-demand fast paths."
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+    write_table(&mut md, NDJSON_FILTERS, "ndjson");
+
+    // Section 2: Complex filters
+    writeln!(md).unwrap();
+    writeln!(md, "## Complex filters (no on-demand fast path)").unwrap();
+    writeln!(md).unwrap();
+    writeln!(
+        md,
+        "Filters using `def`/`reduce` that bypass on-demand extraction. Still parallel."
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+    write_table(&mut md, NDJSON_COMPLEX_FILTERS, "ndjson_complex");
+
+    // Section 3: Stdin
+    writeln!(md).unwrap();
+    writeln!(md, "## Stdin (`cat file | tool`)").unwrap();
+    writeln!(md).unwrap();
+    writeln!(
+        md,
+        "Piped via stdin instead of file argument. No mmap, may affect parallelism."
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+    write_table(&mut md, NDJSON_STDIN_FILTERS, "ndjson_stdin");
+
+    // Section 4: Slurp
+    let has_slurp = NDJSON_SLURP_FILTERS.iter().enumerate().any(|(i, _)| {
+        results.contains_key(&result_key(&format!("ndjson_slurp_{i}"), ndjson_file, "qj"))
+    });
+    if has_slurp {
+        writeln!(md).unwrap();
+        writeln!(md, "## Slurp mode (`-s`)").unwrap();
+        writeln!(md).unwrap();
+        writeln!(
+            md,
+            "All records loaded into array. No parallelism or on-demand fast paths."
+        )
+        .unwrap();
+        writeln!(md).unwrap();
+        write_table(&mut md, NDJSON_SLURP_FILTERS, "ndjson_slurp");
+    }
+
+    writeln!(md).unwrap();
+    md
+}
+
 fn main() {
     let args = Args::parse();
     let qj_path = "./target/release/qj";
@@ -912,9 +1206,11 @@ fn main() {
     let results_dir = Path::new("benches/results");
 
     match args.benchmark_type.as_str() {
-        "json" | "ndjson" => {}
+        "json" | "ndjson" | "ndjson-extended" => {}
         other => {
-            eprintln!("Error: unknown --type '{other}'. Use 'json' or 'ndjson'.");
+            eprintln!(
+                "Error: unknown --type '{other}'. Use 'json', 'ndjson', or 'ndjson-extended'."
+            );
             std::process::exit(1);
         }
     }
@@ -1052,13 +1348,16 @@ fn main() {
         );
         fs::write(&output_path, &md).unwrap();
     } else {
-        // --- NDJSON benchmarks ---
+        // --- NDJSON benchmarks (both "ndjson" and "ndjson-extended") ---
         let (ndjson_file, download_flag) = match args.size.as_str() {
+            "xsmall" => ("gharchive_xsmall.ndjson", " --xsmall"),
             "small" => ("gharchive.ndjson", ""),
             "medium" => ("gharchive_medium.ndjson", " --medium"),
             "large" => ("gharchive_large.ndjson", " --large"),
             other => {
-                eprintln!("Error: unknown --size '{other}'. Use 'small', 'medium', or 'large'.");
+                eprintln!(
+                    "Error: unknown --size '{other}'. Use 'xsmall', 'small', 'medium', or 'large'."
+                );
                 std::process::exit(1);
             }
         };
@@ -1069,32 +1368,111 @@ fn main() {
             std::process::exit(1);
         }
 
-        run_benchmarks(
-            &tools,
-            NDJSON_FILTERS,
-            "ndjson",
-            &[ndjson_file],
-            data_dir,
-            results_dir,
-            &args,
-            &mut results,
-            true, // caffeinate on macOS
-            true, // --ignore-failure
-        );
+        let is_extended = args.benchmark_type == "ndjson-extended";
+
+        // Section 1: Streaming file benchmarks
+        if args.should_run("ndjson") {
+            run_benchmarks(
+                &tools,
+                NDJSON_FILTERS,
+                "ndjson",
+                &[ndjson_file],
+                data_dir,
+                results_dir,
+                &args,
+                &mut results,
+                true,
+                true,
+            );
+        }
+
+        // Section 2 (extended only): Complex filters (no on-demand fast path)
+        if is_extended && args.should_run("complex") {
+            eprintln!();
+            eprintln!("=== Complex filters (bypass on-demand fast paths) ===");
+            run_benchmarks(
+                &tools,
+                NDJSON_COMPLEX_FILTERS,
+                "ndjson_complex",
+                &[ndjson_file],
+                data_dir,
+                results_dir,
+                &args,
+                &mut results,
+                true,
+                true,
+            );
+        }
+
+        // Section 3 (extended only): Stdin benchmarks
+        if is_extended && args.should_run("stdin") {
+            eprintln!();
+            eprintln!("=== Stdin benchmarks (cat file | tool) ===");
+            run_stdin_benchmarks(
+                &tools,
+                NDJSON_STDIN_FILTERS,
+                "ndjson_stdin",
+                ndjson_file,
+                data_dir,
+                results_dir,
+                &args,
+                &mut results,
+            );
+        }
+
+        // Section 4 (extended only): Slurp benchmarks
+        if is_extended && args.should_run("slurp") {
+            let file_bytes = fs::metadata(&ndjson_path).map(|m| m.len()).unwrap_or(0);
+            let file_gb = file_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            if file_gb > 2.0 {
+                eprintln!();
+                eprintln!("=== Slurp benchmarks SKIPPED ({file_gb:.1}GB is too large for -s) ===");
+                eprintln!("  Use --size xsmall or --size small for slurp benchmarks.");
+            } else {
+                eprintln!();
+                eprintln!("=== Slurp benchmarks (-s) ===");
+                run_benchmarks(
+                    &tools,
+                    NDJSON_SLURP_FILTERS,
+                    "ndjson_slurp",
+                    &[ndjson_file],
+                    data_dir,
+                    results_dir,
+                    &args,
+                    &mut results,
+                    true,
+                    true,
+                );
+            }
+        }
 
         let elapsed = bench_start.elapsed();
-        let md = generate_ndjson_markdown(
-            &tools,
-            ndjson_file,
-            NDJSON_FILTERS,
-            &results,
-            data_dir,
-            args.runs,
-            &platform,
-            &date,
-            elapsed,
-        );
-        fs::write(&output_path, &md).unwrap();
+        if is_extended {
+            let md = generate_ndjson_extended_markdown(
+                &tools,
+                ndjson_file,
+                &results,
+                data_dir,
+                args.runs,
+                &platform,
+                &date,
+                elapsed,
+            );
+            fs::write(&output_path, &md).unwrap();
+        } else {
+            let md = generate_ndjson_markdown(
+                &tools,
+                ndjson_file,
+                NDJSON_FILTERS,
+                &results,
+                data_dir,
+                args.runs,
+                &platform,
+                &date,
+                elapsed,
+            );
+            fs::write(&output_path, &md).unwrap();
+        }
     }
 
     let total_elapsed = bench_start.elapsed();

@@ -45,11 +45,7 @@ qj -s 'group_by(.actor.login) | map({user: .[0].actor.login, n: length}) | sort_
 
 # Same aggregation without slurp mode (~4x faster, keeps parallelism)
 qj '.actor.login' events.ndjson | sort | uniq -c | sort -rn | head -10
-```
 
-> **Tip:** For aggregations, prefer streaming extraction piped to Unix tools over slurp mode (`-s`). Slurp bypasses parallelism and on-demand fast paths, so it's only ~2-3x faster than jq.
-
-```bash
 # Compressed files
 qj '.actor.login' gharchive-*.json.gz
 qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
@@ -69,6 +65,13 @@ Benchmarked on M4 MacBook Pro [hyperfine](https://github.com/sharkdp/hyperfine) 
 | `{type, commits: [.payload.commits[]?.message]}` | **801 ms** | 4.84 s | 23.8 s | 9.2 s | 20.9 s |
 
 On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq. See [benches/](benches/) for full results.
+
+**Slower scenarios:**
+
+| Scenario | vs jq | Why | Tip |
+|----------|------:|-----|-----|
+| Stdin (`cat file \| qj`) | ~9-17x | No mmap | Pass filename directly when possible |
+| Slurp mode (`-s`) | ~2-3x | No parallelism or on-demand fast paths | Prefer `qj '.field' \| sort \| uniq -c` for aggregations |
 
 ## How it works
 

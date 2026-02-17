@@ -5,6 +5,9 @@
 # Default (no flags):
 #   2024-01-15, 2 hours -> gharchive.ndjson (~1.1GB), gharchive.json, gharchive.ndjson.gz
 #
+# --xsmall:
+#   2024-01-15, 1 hour  -> gharchive_xsmall.ndjson (~500MB)
+#
 # --medium:
 #   2024-01-15, 6 hours -> gharchive_medium.ndjson (~3.4GB, ~1.2M records)
 #
@@ -22,6 +25,10 @@ if [ "${1:-}" = "--large" ]; then
     HOURS="${QJ_GHARCHIVE_HOURS:-24}"
     DATE="2026-02-01"
     SUFFIX="_large"
+elif [ "${1:-}" = "--xsmall" ]; then
+    HOURS="${QJ_GHARCHIVE_HOURS:-1}"
+    DATE="2024-01-15"
+    SUFFIX="_xsmall"
 elif [ "${1:-}" = "--medium" ]; then
     HOURS="${QJ_GHARCHIVE_HOURS:-6}"
     DATE="2024-01-15"

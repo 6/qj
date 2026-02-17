@@ -147,6 +147,7 @@ cargo run --release --features bench --bin bench_tools -- --type json           
 cargo run --release --features bench --bin bench_tools -- --type ndjson                  # NDJSON (gharchive_medium.ndjson, 3.4GB)
 cargo run --release --features bench --bin bench_tools -- --type ndjson --size small     # NDJSON (gharchive.ndjson, 1.1GB)
 cargo run --release --features bench --bin bench_tools -- --type ndjson --size large     # NDJSON (gharchive_large.ndjson, 6.2GB)
+cargo run --release --features bench --bin bench_tools -- --type ndjson-extended --size xsmall  # extended: streaming + stdin + complex + slurp
 cargo run --release --features bench --bin bench_tools -- --type json --runs 3 --cooldown 2  # quick JSON run
 ```
 
@@ -161,6 +162,7 @@ Results written to `benches/results_mem_json.md` / `benches/results_mem_ndjson.m
 ### GH Archive data (for NDJSON benchmarks)
 ```
 bash benches/download_gharchive.sh           # gharchive.ndjson (~1.1GB) + .json + .ndjson.gz
+bash benches/download_gharchive.sh --xsmall  # gharchive_xsmall.ndjson (~500MB)
 bash benches/download_gharchive.sh --medium  # gharchive_medium.ndjson (~3.4GB, ~1.2M records)
 bash benches/download_gharchive.sh --large   # gharchive_large.ndjson (~6.2GB)
 ```
