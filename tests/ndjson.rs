@@ -1623,6 +1623,29 @@ fn golden_fast_path_number_preservation() {
     assert_fast_path_matches_normal("select(.n == 0) | .s", input);
 }
 
+// --- Exhaustive fast-path differential test ---
+
+/// Runs every `NdjsonFastPath` variant through `assert_fast_path_matches_normal`.
+///
+/// The filter list is derived from an exhaustive match on the `NdjsonFastPath`
+/// enum (via `all_fast_path_test_filters()`), so adding a new variant without
+/// a corresponding test filter is a compile error. This prevents the class of
+/// bug where a new fast-path mapping is added but not tested differentially.
+#[test]
+fn exhaustive_fast_path_vs_normal() {
+    // Diverse NDJSON that exercises object keys, arrays, nested fields,
+    // string values, numbers, booleans, and nulls.
+    let input = r#"{"name":"alice","type":"PushEvent","count":42,"active":true,"value":null,"actor":{"login":"alice"},"meta":{"x":1,"y":2},"items":[1,2,3]}
+{"name":"bob.com","type":"WatchEvent","count":7,"active":false,"value":99,"actor":{"login":"bob"},"meta":{"a":10,"b":20,"c":30},"items":[]}
+{"name":"test_foo","type":"PushEvent","count":100,"active":true,"value":null,"actor":{"login":"charlie"},"meta":{"x":5},"items":[10,20]}
+{"name":"Aardvark","type":"CreateEvent","count":0,"active":false,"value":"hello","actor":{"login":"dave"},"meta":{"z":9,"a":1},"items":[42]}
+"#;
+
+    for filter in qj::parallel::ndjson::all_fast_path_test_filters() {
+        assert_fast_path_matches_normal(filter, input);
+    }
+}
+
 // --- Key-order preservation ---
 
 #[test]

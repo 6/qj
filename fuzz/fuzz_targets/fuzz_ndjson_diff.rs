@@ -40,11 +40,19 @@ const FILTERS: &[&str] = &[
     // MultiFieldArr
     "[.name, .count]",
     "[.type, .actor.login]",
-    // Length/Keys
+    // Length/Keys/KeysUnsorted
     "length",
     ".meta | length",
     "keys",
     ".meta | keys",
+    "keys_unsorted",
+    ".meta | keys_unsorted",
+    // Type
+    "type",
+    ".meta | type",
+    // Has
+    "has(\"name\")",
+    ".meta | has(\"x\")",
     // SelectStringPred
     "select(.name | test(\"^A\"))",
     "select(.name | startswith(\"test\"))",

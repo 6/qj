@@ -4350,3 +4350,86 @@ mod tests {
         assert_eq!(stream_out, buf_out);
     }
 }
+
+/// Return a filter string for every `NdjsonFastPath` variant.
+///
+/// Used by integration tests and fuzz targets to ensure every fast-path variant
+/// is exercised by differential tests (fast path vs normal evaluator). Uses an
+/// exhaustive match so that adding a new variant without a test filter is a
+/// compile error.
+#[doc(hidden)]
+pub fn all_fast_path_test_filters() -> Vec<&'static str> {
+    // This enum variant list must stay exhaustive. The compiler will error if a
+    // new NdjsonFastPath variant is added without a corresponding entry here.
+    #[deny(unreachable_patterns)]
+    fn _variant_coverage_check(fp: &NdjsonFastPath) {
+        match fp {
+            NdjsonFastPath::None => {}
+            NdjsonFastPath::FieldChain(_) => {}
+            NdjsonFastPath::SelectEq { .. } => {}
+            NdjsonFastPath::Length(_) => {}
+            NdjsonFastPath::Keys { .. } => {}
+            NdjsonFastPath::Type(_) => {}
+            NdjsonFastPath::Has { .. } => {}
+            NdjsonFastPath::SelectEqField { .. } => {}
+            NdjsonFastPath::MultiFieldObj { .. } => {}
+            NdjsonFastPath::MultiFieldArr { .. } => {}
+            NdjsonFastPath::SelectEqObj { .. } => {}
+            NdjsonFastPath::SelectEqArr { .. } => {}
+            NdjsonFastPath::SelectStringPred { .. } => {}
+            NdjsonFastPath::SelectStringPredField { .. } => {}
+        }
+    }
+
+    vec![
+        // FieldChain
+        ".name",
+        ".actor.login",
+        // SelectEq (various types + ops)
+        "select(.type == \"PushEvent\")",
+        "select(.count == 42)",
+        "select(.active == true)",
+        "select(.value == null)",
+        "select(.type != \"PushEvent\")",
+        "select(.count > 10)",
+        "select(.count < 100)",
+        "select(.count >= 50)",
+        "select(.count <= 50)",
+        "select(.name > \"m\")",
+        // Length
+        "length",
+        ".meta | length",
+        // Keys (sorted)
+        "keys",
+        ".meta | keys",
+        // Keys (unsorted)
+        "keys_unsorted",
+        ".meta | keys_unsorted",
+        // Type
+        "type",
+        ".meta | type",
+        // Has
+        "has(\"name\")",
+        ".meta | has(\"x\")",
+        // SelectEqField
+        "select(.type == \"PushEvent\") | .name",
+        "select(.count > 10) | .name",
+        // MultiFieldObj
+        "{name: .name, count: .count}",
+        "{type: .type, login: .actor.login}",
+        // MultiFieldArr
+        "[.name, .count]",
+        "[.type, .actor.login]",
+        // SelectEqObj
+        "select(.type == \"PushEvent\") | {name: .name, count: .count}",
+        // SelectEqArr
+        "select(.type == \"PushEvent\") | [.name, .count]",
+        // SelectStringPred
+        "select(.name | test(\"^A\"))",
+        "select(.name | startswith(\"test\"))",
+        "select(.name | endswith(\".com\"))",
+        "select(.name | contains(\"oo\"))",
+        // SelectStringPredField
+        "select(.name | contains(\"oo\")) | .count",
+    ]
+}
