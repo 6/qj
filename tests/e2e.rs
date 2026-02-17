@@ -1923,6 +1923,38 @@ fn jq_compat_arithmetic() {
 }
 
 #[test]
+fn null_multiply_errors() {
+    // jq: null * number and number * null should error, not return null
+    let (ok, stdout, _) = qj_result("1 * .", "null");
+    assert!(!ok, "expected error for 1 * null");
+    assert!(
+        stdout.trim().is_empty(),
+        "expected no output for 1 * null, got: {stdout}"
+    );
+
+    let (ok, stdout, _) = qj_result(". * 1", "null");
+    assert!(!ok, "expected error for null * 1");
+    assert!(
+        stdout.trim().is_empty(),
+        "expected no output for null * 1, got: {stdout}"
+    );
+}
+
+#[test]
+fn jq_compat_try_division_by_zero() {
+    // try suppresses division-by-zero error; [1, 0 | try(1/.)] should produce [1]
+    assert_jq_compat("[1, 0 | try (1 / .)]", "null");
+}
+
+#[test]
+fn jq_compat_null_add_identity() {
+    // null is identity for addition: null + x = x, x + null = x
+    assert_jq_compat("null + 1", "null");
+    assert_jq_compat("1 + null", "null");
+    assert_jq_compat("null + \"hello\"", "null");
+}
+
+#[test]
 fn jq_compat_field_access() {
     assert_jq_compat(".name", r#"{"name":"alice","age":30}"#);
     assert_jq_compat(".a.b.c", r#"{"a":{"b":{"c":42}}}"#);

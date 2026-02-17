@@ -925,7 +925,6 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                     }
                 }
             }
-            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             _ => Err(format!(
                 "{} and {} cannot be multiplied",
                 left.type_name(),
