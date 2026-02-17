@@ -20,10 +20,11 @@ mkdir -p "$DIR"
 DO_JSON=false
 DO_GHARCHIVE=false
 GHARCHIVE_SIZE=""
+NO_GZ=false
 
 # Parse flags
 if [ $# -eq 0 ]; then
-    echo "Usage: bash benches/download_data.sh [--json] [--gharchive] [--xsmall|--medium|--large] [--all]"
+    echo "Usage: bash benches/download_data.sh [--json] [--gharchive] [--xsmall|--medium|--large] [--no-gz] [--all]"
     exit 1
 fi
 
@@ -32,6 +33,7 @@ for arg in "$@"; do
         --json) DO_JSON=true ;;
         --gharchive) DO_GHARCHIVE=true ;;
         --xsmall|--medium|--large) DO_GHARCHIVE=true; GHARCHIVE_SIZE="$arg" ;;
+        --no-gz) NO_GZ=true ;;
         --all) DO_JSON=true; DO_GHARCHIVE=true ;;
         *) echo "Unknown flag: $arg"; exit 1 ;;
     esac
@@ -116,7 +118,7 @@ if $DO_GHARCHIVE; then
         echo "  $NDJSON_SIZE bytes ($(( NDJSON_SIZE / 1024 / 1024 ))MB)"
 
         # Default variant also gets gzip for compressed-file benchmarks
-        if [ -z "${SUFFIX:-}" ]; then
+        if [ -z "${SUFFIX:-}" ] && ! $NO_GZ; then
             NDJSON_GZ="$DIR/gharchive.ndjson.gz"
             echo "Building gharchive.ndjson.gz..."
             gzip -c "$NDJSON" > "$NDJSON_GZ"
