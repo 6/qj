@@ -4,12 +4,14 @@
 
 Benchmarked on an M4 MacBook Pro:
 
-- **NDJSON (3.4 GB, 1.2M records):** `select(.type == "PushEvent")` in 190 ms vs jq's 36.4 s (**191x faster**)
-- **JSON (49 MB):** `.statuses | map({user, text})` in 58 ms vs jq's 695 ms (**12x faster**)
+- **NDJSON (3.4 GB, 1.2M records):** `qj 'select(.type == "PushEvent")'` runs in 190 ms vs jq's 36.4 s (**191x faster**)
+- **JSON (49 MB):** `qj '.statuses | map({user, text})'` runs in 58 ms vs jq's 695 ms (**12x faster**)
+
+The biggest gains are on NDJSON/JSONL workloads, where mmap, on-demand field extraction, automatic parallelism across cores, and SIMD parsing all combine.
 
 ## qj vs jq
 
-**Drop-in replacement.** qj is ~95% compatible with jq's syntax and flags, just faster. SIMD parsing makes even small files snappier.
+**Drop-in replacement.** 95% pass rate on jq's official test suite, with full coverage of everyday filters, builtins, and flags — just faster.
 
 **NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism (no `xargs` or `parallel` needed), and on-demand field extraction. Output order matches input order.
 
