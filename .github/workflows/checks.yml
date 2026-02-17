@@ -21,12 +21,18 @@ jobs:
       - uses: jdx/mise-action@v2
 
       - name: Install Rust components
+        if: matrix.os == 'ubuntu-24.04'
         run: rustup component add rustfmt clippy
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
+        if: matrix.os == 'ubuntu-24.04'
         run: cargo fmt --check
+
+      - name: Clippy
+        if: matrix.os == 'ubuntu-24.04'
+        run: cargo clippy --release -- -D warnings
 
       - name: Build
         run: cargo build --release
@@ -34,16 +40,15 @@ jobs:
       - name: Test
         run: cargo test --release
 
-      - name: Clippy
-        run: cargo clippy --release -- -D warnings
-
       - name: Compat suites
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           cargo test --release jq_conformance -- --ignored
           cargo test --release cli_conformance -- --ignored
           cargo test --release conformance_gaps -- --ignored
 
       - name: Check benchmarks compile
+        if: matrix.os == 'ubuntu-24.04'
         run: cargo bench --no-run
 
       - name: Regression benchmarks (iai-callgrind)
@@ -53,4 +58,5 @@ jobs:
           cargo bench --bench eval_regression
 
       - name: Shellcheck
+        if: matrix.os == 'ubuntu-24.04'
         run: git ls-files '*.sh' | xargs shellcheck
