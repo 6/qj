@@ -1,4 +1,4 @@
-# qj — a faster jq for large JSON and JSONL
+# qj — a fast, jq-compatible JSON processor
 
 Fast jq-compatible JSON processor using SIMD parsing (C++ simdjson via FFI), parallel NDJSON processing, and streaming architecture.
 
@@ -47,7 +47,7 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 - **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
 - **jq conformance suite** (`#[ignore]`): `tests/jq_conformance.rs` — runs jq's official test
   suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against qj and reports pass rate.
-- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 93 individual tests for
+- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 43 individual tests for
   currently-failing jq.test cases, categorized by feature (label/break, foreach, destructuring,
   modules, bignum, etc.) with fix suggestions in comments. Run by category to track progress.
 - **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test
@@ -184,8 +184,11 @@ Benchmarks require exclusive CPU access for reliable results.
 ## Architecture
 - `src/simdjson/` — vendored simdjson.h/cpp + C-linkage bridge + safe Rust FFI wrapper
 - `src/filter/` — jq filter lexer, parser, AST evaluator (On-Demand fast path + DOM fallback)
+- `src/value.rs` — JSON value representation (Arc-based arrays/objects)
+- `src/flat_value.rs` — zero-copy navigation of flat token buffer, avoids materializing full Value tree
+- `src/flat_eval.rs` — lazy evaluator operating on FlatValue for NDJSON lines
 - `src/parallel/` — NDJSON chunk splitter + thread pool
-- `src/output/` — pretty-print, compact, raw output formatters
+- `src/output.rs` — pretty-print, compact, raw output formatters
 - `src/input.rs` — input preprocessing (BOM stripping, JSON/NDJSON parsing into Values)
 - `src/decompress.rs` — transparent gzip (flate2) and zstd decompression, detected by file extension
 - `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks
