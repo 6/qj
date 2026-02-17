@@ -1344,6 +1344,54 @@ tests = [
 # Streaming
 # =============================================================================
 
+# =============================================================================
+# Module system
+# =============================================================================
+
+# =============================================================================
+# Module system (requires external .jq files — cannot be tested in this harness)
+# =============================================================================
+
+[[features]]
+category = "Modules"
+name = "import"
+tests = [
+  { filter = 'import "a" as foo; foo::a', input = 'null', flags = '-L tests/jq_compat/modules --', expected = '"a"' },
+]
+
+[[features]]
+category = "Modules"
+name = "include"
+tests = [
+  { filter = 'include "shadow1"; e', input = 'null', flags = '-L tests/jq_compat/modules --', expected = '2' },
+]
+
+# =============================================================================
+# Arbitrary precision arithmetic
+# =============================================================================
+
+[[features]]
+category = "Bignum"
+name = "Large integer precision"
+tests = [
+  # 13911860366432393 - 10: correct answer is ...383, but jq (f64) gives ...382.
+  # Expected value matches jq since this is a compat suite.
+  { filter = '. - 10', input = '13911860366432393', expected = '13911860366432382' },
+  { filter = '.[0] | tostring', input = '[9007199254740993]', expected = '"9007199254740993"' },
+]
+
+# =============================================================================
+# Advanced def edge cases
+# =============================================================================
+
+[[features]]
+category = "Advanced def"
+name = "Destructuring bind"
+tests = [
+  { filter = '. as {a: $a, b: $b} | [$a, $b]', input = '{"a":1,"b":2}', expected = '[1,2]' },
+  { filter = '. as [$a, $b] | [$b, $a]', input = '[1,2]', expected = '[2,1]' },
+]
+
 [[features]]
 category = "Streaming"
 name = "tostream"

@@ -243,6 +243,25 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | Monochrome output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | --stream | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
 
+### Modules
+
+| Feature | Tests | **qj** | jq | jaq | gojq |
+|---------|------:|-----:|-----:|-----:|-----:|
+| import | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
+| include | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
+
+### Bignum
+
+| Feature | Tests | **qj** | jq | jaq | gojq |
+|---------|------:|-----:|-----:|-----:|-----:|
+| Large integer precision | 2 | **1/2 ~** | 2/2 Y | 1/2 ~ | 1/2 ~ |
+
+### Advanced def
+
+| Feature | Tests | **qj** | jq | jaq | gojq |
+|---------|------:|-----:|-----:|-----:|-----:|
+| Destructuring bind | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+
 ### Streaming
 
 | Feature | Tests | **qj** | jq | jaq | gojq |
@@ -254,9 +273,9 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **qj** | **166** | **0** | **3** | **98.2%** |
-| jq | 169 | 0 | 0 | 100.0% |
-| jaq | 150 | 3 | 16 | 89.6% |
-| gojq | 167 | 0 | 2 | 98.8% |
+| **qj** | **167** | **1** | **5** | **96.8%** |
+| jq | 173 | 0 | 0 | 100.0% |
+| jaq | 153 | 4 | 16 | 89.6% |
+| gojq | 170 | 1 | 2 | 98.6% |
 
 Score = (Y + 0.5 × ~) / total × 100
