@@ -242,6 +242,12 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | --argjson | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | Monochrome output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | --stream | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
+| ASCII output | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 0/2 N |
+| Color output | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 0/2 N |
+| --slurpfile | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| --rawfile | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| --args | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| --jsonargs | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 2/2 Y |
 
 ### Modules
 
@@ -254,7 +260,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Feature | Tests | **qj** | jq | jaq | gojq |
 |---------|------:|-----:|-----:|-----:|-----:|
-| Large integer precision | 1 | **0/1 N** | 1/1 Y | 0/1 N | 0/1 N |
+| Large integer precision | 2 | **0/2 N** | 2/2 Y | 1/2 ~ | 1/2 ~ |
 | Large integer arithmetic | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
 
 ### Advanced def
@@ -274,9 +280,9 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **qj** | **167** | **0** | **7** | **96.0%** |
-| jq | 174 | 0 | 0 | 100.0% |
-| jaq | 154 | 3 | 17 | 89.4% |
-| gojq | 171 | 0 | 3 | 98.3% |
+| **qj** | **173** | **0** | **7** | **96.1%** |
+| jq | 180 | 0 | 0 | 100.0% |
+| jaq | 157 | 4 | 19 | 88.3% |
+| gojq | 175 | 1 | 4 | 97.5% |
 
 Score = (Y + 0.5 × ~) / total × 100

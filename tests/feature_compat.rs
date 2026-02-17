@@ -39,6 +39,10 @@ struct TestCase {
     input: String,
     expected: String,
     flags: Option<String>,
+    /// Arguments appended after the filter (for --args/--jsonargs)
+    post_args: Option<String>,
+    /// If true, compare output as raw bytes (don't filter empty lines)
+    raw_compare: Option<bool>,
 }
 
 fn load_test_file() -> TestFile {
@@ -53,14 +57,55 @@ fn run_tool_with_flags(
     filter: &str,
     input: &str,
     flags: Option<&str>,
+    post_args: Option<&str>,
     cache: &mut common::ToolCache,
 ) -> Option<String> {
+    if post_args.is_some() {
+        // Can't use cache for post_args (different invocation shape)
+        return run_tool_with_post_args(tool, filter, input, flags, post_args);
+    }
     if let Some(flags_str) = flags {
         let parts: Vec<&str> = flags_str.split_whitespace().collect();
         common::run_tool_cached(tool, filter, input, &parts, cache)
     } else {
         common::run_tool_cached(tool, filter, input, &["-c", "--"], cache)
     }
+}
+
+fn run_tool_with_post_args(
+    tool: &common::Tool,
+    filter: &str,
+    input: &str,
+    flags: Option<&str>,
+    post_args: Option<&str>,
+) -> Option<String> {
+    use std::io::Write;
+    let mut cmd = Command::new(&tool.path);
+    if let Some(flags_str) = flags {
+        cmd.args(flags_str.split_whitespace());
+    } else {
+        cmd.args(&["-c", "--"]);
+    }
+    cmd.arg(filter);
+    if let Some(pa) = post_args {
+        cmd.args(pa.split_whitespace());
+    }
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .ok()?;
+    String::from_utf8(output.stdout).ok()
 }
 
 fn test_passes(output: Option<&str>, expected: &str) -> bool {
@@ -86,6 +131,180 @@ fn test_passes(output: Option<&str>, expected: &str) -> bool {
     }
 
     common::json_lines_equal(&actual_lines, &expected_lines)
+}
+
+/// Hardcoded tests for features that can't be expressed in TOML
+/// (binary output, stdin conflicts, etc.)
+/// Returns (features, results_per_tool) to be appended to the TOML-driven data.
+fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<Vec<Vec<bool>>>) {
+    use std::io::Write;
+
+    struct HardcodedTest {
+        category: String,
+        name: String,
+        /// Each sub-test: (description, runner that returns pass/fail per tool)
+        cases: Vec<(String, Box<dyn Fn(&common::Tool) -> bool>)>,
+    }
+
+    let tests: Vec<HardcodedTest> = vec![
+        HardcodedTest {
+            category: "CLI flags".into(),
+            name: "--raw-output0".into(),
+            cases: vec![
+                (
+                    "NUL-separated string output".into(),
+                    Box::new(|tool: &common::Tool| {
+                        let mut cmd = Command::new(&tool.path);
+                        cmd.args(["--raw-output0", "--", ".", "-"]);
+                        let output = cmd
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut child| {
+                                child.stdin.take().unwrap().write_all(b"\"hello\"").unwrap();
+                                child.wait_with_output()
+                            });
+                        match output {
+                            Ok(o) => o.stdout == b"hello\0",
+                            Err(_) => false,
+                        }
+                    }),
+                ),
+                (
+                    "NUL-separated array elements".into(),
+                    Box::new(|tool: &common::Tool| {
+                        let mut cmd = Command::new(&tool.path);
+                        cmd.args(["--raw-output0", "--", ".[]", "-"]);
+                        let output = cmd
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut child| {
+                                child
+                                    .stdin
+                                    .take()
+                                    .unwrap()
+                                    .write_all(b"[\"a\",\"b\"]")
+                                    .unwrap();
+                                child.wait_with_output()
+                            });
+                        match output {
+                            Ok(o) => o.stdout == b"a\0b\0",
+                            Err(_) => false,
+                        }
+                    }),
+                ),
+            ],
+        },
+        HardcodedTest {
+            category: "CLI flags".into(),
+            name: "--from-file".into(),
+            cases: vec![
+                (
+                    "Read filter from file".into(),
+                    Box::new(|tool: &common::Tool| {
+                        // Write filter to a temp file
+                        let dir = std::env::temp_dir();
+                        let filter_path = dir.join("qj_test_filter.jq");
+                        std::fs::write(&filter_path, ".foo").ok();
+                        let mut cmd = Command::new(&tool.path);
+                        cmd.args(["-f", filter_path.to_str().unwrap(), "--", "-"]);
+                        let output = cmd
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut child| {
+                                child
+                                    .stdin
+                                    .take()
+                                    .unwrap()
+                                    .write_all(b"{\"foo\":42}")
+                                    .unwrap();
+                                child.wait_with_output()
+                            });
+                        let _ = std::fs::remove_file(&filter_path);
+                        match output {
+                            Ok(o) => {
+                                String::from_utf8_lossy(&o.stdout).trim() == "42"
+                            }
+                            Err(_) => false,
+                        }
+                    }),
+                ),
+                (
+                    "Read complex filter from file".into(),
+                    Box::new(|tool: &common::Tool| {
+                        let dir = std::env::temp_dir();
+                        let filter_path = dir.join("qj_test_filter2.jq");
+                        std::fs::write(&filter_path, "[.[] | . * 2]").ok();
+                        let mut cmd = Command::new(&tool.path);
+                        cmd.args(["-c", "-f", filter_path.to_str().unwrap(), "--", "-"]);
+                        let output = cmd
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut child| {
+                                child
+                                    .stdin
+                                    .take()
+                                    .unwrap()
+                                    .write_all(b"[1,2,3]")
+                                    .unwrap();
+                                child.wait_with_output()
+                            });
+                        let _ = std::fs::remove_file(&filter_path);
+                        match output {
+                            Ok(o) => {
+                                String::from_utf8_lossy(&o.stdout).trim() == "[2,4,6]"
+                            }
+                            Err(_) => false,
+                        }
+                    }),
+                ),
+            ],
+        },
+    ];
+
+    let mut features = Vec::new();
+    let mut all_results: Vec<Vec<Vec<bool>>> = tools.iter().map(|_| Vec::new()).collect();
+
+    for ht in &tests {
+        features.push(Feature {
+            category: ht.category.clone(),
+            name: ht.name.clone(),
+            jx_only: false,
+            tests: ht
+                .cases
+                .iter()
+                .map(|(desc, _)| TestCase {
+                    filter: desc.clone(),
+                    input: String::new(),
+                    expected: String::new(),
+                    flags: None,
+                    post_args: None,
+                    raw_compare: None,
+                })
+                .collect(),
+        });
+
+        for (ti, tool) in tools.iter().enumerate() {
+            let mut case_results = Vec::new();
+            for (desc, runner) in &ht.cases {
+                let passed = runner(tool);
+                if verbose && !passed {
+                    eprintln!("  FAIL [{}] {}: {}", tool.name, ht.name, desc);
+                }
+                case_results.push(passed);
+            }
+            all_results[ti].push(case_results);
+        }
+    }
+
+    (features, all_results)
 }
 
 fn run_all(verbose: bool) {
@@ -141,9 +360,14 @@ fn run_all(verbose: bool) {
                     &test.filter,
                     &test.input,
                     test.flags.as_deref(),
+                    test.post_args.as_deref(),
                     &mut cache,
                 );
-                let passed = test_passes(output.as_deref(), &test.expected);
+                let passed = if test.raw_compare.unwrap_or(false) {
+                    output.as_deref().map_or(false, |o| o == test.expected)
+                } else {
+                    test_passes(output.as_deref(), &test.expected)
+                };
                 if passed && !skip_scoring {
                     total_pass += 1;
                 }
