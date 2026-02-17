@@ -1,9 +1,9 @@
+> [!NOTE]
+> This is a work in progress 🚧
+
 # qj
 
 `qj` is a fast, [`jq`](https://github.com/jqlang/jq)-compatible JSON processor powered by [simdjson](https://github.com/simdjson/simdjson).
-
-> [!NOTE]
-> Work in progress!
 
 Benchmarked on M4 MacBook Pro:
 
