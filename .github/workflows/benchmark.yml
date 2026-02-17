@@ -44,12 +44,12 @@ jobs:
           bash benches/generate_data.sh --all
 
       - name: Run benchmarks
-        run: cargo run --release --bin bench_tools -- --type json --runs 3 --cooldown 3 --output benches/results_json_ci.md
+        run: cargo run --release --features bench --bin bench_tools -- --type json --runs 3 --cooldown 3 --output benches/results_json_ci.md
 
       - name: Run memory benchmarks
         run: |
-          cargo run --release --bin bench_mem -- --type json --runs 3 --output benches/results_mem_json_ci.md
-          cargo run --release --bin bench_mem -- --type ndjson --runs 3 --output benches/results_mem_ndjson_ci.md
+          cargo run --release --features bench --bin bench_mem -- --type json --runs 3 --output benches/results_mem_json_ci.md
+          cargo run --release --features bench --bin bench_mem -- --type ndjson --runs 3 --output benches/results_mem_ndjson_ci.md
 
       - name: Upload results
         uses: actions/upload-artifact@v4
