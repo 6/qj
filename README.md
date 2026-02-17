@@ -24,8 +24,6 @@ Benchmarked on M4 MacBook Pro:
 
 ## Quick start
 
-Work in progress.
-
 ```bash
 cargo install qj
 ```
