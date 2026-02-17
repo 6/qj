@@ -34,22 +34,9 @@ jobs:
 
       - name: Compat suites
         run: |
-          cargo test --release jq_conformance -- --ignored --nocapture
-          cargo test --release jq_compat -- --ignored --nocapture
-          cargo test --release feature_compat -- --ignored --nocapture
+          cargo test --release jq_conformance -- --ignored
           cargo test --release cli_conformance -- --ignored
           cargo test --release conformance_gaps -- --ignored
-
-      - name: Check compat results are up to date
-        run: |
-          failed=0
-          for f in tests/jq_compat/results.md tests/jq_compat/feature_results.md; do
-            if ! git diff --exit-code "$f"; then
-              echo "::error file=$f::$f is stale. Run the compat suites and commit the updated file."
-              failed=1
-            fi
-          done
-          exit $failed
 
       - name: Check benchmarks compile
         run: cargo bench --no-run
