@@ -1,6 +1,6 @@
 # qj
 
-`qj` is Quick JSON, a fast, [`jq`](https://github.com/jqlang/jq)-compatible JSON processor.
+`qj` is a fast, [`jq`](https://github.com/jqlang/jq)-compatible JSON processor powered by [simdjson](https://github.com/simdjson/simdjson).
 
 Benchmarked on an M4 MacBook Pro:
 
@@ -11,7 +11,7 @@ Benchmarked on an M4 MacBook Pro:
 
 **Drop-in replacement.** 95% pass rate on jq's official test suite, with full coverage of everyday filters, builtins, and flags — just faster.
 
-**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining [simdjson](https://github.com/simdjson/simdjson) parsing, mmap, automatic parallelism across cores, and on-demand field extraction.
+**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction.
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
