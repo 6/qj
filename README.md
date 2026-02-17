@@ -47,7 +47,7 @@ M4 Pro (10 cores) via [hyperfine](https://github.com/sharkdp/hyperfine). See [be
 | `{type, commits: [….message]}` | **268 ms** | 1.72 s | 8.0 s | 3.2 s |
 | `{type, commits: (… \| length)}` | **262 ms** | 1.54 s | 7.5 s | 3.1 s |
 
-On single JSON files (49 MB), qj is 2-29x faster than jq and ~2x faster than jaq — SIMD parsing, no parallelism needed. [Full JSON results](benches/results_json.md).
+On single JSON files (49 MB) with no parallelism, qj is 2-29x faster than jq and 1-8x faster than jaq.
 
 ## How it works
 
@@ -59,7 +59,7 @@ On single JSON files (49 MB), qj is 2-29x faster than jq and ~2x faster than jaq
 
 ## Compatibility
 
-**98.5%** feature coverage (163/166 features passing, [details](tests/jq_compat/feature_results.md)).
+**98.2%** feature coverage (166/169 features passing, [details](tests/jq_compat/feature_results.md)).
 **91%** pass rate on jq's official 497-test suite.
 
 What's missing: module system (`import`/`include`), arbitrary precision arithmetic (qj uses i64/f64, large numbers preserved on passthrough).

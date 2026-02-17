@@ -1340,14 +1340,6 @@ tests = [
   { filter = '.', input = '[1,2]', flags = '--stream -c --', expected = "[[0],1]\n[[1],2]\n[[1]]" },
 ]
 
-[[features]]
-category = "CLI flags"
-name = "--jsonl"
-jx_only = true
-tests = [
-  { filter = '.x', input = '{"x":1}', flags = '--jsonl -c --', expected = '1' },
-]
-
 # =============================================================================
 # Streaming
 # =============================================================================
