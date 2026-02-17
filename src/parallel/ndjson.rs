@@ -377,12 +377,10 @@ pub fn process_ndjson(
     Ok((out, had_output))
 }
 
-/// Process an mmap'd NDJSON buffer in fixed-size windows, writing output per-window.
+/// Process an NDJSON buffer in fixed-size windows, writing output per-window.
 ///
-/// Combines mmap zero-copy I/O (no read syscalls) with bounded output memory:
-/// only one window's output is buffered at a time. After each window, releases
-/// processed pages via `madvise(MADV_DONTNEED)` so the kernel can reclaim them
-/// immediately — keeps RSS proportional to window size, not file size.
+/// Only one window's output is buffered at a time, bounding memory to
+/// O(window_size) instead of O(file_size).
 pub fn process_ndjson_windowed<W: Write>(
     data: &[u8],
     filter: &Filter,
@@ -404,7 +402,7 @@ pub fn process_ndjson_windowed<W: Write>(
         NdjsonFastPath::None
     };
 
-    let window_size = window_size(true);
+    let window_size = window_size();
     let mut had_output = false;
     let mut offset = 0;
 
@@ -456,47 +454,30 @@ pub fn process_ndjson_windowed<W: Write>(
     Ok(had_output)
 }
 
-/// Minimum window size for streaming NDJSON processing (8 MiB).
-/// Low enough for memory-constrained devices (Raspberry Pi, small containers).
-const MIN_WINDOW_SIZE: usize = 8 * 1024 * 1024;
+/// Minimum window size (32 MiB). On single-core machines, 32 chunks is
+/// more than enough. Keeps memory reasonable on constrained devices.
+const MIN_WINDOW_SIZE: usize = 32 * 1024 * 1024;
 
-/// Maximum window size for streaming (stdin/pipe) path (64 MiB).
-/// The window IS the heap buffer, so we cap conservatively.
-const MAX_WINDOW_SIZE_STREAMING: usize = 64 * 1024 * 1024;
+/// Maximum window size (256 MiB). Caps output memory per window.
+const MAX_WINDOW_SIZE: usize = 256 * 1024 * 1024;
 
-/// Maximum window size for mmap'd file path (256 MiB).
-/// Input is kernel-managed virtual memory (not heap), so only output is
-/// buffered per window. Larger windows = more parallelism = less overhead.
-const MAX_WINDOW_SIZE_MMAP: usize = 256 * 1024 * 1024;
-
-/// Compute window size based on available parallelism and whether input is mmap'd.
-/// Override with `QJ_WINDOW_SIZE` env var (in megabytes, e.g. `QJ_WINDOW_SIZE=128`).
-///
-/// For mmap'd files: input memory is kernel-managed (not heap), so we use large
-/// windows (256 MB) to maximize parallelism. Only output is buffered per window.
-///
-/// For streaming (stdin/pipe): the window IS the heap buffer, so we size it
-/// conservatively at 2 chunks per core, clamped to 8–64 MB.
-fn window_size(mmap: bool) -> usize {
+/// Compute window size: 32 chunks per core, clamped to 32–256 MB.
+/// Rayon needs many chunks per core for efficient work-stealing; the old
+/// value of 2 chunks/core left most cores idle between windows.
+/// Override with `QJ_WINDOW_SIZE` env var (in megabytes, e.g. `QJ_WINDOW_SIZE=64`).
+fn window_size() -> usize {
     if let Some(val) = std::env::var_os("QJ_WINDOW_SIZE")
         && let Some(mb) = val.to_str().and_then(|s| s.parse::<usize>().ok())
     {
-        return (mb * 1024 * 1024).max(MIN_WINDOW_SIZE);
+        return mb * 1024 * 1024;
     }
-    if mmap {
-        // Large windows for mmap: input is virtual memory, only output is heap.
-        // 256 MB gives ~256 chunks per window — plenty for any core count.
-        MAX_WINDOW_SIZE_MMAP
-    } else {
-        // Conservative for streaming: window is heap-allocated.
-        let num_threads = rayon::current_num_threads();
-        (num_threads * CHUNK_TARGET_SIZE * 2).clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE_STREAMING)
-    }
+    let num_threads = rayon::current_num_threads();
+    (num_threads * CHUNK_TARGET_SIZE * 32).clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE)
 }
 
 /// Process NDJSON from a reader in fixed-size windows, writing output per-window.
 ///
-/// Reads `window_size(false)` bytes at a time, processes each window's chunks in
+/// Reads `window_size()` bytes at a time, processes each window's chunks in
 /// parallel, and writes output directly to `out`. Lines spanning window
 /// boundaries are carried to the next window. Memory usage is O(window_size)
 /// instead of O(file_size).
@@ -523,7 +504,7 @@ pub fn process_ndjson_streaming<R: Read, W: Write>(
         NdjsonFastPath::None
     };
 
-    let window_size = window_size(false);
+    let window_size = window_size();
     let mut buf = vec![0u8; window_size];
     let mut carry_len: usize = 0;
     let mut had_output = false;
