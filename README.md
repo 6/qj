@@ -24,12 +24,10 @@ Benchmarked on M4 MacBook Pro:
 
 ## Quick start
 
-Work in progress. For now:
+Work in progress.
 
 ```bash
-git clone https://github.com/6/qj
-cd qj
-cargo install --path .
+cargo install qj
 ```
 
 Usage:
