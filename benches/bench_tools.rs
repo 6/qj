@@ -240,24 +240,9 @@ static NDJSON_FILTERS: &[BenchFilter] = &[
         expr: "keys",
     },
     BenchFilter {
-        name: "type",
-        flags: &["-c"],
-        expr: "type",
-    },
-    BenchFilter {
-        name: "has",
-        flags: &["-c"],
-        expr: r#"has("actor")"#,
-    },
-    BenchFilter {
         name: "select",
         flags: &["-c"],
         expr: r#"select(.type == "PushEvent")"#,
-    },
-    BenchFilter {
-        name: "select+field",
-        flags: &["-c"],
-        expr: r#"select(.type == "PushEvent") | .payload.size"#,
     },
     BenchFilter {
         name: "reshape",
@@ -268,37 +253,9 @@ static NDJSON_FILTERS: &[BenchFilter] = &[
         name: "evaluator",
         flags: &["-c"],
         expr: "{type, commits: [.payload.commits[]?.message]}",
-    },
-    BenchFilter {
-        name: "evaluator (complex)",
-        flags: &["-c"],
-        expr: "{type, commits: (.payload.commits // [] | length)}",
     },
 ];
 
-/// Subset of NDJSON filters for medium/large datasets (faster to run).
-static NDJSON_FILTERS_SHORT: &[BenchFilter] = &[
-    BenchFilter {
-        name: "field",
-        flags: &[],
-        expr: ".actor.login",
-    },
-    BenchFilter {
-        name: "select",
-        flags: &["-c"],
-        expr: r#"select(.type == "PushEvent")"#,
-    },
-    BenchFilter {
-        name: "reshape",
-        flags: &["-c"],
-        expr: "{type, repo: .repo.name, actor: .actor.login}",
-    },
-    BenchFilter {
-        name: "evaluator",
-        flags: &["-c"],
-        expr: "{type, commits: [.payload.commits[]?.message]}",
-    },
-];
 
 // --- Tool discovery ---
 
@@ -1112,14 +1069,9 @@ fn main() {
             std::process::exit(1);
         }
 
-        let ndjson_filters = match args.size.as_str() {
-            "small" => NDJSON_FILTERS,
-            _ => NDJSON_FILTERS_SHORT,
-        };
-
         run_benchmarks(
             &tools,
-            ndjson_filters,
+            NDJSON_FILTERS,
             "ndjson",
             &[ndjson_file],
             data_dir,
@@ -1134,7 +1086,7 @@ fn main() {
         let md = generate_ndjson_markdown(
             &tools,
             ndjson_file,
-            ndjson_filters,
+            NDJSON_FILTERS,
             &results,
             data_dir,
             args.runs,
