@@ -14,7 +14,7 @@ Benchmarked on M4 MacBook Pro:
 
 **Drop-in replacement.** 95% pass rate on jq's official test suite, with full coverage of everyday filters, builtins, and flags — just faster.
 
-**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction.
+**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. Slurp mode (`-s`) is only ~2-3x faster than jq as it bypasses parallelism and on-demand fast paths.
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
@@ -41,8 +41,15 @@ qj '.items[] | {id, name}' large.json
 tail -f logs.jsonl | qj -c 'select(.level == "ERROR") | {ts: .timestamp, msg: .message}'
 
 # Slurp NDJSON into array
-qj -s 'sort_by(.age) | reverse | .[0]' users.jsonl
-  
+qj -s 'group_by(.actor.login) | map({user: .[0].actor.login, n: length}) | sort_by(.n) | reverse | .[:10]' events.ndjson
+
+# Same aggregation without slurp mode (~4x faster, keeps parallelism)
+qj '.actor.login' events.ndjson | sort | uniq -c | sort -rn | head -10
+```
+
+> **Tip:** For aggregations, prefer streaming extraction piped to Unix tools over slurp mode (`-s`). Slurp bypasses parallelism and on-demand fast paths, so it's only ~2-3x faster than jq.
+
+```bash
 # Compressed files
 qj '.actor.login' gharchive-*.json.gz
 qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
