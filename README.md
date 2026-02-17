@@ -15,8 +15,6 @@ Benchmarked on an M4 MacBook Pro:
 
 **NDJSON / JSONL pipelines.** 30-150x faster than jq — auto-parallelizes across cores. No `xargs` or `parallel` needed.
 
-**Streaming and ad-hoc pipelines.** Tailing logs, piping API responses, one-shot transforms.
-
 **When jq is fine.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses i64/f64 internally — large numbers are preserved on passthrough but arithmetic loses precision beyond 53 bits.
 
 **Memory tradeoff.** qj trades memory for speed (~64 MB for NDJSON vs jq's ~5 MB). If memory is tight, jq is the safer choice.
@@ -51,7 +49,7 @@ qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 
 ## Benchmarks
 
-M4 Pro (10 cores) via [hyperfine](https://github.com/sharkdp/hyperfine). See [benches/](benches/) for full results.
+M4 MacBook Pro via [hyperfine](https://github.com/sharkdp/hyperfine). See [benches/](benches/) for full results.
 
 **NDJSON** (1.1 GB GitHub Archive, parallel by default):
 
@@ -70,23 +68,19 @@ On single JSON files (49 MB) with no parallelism, qj is 2-29x faster than jq and
 
 ## How it works
 
-- **SIMD parsing.** C++ simdjson (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
+- **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
 - **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks, ordered output. Streams in fixed-size windows (8–64 MB, scaled to core count) so memory stays flat regardless of file size. On Apple Silicon, uses only performance cores to avoid E-core contention.
 - **Zero-copy I/O.** mmap for single-document JSON — no heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
 - **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed automatically based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).
 
-## Compatibility
+## Compatibility and limitations
 
 **95%** pass rate on jq's official [497-test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test).
 **96%** feature coverage (169/176 features, [details](tests/jq_compat/feature_results.md)).
-
-What's missing: module system (`import`/`include`), arbitrary precision arithmetic (qj uses i64/f64, large numbers preserved on passthrough).
-
-## Known limitations
 
 - No module system — `import`/`include` are not supported.
 - No arbitrary precision arithmetic — i64/f64 internally. Large numbers are preserved on passthrough but arithmetic uses f64 precision.
 - Some edge cases in `def` (def-inside-expressions, destructuring bind patterns).
 - Single-document JSON >4 GB falls back to serde_json (simdjson's limit). Still faster than jq but ~3-6x slower than simdjson's fast path. **NDJSON (JSONL) is unaffected** since each line is parsed independently.
-- NDJSON fast paths (e.g. `select`) output raw input bytes, so Unicode escapes like `\u000B` preserve their original hex casing. jq normalizes to lowercase (`\u000b`). Both are valid JSON.
+- NDJSON fast paths (e.g. `select`) output raw input bytes, so Unicode escapes like `\u000B` preserve their original hex casing. jq normalizes to lowercase (`\u000b`). Both are valid JSON per RFC 8259.
