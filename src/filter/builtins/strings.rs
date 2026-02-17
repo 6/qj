@@ -30,7 +30,13 @@ pub(super) fn eval_strings(
         "tostring" => match input {
             Value::String(_) => output(input.clone()),
             Value::Int(n) => output(Value::String(itoa::Buffer::new().format(*n).into())),
-            Value::Double(f, _) => output(Value::String(ryu::Buffer::new().format(*f).into())),
+            Value::Double(f, raw) => {
+                let s = match raw {
+                    Some(r) => r.to_string(),
+                    None => ryu::Buffer::new().format(*f).to_string(),
+                };
+                output(Value::String(s));
+            }
             Value::Bool(b) => output(Value::String(if *b { "true" } else { "false" }.into())),
             Value::Null => output(Value::String("null".into())),
             Value::Array(_) | Value::Object(_) => {

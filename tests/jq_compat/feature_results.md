@@ -64,7 +64,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Feature | Tests | **qj** | jq | jaq | gojq |
 |---------|------:|-----:|-----:|-----:|-----:|
-| Large integer precision | 2 | **0/2 N** | 2/2 Y | 1/2 ~ | 1/2 ~ |
+| Large integer precision | 2 | **1/2 ~** | 2/2 Y | 1/2 ~ | 1/2 ~ |
 | Large integer arithmetic | 1 | **0/1 N** | 1/1 Y | 1/1 Y | 1/1 Y |
 
 ### CLI flags
@@ -276,7 +276,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **qj** | **169** | **0** | **7** | **96.0%** |
+| **qj** | **169** | **1** | **6** | **96.3%** |
 | jq | 176 | 0 | 0 | 100.0% |
 | jaq | 153 | 7 | 16 | 88.9% |
 | gojq | 171 | 2 | 3 | 97.7% |
