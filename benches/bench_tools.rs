@@ -1302,7 +1302,9 @@ fn main() {
         }
         if json_files.is_empty() {
             eprintln!("Error: no JSON test data found in benches/data/.");
-            eprintln!("Run: bash benches/download_data.sh --json && bash benches/generate_data.sh --json");
+            eprintln!(
+                "Run: bash benches/download_data.sh --json && bash benches/generate_data.sh --json"
+            );
             std::process::exit(1);
         }
 
