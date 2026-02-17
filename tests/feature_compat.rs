@@ -155,7 +155,7 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                     "NUL-separated string output".into(),
                     Box::new(|tool: &common::Tool| {
                         let mut cmd = Command::new(&tool.path);
-                        cmd.args(["--raw-output0", "--", ".", "-"]);
+                        cmd.args(["--raw-output0", "--", "."]);
                         let output = cmd
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped())
@@ -175,7 +175,7 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                     "NUL-separated array elements".into(),
                     Box::new(|tool: &common::Tool| {
                         let mut cmd = Command::new(&tool.path);
-                        cmd.args(["--raw-output0", "--", ".[]", "-"]);
+                        cmd.args(["--raw-output0", "--", ".[]"]);
                         let output = cmd
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped())
@@ -210,7 +210,7 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                         let filter_path = dir.join("qj_test_filter.jq");
                         std::fs::write(&filter_path, ".foo").ok();
                         let mut cmd = Command::new(&tool.path);
-                        cmd.args(["-f", filter_path.to_str().unwrap(), "--", "-"]);
+                        cmd.args(["-f", filter_path.to_str().unwrap(), "--"]);
                         let output = cmd
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped())
@@ -241,7 +241,7 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                         let filter_path = dir.join("qj_test_filter2.jq");
                         std::fs::write(&filter_path, "[.[] | . * 2]").ok();
                         let mut cmd = Command::new(&tool.path);
-                        cmd.args(["-c", "-f", filter_path.to_str().unwrap(), "--", "-"]);
+                        cmd.args(["-c", "-f", filter_path.to_str().unwrap(), "--"]);
                         let output = cmd
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped())
@@ -411,6 +411,20 @@ fn run_all(verbose: bool) {
         results.push(tool_results);
     }
     common::save_cache("feature_compat", &cache);
+
+    // --- Append hardcoded tests (binary output, stdin conflicts, etc.) ---
+    let (extra_features, extra_results) = hardcoded_tests(&tools, verbose);
+    let mut all_features: Vec<&Feature> = test_file.features.iter().collect();
+    for f in &extra_features {
+        all_features.push(f);
+    }
+    // Merge extra results into main results
+    for (ti, tool_extra) in extra_results.into_iter().enumerate() {
+        for feature_results in tool_extra {
+            results[ti].push(feature_results);
+        }
+    }
+
     println!();
 
     // --- Generate markdown ---
@@ -433,7 +447,7 @@ fn run_all(verbose: bool) {
 
     let mut current_cat = "";
 
-    for (fi, feature) in test_file.features.iter().enumerate() {
+    for (fi, feature) in all_features.iter().enumerate() {
         if feature.category != current_cat {
             if !current_cat.is_empty() {
                 md.push('\n'); // blank line before new category header
@@ -484,7 +498,7 @@ fn run_all(verbose: bool) {
         let mut n_count = 0usize;
         let mut scored_features = 0usize;
 
-        for (fi, feature) in test_file.features.iter().enumerate() {
+        for (fi, feature) in all_features.iter().enumerate() {
             if feature.jx_only && !is_jx(tool) {
                 continue;
             }

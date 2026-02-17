@@ -59,7 +59,7 @@ On single JSON files (49 MB) with no parallelism, qj is 2-29x faster than jq and
 
 ## Compatibility
 
-**96%** feature coverage (173/180 features, [details](tests/jq_compat/feature_results.md)).
+**96%** feature coverage (175/182 features, [details](tests/jq_compat/feature_results.md)).
 **91%** pass rate on jq's official 497-test suite.
 
 What's missing: module system (`import`/`include`), arbitrary precision arithmetic (qj uses i64/f64, large numbers preserved on passthrough).
