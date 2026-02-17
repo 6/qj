@@ -11,6 +11,9 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | Feature | Tests | **qj** | jq | jaq | gojq |
 |---------|------:|-----:|-----:|-----:|-----:|
 | Destructuring bind | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| Inner def scoping | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| def-based assignment | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
+| Filter-param vs $-param equivalence | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 
 ### Array functions
 
@@ -276,9 +279,9 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **qj** | **169** | **1** | **6** | **96.3%** |
-| jq | 176 | 0 | 0 | 100.0% |
-| jaq | 153 | 7 | 16 | 88.9% |
-| gojq | 171 | 2 | 3 | 97.7% |
+| **qj** | **172** | **1** | **6** | **96.4%** |
+| jq | 179 | 0 | 0 | 100.0% |
+| jaq | 156 | 7 | 16 | 89.1% |
+| gojq | 174 | 2 | 3 | 97.8% |
 
 Score = (Y + 0.5 × ~) / total × 100

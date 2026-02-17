@@ -1421,6 +1421,29 @@ tests = [
 ]
 
 [[features]]
+category = "Advanced def"
+name = "Inner def scoping"
+tests = [
+  { filter = 'def f: 1; def g: f, def f: 2; f; [g]', input = 'null', expected = '[1,2]' },
+  { filter = 'def f: 1; def g: f, def f: 2; def g: 3; f, def f: g; f, g; def f: 4; [f, def f: g; def g: 5; f, g]+[f,g]', input = 'null', expected = '[4,1,2,3,3,5,4,1,2,3,3]' },
+]
+
+[[features]]
+category = "Advanced def"
+name = "def-based assignment"
+tests = [
+  { filter = 'def x: .[1,2]; x=10', input = '[0,1,2]', expected = '[0,10,10]' },
+  { filter = 'def inc(x): x |= .+1; inc(.[].a)', input = '[{"a":1,"b":2},{"a":2,"b":4}]', expected = '[{"a":2,"b":2},{"a":3,"b":4}]' },
+]
+
+[[features]]
+category = "Advanced def"
+name = "Filter-param vs $-param equivalence"
+tests = [
+  { filter = 'def x(a;b): a as $a | b as $b | $a + $b; def y($a;$b): $a + $b; def check(a;b): [x(a;b)] == [y(a;b)]; check(.[];.[]*2)', input = '[1,2,3]', expected = 'true' },
+]
+
+[[features]]
 category = "Streaming"
 name = "tostream"
 tests = [
