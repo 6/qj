@@ -14,7 +14,7 @@ Benchmarked on M4 MacBook Pro:
 
 **Drop-in replacement.** 95% pass rate on jq's official test suite, with full coverage of everyday filters, builtins, and flags — just faster.
 
-**NDJSON / JSONL pipelines.** qj is 29-191x faster than jq by combining SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. Slurp mode (`-s`) is only ~2-3x faster than jq as it bypasses parallelism and on-demand fast paths.
+**NDJSON / JSONL pipelines.** qj is 25-191x faster than jq for common streaming filters by combining SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. Note: Stdin and slurp mode (`-s`) see smaller gains since they can't use all optimizations ([see benchmarks](#benchmarks)).
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
@@ -66,12 +66,12 @@ Benchmarked on M4 MacBook Pro [hyperfine](https://github.com/sharkdp/hyperfine) 
 
 On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq. See [benches/](benches/) for full results.
 
-**Slower scenarios:**
+**Where the gap narrows:**
 
-| Scenario | vs jq | Why | Tip |
+| Scenario | vs jq | Why? | Faster alternative |
 |----------|------:|-----|-----|
-| Stdin (`cat file \| qj`) | ~9-17x | No mmap | Pass filename directly when possible |
-| Slurp mode (`-s`) | ~2-3x | No parallelism or on-demand fast paths | Prefer `qj '.field' \| sort \| uniq -c` for aggregations |
+| Stdin (`cat file \| qj`) | ~9-17x | No mmap | Pass filename directly (~10x faster than stdin) |
+| Slurp mode (`-s`) | ~2-3x | No parallelism or on-demand fast paths | Prefer Unix pipelines (~4x faster), e.g. `qj '.field' \| sort \| uniq -c` |
 
 ## How it works
 
