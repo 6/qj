@@ -49,12 +49,8 @@ pub fn run_tool(tool: &Tool, filter: &str, input: &str, extra_args: &[&str]) -> 
         .stderr(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — child may exit before reading all input
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .ok()?;
