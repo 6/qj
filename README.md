@@ -49,22 +49,22 @@ qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 
 ## Benchmarks
 
-M4 MacBook Pro via [hyperfine](https://github.com/sharkdp/hyperfine). See [benches/](benches/) for full results.
+M4 MacBook Pro via [hyperfine](https://github.com/sharkdp/hyperfine). Compared against [jq](https://github.com/jqlang/jq) and two popular reimplementations: [jaq](https://github.com/01mf02/jaq) and [gojq](https://github.com/itchyny/gojq). See [benches/](benches/) for full results.
 
 **NDJSON** (1.1 GB GitHub Archive, parallel by default):
 
-| Workload | qj (parallel by default) | qj (1 thread) | jq | jaq |
-|----------|---:|---------------:|---:|----:|
-| `.actor.login` | **66 ms** | 338 ms | 7.2 s | 2.9 s |
-| `length` | **108 ms** | 593 ms | 7.2 s | 2.7 s |
-| `keys` | **109 ms** | 737 ms | 7.7 s | 2.9 s |
-| `select(.type == "PushEvent")` | **101 ms** | 406 ms | 13.5 s | 3.5 s |
-| `select(…) \| .payload.size` | **77 ms** | 428 ms | 7.2 s | 2.9 s |
-| `{type, repo, actor}` | **116 ms** | 779 ms | 7.9 s | 3.3 s |
-| `{type, commits: [….message]}` | **268 ms** | 1.72 s | 8.0 s | 3.2 s |
-| `{type, commits: (… \| length)}` | **262 ms** | 1.54 s | 7.5 s | 3.1 s |
+| Workload | qj (parallel by default) | qj (1 thread) | jq | jaq | gojq |
+|----------|---:|---------------:|---:|----:|----:|
+| `.actor.login` | **66 ms** | 338 ms | 7.2 s | 2.9 s | 7.1 s |
+| `length` | **108 ms** | 593 ms | 7.2 s | 2.7 s | 7.2 s |
+| `keys` | **109 ms** | 737 ms | 7.7 s | 2.9 s | 6.8 s |
+| `select(.type == "PushEvent")` | **101 ms** | 406 ms | 13.5 s | 3.5 s | 7.9 s |
+| `select(…) \| .payload.size` | **77 ms** | 428 ms | 7.2 s | 2.9 s | 7.0 s |
+| `{type, repo, actor}` | **116 ms** | 779 ms | 7.9 s | 3.3 s | 7.2 s |
+| `{type, commits: [….message]}` | **268 ms** | 1.72 s | 8.0 s | 3.2 s | 7.0 s |
+| `{type, commits: (… \| length)}` | **262 ms** | 1.54 s | 7.5 s | 3.1 s | 6.8 s |
 
-On single JSON files (49 MB) with no parallelism, qj is 2-29x faster than jq and 1-8x faster than jaq.
+On single JSON files (49 MB) with no parallelism, qj is 2-29x faster than jq, 1-8x faster than jaq, and 2-12x faster than gojq.
 
 ## How it works
 
