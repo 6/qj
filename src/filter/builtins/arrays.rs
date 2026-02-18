@@ -69,7 +69,13 @@ pub(super) fn eval_arrays(
                         }
                         output(Value::Array(Arc::new(result)));
                     }
-                    _ => {}
+                    _ => {
+                        set_error(format!(
+                            "Cannot iterate over {} ({})",
+                            input.type_name(),
+                            input.short_desc()
+                        ));
+                    }
                 }
             }
         }

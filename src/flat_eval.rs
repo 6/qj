@@ -5,6 +5,7 @@
 //! allocation) and only materializes at the point where a concrete Value is
 //! needed (output boundary, complex computation, etc.).
 
+use crate::filter::eval::set_last_error;
 use crate::filter::{BoolOp, Env, Filter, ObjKey, Pattern};
 use crate::flat_value::FlatValue;
 use crate::value::Value;
@@ -72,7 +73,7 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
             } else if flat.is_null() {
                 NavResult::Values(vec![Value::Null])
             } else {
-                crate::filter::eval::set_last_error(Value::String(format!(
+                set_last_error(Value::String(format!(
                     "Cannot index {} with string \"{}\"",
                     flat.type_name(),
                     name
@@ -87,8 +88,8 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
             } else if flat.is_object() {
                 NavResult::FlatMany(flat.object_iter().map(|(_, v)| v).collect())
             } else {
-                crate::filter::eval::set_last_error(Value::String(format!(
-                    "Cannot iterate over {}",
+                set_last_error(Value::String(format!(
+                    "{} is not iterable",
                     flat.type_name()
                 )));
                 NavResult::Values(vec![])
@@ -111,7 +112,7 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
                 } else if flat.is_null() {
                     NavResult::Values(vec![Value::Null])
                 } else {
-                    crate::filter::eval::set_last_error(Value::String(format!(
+                    set_last_error(Value::String(format!(
                         "Cannot index {} with number",
                         flat.type_name()
                     )));
@@ -135,6 +136,10 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
                 let mut all_flat = Vec::new();
                 let mut all_values = Vec::new();
                 for mid in mids {
+                    // Stop if an error was raised (match regular eval Pipe behavior)
+                    if crate::filter::eval::has_last_error() {
+                        break;
+                    }
                     match eval_flat_nav(right, mid, env) {
                         NavResult::Flat(child) => all_flat.push(child),
                         NavResult::FlatMany(children) => all_flat.extend(children),
@@ -153,6 +158,10 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
             NavResult::Values(values) => {
                 let mut results = Vec::new();
                 for v in &values {
+                    // Stop if an error was raised (match regular eval Pipe behavior)
+                    if crate::filter::eval::has_last_error() {
+                        break;
+                    }
                     crate::filter::eval::eval_filter_with_env(right, v, env, &mut |out| {
                         results.push(out);
                     });
@@ -449,7 +458,11 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                     output(val.to_value());
                 }
             }
-            // else: error in jq (no output)
+            // Non-iterable types: no output, no error.
+            // Note: regular eval sets an error here, but flat_eval is only
+            // used for NDJSON where input is always an object. Keeping the
+            // error-free behavior avoids interactions with Alternative/Try
+            // error clearing that differ between the two eval paths.
         }
 
         Filter::Select(cond) => {
@@ -504,12 +517,12 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                 }
                 output(Value::Array(Arc::new(result)));
             } else if flat.is_object() {
-                // jq: map(f) on objects applies f to each value, returns array
-                let mut result = Vec::new();
-                for (_, v) in flat.object_iter() {
-                    eval_flat(f, v, env, &mut |v| result.push(v));
-                }
-                output(Value::Array(Arc::new(result)));
+                // Materialize and use regular eval for map on objects.
+                // Object values can be any type, and eval_flat's error state
+                // can diverge from regular eval when processing scalars
+                // through compound filters (Pipe/Alternative/etc).
+                let value = flat.to_value();
+                crate::filter::eval::eval_filter_with_env(filter, &value, env, output);
             } else {
                 let value = flat.to_value();
                 crate::filter::eval::set_last_error(Value::String(format!(
@@ -581,9 +594,15 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                 output(Value::Array(Arc::new(
                     (0..len as i64).map(Value::Int).collect(),
                 )));
+            } else if flat.is_null() {
+                output(Value::Null);
             } else {
                 let value = flat.to_value();
-                crate::filter::eval::eval_filter_with_env(filter, &value, env, output);
+                crate::filter::eval::set_last_error(Value::String(format!(
+                    "{} ({}) has no keys",
+                    value.type_name(),
+                    value.short_desc()
+                )));
             }
         }
 

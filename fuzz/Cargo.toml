@@ -70,3 +70,9 @@ name = "fuzz_bridge_map"
 path = "fuzz_targets/fuzz_bridge_map.rs"
 doc = false
 test = false
+
+[[bin]]
+name = "fuzz_flat_eval_diff"
+path = "fuzz_targets/fuzz_flat_eval_diff.rs"
+doc = false
+test = false
