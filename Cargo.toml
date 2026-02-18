@@ -1,6 +1,6 @@
 [package]
 name = "qj"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 autobenches = false
 description = "A fast, jq-compatible JSON processor powered by simdjson"
@@ -8,6 +8,16 @@ license = "MIT"
 keywords = ["json", "jq", "simd", "ndjson", "jsonl"]
 categories = ["command-line-utilities", "text-processing"]
 repository = "https://github.com/6/qj"
+exclude = [
+    ".github/",
+    "benches/",
+    "docs/",
+    "fuzz/",
+    "tests/",
+    ".claude/",
+    "CLAUDE.md",
+    "mise.toml",
+]
 
 [features]
 bench = []
@@ -44,6 +54,7 @@ proptest = "1.10.0"
 [profile.release]
 opt-level = 3
 lto = "thin"
+strip = true
 
 [profile.bench]
 debug = true
