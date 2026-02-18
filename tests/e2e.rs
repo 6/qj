@@ -2021,8 +2021,7 @@ fn jq_compat_exhaustive_arithmetic_type_pairs() {
     }
     let filter = try_exprs.join(", ");
 
-    let (qj_stdout, _, _) =
-        run_tool_full(env!("CARGO_BIN_EXE_qj"), &["-cn", &filter], "null");
+    let (qj_stdout, _, _) = run_tool_full(env!("CARGO_BIN_EXE_qj"), &["-cn", &filter], "null");
     let (jq_stdout, _, _) = run_tool_full("jq", &["-cn", &filter], "null");
 
     let qj_lines: Vec<&str> = qj_stdout.lines().collect();
@@ -2033,9 +2032,7 @@ fn jq_compat_exhaustive_arithmetic_type_pairs() {
         let qj_line = qj_lines.get(i).map(|s| *s).unwrap_or("<missing>");
         let jq_line = jq_lines.get(i).map(|s| *s).unwrap_or("<missing>");
         if qj_line != jq_line {
-            failures.push(format!(
-                "  {label}\n    qj={qj_line:?} jq={jq_line:?}",
-            ));
+            failures.push(format!("  {label}\n    qj={qj_line:?} jq={jq_line:?}",));
         }
     }
 
