@@ -52,9 +52,20 @@ pub(super) fn eval_strings(
                     output(Value::Int(n));
                 } else if let Ok(f) = s.parse::<f64>() {
                     output(Value::Double(f, None));
+                } else {
+                    set_error(format!(
+                        "string ({}) cannot be parsed as a number",
+                        Value::String(s.clone()).short_desc()
+                    ));
                 }
             }
-            _ => {}
+            _ => {
+                set_error(format!(
+                    "{} ({}) cannot be parsed as a number",
+                    input.type_name(),
+                    input.short_desc()
+                ));
+            }
         },
         "ascii_downcase" => {
             if let Value::String(s) = input {

@@ -14,11 +14,11 @@
 **Effort:** Medium
 **Files:** `src/filter/builtins/math.rs`
 
-### Bugs found
+### Bugs found (all fixed)
 
-- **`log(0)`**: qj returns `null`, jq returns `-1.7976931348623157e+308` (negative infinity representation)
-- **`nan | isfinite`**: qj returns `false`, jq returns `true` (jq 1.8 considers NaN finite)
-- **Math type errors**: `floor` on string, `sqrt` on boolean, etc. — qj exits 0 with no output, jq errors with exit 5. Missing `set_error()` calls in math.rs.
+- **`log(0)`**: ~~qj returns `null`~~ → Fixed: infinity now formatted as `±1.7976931348623157e+308` like jq (`output.rs`)
+- **`nan | isfinite`**: ~~qj returns `false`~~ → Fixed: changed `f.is_finite()` to `!f.is_infinite()` (`math.rs`)
+- **Math type errors**: ~~exits 0 silently~~ → Fixed: added `require_number()` helper with `set_error()` for all 33 unary math builtins (`math.rs`)
 
 ### Problem
 
@@ -63,9 +63,9 @@ No unit tests exist. Specific risks:
 **Effort:** Medium
 **Files:** `src/filter/builtins/strings.rs`
 
-### Bugs found
+### Bugs found (all fixed)
 
-- **`tonumber` on non-numeric string**: qj exits 0 with no output, jq errors with exit 5. Missing `set_error()` call in strings.rs.
+- **`tonumber` on non-numeric string**: ~~exits 0 silently~~ → Fixed: added `set_error()` for unparseable strings and non-string/non-number input (`strings.rs`)
 
 ### Problem
 
@@ -169,10 +169,10 @@ All date functions are untested. Date handling is inherently fragile:
 **Effort:** Medium
 **Files:** `src/filter/builtins/arrays.rs`
 
-### Bugs found
+### Bugs found (all fixed)
 
-- **`combinations` panics on empty sub-array**: `[[], [1,2]] | [combinations]` causes `index out of bounds: the len is 0 but the index is 0` at arrays.rs:965. This is a **crash bug**.
-- **`combinations(0)` wrong output**: jq returns `[[]]`, qj returns `[]`.
+- **`combinations` panics on empty sub-array**: ~~crash~~ → Fixed: added empty sub-array guard (`arrays.rs`)
+- **`combinations(0)` wrong output**: ~~returns `[]`~~ → Fixed: added `n == 0` special case returning `[[]]` (`arrays.rs`)
 
 ### Problem
 
@@ -442,16 +442,16 @@ Output formatting has minimal edge case coverage:
 
 38 new e2e jq_compat tests added to `tests/e2e.rs` (782 → 820 total e2e tests).
 
-### Bugs found
+### Bugs found and fixed
 
-| Severity | Bug | Location |
+| Severity | Bug | Fix |
 |---|---|---|
-| **CRASH** | `combinations` panics on empty sub-array (`[[], [1,2]] \| [combinations]`) | `arrays.rs:965` — index out of bounds |
-| **Wrong output** | `combinations(0)` returns `[]` instead of `[[]]` | `arrays.rs` combinations logic |
-| **Silent drop** | `log(0)` returns `null` instead of `-1.7976931348623157e+308` (negative infinity) | `math.rs` |
-| **Wrong value** | `nan \| isfinite` returns `false`, jq returns `true` | `math.rs:248` |
-| **Missing error** | Math builtins on non-number input exit 0 silently (jq errors with exit 5) | `math.rs` — needs `set_error()` type checks |
-| **Missing error** | `tonumber` on non-numeric string exits 0 silently (jq errors with exit 5) | `strings.rs:57` — needs `set_error()` |
+| **CRASH** | `combinations` panics on empty sub-array (`[[], [1,2]] \| [combinations]`) | Added `arrays.iter().any(\|a\| a.is_empty())` guard |
+| **Wrong output** | `combinations(0)` returns `[]` instead of `[[]]` | Added `n == 0` special case returning `[[]]` |
+| **Silent drop** | `log(0)` returns `null` instead of `-1.7976931348623157e+308` | Changed `output.rs` infinity formatting to write `±DBL_MAX` like jq |
+| **Wrong value** | `nan \| isfinite` returns `false`, jq returns `true` | Changed `f.is_finite()` to `!f.is_infinite()` — jq considers NaN finite |
+| **Missing error** | Math builtins on non-number input exit 0 silently | Added `require_number()` helper with `set_error()` to all 33 unary math functions |
+| **Missing error** | `tonumber` on non-numeric string exits 0 silently | Added `set_error()` for unparseable strings and non-string/non-number input |
 
 ### No issues found
 

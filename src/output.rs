@@ -504,7 +504,12 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
         return w.write_all(b"null");
     }
     if f.is_infinite() {
-        return w.write_all(b"null");
+        // jq represents +/-Infinity as +/-DBL_MAX (1.7976931348623157e+308)
+        if f.is_sign_positive() {
+            return w.write_all(b"1.7976931348623157e+308");
+        } else {
+            return w.write_all(b"-1.7976931348623157e+308");
+        }
     }
     // Use raw JSON text when available (literal preservation)
     if let Some(text) = raw {
@@ -710,7 +715,15 @@ mod tests {
 
     #[test]
     fn double_infinity() {
-        assert_eq!(compact(&Value::Double(f64::INFINITY, None)), "null");
+        // jq represents infinity as +/- DBL_MAX
+        assert_eq!(
+            compact(&Value::Double(f64::INFINITY, None)),
+            "1.7976931348623157e+308"
+        );
+        assert_eq!(
+            compact(&Value::Double(f64::NEG_INFINITY, None)),
+            "-1.7976931348623157e+308"
+        );
     }
 
     #[test]

@@ -7242,9 +7242,8 @@ fn jq_compat_math_nan_infinite() {
     assert_jq_compat("1 | isfinite", "null");
     assert_jq_compat("1 | isnormal", "null");
     assert_jq_compat("0 | isnormal", "null");
-    // KNOWN DIVERGENCE: nan | isfinite — jq returns true (IEEE: NaN is not finite
-    // but jq 1.8 returns true), qj returns false. qj follows IEEE semantics.
-    // TODO: match jq's behavior if intended
+    // jq's isfinite means "not infinite" — NaN is considered finite
+    assert_jq_compat("nan | isfinite", "null");
 }
 
 #[test]
@@ -7280,19 +7279,15 @@ fn jq_compat_math_domain_errors() {
     assert_jq_compat("asin", "2");
     // acos out of domain
     assert_jq_compat("acos", "2");
-    // KNOWN DIVERGENCE: log(0) — jq returns -1.7976931348623157e+308, qj returns null
-    // TODO: fix log(0) to return -Infinity representation
+    // log(0) → -Infinity → represented as -DBL_MAX
+    assert_jq_compat("log", "0");
 }
 
 #[test]
 fn jq_compat_math_type_errors() {
-    // KNOWN DIVERGENCE: math builtins on non-number input
-    // jq errors (exit 5), qj exits 0 with no output.
-    // These need set_error() calls in math.rs for type checking.
-    // TODO: add type error propagation to math builtins
-    // assert_jq_compat("floor", r#""hello""#);
-    // assert_jq_compat("sqrt", "true");
-    // assert_jq_compat("sin", "null");
+    assert_jq_compat("floor", r#""hello""#);
+    assert_jq_compat("sqrt", "true");
+    assert_jq_compat("sin", "null");
 }
 
 // =========================================================================
@@ -7352,9 +7347,9 @@ fn jq_compat_string_tostring_tonumber() {
     assert_jq_compat("tonumber", r#""42""#);
     assert_jq_compat("tonumber", r#""3.14""#);
     assert_jq_compat("tonumber", "42");
-    // KNOWN DIVERGENCE: tonumber on non-numeric string
-    // jq errors (exit 5), qj exits 0 with no output
-    // TODO: add set_error() to tonumber for invalid strings
+    assert_jq_compat("tonumber", r#""hello""#);
+    assert_jq_compat("tonumber", "null");
+    assert_jq_compat("tonumber", "true");
 }
 
 #[test]
@@ -7471,11 +7466,10 @@ fn jq_compat_combinations() {
     assert_jq_compat("[combinations]", "[[1],[2],[3]]");
     assert_jq_compat("[combinations]", "[[1,2]]");
     assert_jq_compat("[combinations(2)]", "[1,2]");
-    // KNOWN BUG: combinations panics on empty sub-array (index out of bounds
-    // at arrays.rs:965). jq returns [].
-    // assert_jq_compat("[combinations]", "[[], [1,2]]");
-    // KNOWN DIVERGENCE: combinations(0) — jq returns [[]], qj returns []
-    // assert_jq_compat("[combinations(0)]", "[1,2]");
+    // Empty sub-array → empty Cartesian product
+    assert_jq_compat("[combinations]", "[[], [1,2]]");
+    // combinations(0) → one empty array
+    assert_jq_compat("[combinations(0)]", "[1,2]");
 }
 
 #[test]

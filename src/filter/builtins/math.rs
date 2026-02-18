@@ -5,6 +5,22 @@ use super::super::eval::eval;
 use super::super::value_ops::{
     f64_to_value, input_as_f64, libc_frexp, libc_j0, libc_j1, libc_ldexp, libc_logb, to_f64,
 };
+use super::set_error;
+
+/// Get input as f64, or set an error for non-number types.
+fn require_number(input: &Value) -> Option<f64> {
+    match input_as_f64(input) {
+        Some(f) => Some(f),
+        None => {
+            set_error(format!(
+                "{} ({}) number required",
+                input.type_name(),
+                input.short_desc()
+            ));
+            None
+        }
+    }
+}
 
 pub(super) fn eval_math(
     name: &str,
@@ -67,132 +83,132 @@ pub(super) fn eval_math(
             _ => {}
         },
         "floor" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(f64_to_value(f.floor()));
             }
         }
         "ceil" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(f64_to_value(f.ceil()));
             }
         }
         "round" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(f64_to_value(f.round()));
             }
         }
         "trunc" | "truncate" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(f64_to_value(f.trunc()));
             }
         }
         "fabs" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.abs(), None));
             }
         }
         "sqrt" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.sqrt(), None));
             }
         }
         "cbrt" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.cbrt(), None));
             }
         }
         "log" | "log_e" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.ln(), None));
             }
         }
         "log2" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.log2(), None));
             }
         }
         "log10" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.log10(), None));
             }
         }
         "logb" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(libc_logb(f), None));
             }
         }
         "exp" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.exp(), None));
             }
         }
         "exp2" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.exp2(), None));
             }
         }
         "sin" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.sin(), None));
             }
         }
         "cos" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.cos(), None));
             }
         }
         "tan" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.tan(), None));
             }
         }
         "asin" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.asin(), None));
             }
         }
         "acos" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.acos(), None));
             }
         }
         "atan" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.atan(), None));
             }
         }
         "sinh" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.sinh(), None));
             }
         }
         "cosh" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.cosh(), None));
             }
         }
         "tanh" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.tanh(), None));
             }
         }
         "asinh" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.asinh(), None));
             }
         }
         "acosh" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.acosh(), None));
             }
         }
         "atanh" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(f.atanh(), None));
             }
         }
         "significand" | "nearbyint" | "rint" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 let result = match name {
                     "significand" => {
                         if f == 0.0 {
@@ -215,18 +231,18 @@ pub(super) fn eval_math(
             }
         }
         "exponent" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 let (_, exp) = libc_frexp(f);
                 output(Value::Int(exp as i64));
             }
         }
         "j0" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(libc_j0(f), None));
             }
         }
         "j1" => {
-            if let Some(f) = input_as_f64(input) {
+            if let Some(f) = require_number(input) {
                 output(Value::Double(libc_j1(f), None));
             }
         }
@@ -248,7 +264,8 @@ pub(super) fn eval_math(
         }
         "isfinite" => {
             if let Some(f) = input_as_f64(input) {
-                output(Value::Bool(f.is_finite()));
+                // jq's isfinite means "not infinite" (NaN is considered finite)
+                output(Value::Bool(!f.is_infinite()));
             } else {
                 output(Value::Bool(false));
             }

@@ -957,6 +957,10 @@ pub(super) fn eval_arrays(
                     if arrays.is_empty() {
                         return;
                     }
+                    // If any sub-array is empty, Cartesian product is empty
+                    if arrays.iter().any(|a| a.is_empty()) {
+                        return;
+                    }
                     let mut indices = vec![0usize; arrays.len()];
                     loop {
                         let combo: Vec<Value> = indices
@@ -983,7 +987,15 @@ pub(super) fn eval_arrays(
                 } else {
                     let mut n = 0i64;
                     eval(&args[0], input, env, &mut |v| n = to_f64(&v) as i64);
-                    if n <= 0 {
+                    if n == 0 {
+                        // combinations(0) produces one empty array
+                        output(Value::Array(Arc::new(vec![])));
+                        return;
+                    }
+                    if n < 0 {
+                        return;
+                    }
+                    if arr.is_empty() {
                         return;
                     }
                     let arrays: Vec<&[Value]> = (0..n).map(|_| arr.as_ref().as_slice()).collect();
