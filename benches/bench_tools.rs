@@ -339,6 +339,7 @@ static NDJSON_SLURP_FILTERS: &[BenchFilter] = &[
 struct Tool {
     name: String,
     path: String,
+    version: String,
     extra_args: Vec<String>,
 }
 
@@ -353,25 +354,53 @@ fn find_tool(name: &str) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
+fn tool_version(path: &str) -> String {
+    Command::new(path)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()
+        .map(|o| {
+            let out = String::from_utf8_lossy(&o.stdout);
+            let err = String::from_utf8_lossy(&o.stderr);
+            let s = if out.trim().is_empty() {
+                err.trim().to_string()
+            } else {
+                out.trim().to_string()
+            };
+            // Take first line only, strip tool name prefix if present
+            s.lines().next().unwrap_or("").to_string()
+        })
+        .unwrap_or_default()
+}
+
 fn discover_tools(qj_path: &str, include_1t: bool) -> Vec<Tool> {
+    let qj_version = tool_version(qj_path);
     let mut tools = vec![Tool {
         name: "qj".into(),
         path: qj_path.into(),
+        version: qj_version.clone(),
         extra_args: vec![],
     }];
     if include_1t {
         tools.push(Tool {
             name: "qj (1T)".into(),
             path: qj_path.into(),
+            version: qj_version,
             extra_args: vec!["--threads".into(), "1".into()],
         });
     }
     match find_tool("jq") {
-        Some(path) => tools.push(Tool {
-            name: "jq".into(),
-            path,
-            extra_args: vec![],
-        }),
+        Some(path) => {
+            let version = tool_version(&path);
+            tools.push(Tool {
+                name: "jq".into(),
+                path,
+                version,
+                extra_args: vec![],
+            });
+        }
         None => {
             eprintln!("Error: jq not found.");
             std::process::exit(1);
@@ -379,9 +408,11 @@ fn discover_tools(qj_path: &str, include_1t: bool) -> Vec<Tool> {
     }
     for name in ["jaq", "gojq"] {
         if let Some(path) = find_tool(name) {
+            let version = tool_version(&path);
             tools.push(Tool {
                 name: name.into(),
                 path,
+                version,
                 extra_args: vec![],
             });
         } else {
@@ -508,6 +539,22 @@ fn format_throughput_result(val: Option<&ResultValue>, bytes: u64) -> String {
         }
         None => "-".to_string(),
     }
+}
+
+/// Format tool versions as a markdown line: "Tools: qj 0.1.0, jq-1.8.1, ..."
+fn format_tool_versions(tools: &[Tool]) -> String {
+    let versions: Vec<String> = tools
+        .iter()
+        .filter(|t| !t.name.contains("(1T)"))
+        .map(|t| {
+            if t.version.is_empty() {
+                t.name.clone()
+            } else {
+                t.version.clone()
+            }
+        })
+        .collect();
+    format!("Tools: {}", versions.join(", "))
 }
 
 /// Geometric mean of jq_time/tool_time ratios.
@@ -688,6 +735,7 @@ fn generate_json_markdown(
         "> Last updated: {date} on `{platform}` (total time: {elapsed:.0?})"
     )
     .unwrap();
+    writeln!(md, "> {}", format_tool_versions(tools)).unwrap();
     writeln!(md).unwrap();
     writeln!(
         md,
@@ -922,6 +970,7 @@ fn generate_ndjson_markdown(
         "> {runs} runs, 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine)."
     )
     .unwrap();
+    writeln!(md, "> {}", format_tool_versions(tools)).unwrap();
     writeln!(md).unwrap();
     writeln!(
         md,
@@ -1115,6 +1164,7 @@ fn generate_ndjson_extended_markdown(
     )
     .unwrap();
     writeln!(md, "> Dataset: {ndjson_file} ({file_size_str})").unwrap();
+    writeln!(md, "> {}", format_tool_versions(tools)).unwrap();
     writeln!(md).unwrap();
 
     // Helper closure to write a results table
