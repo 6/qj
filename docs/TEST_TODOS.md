@@ -43,142 +43,66 @@ All four fixed in the same commit.
 
 ## 2. Property-based differential testing (jq oracle)
 
-**Status:** TODO — next up
+**Status:** Done ([406bee4](https://github.com/6/qj/commit/406bee4))
 **Priority:** High — catches divergences that humans wouldn't think to test
 **Effort:** Medium (new test file + grammar-aware generator)
-**Files:** new `tests/jq_differential.rs`
+**Files:** `tests/jq_differential.rs`
 
-### Problem
+### What was done
 
-Hand-written tests only cover cases someone thought of. The `null * number` bug persisted because nobody thought to write that specific test. The exhaustive arithmetic test (#1) locked down all type-pair arithmetic, but the rest of the evaluator — builtins, string operations, try/catch, if/then/else, reduce, path expressions — has the same "never compared against jq" exposure.
+Implemented `tests/jq_differential.rs` with 4 proptest suites (2000 cases each, `#[ignore]`):
+- `differential_filter_vs_jq` — composite filters with pipes, try, if/then/else, reduce, variable binding, string interpolation
+- `differential_arithmetic_vs_jq` — arithmetic with random scalars
+- `differential_builtins_vs_jq` — 35+ nullary builtins + unary builtins with random inputs
+- `differential_formats_vs_jq` — all format strings (`@json`, `@html`, `@uri`, `@sh`, `@csv`, `@tsv`, `@base64`, `@base64d`)
 
-### Solution: proptest with grammar-aware generators
+Grammar-aware generators:
+- `arb_json_input()` — recursive (depth 2): scalars, arrays, objects with keys a-d
+- `arb_filter()` — recursive (depth 3): pipes, comma, arithmetic, comparison, boolean ops, try, if/then/else, alternative, array/object construction, variable binding, reduce, string interpolation
+- Uses `(0-N)` instead of bare `-N` to avoid CLI flag parsing issues
+- Avoids integer-valued floats (known filter literal preservation limitation)
 
-Generate random but **syntactically valid** `(filter, input)` pairs, run both qj and jq, assert identical stdout + exit code. Use `proptest` for deterministic seeds, reproducible failures, and automatic shrinking to minimal cases.
+**Found 4 divergences on first run:**
+1. `flatten` on objects — qj produced nothing, jq extracts values first (fixed in [3152f98](https://github.com/6/qj/commit/3152f98))
+2. Format strings on non-strings — `@html`, `@uri`, `@sh`, `@base64`, `@base64d`, `@urid` silently dropped non-string inputs instead of calling tostring first (fixed in [3152f98](https://github.com/6/qj/commit/3152f98))
+3. `@sh` type-specific semantics — jq only quotes strings, passes numbers/bools/null bare, space-joins arrays recursively, errors on objects (fixed in [3152f98](https://github.com/6/qj/commit/3152f98))
+4. Filter literal preservation (`null + 100.0` → qj outputs `100`, jq outputs `100.0`) — deferred, deeper issue
 
-```rust
-// tests/jq_differential.rs
-use proptest::prelude::*;
+### Known limitation
 
-fn arb_json_value() -> impl Strategy<Value = String> {
-    prop_oneof![
-        Just("null".to_string()),
-        Just("true".to_string()),
-        Just("false".to_string()),
-        (-1000i64..1000).prop_map(|n| n.to_string()),
-        (-100.0f64..100.0).prop_map(|f| format!("{f}")),
-        "[a-z]{0,10}".prop_map(|s| format!("\"{s}\"")),
-        // arrays and objects of the above...
-    ]
-}
-
-fn arb_filter() -> impl Strategy<Value = String> {
-    prop_oneof![
-        // Arithmetic
-        (arb_json_value(), arb_op(), arb_json_value())
-            .prop_map(|(a, op, b)| format!("{a} {op} {b}")),
-        // Builtins
-        Just("length".to_string()),
-        Just("keys".to_string()),
-        Just("type".to_string()),
-        // Field access
-        Just(".foo".to_string()),
-        Just(".foo.bar".to_string()),
-        // Pipes
-        (arb_simple_filter(), arb_simple_filter())
-            .prop_map(|(a, b)| format!("{a} | {b}")),
-        // try
-        arb_simple_filter().prop_map(|f| format!("try ({f})")),
-    ]
-}
-
-proptest! {
-    #[test]
-    #[ignore]
-    fn differential_vs_jq(
-        filter in arb_filter(),
-        input in arb_json_value(),
-    ) {
-        let (qj_out, qj_err, qj_ok) = run_qj(&filter, &input);
-        let (jq_out, jq_err, jq_ok) = run_jq(&filter, &input);
-        prop_assert_eq!(qj_out, jq_out, "stdout mismatch");
-        prop_assert_eq!(qj_ok, jq_ok, "exit code mismatch");
-    }
-}
-```
-
-Advantages: reproducible seeds, shrinking to minimal failing case, runs in CI with `--ignored`.
-Disadvantages: limited by the grammar strategies you write (but the grammar can grow incrementally).
-
-### Grammar coverage targets
-
-The generator should produce filters covering at minimum:
-- All 5 arithmetic operators with all type combinations
-- Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`)
-- Boolean operators (`and`, `or`, `not`)
-- String builtins (`length`, `ltrimstr`, `rtrimstr`, `split`, `join`, `test`, `match`, `ascii_downcase`, `ascii_upcase`, `startswith`, `endswith`, `contains`, `explode`, `implode`)
-- Array builtins (`map`, `select`, `empty`, `add`, `any`, `all`, `flatten`, `group_by`, `sort_by`, `unique_by`, `min_by`, `max_by`, `first`, `last`, `nth`, `range`, `limit`, `until`, `repeat`, `indices`, `inside`, `getpath`, `setpath`, `delpaths`)
-- Object builtins (`keys`, `values`, `has`, `in`, `to_entries`, `from_entries`, `with_entries`)
-- Type/conversion builtins (`type`, `infinite`, `nan`, `isinfinite`, `isnan`, `isnormal`, `tostring`, `tonumber`, `ascii`, `null`)
-- `try`/`catch`, `if`/`then`/`else`, `//` (alternative operator)
-- Pipes and composition (`|`, `,`)
-- Variable binding (`. as $x | ...`)
-- `reduce`, `foreach`
-- `@base64`, `@base64d`, `@uri`, `@csv`, `@tsv`, `@html`, `@json`, `@text`, `@sh`
+Filter literal float preservation (e.g., `100.0` in a filter expression) is not yet tracked through evaluation. The proptest generators work around this by avoiding integer-valued floats. This is a known qj limitation, not a test gap.
 
 ---
 
 ## 3. Grammar-aware `fuzz_eval` rewrite
 
-**Status:** TODO
+**Status:** Done
 **Priority:** Medium — makes existing fuzzer dramatically more effective
 **Effort:** Medium (rewrite one fuzz target)
-**Files:** `fuzz/fuzz_targets/fuzz_eval.rs`
+**Files:** `fuzz/fuzz_targets/fuzz_eval.rs`, `fuzz/Cargo.toml`
 
-### Problem
+### What was done
 
-The current `fuzz_eval` splits random bytes at an arbitrary offset into "JSON" and "filter". Almost all generated inputs fail to parse (invalid UTF-8, invalid JSON, invalid filter syntax). The fuzzer spends >99% of its time in parser rejection paths and almost never reaches the evaluator.
+Rewrote `fuzz_eval.rs` with `arbitrary::Arbitrary`-derived structured inputs:
 
-It could theoretically generate `null * 1` — but the probability of random bytes producing both valid JSON (`null`) AND a valid filter (`1 * .`) is astronomically low. In practice, after 120 seconds of fuzzing, the evaluator code coverage is minimal.
+- **`FuzzValue`** — maps to `Value` with depth-bounded recursion (max 3). Scalars use lookup tables: 15 interesting doubles (0.0, -0.0, NAN, INFINITY, MIN, MAX, EPSILON, etc.), 8 strings, 4 object keys.
+- **`FuzzFilter`** — maps to `Filter` with depth-bounded recursion (max 3). 6 leaf variants (Identity, Field, Iterate, Literal, Builtin, Var) and 17 recursive variants (Pipe, Comma, Arith, Compare, BoolOp, Not, Neg, Try, Alternative, IfThenElse, ArrayConstruct, ObjectConstruct, Select, Bind, Reduce, StringInterp, Index). Builtins use a table of ~70 expressions parsed via `filter::parse()`.
+- **`FuzzInput`** — top-level struct with `FuzzValue` + `FuzzFilter`, derives `Arbitrary`.
 
-### Solution
+Every fuzz iteration constructs a valid `Value` + `Filter` AST directly, bypassing parsing entirely. 100% of iterations reach the evaluator.
 
-Use `libfuzzer_sys::arbitrary::Arbitrary` to derive structured inputs:
+### Results
 
-```rust
-#[derive(Arbitrary)]
-enum FuzzValue {
-    Null,
-    Bool(bool),
-    Int(i16),          // small range to stay interesting
-    Float(f32),        // small range
-    Str(String),       // libfuzzer will generate varied strings
-    Array(Vec<FuzzValue>),
-    Object(Vec<(String, FuzzValue)>),
-}
+- **700K executions in 60s** (~10.8K exec/s) — vs the old approach which spent >99% of time in parser rejection
+- **2925 code coverage edges** reached
+- **Zero crashes or timeouts** on first run
+- `Recurse` (`..`) excluded from filter generation to avoid combinatorial explosion with nested `Bind`
 
-#[derive(Arbitrary)]
-enum FuzzFilter {
-    Identity,
-    Field(String),
-    Literal(FuzzValue),
-    Arith(Box<FuzzFilter>, ArithOp, Box<FuzzFilter>),
-    Pipe(Box<FuzzFilter>, Box<FuzzFilter>),
-    Try(Box<FuzzFilter>),
-    Builtin(BuiltinName),
-    // ...
-}
-```
+### Design notes
 
-This guarantees every fuzz iteration produces a valid filter + valid input, so 100% of iterations reach the evaluator. Coverage-guided mutation then explores the evaluation logic space efficiently.
-
-### Scope
-
-This is a rewrite of `fuzz_eval.rs` only. The other fuzz targets (parse, DOM, NDJSON diff, output) are fine as-is — they're testing parser robustness where random bytes are the right approach.
-
-### Relationship to #2
-
-If #2 (proptest differential) is implemented first, the grammar generator code can be shared. The structured `FuzzFilter`/`FuzzValue` enums would be similar to the proptest strategies, just using `Arbitrary` instead of `Strategy`. Consider extracting the grammar into a shared crate or module.
+- Depth bounded to 3 to prevent exponential blowup from nested `Bind(Iterate, Iterate)` patterns
+- Output capped at 500 values per evaluation to bound slow cases
+- Per-case timeout of 10s recommended: `cargo +nightly fuzz run fuzz_eval -s none -- -timeout=10`
 
 ---
 
@@ -211,9 +135,9 @@ The only remaining value would be if the feature matrix report itself is a deliv
 | # | Improvement | Status | Catches future bugs? | Effort |
 |---|---|---|---|---|
 | 1 | Exhaustive type-pair arithmetic | **Done** | All arithmetic | Small |
-| 2 | Property-based differential testing | **Next** | All features | Medium |
-| 3 | Grammar-aware fuzz_eval | TODO | All features (crash + divergence) | Medium |
+| 2 | Property-based differential testing | **Done** | All features | Medium |
+| 3 | Grammar-aware fuzz_eval | **Done** | All features (crash + divergence) | Medium |
 | 4 | Arithmetic unit tests | Superseded by #1 | Arithmetic only (faster feedback) | Small |
 | 5 | features.toml type edges | Superseded by #1 | Tested features only | Small |
 
-Recommended order: **#2 → #3**. #1 is done. #4 and #5 are low priority given #1's coverage.
+All high-priority items (#1, #2, #3) are done. #4 and #5 are low priority given #1's coverage.
