@@ -171,5 +171,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add benches/results_ci.md
-          git diff --staged --quiet || git commit -m "Update benchmark results [skip ci]"
-          git push
+          git diff --staged --quiet && exit 0
+          git commit -m "Update benchmark results [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase && git push && exit 0
+            sleep 5
+          done
+          echo "Failed to push after 3 attempts"
+          exit 1
