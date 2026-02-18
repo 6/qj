@@ -1,9 +1,12 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.1.1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,7 +15,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version format. Use semver like 0.1.1"
+            exit 1
+          fi
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "::error::Tag v${{ inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Bump version and tag
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' Cargo.toml
+          cargo update -p qj
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release v${{ inputs.version }}"
+          git tag "v${{ inputs.version }}"
+          git push origin main --tags
+
   build:
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -32,6 +64,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
 
       - uses: jdx/mise-action@v2
 
@@ -72,6 +106,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -79,7 +115,7 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub release
-        run: gh release create ${{ github.ref_name }} qj-*.tar.gz --generate-notes
+        run: gh release create "v${{ inputs.version }}" qj-*.tar.gz --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -89,6 +125,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
 
       - uses: jdx/mise-action@v2
 
