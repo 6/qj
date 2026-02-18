@@ -28,6 +28,11 @@ cargo test --release conformance_gaps -- --ignored                      # gap te
 cargo test --release gap_label_break -- --ignored                       # run one category
 cargo test --release jq_compat -- --ignored --nocapture                 # cross-tool comparison
 cargo test --release feature_compat -- --ignored --nocapture            # feature matrix
+cargo test --release jq_differential -- --ignored --nocapture          # proptest differential vs jq
+cargo test --release differential_filter -- --ignored --nocapture      # differential: random filters
+cargo test --release differential_arithmetic -- --ignored --nocapture  # differential: arithmetic focus
+cargo test --release differential_builtins -- --ignored --nocapture    # differential: builtins focus
+cargo test --release differential_formats -- --ignored --nocapture     # differential: format strings
 ```
 
 **Note:** The conformance test prints its summary to stderr (visible without `--nocapture`).
@@ -57,6 +62,11 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
   against qj, jq, jaq, and gojq. Writes `tests/jq_compat/results.md`.
 - **Feature compatibility suite** (`#[ignore]`): `tests/jq_compat/features.toml` — TOML-defined
   tests, per-feature Y/~/N matrix. Writes `tests/jq_compat/feature_results.md`.
+- **Differential testing** (`#[ignore]`): `tests/jq_differential.rs` — property-based tests using
+  `proptest` that generate random (filter, input) pairs and compare qj vs jq output. Four focused
+  tests: general filters, arithmetic, builtins, and format strings. 2000 cases each. Catches
+  behavioral divergences that hand-written tests miss. Run iteratively: fix or exclude each
+  failure, re-run to find the next.
 - **Updating the vendored test suite:** `tests/jq_compat/update_test_suite.sh` — downloads
   `jq.test` and test modules from a jq release tag and updates `mise.toml`.
   ```

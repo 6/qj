@@ -22,85 +22,39 @@ The common thread: **the suite is good at testing deliberately-implemented featu
 
 ## 1. Exhaustive type-pair arithmetic tests
 
-**Status:** TODO
+**Status:** Done ([3a52294](https://github.com/6/qj/commit/3a52294))
 **Priority:** Highest — directly prevents the class of bug that caused 610b937
 **Effort:** Small (single test function)
 **Files:** `tests/e2e.rs`
 
-### Problem
+### What was done
 
-`arith_values(left, op, right)` dispatches on `(Value, ArithOp, Value)`. There are 7 value types (`null`, `bool`, `int`, `float`, `string`, `array`, `object`) and 5 operators (`+`, `-`, `*`, `/`, `%`). That's 7×7×5 = 245 type-pair/operator combinations. Most should error, but the exact behavior (error vs. result, error message wording) must match jq.
+Added `jq_compat_exhaustive_arithmetic_type_pairs` — tests 14 representative values × 14 values × 5 operators = 980 combinations against jq, comparing both stdout and exit codes. Also added `jq_compat_arithmetic_edge_cases` for string repetition, string split, division by zero, object merge, array operations, null identity, and overflow promotion.
 
-No test currently covers more than a handful of these combinations. The `null * number` bug was one cell in this 245-cell matrix that nobody checked.
+**Found 4 bug classes on first run:**
+- Negative zero (`0 * -1` → `0` instead of `-0`)
+- Float modulo (`10.5 % 3` → `1.5` instead of `1`, jq truncates to int)
+- String split edge cases (`"hello" / ""` included boundary empties)
+- Float modulo div-by-zero (`1 % 0.5` didn't error, 0.5 truncates to 0)
 
-### Solution
-
-A single `#[test]` that exhaustively enumerates representative values for each type, pairs them with each operator, runs the expression through both qj and jq, and compares stdout + exit code:
-
-```rust
-#[test]
-fn exhaustive_arithmetic_type_pairs() {
-    let values = [
-        "null",
-        "true",
-        "false",
-        "0",
-        "1",
-        "1.5",
-        "\"hello\"",
-        "[]",
-        "[1,2]",
-        "{}",
-        "{\"a\":1}",
-    ];
-    let ops = ["+", "-", "*", "/", "%"];
-    for a in &values {
-        for b in &values {
-            for op in &ops {
-                let filter = format!("{a} {op} {b}");
-                assert_jq_compat_full(&filter, "null");
-            }
-        }
-    }
-}
-```
-
-11 values × 11 values × 5 ops = 605 comparisons. Uses `assert_jq_compat_full` (comparing both stdout and exit code, not just stdout) so error-producing combinations are verified too.
-
-This would have caught the `null * number` bug immediately — it's literally one cell in the matrix.
-
-### Edge cases to include
-
-Beyond the basic matrix, add targeted tests for:
-- Division by zero: `1 / 0`, `1.0 / 0`, `1 % 0`
-- String repetition: `"ab" * 3`, `"ab" * -1`, `"ab" * 0`
-- String split: `"a,b,c" / ","`
-- Object merge via `*`: `{a:1} * {b:2}`, `{a:{x:1}} * {a:{y:2}}`
-- Array concatenation via `+`: `[1] + [2]`
-- Array subtraction via `-`: `[1,2,3] - [2]`
-- `null` as addition identity: `null + 1`, `1 + null`, `null + "s"`, `null + []`, `null + {}`
-- Overflow: `9223372036854775807 + 1`, `9223372036854775807 * 2`
+All four fixed in the same commit.
 
 ---
 
 ## 2. Property-based differential testing (jq oracle)
 
-**Status:** TODO
+**Status:** TODO — next up
 **Priority:** High — catches divergences that humans wouldn't think to test
 **Effort:** Medium (new test file + grammar-aware generator)
-**Files:** new `tests/jq_differential.rs` or new fuzz target `fuzz/fuzz_targets/fuzz_jq_diff.rs`
+**Files:** new `tests/jq_differential.rs`
 
 ### Problem
 
-Hand-written tests only cover cases someone thought of. The `null * number` bug persisted because nobody thought to write that specific test. We need a way to explore the space of `(filter, input)` pairs automatically and flag any case where qj and jq disagree.
+Hand-written tests only cover cases someone thought of. The `null * number` bug persisted because nobody thought to write that specific test. The exhaustive arithmetic test (#1) locked down all type-pair arithmetic, but the rest of the evaluator — builtins, string operations, try/catch, if/then/else, reduce, path expressions — has the same "never compared against jq" exposure.
 
-### Solution: grammar-aware differential fuzzer
+### Solution: proptest with grammar-aware generators
 
-Generate random but **syntactically valid** `(filter, input)` pairs, run both qj and jq, assert identical stdout + exit code.
-
-Two possible implementations:
-
-#### Option A: `proptest`/`quickcheck` in a `#[test] #[ignore]` (deterministic, reproducible)
+Generate random but **syntactically valid** `(filter, input)` pairs, run both qj and jq, assert identical stdout + exit code. Use `proptest` for deterministic seeds, reproducible failures, and automatic shrinking to minimal cases.
 
 ```rust
 // tests/jq_differential.rs
@@ -153,29 +107,8 @@ proptest! {
 }
 ```
 
-Advantages: reproducible seeds, shrinking to minimal failing case, runs in CI.
-Disadvantages: limited by the grammar strategies you write.
-
-#### Option B: cargo-fuzz target (`fuzz_jq_diff.rs`)
-
-```rust
-// fuzz/fuzz_targets/fuzz_jq_diff.rs
-fuzz_target!(|data: &[u8]| {
-    let (filter, input) = grammar_decode(data);
-    let qj_result = run_qj_binary(&filter, &input);
-    let jq_result = run_jq_binary(&filter, &input);
-    if qj_result != jq_result {
-        panic!("divergence: filter={filter:?} input={input:?}");
-    }
-});
-```
-
-Advantages: coverage-guided, finds surprising edge cases.
-Disadvantages: requires jq installed, slower per iteration (process spawning), harder to reproduce.
-
-#### Recommendation
-
-Start with **Option A** (`proptest` in `tests/jq_differential.rs`). It integrates with `cargo test --ignored`, produces reproducible regressions, and the grammar can grow incrementally. If/when the grammar stops finding new bugs, consider Option B for deeper exploration.
+Advantages: reproducible seeds, shrinking to minimal failing case, runs in CI with `--ignored`.
+Disadvantages: limited by the grammar strategies you write (but the grammar can grow incrementally).
 
 ### Grammar coverage targets
 
@@ -243,128 +176,44 @@ This guarantees every fuzz iteration produces a valid filter + valid input, so 1
 
 This is a rewrite of `fuzz_eval.rs` only. The other fuzz targets (parse, DOM, NDJSON diff, output) are fine as-is — they're testing parser robustness where random bytes are the right approach.
 
+### Relationship to #2
+
+If #2 (proptest differential) is implemented first, the grammar generator code can be shared. The structured `FuzzFilter`/`FuzzValue` enums would be similar to the proptest strategies, just using `Arbitrary` instead of `Strategy`. Consider extracting the grammar into a shared crate or module.
+
 ---
 
 ## 4. Arithmetic unit tests for `arith_values()`
 
-**Status:** TODO
-**Priority:** Medium — catches regressions from refactoring the match arms
-**Effort:** Small
-**Files:** `src/filter/value_ops.rs` (add to existing `#[cfg(test)]` module)
+**Status:** Largely superseded by #1
+**Priority:** Low — the exhaustive e2e test (#1) already covers all type-pair combinations against jq, and the fixes it prompted updated the existing unit tests too.
 
-### Problem
+### Remaining value
 
-The `arith_values()` function (~150 lines, 5 operators, dozens of match arms) is the single dispatch point for all arithmetic in the evaluator. It currently has **zero unit tests**. The existing `#[cfg(test)]` module in `value_ops.rs` tests `to_f64`, `frexp`, `todate`, `set_path`, `del_path`, etc. — but not arithmetic.
+Unit tests in `value_ops.rs` would still be useful for:
+- **Faster feedback** — unit tests run in <1ms vs ~10s for the exhaustive e2e test
+- **Refactoring safety** — if someone restructures the match arms, unit tests catch breakage without needing jq installed
 
-This means any refactoring of the match arms (reordering, adding new type combinations, changing error messages) has no safety net beyond e2e tests, which are slower and less targeted.
-
-### Solution
-
-Add direct unit tests for each match arm, focusing on:
-
-1. **Null behavior per operator:**
-   - `Add`: null is identity (`null + x = x`, `x + null = x`)
-   - `Sub`, `Mul`, `Div`, `Mod`: null always errors
-
-2. **Overflow promotion:**
-   - `i64::MAX + 1` → f64
-   - `i64::MAX * 2` → f64
-   - `i64::MIN / -1` → f64
-
-3. **Division by zero:**
-   - `int / 0` → error
-   - `float / 0.0` → error
-   - `int % 0` → error
-
-4. **String operations:**
-   - `"ab" * 3` → `"ababab"`
-   - `"ab" * -1` → `null`
-   - `"a,b" / ","` → `["a","b"]`
-
-5. **Collection operations:**
-   - `[1,2] + [3]` → `[1,2,3]`
-   - `[1,2,3] - [2]` → `[1,3]`
-   - `{a:1} * {b:2}` → `{a:1,b:2}` (shallow merge)
-   - `{a:{x:1}} * {a:{y:2}}` → recursive merge
-
-6. **Type mismatch errors:**
-   - `"s" - 1` → error
-   - `[] * 2` → error
-   - `{} / 2` → error
-
-```rust
-#[test]
-fn arith_null_add_identity() {
-    let one = Value::Int(1);
-    assert_eq!(arith_values(&Value::Null, &ArithOp::Add, &one), Ok(Value::Int(1)));
-    assert_eq!(arith_values(&one, &ArithOp::Add, &Value::Null), Ok(Value::Int(1)));
-}
-
-#[test]
-fn arith_null_mul_errors() {
-    let one = Value::Int(1);
-    assert!(arith_values(&Value::Null, &ArithOp::Mul, &one).is_err());
-    assert!(arith_values(&one, &ArithOp::Mul, &Value::Null).is_err());
-}
-```
+But this is incremental safety, not a gap. The e2e test is the real safety net.
 
 ---
 
 ## 5. Expand `features.toml` with type-edge variants
 
-**Status:** TODO
-**Priority:** Low — mostly redundant if #1 is implemented, but useful for the feature matrix report
-**Effort:** Small
-**Files:** `tests/jq_compat/features.toml`
+**Status:** Superseded by #1
+**Priority:** Skip — the exhaustive e2e test covers all arithmetic type-edge cases more thoroughly than features.toml could. The feature matrix report would still show "Y" for operators, which is now actually accurate since the underlying bugs are fixed.
 
-### Problem
-
-The feature compat suite tests each operator with one or two clean cases:
-- Addition: `2 + 1`, `"hello" + " world"`, `[1,2] + [3,4]`
-- Multiplication: `7 * 3`, `{a:{b:1}} * {a:{c:2}}`
-- etc.
-
-None include null, bool, or mixed-type operands. The feature matrix report shows "Y" for all operators, giving a false sense of completeness.
-
-### Solution
-
-Add type-edge variants to each operator section:
-
-```toml
-[[features]]
-category = "Operators"
-name = "Addition (null identity)"
-tests = [
-  { filter = 'null + 1', input = 'null', expected = '1' },
-  { filter = '1 + null', input = 'null', expected = '1' },
-  { filter = 'null + "s"', input = 'null', expected = '"s"' },
-  { filter = 'null + [1]', input = 'null', expected = '[1]' },
-  { filter = 'null + {a:1}', input = 'null', expected = '{"a":1}' },
-]
-
-[[features]]
-category = "Operators"
-name = "Multiplication (type errors)"
-tests = [
-  { filter = 'null * 1', input = 'null', expected_error = true },
-  { filter = '1 * null', input = 'null', expected_error = true },
-  { filter = '"s" * 3', input = 'null', expected = '"sss"' },
-  { filter = '"s" * -1', input = 'null', expected = 'null' },
-]
-```
-
-**Note:** This requires adding `expected_error` support to the feature compat runner if it doesn't already exist.
+The only remaining value would be if the feature matrix report itself is a deliverable (e.g., for README documentation). Otherwise, not worth the effort.
 
 ---
 
 ## Summary
 
-| # | Improvement | Catches `null*number`? | Catches future type bugs? | Effort |
+| # | Improvement | Status | Catches future bugs? | Effort |
 |---|---|---|---|---|
-| 1 | Exhaustive type-pair arithmetic | Yes (directly) | Yes (all arithmetic) | Small |
-| 2 | Property-based differential testing | Yes (probabilistically) | Yes (all features) | Medium |
-| 3 | Grammar-aware fuzz_eval | Yes (probabilistically) | Yes (all features) | Medium |
-| 4 | Arithmetic unit tests | Yes (directly) | Partial (arithmetic only) | Small |
-| 5 | features.toml type edges | Yes (directly) | Partial (tested features) | Small |
+| 1 | Exhaustive type-pair arithmetic | **Done** | All arithmetic | Small |
+| 2 | Property-based differential testing | **Next** | All features | Medium |
+| 3 | Grammar-aware fuzz_eval | TODO | All features (crash + divergence) | Medium |
+| 4 | Arithmetic unit tests | Superseded by #1 | Arithmetic only (faster feedback) | Small |
+| 5 | features.toml type edges | Superseded by #1 | Tested features only | Small |
 
-Recommended order: **1 → 4 → 2 → 5 → 3**. Items 1 and 4 are quick wins that cover the immediate gap. Item 2 is the highest long-term value. Items 3 and 5 are incremental improvements.
+Recommended order: **#2 → #3**. #1 is done. #4 and #5 are low priority given #1's coverage.
