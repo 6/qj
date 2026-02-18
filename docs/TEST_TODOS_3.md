@@ -316,10 +316,14 @@ Lenient mode (`match_pattern`) is used in `as` bindings. Strict mode (`try_match
 
 ## 7. NDJSON chunk splitting edge cases
 
-**Status:** Open
+**Status:** Done ✓ (10 new unit tests: split_chunks edge cases + process_ndjson edge cases)
 **Priority:** Medium — could cause data corruption on malformed NDJSON
 **Effort:** Small
 **Files:** `src/parallel/ndjson.rs` (lines 408-438), tests in `tests/ndjson.rs`
+
+### Bugs found
+
+None — split_chunks correctly handles: no newlines, no trailing newline, only newlines, oversized records, consecutive newlines, target_size=0, escaped \n in JSON strings. process_ndjson correctly handles: whitespace-only input, no trailing newline, escaped newlines in strings.
 
 ### Problem
 
@@ -397,10 +401,14 @@ When hit, these limits cause the loop to stop with no error, no warning. The use
 
 ## 10. Output formatting edge cases
 
-**Status:** Open
+**Status:** Done ✓ (14 new unit tests + 5 new e2e jq_compat tests)
 **Priority:** Low — unlikely to crash, but could produce corrupt terminal output
 **Effort:** Small
 **Files:** `src/output.rs`
+
+### Bugs found
+
+None — raw mode correctly passes through control chars (NUL, tab, newline), compact mode correctly JSON-escapes them, pretty mode handles 50-level nesting, ASCII mode correctly produces surrogate pairs for supplementary plane characters and \uXXXX for BMP/control chars, sort_keys works recursively, -0 output matches jq, infinity/NaN output matches jq.
 
 ### Problem
 
@@ -431,16 +439,17 @@ Output formatting has minimal edge case coverage:
 | 4 | Unit tests for untested array builtins | **Done** | High — walk drops outputs, bsearch off-by-one | Medium |
 | 5 | Unit tests for `inside` + entry functions | **Done** | High — behavioral correctness unverified | Small |
 | 6 | Unit tests for destructuring patterns | **Done** | High — two modes, zero tests | Medium |
-| 7 | NDJSON chunk splitting edge cases | Open | Medium — data corruption risk | Small |
+| 7 | NDJSON chunk splitting edge cases | **Done** | Medium — data corruption risk | Small |
 | 8 | Loop iteration limits | **Done** | Medium — silent truncation | Small |
 | 9 | `@base64d` roundtrip tests | **Done** | Medium — silent data corruption | Small |
-| 10 | Output formatting edge cases | Open | Low — terminal corruption | Small |
+| 10 | Output formatting edge cases | **Done** | Low — terminal corruption | Small |
 
 ---
 
 ## Results
 
-38 new e2e jq_compat tests added to `tests/e2e.rs` (782 → 820 total e2e tests).
+43 new e2e jq_compat tests added to `tests/e2e.rs` (782 → 825 total e2e tests).
+23 new unit tests added (10 in `ndjson.rs`, 14 in `output.rs` — 971 → 994 total unit tests).
 
 ### Bugs found and fixed
 

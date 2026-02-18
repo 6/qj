@@ -822,4 +822,220 @@ mod tests {
         write_value(&mut buf, &v, &config).unwrap();
         assert_eq!(buf, b"hello"); // no trailing newline
     }
+
+    // --- Output formatting edge cases (TEST_TODOS_3 #10) ---
+
+    #[test]
+    fn raw_output_control_characters() {
+        // Raw mode outputs string bytes directly, including control chars
+        let config = OutputConfig {
+            mode: OutputMode::Raw,
+            ..Default::default()
+        };
+        // String with tab, newline, carriage return
+        let v = Value::String("a\tb\nc\rd".into());
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        assert_eq!(buf, b"a\tb\nc\rd\n"); // raw bytes + trailing newline
+
+        // String with NUL byte
+        let v = Value::String("before\0after".into());
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        assert_eq!(buf, b"before\0after\n");
+    }
+
+    #[test]
+    fn compact_control_characters_escaped() {
+        // Compact mode should JSON-escape control characters
+        let v = Value::String("a\tb\nc".into());
+        let s = compact(&v);
+        assert_eq!(s, r#""a\tb\nc""#);
+
+        // NUL byte
+        let v = Value::String("x\0y".into());
+        let s = compact(&v);
+        assert_eq!(s, r#""x\u0000y""#);
+
+        // BEL (0x07)
+        let v = Value::String("x\x07y".into());
+        let s = compact(&v);
+        assert_eq!(s, r#""x\u0007y""#);
+    }
+
+    #[test]
+    fn pretty_deeply_nested_array() {
+        // Build a 50-level deep nested array: [[[...[42]...]]]
+        let mut v = Value::Int(42);
+        for _ in 0..50 {
+            v = Value::Array(Arc::new(vec![v]));
+        }
+        let config = OutputConfig {
+            mode: OutputMode::Pretty,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        // Should have 50 opening brackets and 50 closing brackets
+        assert_eq!(s.matches('[').count(), 50);
+        assert_eq!(s.matches(']').count(), 50);
+        assert!(s.contains("42"));
+        // Deepest indent should be 50 * 2 = 100 spaces
+        let deepest_line = s.lines().find(|l| l.contains("42")).unwrap();
+        let indent = deepest_line.len() - deepest_line.trim_start().len();
+        assert_eq!(indent, 100); // 50 levels * 2 spaces
+    }
+
+    #[test]
+    fn pretty_deeply_nested_object() {
+        // Build a 30-level deep nested object: {"a":{"a":...{"a":1}...}}
+        let mut v = Value::Int(1);
+        for _ in 0..30 {
+            v = Value::Object(Arc::new(vec![("a".into(), v)]));
+        }
+        let config = OutputConfig {
+            mode: OutputMode::Pretty,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(s.matches('{').count(), 30);
+        assert_eq!(s.matches('}').count(), 30);
+        assert!(s.contains(": 1"));
+    }
+
+    #[test]
+    fn ascii_output_surrogate_pairs() {
+        // Supplementary plane character (emoji) should be encoded as surrogate pair
+        let v = Value::String("🎉".into()); // U+1F389
+        let config = OutputConfig {
+            mode: OutputMode::Compact,
+            ascii_output: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        let s = String::from_utf8(buf).unwrap().trim_end().to_string();
+        assert_eq!(s, r#""\ud83c\udf89""#);
+    }
+
+    #[test]
+    fn ascii_output_bmp_characters() {
+        // BMP character should use single \uXXXX escape
+        let v = Value::String("café".into());
+        let config = OutputConfig {
+            mode: OutputMode::Compact,
+            ascii_output: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        let s = String::from_utf8(buf).unwrap().trim_end().to_string();
+        assert_eq!(s, r#""caf\u00e9""#);
+    }
+
+    #[test]
+    fn ascii_output_control_chars() {
+        // Control characters in ASCII mode should be \uXXXX
+        let v = Value::String("\x01\x02\x1f".into());
+        let config = OutputConfig {
+            mode: OutputMode::Compact,
+            ascii_output: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        let s = String::from_utf8(buf).unwrap().trim_end().to_string();
+        assert_eq!(s, r#""\u0001\u0002\u001f""#);
+    }
+
+    #[test]
+    fn compact_large_object() {
+        // Object with many keys — verify correct formatting
+        let pairs: Vec<(String, Value)> =
+            (0..100).map(|i| (format!("k{i}"), Value::Int(i))).collect();
+        let v = Value::Object(Arc::new(pairs));
+        let s = compact(&v);
+        assert!(s.starts_with('{'));
+        assert!(s.ends_with('}'));
+        // Verify all 100 keys present
+        for i in 0..100 {
+            assert!(s.contains(&format!(r#""k{i}""#)));
+        }
+        // No newlines in compact mode
+        assert!(!s.contains('\n'));
+    }
+
+    #[test]
+    fn sort_keys_deeply_nested() {
+        // Verify sort_keys works recursively through nested structures
+        let inner = Value::Object(Arc::new(vec![
+            ("z".into(), Value::Int(1)),
+            ("a".into(), Value::Int(2)),
+        ]));
+        let arr = Value::Array(Arc::new(vec![
+            Value::Object(Arc::new(vec![
+                ("m".into(), Value::Int(3)),
+                ("b".into(), Value::Int(4)),
+            ])),
+            inner,
+        ]));
+        let outer = Value::Object(Arc::new(vec![
+            ("y".into(), arr),
+            ("x".into(), Value::Int(0)),
+        ]));
+        let config = OutputConfig {
+            mode: OutputMode::Compact,
+            sort_keys: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &outer, &config).unwrap();
+        let s = String::from_utf8(buf).unwrap().trim_end().to_string();
+        assert_eq!(s, r#"{"x":0,"y":[{"b":4,"m":3},{"a":2,"z":1}]}"#);
+    }
+
+    #[test]
+    fn double_neg_infinity() {
+        assert_eq!(
+            compact(&Value::Double(f64::NEG_INFINITY, None)),
+            "-1.7976931348623157e+308"
+        );
+    }
+
+    #[test]
+    fn double_negative_zero() {
+        // -0.0 should output as -0 (matching jq)
+        let s = compact(&Value::Double(-0.0, None));
+        assert_eq!(s, "-0");
+    }
+
+    #[test]
+    fn raw_output0_nul_separator() {
+        let v = Value::String("hello".into());
+        let config = OutputConfig {
+            mode: OutputMode::Raw,
+            null_separator: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        assert_eq!(buf, b"hello\0");
+    }
+
+    #[test]
+    fn pretty_tab_indent() {
+        let v = Value::Object(Arc::new(vec![("a".into(), Value::Int(1))]));
+        let config = OutputConfig {
+            mode: OutputMode::Pretty,
+            indent: "\t".into(),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_value(&mut buf, &v, &config).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("\t\"a\""));
+    }
 }

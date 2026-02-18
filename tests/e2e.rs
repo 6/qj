@@ -7591,3 +7591,42 @@ fn jq_compat_base64_roundtrip() {
     assert_jq_compat("@base64 | @base64d", r#""abc""#);
     assert_jq_compat("@base64 | @base64d", r#""""#);
 }
+
+// =========================================================================
+// TEST_TODOS_3 #10: Output formatting edge cases
+// =========================================================================
+
+#[test]
+fn jq_compat_output_infinity() {
+    // Infinity is represented as +/- DBL_MAX
+    assert_jq_compat("infinite", "null");
+    assert_jq_compat("-infinite", "null");
+    assert_jq_compat("1e308 * 10", "null");
+}
+
+#[test]
+fn jq_compat_output_nan() {
+    assert_jq_compat("nan", "null");
+    assert_jq_compat("nan | isnan", "null");
+}
+
+#[test]
+fn jq_compat_output_negative_zero() {
+    assert_jq_compat("0 * -1.0", "null");
+    assert_jq_compat(". * -1.0", "0");
+}
+
+#[test]
+fn jq_compat_output_string_escaping() {
+    // Verify control character escaping matches jq
+    assert_jq_compat(r#""\t""#, "null");
+    assert_jq_compat(r#""\n""#, "null");
+    assert_jq_compat(r#""\r""#, "null");
+    assert_jq_compat(r#""\u0000""#, "null");
+}
+
+#[test]
+fn jq_compat_output_sort_keys() {
+    assert_jq_compat(r#"{"z":1,"a":2,"m":3} | keys"#, "null");
+    assert_jq_compat(r#"{"z":{"b":2,"a":1},"a":0}"#, "null");
+}

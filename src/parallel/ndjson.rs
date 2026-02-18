@@ -2418,6 +2418,128 @@ mod tests {
     }
 
     #[test]
+    fn split_chunks_no_newlines() {
+        // A single giant record with no newline at all
+        let data = b"{\"key\":\"value\"}";
+        let chunks = split_chunks(data, 4);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], data.as_slice());
+    }
+
+    #[test]
+    fn split_chunks_no_trailing_newline() {
+        // Last record has no trailing newline — should still be included
+        let data = b"line1\nline2\nline3";
+        let chunks = split_chunks(data, 6);
+        let total: usize = chunks.iter().map(|c| c.len()).sum();
+        assert_eq!(total, data.len());
+        // Last chunk should be "line3" (no newline)
+        let last = chunks.last().unwrap();
+        assert!(last.ends_with(b"line3"));
+    }
+
+    #[test]
+    fn split_chunks_only_newlines() {
+        let data = b"\n\n\n\n\n";
+        let chunks = split_chunks(data, 2);
+        let total: usize = chunks.iter().map(|c| c.len()).sum();
+        assert_eq!(total, data.len());
+    }
+
+    #[test]
+    fn split_chunks_oversized_record() {
+        // Single record much larger than target_size — becomes one oversized chunk
+        let large_record = format!("{{\"data\":\"{}\"}}\n", "x".repeat(200));
+        let data = format!("{{\"a\":1}}\n{}{{\"b\":2}}\n", large_record);
+        let bytes = data.as_bytes();
+        // Target size smaller than the large record
+        let chunks = split_chunks(bytes, 10);
+        // Verify all data is preserved
+        let total: usize = chunks.iter().map(|c| c.len()).sum();
+        assert_eq!(total, bytes.len());
+        // Verify reassembled data matches original
+        let reassembled: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+        assert_eq!(reassembled, bytes);
+    }
+
+    #[test]
+    fn split_chunks_consecutive_newlines() {
+        // Multiple empty lines between records
+        let data = b"{\"a\":1}\n\n\n{\"b\":2}\n\n";
+        let chunks = split_chunks(data, 5);
+        let reassembled: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+        assert_eq!(reassembled, data.as_slice());
+    }
+
+    #[test]
+    fn split_chunks_target_size_zero() {
+        // Edge case: target_size of 0 should still work (each line is a chunk)
+        let data = b"a\nb\nc\n";
+        let chunks = split_chunks(data, 0);
+        let reassembled: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+        assert_eq!(reassembled, data.as_slice());
+        // Each chunk ends at a newline
+        for chunk in &chunks {
+            assert!(chunk.ends_with(b"\n"));
+        }
+    }
+
+    #[test]
+    fn split_chunks_escaped_newline_in_json() {
+        // JSON escaped \n is two bytes (0x5C, 0x6E), not a literal newline (0x0A).
+        // split_chunks only splits on literal 0x0A, so this should NOT be split.
+        let data = b"{\"msg\":\"hello\\nworld\"}\n{\"msg\":\"foo\"}\n";
+        let chunks = split_chunks(data, 100);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], data.as_slice());
+    }
+
+    #[test]
+    fn process_ndjson_escaped_newline_preserved() {
+        // Verify that JSON strings with escaped \n pass through correctly
+        let data = b"{\"msg\":\"hello\\nworld\"}\n";
+        let filter = crate::filter::parse(".msg").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(String::from_utf8(output).unwrap(), "\"hello\\nworld\"\n");
+    }
+
+    #[test]
+    fn process_ndjson_whitespace_only() {
+        // Buffer with only whitespace/newlines — no output
+        let data = b"\n  \n\t\n  \n";
+        let filter = crate::filter::parse(".").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(!had_output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn process_ndjson_no_trailing_newline() {
+        // Last record without trailing newline should still be processed
+        let data = b"{\"a\":1}\n{\"b\":2}";
+        let filter = crate::filter::parse(".").unwrap();
+        let config = OutputConfig {
+            mode: crate::output::OutputMode::Compact,
+            ..Default::default()
+        };
+        let env = crate::filter::Env::empty();
+        let (output, had_output, _) = process_ndjson(data, &filter, &config, &env).unwrap();
+        assert!(had_output);
+        assert_eq!(String::from_utf8(output).unwrap(), "{\"a\":1}\n{\"b\":2}\n");
+    }
+
+    #[test]
     fn process_ndjson_basic() {
         let data = b"{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n";
         let filter = crate::filter::parse(".name").unwrap();
