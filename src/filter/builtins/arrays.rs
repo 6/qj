@@ -45,12 +45,25 @@ pub(super) fn eval_arrays(
             }
         }
         "map" => {
-            if let (Value::Array(arr), Some(f)) = (input, args.first()) {
-                let mut result = Vec::with_capacity(arr.len());
-                for item in arr.iter() {
-                    eval(f, item, env, &mut |v| result.push(v));
+            if let Some(f) = args.first() {
+                match input {
+                    Value::Array(arr) => {
+                        let mut result = Vec::with_capacity(arr.len());
+                        for item in arr.iter() {
+                            eval(f, item, env, &mut |v| result.push(v));
+                        }
+                        output(Value::Array(Arc::new(result)));
+                    }
+                    Value::Object(obj) => {
+                        // jq: map(f) on objects applies f to each value, returns array
+                        let mut result = Vec::with_capacity(obj.len());
+                        for (_, v) in obj.iter() {
+                            eval(f, v, env, &mut |v| result.push(v));
+                        }
+                        output(Value::Array(Arc::new(result)));
+                    }
+                    _ => {}
                 }
-                output(Value::Array(Arc::new(result)));
             }
         }
         "select" => {

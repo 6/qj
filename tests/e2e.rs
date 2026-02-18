@@ -2542,6 +2542,31 @@ fn jq_compat_map_values() {
 }
 
 #[test]
+fn map_on_object() {
+    assert_jq_compat("map(type)", r#"{"a":null}"#);
+    assert_jq_compat("map(. + 1)", r#"{"a":1,"b":2,"c":3}"#);
+    assert_jq_compat("[map(type)]", r#"{"a":1,"b":"hi","c":null,"d":true}"#);
+}
+
+#[test]
+fn csv_tsv_reject_nested() {
+    // jq errors on arrays/objects as CSV/TSV elements; qj silently drops
+    // (exit code divergence is a known systemic issue — qj doesn't propagate
+    // errors from format builtins). Both produce empty stdout.
+    let out = qj_compact("@csv", r#"[1,[2,3],4]"#);
+    assert_eq!(out.trim(), "");
+    let out = qj_compact("@tsv", r#"[1,[2,3],4]"#);
+    assert_eq!(out.trim(), "");
+    let out = qj_compact("@csv", r#"[1,{"a":2},3]"#);
+    assert_eq!(out.trim(), "");
+    let out = qj_compact("@tsv", r#"[1,{"a":2},3]"#);
+    assert_eq!(out.trim(), "");
+    // Valid inputs still work
+    assert_jq_compat("@csv", r#"[1,"two",3]"#);
+    assert_jq_compat("@tsv", r#"[1,"two",3]"#);
+}
+
+#[test]
 fn limit_builtin() {
     let out = qj_compact("[limit(3; range(10))]", "null");
     assert_eq!(out.trim(), "[0,1,2]");

@@ -119,6 +119,13 @@ pub(super) fn eval_format(
         }
         "@csv" => {
             if let Value::Array(arr) = input {
+                // jq errors on arrays/objects as CSV elements
+                if arr
+                    .iter()
+                    .any(|v| matches!(v, Value::Array(_) | Value::Object(_)))
+                {
+                    return;
+                }
                 let parts: Vec<String> = arr
                     .iter()
                     .map(|v| match v {
@@ -138,6 +145,13 @@ pub(super) fn eval_format(
         }
         "@tsv" => {
             if let Value::Array(arr) = input {
+                // jq errors on arrays/objects as TSV elements
+                if arr
+                    .iter()
+                    .any(|v| matches!(v, Value::Array(_) | Value::Object(_)))
+                {
+                    return;
+                }
                 let parts: Vec<String> = arr
                     .iter()
                     .map(|v| match v {

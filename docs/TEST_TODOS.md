@@ -130,6 +130,39 @@ The only remaining value would be if the feature matrix report itself is a deliv
 
 ---
 
+## 6. Systemic silent error drops in builtins
+
+**Status:** Open
+**Priority:** Medium — causes exit code divergences from jq on invalid inputs
+**Effort:** Medium-large (touches many builtins across multiple files)
+
+### Problem
+
+Many builtins in `src/filter/builtins/arrays.rs` use `if let Value::Array(arr) = input` patterns that silently produce no output when given non-array inputs. jq errors on these cases (exit code 5) with descriptive messages. qj produces empty stdout with exit code 0.
+
+This is a systemic pattern affecting 20+ builtins. Examples:
+
+- `sort` on an object → jq errors, qj silent
+- `unique` on a string → jq errors, qj silent
+- `group_by` on a number → jq errors, qj silent
+- `@csv`/`@tsv` with nested arrays/objects → jq errors, qj silent
+
+### Why it matters
+
+Silent errors are worse than wrong output — the user gets no indication that their filter didn't apply. The proptest differential suite (#2) catches these as exit code mismatches, but fixing them requires an error propagation mechanism that qj currently lacks for builtin evaluation.
+
+### Approach
+
+1. Add an error/diagnostic callback to the builtin eval signature (or return `Result`)
+2. Replace `if let Value::Array` early-returns with explicit type-check errors
+3. Match jq's error messages where possible (users may parse stderr)
+
+### Builtins affected (non-exhaustive)
+
+`sort`, `sort_by`, `group_by`, `unique`, `unique_by`, `flatten`, `first`, `last`, `reverse`, `min`, `max`, `min_by`, `max_by`, `add`, `transpose`, `limit`, `skip`, `until`, `while`, `repeat`, `nth`, `combinations`, `@csv`, `@tsv`
+
+---
+
 ## Summary
 
 | # | Improvement | Status | Catches future bugs? | Effort |
@@ -139,5 +172,6 @@ The only remaining value would be if the feature matrix report itself is a deliv
 | 3 | Grammar-aware fuzz_eval | **Done** | All features (crash + divergence) | Medium |
 | 4 | Arithmetic unit tests | Superseded by #1 | Arithmetic only (faster feedback) | Small |
 | 5 | features.toml type edges | Superseded by #1 | Tested features only | Small |
+| 6 | Systemic silent error drops | Open | Error behavior fidelity | Medium-large |
 
-All high-priority items (#1, #2, #3) are done. #4 and #5 are low priority given #1's coverage.
+All high-priority items (#1, #2, #3) are done. #4 and #5 are low priority given #1's coverage. #6 is a new finding from the proptest differential suite.

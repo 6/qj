@@ -496,15 +496,21 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
         },
 
         Filter::Builtin(name, args) if name == "map" && args.len() == 1 => {
+            let f = &args[0];
             if flat.is_array() {
-                let f = &args[0];
                 let mut result = Vec::new();
                 for elem in flat.array_iter() {
                     eval_flat(f, elem, env, &mut |v| result.push(v));
                 }
                 output(Value::Array(Arc::new(result)));
+            } else if flat.is_object() {
+                // jq: map(f) on objects applies f to each value, returns array
+                let mut result = Vec::new();
+                for (_, v) in flat.object_iter() {
+                    eval_flat(f, v, env, &mut |v| result.push(v));
+                }
+                output(Value::Array(Arc::new(result)));
             }
-            // else: non-array → no output (matches jq)
         }
 
         Filter::Builtin(name, args) if name == "map_values" && args.len() == 1 => {
