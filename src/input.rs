@@ -585,4 +585,334 @@ mod tests {
             panic!("expected array");
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Differential tests: simdjson vs serde_json parsing paths
+    // -----------------------------------------------------------------------
+
+    /// Recursively compare two Values with order-independent object key comparison.
+    /// serde_json uses BTreeMap (sorted keys) while simdjson preserves insertion order,
+    /// so direct PartialEq fails on objects with multiple keys.
+    fn values_equal_unordered(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Double(a, _), Value::Double(b, _)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|(x, y)| values_equal_unordered(x, y))
+            }
+            (Value::Object(a), Value::Object(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                // Every key in a must exist in b with equal value, and vice versa
+                a.iter().all(|(ka, va)| {
+                    b.iter()
+                        .find(|(kb, _)| kb == ka)
+                        .map_or(false, |(_, vb)| values_equal_unordered(va, vb))
+                }) && b.iter().all(|(kb, _)| a.iter().any(|(ka, _)| ka == kb))
+            }
+            _ => false,
+        }
+    }
+
+    /// Parse JSON through simdjson (dom_parse_to_value) and serde_json (Value::from),
+    /// assert the resulting Values are equal. Uses order-independent object comparison
+    /// because serde_json sorts keys alphabetically (BTreeMap) while simdjson preserves
+    /// insertion order.
+    fn assert_simdjson_serde_agree(json: &[u8]) {
+        // simdjson path
+        let padded = crate::simdjson::pad_buffer(json);
+        let simdjson_val = crate::simdjson::dom_parse_to_value(&padded, json.len())
+            .unwrap_or_else(|e| panic!("simdjson failed on {:?}: {e}", std::str::from_utf8(json)));
+
+        // serde_json path
+        let text = std::str::from_utf8(json).unwrap();
+        let serde_val: serde_json::Value = serde_json::from_str(text)
+            .unwrap_or_else(|e| panic!("serde_json failed on {text:?}: {e}"));
+        let serde_converted = Value::from(serde_val);
+
+        assert!(
+            values_equal_unordered(&simdjson_val, &serde_converted),
+            "simdjson vs serde_json mismatch for input: {text}\n  simdjson: {simdjson_val:?}\n  serde:   {serde_converted:?}"
+        );
+    }
+
+    #[test]
+    fn diff_simple_object() {
+        assert_simdjson_serde_agree(br#"{"a":1,"b":"hello","c":null,"d":true,"e":1.5}"#);
+    }
+
+    #[test]
+    fn diff_mixed_array() {
+        assert_simdjson_serde_agree(br#"[1,2,3,"hello",null,true,false,1.23456789012345]"#);
+    }
+
+    #[test]
+    fn diff_unicode_escapes() {
+        assert_simdjson_serde_agree(br#"{"emoji":"\u0041\u0042\u0043"}"#);
+    }
+
+    #[test]
+    fn diff_escape_sequences() {
+        assert_simdjson_serde_agree(br#"{"s":"a\"b\\c\/d\n\t\r\f\b"}"#);
+    }
+
+    #[test]
+    fn diff_nested_objects() {
+        assert_simdjson_serde_agree(br#"{"nested":{"deep":{"value":42}}}"#);
+    }
+
+    #[test]
+    fn diff_empty_containers() {
+        assert_simdjson_serde_agree(b"{}");
+        assert_simdjson_serde_agree(b"[]");
+    }
+
+    #[test]
+    fn diff_scalar_int() {
+        assert_simdjson_serde_agree(b"0");
+        assert_simdjson_serde_agree(b"42");
+        assert_simdjson_serde_agree(b"-1");
+        assert_simdjson_serde_agree(b"9223372036854775807"); // i64::MAX
+    }
+
+    #[test]
+    fn diff_scalar_double() {
+        assert_simdjson_serde_agree(b"3.14");
+        assert_simdjson_serde_agree(b"1e10");
+        assert_simdjson_serde_agree(b"-0.0");
+    }
+
+    #[test]
+    fn diff_scalar_string() {
+        assert_simdjson_serde_agree(br#""""#);
+        assert_simdjson_serde_agree(br#""hello world""#);
+    }
+
+    #[test]
+    fn diff_scalar_bool_null() {
+        assert_simdjson_serde_agree(b"true");
+        assert_simdjson_serde_agree(b"false");
+        assert_simdjson_serde_agree(b"null");
+    }
+
+    #[test]
+    fn diff_negative_i64_min() {
+        assert_simdjson_serde_agree(b"-9223372036854775808"); // i64::MIN
+    }
+
+    #[test]
+    fn diff_array_of_objects() {
+        assert_simdjson_serde_agree(br#"[{"name":"alice","age":30},{"name":"bob","age":25}]"#);
+    }
+
+    #[test]
+    fn diff_object_with_array_values() {
+        assert_simdjson_serde_agree(br#"{"tags":["rust","json"],"scores":[100,200,300]}"#);
+    }
+
+    #[test]
+    fn diff_deeply_nested_mixed() {
+        assert_simdjson_serde_agree(br#"{"a":[{"b":{"c":[1,2,{"d":true}]}}]}"#);
+    }
+
+    #[test]
+    fn diff_unicode_multibyte() {
+        assert_simdjson_serde_agree(br#"{"text":"\u00e9\u00e8\u00ea"}"#);
+    }
+
+    #[test]
+    fn diff_large_array() {
+        // 100-element array
+        let mut json = String::from("[");
+        for i in 0..100 {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&i.to_string());
+        }
+        json.push(']');
+        assert_simdjson_serde_agree(json.as_bytes());
+    }
+
+    #[test]
+    fn diff_object_many_keys() {
+        let mut json = String::from("{");
+        for i in 0..50 {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!("\"key{i}\":{i}"));
+        }
+        json.push('}');
+        assert_simdjson_serde_agree(json.as_bytes());
+    }
+
+    #[test]
+    fn diff_whitespace_variations() {
+        // Extra whitespace should not affect value equality
+        assert_simdjson_serde_agree(b"{ \"a\" : 1 , \"b\" : [ 2 , 3 ] }");
+        assert_simdjson_serde_agree(b"  [  1  ,  2  ,  3  ]  ");
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-doc fallback: serde_json StreamDeserializer path
+    //
+    // The serde_json fallback activates when simdjson fails AND the buffer
+    // has no newlines. simdjson succeeds on `{"a":1}{"b":2}` (returning
+    // only the first doc), so concatenated objects/arrays don't trigger
+    // the fallback — only inputs that are genuinely invalid single JSON do.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn multi_doc_space_separated_scalars() {
+        // simdjson rejects "123 456 789" (not valid single JSON), falls to
+        // serde_json StreamDeserializer since no newlines present.
+        let mut vals = Vec::new();
+        collect_values_from_buf(b"123 456 789", false, &mut vals).unwrap();
+        assert_eq!(vals.len(), 3);
+        assert_eq!(vals[0], Value::Int(123));
+        assert_eq!(vals[1], Value::Int(456));
+        assert_eq!(vals[2], Value::Int(789));
+    }
+
+    #[test]
+    fn multi_doc_space_separated_match_simdjson() {
+        // Each value from multi-doc serde_json parse should match simdjson
+        // parse of the same value individually.
+        let mut vals = Vec::new();
+        collect_values_from_buf(b"true false null", false, &mut vals).unwrap();
+        assert_eq!(vals.len(), 3);
+
+        for (i, single_json) in [b"true".as_slice(), b"false", b"null"].iter().enumerate() {
+            let padded = crate::simdjson::pad_buffer(single_json);
+            let simdjson_val =
+                crate::simdjson::dom_parse_to_value(&padded, single_json.len()).unwrap();
+            assert_eq!(
+                vals[i], simdjson_val,
+                "multi-doc element {i} differs from simdjson parse"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_doc_mixed_scalars_and_containers() {
+        // Mix of scalars and containers — serde_json stream handles these
+        let mut vals = Vec::new();
+        collect_values_from_buf(b"42 \"hello\" true", false, &mut vals).unwrap();
+        assert_eq!(vals.len(), 3);
+        assert_eq!(vals[0], Value::Int(42));
+        assert_eq!(vals[1], Value::String("hello".into()));
+        assert_eq!(vals[2], Value::Bool(true));
+    }
+
+    #[test]
+    fn multi_doc_concatenated_objects_simdjson_first_only() {
+        // simdjson succeeds on first doc of concatenated JSON, returning only
+        // the first object. This is expected behavior — not a multi-doc parse.
+        let mut vals = Vec::new();
+        collect_values_from_buf(br#"{"a":1}{"b":2}"#, false, &mut vals).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert_eq!(
+            vals[0],
+            Value::Object(Arc::new(vec![("a".into(), Value::Int(1))]))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_values_from_buf: simdjson primary path vs line-by-line fallback
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ndjson_lines_match_single_doc_parse() {
+        // Verify that parsing as NDJSON lines gives the same values as
+        // parsing each line individually through simdjson.
+        let input = b"{\"a\":1}\n{\"b\":2}\n{\"c\":3}";
+        let mut line_vals = Vec::new();
+        collect_values_from_buf(input, false, &mut line_vals).unwrap();
+
+        for (i, line) in [br#"{"a":1}"#.as_slice(), br#"{"b":2}"#, br#"{"c":3}"#]
+            .iter()
+            .enumerate()
+        {
+            let padded = crate::simdjson::pad_buffer(line);
+            let single = crate::simdjson::dom_parse_to_value(&padded, line.len()).unwrap();
+            assert_eq!(
+                line_vals[i], single,
+                "NDJSON line {i} differs from single-doc simdjson parse"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases: precision limits, special characters
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn diff_f64_precision_boundary() {
+        // Near the limits of f64 precision — both parsers should agree
+        assert_simdjson_serde_agree(b"1.7976931348623157e308");
+        assert_simdjson_serde_agree(b"5e-324");
+        assert_simdjson_serde_agree(b"2.2250738585072014e-308");
+    }
+
+    #[test]
+    fn diff_string_with_null_escape() {
+        assert_simdjson_serde_agree(br#"{"s":"hello\u0000world"}"#);
+    }
+
+    #[test]
+    fn diff_surrogate_pair() {
+        // U+1F600 = \uD83D\uDE00
+        assert_simdjson_serde_agree(br#"{"emoji":"\uD83D\uDE00"}"#);
+    }
+
+    #[test]
+    fn diff_empty_string_key() {
+        assert_simdjson_serde_agree(br#"{"":"value"}"#);
+    }
+
+    #[test]
+    fn diff_numeric_string_key() {
+        assert_simdjson_serde_agree(br#"{"123":"numeric key"}"#);
+    }
+
+    #[test]
+    fn diff_repeated_keys() {
+        // JSON with duplicate keys — both should parse (serde_json keeps last)
+        // simdjson keeps first. We compare independently so just verify no crash.
+        let json = br#"{"a":1,"a":2}"#;
+        let padded = crate::simdjson::pad_buffer(json);
+        let _simdjson = crate::simdjson::dom_parse_to_value(&padded, json.len()).unwrap();
+        let _serde: serde_json::Value = serde_json::from_str(r#"{"a":1,"a":2}"#).unwrap();
+        // Don't compare values since duplicate key behavior intentionally differs
+    }
+
+    #[test]
+    fn diff_nested_empty_containers() {
+        assert_simdjson_serde_agree(br#"{"a":[],"b":{},"c":[{}],"d":{"e":[]}}"#);
+    }
+
+    #[test]
+    fn diff_long_string() {
+        let long_str = "x".repeat(10000);
+        let json = format!("\"{}\"", long_str);
+        assert_simdjson_serde_agree(json.as_bytes());
+    }
+
+    #[test]
+    fn diff_deeply_nested_arrays() {
+        assert_simdjson_serde_agree(b"[[[[[[[[1]]]]]]]]");
+    }
+
+    #[test]
+    fn diff_deeply_nested_objects() {
+        assert_simdjson_serde_agree(br#"{"a":{"b":{"c":{"d":{"e":{"f":{"g":1}}}}}}}"#);
+    }
 }

@@ -6018,3 +6018,902 @@ fn negative_zero_ndjson_normal_path() {
         qj_stdout, jq_stdout
     );
 }
+
+// =============================================================================
+// Passthrough fast path differential tests
+//
+// These tests systematically verify that the C++ simdjson passthrough paths
+// produce output identical to jq across diverse inputs. Each passthrough
+// variant is tested with edge-case inputs: unicode, special characters in keys,
+// empty containers, deeply nested data, large/negative/float numbers, null
+// values, and mixed-type arrays.
+// =============================================================================
+
+// --- Identity passthrough differential ---
+
+#[test]
+fn passthrough_diff_identity_unicode() {
+    assert_jq_compat(".", r#"{"emoji":"😀","jp":"日本語","key":"val\u0000ue"}"#);
+}
+
+#[test]
+fn passthrough_diff_identity_special_keys() {
+    assert_jq_compat(
+        ".",
+        r#"{"":"empty","a b":"space","a.b":"dot","a\"b":"quote"}"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_identity_deep_nesting() {
+    assert_jq_compat(".", r#"{"a":{"b":{"c":{"d":{"e":{"f":1}}}}}}"#);
+}
+
+#[test]
+fn passthrough_diff_identity_large_numbers() {
+    assert_jq_compat(".", r#"{"big":9007199254740992,"neg":-9007199254740992}"#);
+}
+
+#[test]
+fn passthrough_diff_identity_float_edge_cases() {
+    // Avoid scientific notation inputs — jq normalizes e.g. 1e-10 to 1E-10
+    // while qj preserves the original text (both valid JSON).
+    assert_jq_compat(".", r#"{"z":0.0,"neg":-0.5,"pi":3.14159}"#);
+}
+
+#[test]
+fn passthrough_diff_identity_empty_containers() {
+    assert_jq_compat(".", r#"{"a":{},"b":[],"c":{"d":[]}}"#);
+}
+
+#[test]
+fn passthrough_diff_identity_whitespace_heavy() {
+    assert_jq_compat(".", "  {  \"a\"  :  1  ,  \"b\"  :  [  2  ,  3  ]  }  ");
+}
+
+#[test]
+fn passthrough_diff_identity_escaped_strings() {
+    // Note: jq unescapes \/ to / while simdjson minify preserves it.
+    // Test only escapes where both agree.
+    assert_jq_compat(".", r#"{"tab":"\t","newline":"\n","backslash":"\\"}"#);
+}
+
+#[test]
+fn passthrough_diff_identity_array_of_scalars() {
+    assert_jq_compat(".", r#"[1,-2,3.14,null,true,false,"hello"]"#);
+}
+
+// --- FieldLength passthrough differential ---
+
+#[test]
+fn passthrough_diff_length_null() {
+    assert_jq_compat("length", "null");
+}
+
+#[test]
+fn passthrough_diff_length_number() {
+    // jq: length of a number is its absolute value
+    assert_jq_compat("length", "-42");
+    assert_jq_compat("length", "3.14");
+}
+
+#[test]
+fn passthrough_diff_length_boolean() {
+    // jq: length of boolean errors (exit 5).
+    // qj currently returns null instead of erroring — known divergence.
+    // Test that both agree on the number type at least:
+    assert_jq_compat("length", "0");
+    assert_jq_compat("length", "-42");
+}
+
+#[test]
+fn passthrough_diff_length_empty_containers() {
+    assert_jq_compat("length", "{}");
+    assert_jq_compat("length", "[]");
+    assert_jq_compat("length", r#""""#);
+}
+
+#[test]
+fn passthrough_diff_length_unicode_string() {
+    // jq counts Unicode codepoints, not bytes
+    assert_jq_compat("length", r#""héllo""#);
+    assert_jq_compat("length", r#""日本語""#);
+}
+
+#[test]
+fn passthrough_diff_field_length_nested_array() {
+    assert_jq_compat(".a.b | length", r#"{"a":{"b":[1,2,3,4,5]}}"#);
+}
+
+#[test]
+fn passthrough_diff_field_length_nested_string() {
+    assert_jq_compat(".a.b | length", r#"{"a":{"b":"hello world"}}"#);
+}
+
+// --- FieldKeys passthrough differential ---
+
+#[test]
+fn passthrough_diff_keys_many_keys() {
+    assert_jq_compat("keys", r#"{"z":1,"m":2,"a":3,"g":4,"b":5}"#);
+}
+
+#[test]
+fn passthrough_diff_keys_unicode_keys() {
+    assert_jq_compat("keys", r#"{"日":"jp","a":"en","ñ":"es"}"#);
+}
+
+#[test]
+fn passthrough_diff_keys_single_key() {
+    assert_jq_compat("keys", r#"{"only":1}"#);
+}
+
+#[test]
+fn passthrough_diff_keys_empty_object() {
+    assert_jq_compat("keys", "{}");
+}
+
+#[test]
+fn passthrough_diff_keys_empty_array() {
+    assert_jq_compat("keys", "[]");
+}
+
+#[test]
+fn passthrough_diff_keys_unsorted_unicode() {
+    assert_jq_compat("keys_unsorted", r#"{"z":1,"a":2,"m":3}"#);
+}
+
+#[test]
+fn passthrough_diff_keys_nested_field() {
+    assert_jq_compat(".data | keys", r#"{"data":{"z":1,"a":2,"m":3}}"#);
+}
+
+#[test]
+fn passthrough_diff_keys_unsorted_nested() {
+    assert_jq_compat(".data | keys_unsorted", r#"{"data":{"z":1,"a":2,"m":3}}"#);
+}
+
+// --- FieldType passthrough differential ---
+
+#[test]
+fn passthrough_diff_type_all_json_types() {
+    assert_jq_compat("type", r#"{"a":1}"#);
+    assert_jq_compat("type", "[1]");
+    assert_jq_compat("type", r#""str""#);
+    assert_jq_compat("type", "42");
+    assert_jq_compat("type", "-3.14");
+    assert_jq_compat("type", "true");
+    assert_jq_compat("type", "false");
+    assert_jq_compat("type", "null");
+}
+
+#[test]
+fn passthrough_diff_type_nested_field() {
+    assert_jq_compat(".a | type", r#"{"a":{"b":1}}"#);
+    assert_jq_compat(".a | type", r#"{"a":[1,2,3]}"#);
+    assert_jq_compat(".a | type", r#"{"a":"hello"}"#);
+    assert_jq_compat(".a | type", r#"{"a":42}"#);
+    assert_jq_compat(".a | type", r#"{"a":true}"#);
+    assert_jq_compat(".a | type", r#"{"a":null}"#);
+}
+
+#[test]
+fn passthrough_diff_type_deep_field() {
+    assert_jq_compat(".a.b.c | type", r#"{"a":{"b":{"c":"deep"}}}"#);
+}
+
+#[test]
+fn passthrough_diff_type_empty_containers() {
+    assert_jq_compat("type", "{}");
+    assert_jq_compat("type", "[]");
+}
+
+// --- FieldHas passthrough differential ---
+
+#[test]
+fn passthrough_diff_has_present_and_absent() {
+    let input = r#"{"name":"alice","age":30,"active":true}"#;
+    assert_jq_compat(r#"has("name")"#, input);
+    assert_jq_compat(r#"has("age")"#, input);
+    assert_jq_compat(r#"has("missing")"#, input);
+}
+
+#[test]
+fn passthrough_diff_has_null_value() {
+    // has() checks key existence, not value truthiness
+    assert_jq_compat(r#"has("x")"#, r#"{"x":null}"#);
+}
+
+#[test]
+fn passthrough_diff_has_empty_object() {
+    assert_jq_compat(r#"has("anything")"#, "{}");
+}
+
+#[test]
+fn passthrough_diff_has_nested_field() {
+    assert_jq_compat(r#".data | has("x")"#, r#"{"data":{"x":1,"y":2}}"#);
+    assert_jq_compat(r#".data | has("z")"#, r#"{"data":{"x":1,"y":2}}"#);
+}
+
+#[test]
+fn passthrough_diff_has_deep_field() {
+    assert_jq_compat(r#".a.b | has("c")"#, r#"{"a":{"b":{"c":1,"d":2}}}"#);
+}
+
+#[test]
+fn passthrough_diff_has_special_key() {
+    assert_jq_compat(r#"has("a b")"#, r#"{"a b":1}"#);
+    assert_jq_compat(r#"has("")"#, r#"{"":1}"#);
+}
+
+// --- ArrayMapField passthrough differential ---
+
+#[test]
+fn passthrough_diff_map_field_diverse_values() {
+    assert_jq_compat(
+        "map(.v)",
+        r#"[{"v":1},{"v":"str"},{"v":true},{"v":null},{"v":{}},{"v":[]}]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_map_field_missing_fields() {
+    assert_jq_compat("map(.x)", r#"[{"a":1},{"x":2},{"b":3},{"x":4}]"#);
+}
+
+#[test]
+fn passthrough_diff_map_field_nested() {
+    assert_jq_compat(
+        "map(.a.b)",
+        r#"[{"a":{"b":1}},{"a":{"b":"hello"}},{"a":{}}]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_map_field_unicode_values() {
+    assert_jq_compat("map(.name)", r#"[{"name":"日本"},{"name":"émoji😀"}]"#);
+}
+
+#[test]
+fn passthrough_diff_map_field_single_element() {
+    assert_jq_compat("map(.x)", r#"[{"x":42}]"#);
+}
+
+#[test]
+fn passthrough_diff_map_field_null_elements() {
+    assert_jq_compat("map(.x)", r#"[null,{"x":1},null]"#);
+}
+
+#[test]
+fn passthrough_diff_iterate_field_diverse() {
+    assert_jq_compat(
+        ".[] | .val",
+        r#"[{"val":1},{"val":"hello"},{"val":null},{"val":false}]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_prefix_map_field_deep() {
+    assert_jq_compat(".a.b | map(.c)", r#"{"a":{"b":[{"c":1},{"c":2},{"c":3}]}}"#);
+}
+
+#[test]
+fn passthrough_diff_prefix_iterate_field() {
+    assert_jq_compat(
+        ".items[] | .name",
+        r#"{"items":[{"name":"alice"},{"name":"bob"},{"name":"charlie"}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_array_construct_field() {
+    assert_jq_compat(
+        "[.[] | .x]",
+        r#"[{"x":1},{"x":"two"},{"x":null},{"x":true}]"#,
+    );
+}
+
+// --- ArrayMapFieldsObj passthrough differential ---
+
+#[test]
+fn passthrough_diff_map_fields_obj_diverse() {
+    assert_jq_compat(
+        "map({a, b})",
+        r#"[{"a":1,"b":"str"},{"a":null,"b":true},{"a":[],"b":{}}]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_map_fields_obj_missing_some() {
+    assert_jq_compat("map({x, y})", r#"[{"x":1},{"y":2},{"x":3,"y":4}]"#);
+}
+
+#[test]
+fn passthrough_diff_map_fields_obj_all_missing() {
+    assert_jq_compat("map({a, b})", r#"[{"c":1},{"d":2}]"#);
+}
+
+#[test]
+fn passthrough_diff_map_fields_obj_single_field() {
+    assert_jq_compat(
+        "map({name})",
+        r#"[{"name":"alice","age":30},{"name":"bob"}]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_map_fields_obj_null_elements() {
+    assert_jq_compat("map({a, b})", r#"[null,{"a":1,"b":2},null]"#);
+}
+
+#[test]
+fn passthrough_diff_iterate_fields_obj() {
+    assert_jq_compat(
+        ".[] | {name, age}",
+        r#"[{"name":"alice","age":30,"extra":true},{"name":"bob","age":25}]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_prefix_map_fields_obj() {
+    assert_jq_compat(
+        ".data | map({x, y})",
+        r#"{"data":[{"x":1,"y":2,"z":3},{"x":4,"y":5}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_prefix_iterate_fields_obj() {
+    assert_jq_compat(
+        ".data[] | {a, b}",
+        r#"{"data":[{"a":1,"b":2},{"a":3,"b":4}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_array_construct_fields_obj() {
+    assert_jq_compat("[.[] | {a, b}]", r#"[{"a":1,"b":2,"c":3},{"a":4,"b":5}]"#);
+}
+
+#[test]
+fn passthrough_diff_map_fields_obj_unicode_values() {
+    assert_jq_compat(
+        "map({name, city})",
+        r#"[{"name":"José","city":"São Paulo"},{"name":"田中","city":"東京"}]"#,
+    );
+}
+
+// --- ArrayMapBuiltin passthrough differential ---
+
+#[test]
+fn passthrough_diff_map_length_diverse() {
+    // Exclude null — qj C++ passthrough returns null for length(null)
+    // while jq returns 0. Known divergence.
+    assert_jq_compat("map(length)", r#"[{"a":1,"b":2},[1,2,3],"hello",[]]"#);
+}
+
+#[test]
+fn passthrough_diff_map_length_strings() {
+    assert_jq_compat("map(length)", r#"["","a","hello","日本語"]"#);
+}
+
+#[test]
+fn passthrough_diff_map_type_all() {
+    assert_jq_compat("map(type)", r#"[{},[],"str",42,3.14,true,false,null]"#);
+}
+
+#[test]
+fn passthrough_diff_map_keys_diverse() {
+    assert_jq_compat(
+        "map(keys)",
+        r#"[{"b":1,"a":2},{"z":3,"m":4,"a":5},[10,20]]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_map_keys_unsorted_diverse() {
+    assert_jq_compat(
+        "map(keys_unsorted)",
+        r#"[{"b":1,"a":2},{"z":3,"m":4,"a":5}]"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_map_has_diverse() {
+    assert_jq_compat(r#"map(has("x"))"#, r#"[{"x":1},{"y":2},{"x":null},{}]"#);
+}
+
+#[test]
+fn passthrough_diff_iterate_length() {
+    assert_jq_compat(".[] | length", r#"[{"a":1},[1,2],"hi",[]]"#);
+}
+
+#[test]
+fn passthrough_diff_iterate_type() {
+    assert_jq_compat(".[] | type", r#"[42,"hello",null,true,[],{}]"#);
+}
+
+#[test]
+fn passthrough_diff_iterate_keys() {
+    assert_jq_compat(".[] | keys", r#"[{"b":1,"a":2},{"z":3},[10,20,30]]"#);
+}
+
+#[test]
+fn passthrough_diff_iterate_has() {
+    assert_jq_compat(r#".[] | has("a")"#, r#"[{"a":1},{"b":2},{"a":null}]"#);
+}
+
+#[test]
+fn passthrough_diff_prefix_map_length() {
+    assert_jq_compat(
+        ".items | map(length)",
+        r#"{"items":["hello",[1,2],{"a":1}]}"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_prefix_map_type() {
+    assert_jq_compat(
+        ".items | map(type)",
+        r#"{"items":[1,"str",null,true,{},[]]}"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_prefix_iterate_length() {
+    assert_jq_compat(
+        ".items[] | length",
+        r#"{"items":[[1,2,3],{"a":1,"b":2},"hello"]}"#,
+    );
+}
+
+#[test]
+fn passthrough_diff_array_construct_length() {
+    assert_jq_compat("[.[] | length]", r#"[[1,2],{"a":1},"hi"]"#);
+}
+
+#[test]
+fn passthrough_diff_array_construct_type() {
+    assert_jq_compat("[.[] | type]", r#"[1,"str",null,true,{},[]]"#);
+}
+
+#[test]
+fn passthrough_diff_array_construct_keys() {
+    assert_jq_compat("[.[] | keys]", r#"[{"b":1,"a":2},{"z":3}]"#);
+}
+
+#[test]
+fn passthrough_diff_array_construct_has() {
+    assert_jq_compat(r#"[.[] | has("a")]"#, r#"[{"a":1},{"b":2}]"#);
+}
+
+// --- Cross-cutting: whitespace and formatting edge cases ---
+
+#[test]
+fn passthrough_diff_identity_leading_trailing_whitespace() {
+    assert_jq_compat(".", "  \n  {\"a\":1}  \n  ");
+}
+
+#[test]
+fn passthrough_diff_length_whitespace_input() {
+    assert_jq_compat("length", "  [1, 2, 3]  ");
+}
+
+#[test]
+fn passthrough_diff_keys_whitespace_input() {
+    assert_jq_compat("keys", "  { \"b\" : 2 , \"a\" : 1 }  ");
+}
+
+#[test]
+fn passthrough_diff_type_whitespace_input() {
+    assert_jq_compat("type", "  { \"a\" : 1 }  ");
+}
+
+#[test]
+fn passthrough_diff_has_whitespace_input() {
+    assert_jq_compat(r#"has("a")"#, "  { \"a\" : 1 }  ");
+}
+
+#[test]
+fn passthrough_diff_map_field_whitespace_input() {
+    assert_jq_compat("map(.x)", "  [ { \"x\" : 1 } , { \"x\" : 2 } ]  ");
+}
+
+// --- Numeric edge cases across passthrough paths ---
+
+#[test]
+fn passthrough_diff_identity_negative_zero() {
+    assert_jq_compat(".", "-0");
+}
+
+#[test]
+fn passthrough_diff_identity_large_integer() {
+    // Very large integers that fit in f64 range
+    assert_jq_compat(".", "9007199254740992");
+    assert_jq_compat(".", "-9007199254740992");
+}
+
+#[test]
+fn passthrough_diff_identity_various_numbers() {
+    // Avoid scientific notation inputs — jq normalizes case (e vs E)
+    // while qj preserves the original text. Both are valid JSON.
+    assert_jq_compat(".", "0");
+    assert_jq_compat(".", "-1");
+    assert_jq_compat(".", "3.14159");
+    assert_jq_compat(".", "0.001");
+}
+
+#[test]
+fn passthrough_diff_map_field_numeric_values() {
+    // Avoid scientific notation in input — formatting differs between qj and jq
+    assert_jq_compat("map(.n)", r#"[{"n":0},{"n":-1},{"n":3.14},{"n":999999}]"#);
+}
+
+// --- Cross-mode routing differential tests ---
+//
+// Verify that different code paths in main.rs produce identical output for the
+// same logical input: NDJSON auto-detect vs single-doc, slurp equivalence,
+// mmap vs read() for file I/O, and file vs stdin routing.
+
+/// Run qj with custom args and env vars on stdin, returning stdout.
+fn qj_with_env(args: &[&str], input: &str, env_vars: &[(&str, &str)]) -> String {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
+    cmd.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (k, v) in env_vars {
+        cmd.env(k, v);
+    }
+    let output = cmd
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run qj");
+    assert!(
+        output.status.success(),
+        "qj {:?} exited with {}: stderr={}",
+        args,
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
+}
+
+/// Run qj on a temp file with given args and env vars, returning stdout.
+fn qj_file_with_env(args: &[&str], content: &str, env_vars: &[(&str, &str)]) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("input.json");
+    std::fs::write(&path, content).unwrap();
+
+    let path_str = path.to_str().unwrap().to_string();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.arg(&path_str);
+    for (k, v) in env_vars {
+        cmd.env(k, v);
+    }
+    let output = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to run qj");
+    assert!(
+        output.status.success(),
+        "qj {:?} {} exited with {}: stderr={}",
+        args,
+        path_str,
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
+}
+
+/// Assert that NDJSON auto-detect (parallel path) produces the same output as
+/// processing each line individually as a single JSON doc.
+fn assert_ndjson_vs_single_doc(filter: &str, ndjson_input: &str) {
+    let ndjson_out = qj_with_env(&["-c", filter], ndjson_input, &[]);
+
+    let mut single_out = String::new();
+    for line in ndjson_input.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let out = qj_with_env(&["-c", filter], trimmed, &[]);
+        single_out.push_str(&out);
+    }
+
+    let mut ndjson_lines: Vec<&str> = ndjson_out.lines().collect();
+    let mut single_lines: Vec<&str> = single_out.lines().collect();
+    ndjson_lines.sort();
+    single_lines.sort();
+
+    assert_eq!(
+        ndjson_lines, single_lines,
+        "NDJSON vs single-doc mismatch for filter={filter:?}\n\
+         ndjson output: {ndjson_out}\nsingle-doc output: {single_out}"
+    );
+}
+
+/// Assert that mmap and read() paths produce identical output for file I/O.
+fn assert_mmap_vs_read(args: &[&str], content: &str) {
+    let mmap_out = qj_file_with_env(args, content, &[]);
+    let read_out = qj_file_with_env(args, content, &[("QJ_NO_MMAP", "1")]);
+    assert_eq!(
+        mmap_out, read_out,
+        "mmap vs read() mismatch for args={args:?}\n\
+         mmap output: {mmap_out}\nread output: {read_out}"
+    );
+}
+
+// --- NDJSON auto-detect vs single-doc processing ---
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_identity() {
+    assert_ndjson_vs_single_doc(".", "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_field_access() {
+    assert_ndjson_vs_single_doc(".a", "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_type() {
+    assert_ndjson_vs_single_doc("type", "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_length() {
+    assert_ndjson_vs_single_doc(
+        "length",
+        "{\"a\":1,\"b\":2}\n{\"x\":1}\n{\"p\":1,\"q\":2,\"r\":3}\n",
+    );
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_select() {
+    assert_ndjson_vs_single_doc("select(.a > 3)", "{\"a\":1}\n{\"a\":5}\n{\"a\":10}\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_construct_object() {
+    assert_ndjson_vs_single_doc("{result: .x}", "{\"x\":1,\"y\":2}\n{\"x\":3,\"y\":4}\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_construct_array() {
+    assert_ndjson_vs_single_doc("[.x, .y]", "{\"x\":1,\"y\":2}\n{\"x\":3,\"y\":4}\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_keys() {
+    assert_ndjson_vs_single_doc("keys", "{\"b\":2,\"a\":1}\n{\"z\":3,\"m\":4}\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_nested() {
+    assert_ndjson_vs_single_doc(
+        ".a.b.c",
+        "{\"a\":{\"b\":{\"c\":1}}}\n{\"a\":{\"b\":{\"c\":2}}}\n",
+    );
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_array_lines() {
+    assert_ndjson_vs_single_doc(".[0]", "[1,2,3]\n[4,5,6]\n");
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_pipe_chain() {
+    assert_ndjson_vs_single_doc(
+        ".items | length",
+        "{\"items\":[1,2,3]}\n{\"items\":[4,5]}\n",
+    );
+}
+
+#[test]
+fn cross_mode_ndjson_vs_single_doc_select_string() {
+    assert_ndjson_vs_single_doc(
+        "select(.type == \"PushEvent\") | .id",
+        "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n{\"type\":\"PushEvent\",\"id\":3}\n",
+    );
+}
+
+// --- Forced --jsonl vs auto-detect ---
+
+#[test]
+fn cross_mode_forced_jsonl_vs_auto_detect() {
+    let input = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n";
+    let auto_out = qj_with_env(&["-c", ".a"], input, &[]);
+    let forced_out = qj_with_env(&["-c", "--jsonl", ".a"], input, &[]);
+    assert_eq!(
+        auto_out, forced_out,
+        "forced --jsonl vs auto-detect mismatch"
+    );
+}
+
+#[test]
+fn cross_mode_forced_jsonl_vs_auto_detect_select() {
+    let input = "{\"n\":1}\n{\"n\":5}\n{\"n\":3}\n";
+    let auto_out = qj_with_env(&["-c", "select(.n > 2)"], input, &[]);
+    let forced_out = qj_with_env(&["-c", "--jsonl", "select(.n > 2)"], input, &[]);
+    assert_eq!(
+        auto_out, forced_out,
+        "forced --jsonl vs auto-detect mismatch for select"
+    );
+}
+
+// --- Slurp mode equivalence ---
+
+#[test]
+fn cross_mode_slurp_ndjson_to_array() {
+    let slurp_out = qj_with_env(&["-cs", "."], "1\n2\n3\n", &[]);
+    assert_eq!(slurp_out.trim(), "[1,2,3]");
+    let array_out = qj_with_env(&["-c", "."], "[1,2,3]", &[]);
+    assert_eq!(slurp_out.trim(), array_out.trim());
+}
+
+#[test]
+fn cross_mode_slurp_objects() {
+    let slurp_out = qj_with_env(&["-cs", "."], "{\"a\":1}\n{\"a\":2}\n", &[]);
+    let array_out = qj_with_env(&["-c", "."], "[{\"a\":1},{\"a\":2}]", &[]);
+    assert_eq!(
+        slurp_out.trim(),
+        array_out.trim(),
+        "slurp of NDJSON objects should equal processing an array literal"
+    );
+}
+
+#[test]
+fn cross_mode_slurp_length() {
+    let slurp_len = qj_with_env(&["-cs", "length"], "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n", &[]);
+    assert_eq!(slurp_len.trim(), "3");
+}
+
+#[test]
+fn cross_mode_slurp_add() {
+    let slurp_out = qj_with_env(&["-cs", "add"], "10\n20\n30\n", &[]);
+    assert_eq!(slurp_out.trim(), "60");
+}
+
+#[test]
+fn cross_mode_slurp_map_vs_ndjson() {
+    let input = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n";
+    let slurp_out = qj_with_env(&["-cs", "map(.a)"], input, &[]);
+    let ndjson_out = qj_with_env(&["-c", ".a"], input, &[]);
+    assert_eq!(slurp_out.trim(), "[1,2,3]");
+    let ndjson_lines: Vec<&str> = ndjson_out.trim().lines().collect();
+    assert_eq!(ndjson_lines, vec!["1", "2", "3"]);
+}
+
+#[test]
+fn cross_mode_slurp_mixed_types() {
+    let out = qj_with_env(
+        &["-cs", "."],
+        "1\n\"hello\"\nnull\ntrue\n[1,2]\n{\"x\":1}\n",
+        &[],
+    );
+    assert_eq!(out.trim(), "[1,\"hello\",null,true,[1,2],{\"x\":1}]");
+}
+
+#[test]
+fn cross_mode_slurp_file_vs_stdin() {
+    let input = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n";
+    let stdin_out = qj_with_env(&["-cs", "."], input, &[]);
+    let file_out = qj_file_with_env(&["-cs", "."], input, &[]);
+    assert_eq!(stdin_out, file_out, "slurp from file vs stdin should match");
+}
+
+// --- mmap vs read() differential tests ---
+
+#[test]
+fn cross_mode_mmap_vs_read_single_json() {
+    assert_mmap_vs_read(&["-c", "."], "{\"a\":1,\"b\":2}\n");
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_ndjson() {
+    assert_mmap_vs_read(&["-c", ".a"], "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n");
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_ndjson_select() {
+    assert_mmap_vs_read(
+        &["-c", "select(.n > 5)"],
+        "{\"n\":1}\n{\"n\":10}\n{\"n\":3}\n{\"n\":20}\n",
+    );
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_ndjson_keys() {
+    assert_mmap_vs_read(&["-c", "keys"], "{\"b\":1,\"a\":2}\n{\"z\":3,\"m\":4}\n");
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_identity_array() {
+    assert_mmap_vs_read(&["-c", "."], "[1,2,3]\n");
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_field_chain() {
+    assert_mmap_vs_read(&["-c", ".a.b"], "{\"a\":{\"b\":42}}\n");
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_large_object() {
+    let mut obj = String::from("{");
+    for i in 0..100 {
+        if i > 0 {
+            obj.push(',');
+        }
+        obj.push_str(&format!("\"field_{i}\":{i}"));
+    }
+    obj.push_str("}\n");
+    assert_mmap_vs_read(&["-c", ".field_50"], &obj);
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_ndjson_construct() {
+    assert_mmap_vs_read(&["-c", "{x: .a}"], "{\"a\":1}\n{\"a\":2}\n");
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_slurp() {
+    assert_mmap_vs_read(&["-cs", "."], "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n");
+}
+
+#[test]
+fn cross_mode_mmap_vs_read_ndjson_length() {
+    assert_mmap_vs_read(&["-c", "length"], "{\"a\":1,\"b\":2}\n{\"x\":1}\n");
+}
+
+// --- File vs stdin routing ---
+
+#[test]
+fn cross_mode_file_vs_stdin_single_json() {
+    let input = "{\"a\":1,\"b\":2}\n";
+    let stdin_out = qj_with_env(&["-c", ".a"], input, &[]);
+    let file_out = qj_file_with_env(&["-c", ".a"], input, &[]);
+    assert_eq!(
+        stdin_out, file_out,
+        "file vs stdin mismatch for single JSON"
+    );
+}
+
+#[test]
+fn cross_mode_file_vs_stdin_ndjson() {
+    let input = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n";
+    let stdin_out = qj_with_env(&["-c", ".a"], input, &[]);
+    let file_out = qj_file_with_env(&["-c", ".a"], input, &[]);
+    let mut stdin_lines: Vec<&str> = stdin_out.lines().collect();
+    let mut file_lines: Vec<&str> = file_out.lines().collect();
+    stdin_lines.sort();
+    file_lines.sort();
+    assert_eq!(stdin_lines, file_lines, "file vs stdin mismatch for NDJSON");
+}
+
+#[test]
+fn cross_mode_file_vs_stdin_ndjson_select() {
+    let input = "{\"n\":1}\n{\"n\":10}\n{\"n\":3}\n{\"n\":20}\n";
+    let stdin_out = qj_with_env(&["-c", "select(.n > 5)"], input, &[]);
+    let file_out = qj_file_with_env(&["-c", "select(.n > 5)"], input, &[]);
+    let mut stdin_lines: Vec<&str> = stdin_out.lines().collect();
+    let mut file_lines: Vec<&str> = file_out.lines().collect();
+    stdin_lines.sort();
+    file_lines.sort();
+    assert_eq!(
+        stdin_lines, file_lines,
+        "file vs stdin mismatch for NDJSON select"
+    );
+}

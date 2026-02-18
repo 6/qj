@@ -211,6 +211,133 @@ Used TDD approach: wrote `jq_compat_builtin_type_errors` e2e test first (31 `ass
 
 ---
 
+---
+
+## 8. Passthrough fast path differential testing
+
+**Status:** Open
+**Priority:** High — C++ reimplementation of evaluator logic with zero verification
+**Effort:** Medium (new test function in `tests/e2e.rs`)
+
+### Problem
+
+Single-doc JSON files with simple filters (`.`, `.field`, `length`, `keys`, `type`, `has("x")`, `map(.field)`, etc.) are routed through passthrough fast paths in `src/main.rs` (lines ~442-455, ~800-890). These paths use C++ simdjson operations directly — `simdjson::minify()` for identity, C++ bridge functions for field extraction, length, keys, type — bypassing the Rust evaluator entirely.
+
+No test verifies that passthrough output matches normal evaluator output. This is the same class of bug that produced divergences in flat_eval (#6).
+
+### Passthrough patterns
+
+| Pattern | C++ path | Rust equivalent |
+|---|---|---|
+| `.` (Identity) | `simdjson::minify()` | `eval_filter` → `write_compact` |
+| `.field` | `field_raw()` | `eval_filter` → Field |
+| `length` | `field_length()` | `eval_filter` → length builtin |
+| `keys` | `field_keys()` | `eval_filter` → keys builtin |
+| `type` | `field_type()` / tag check | `eval_filter` → type builtin |
+| `has("x")` | `field_raw()` null check | `eval_filter` → has builtin |
+| `.field.subfield` | chained `field_raw()` | `eval_filter` → Pipe(Field, Field) |
+
+### Approach
+
+Add `passthrough_matches_normal` e2e test that:
+1. For each passthrough-eligible filter, processes diverse JSON inputs with passthrough enabled (default)
+2. Processes the same inputs with `QJ_NO_FAST_PATH=1` (forces normal eval)
+3. Asserts identical stdout
+
+Diverse inputs should cover: objects with various value types, arrays, nested structures, strings, numbers, null, booleans, empty containers, unicode, large numbers, special floats.
+
+---
+
+## 9. Input parsing fallback differential testing
+
+**Status:** Open
+**Priority:** Medium — multiple parsing paths for same input
+**Effort:** Small-medium (new test function)
+
+### Problem
+
+`src/input.rs` has three parsing paths:
+1. **simdjson** (primary) — C++ FFI, fast, ~4GB capacity limit
+2. **Line-by-line** (fallback) — tries each line as separate JSON via simdjson
+3. **serde_json StreamDeserializer** (last resort) — pure Rust, handles multi-doc JSON without newline separators
+
+No test verifies these produce identical `Value` representations for the same input. Differences in number precision, string escaping, error recovery, or object key ordering could cause silent divergences.
+
+Additionally, `has_special_float_tokens()` + `preprocess_special_floats()` handles non-standard tokens (`NaN`, `Infinity`, `nan`, `inf`) with a preprocessing step that only applies in certain fallback paths.
+
+### Approach
+
+Add tests that:
+1. Feed identical JSON through simdjson and serde_json paths, compare Values
+2. Test inputs that trigger fallback (e.g., multi-doc without newlines, edge-case JSON)
+3. Test special float token handling roundtrip
+4. Verify number precision consistency across paths
+
+---
+
+## 10. Cross-mode routing differential testing
+
+**Status:** Open
+**Priority:** Medium — different routing produces different code paths for same logical operation
+**Effort:** Medium (new test function in `tests/e2e.rs`)
+
+### Problem
+
+`main.rs` has multiple routing decisions that send the same logical input through different code paths:
+
+1. **NDJSON vs single-doc**: A file with one JSON object per line can be processed as NDJSON (parallel, flat_eval per line) or as single-doc (flat_eval on whole file). `is_ndjson()` heuristic decides.
+2. **Slurp mode**: `-s` collects all values into an array before eval. `echo '1\n2\n3' | qj -s '.'` vs `echo '[1,2,3]' | qj '.'` should produce identical output.
+3. **Streaming vs buffered NDJSON**: `process_ndjson_streaming()` vs `process_ndjson()` — used depending on input source (pipe vs file). Different chunking and carry logic.
+4. **mmap vs read()**: File I/O path differs; `QJ_NO_MMAP=1` forces read(). Both should produce identical output.
+5. **Windowed NDJSON**: `process_ndjson_windowed()` for very large files — different chunking strategy.
+
+### Approach
+
+Add cross-mode tests that:
+1. Process same NDJSON content via `--jsonl` flag (forced NDJSON) vs single-doc, compare output
+2. Process same content with `-s` vs pre-wrapped in array, compare output
+3. Process same file with `QJ_NO_MMAP=1` vs default, compare output
+4. Generate NDJSON large enough to trigger windowed processing, compare against sequential
+
+---
+
+## 11. Decompression path differential testing
+
+**Status:** Open
+**Priority:** Low — standard library decompression, unlikely to diverge
+**Effort:** Small (new test function)
+
+### Problem
+
+Compressed files (`.gz`, `.zst`/`.zstd`) are decompressed to memory, then processed through the normal pipeline. No test verifies that `qj '.field' data.json.gz` produces identical output to `qj '.field' data.json`.
+
+Risk is low since decompression uses standard libraries (flate2, zstd), but the decompressed bytes follow a slightly different routing path in `process_file()` (lines 1006-1055) vs uncompressed files which may use mmap (lines 1057-1189).
+
+### Approach
+
+Add test that:
+1. Creates a small JSON file and its gzip/zstd compressed version
+2. Processes both with same filter
+3. Asserts identical output
+
+---
+
+## 12. Output mode value identity testing
+
+**Status:** Open
+**Priority:** Low — shared code paths make divergence unlikely
+**Effort:** Small
+
+### Problem
+
+Pretty, compact, and raw output modes use different formatting code paths. No test verifies that the underlying Value representation is preserved across modes — i.e., that `compact` and `pretty` output parse back to identical JSON values.
+
+### Approach
+
+Add test that processes same input with `-c` (compact) and default (pretty), parses both outputs back to Values, asserts equality. Also test `-r` (raw) on string values.
+
+---
+
 ## Summary
 
 | # | Improvement | Status | Catches future bugs? | Effort |
@@ -222,5 +349,10 @@ Used TDD approach: wrote `jq_compat_builtin_type_errors` e2e test first (31 `ass
 | 5 | features.toml type edges | Superseded by #1 | Tested features only | Small |
 | 6 | flat_eval ↔ normal eval differential | **Done** | Dual-path divergences | Small-medium |
 | 7 | Systemic silent error drops | **Done** | Error behavior fidelity | Medium-large |
+| 8 | Passthrough fast path differential | Open | C++ vs Rust divergences | Medium |
+| 9 | Input parsing fallback differential | Open | Parser divergences | Small-medium |
+| 10 | Cross-mode routing differential | Open | Routing divergences | Medium |
+| 11 | Decompression path differential | Open | Decompression routing | Small |
+| 12 | Output mode value identity | Open | Output formatting | Small |
 
-All items complete.
+#1–#7 done. #8–#10 are the next priorities (parallel execution paths with independent implementations). #11–#12 are low risk.
