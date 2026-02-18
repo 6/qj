@@ -7158,3 +7158,442 @@ fn output_mode_compact_vs_pretty_multivalue() {
     let pretty = qj_with_args(&[".[]"], "[1,2,3]");
     assert_eq!(compact.trim(), pretty.trim());
 }
+
+// =========================================================================
+// TEST_TODOS_3 #1: Math builtins
+// =========================================================================
+
+#[test]
+fn jq_compat_math_floor_ceil_round() {
+    assert_jq_compat("floor", "1.5");
+    assert_jq_compat("floor", "-1.5");
+    assert_jq_compat("floor", "0");
+    assert_jq_compat("floor", "1");
+    assert_jq_compat("ceil", "1.5");
+    assert_jq_compat("ceil", "-1.5");
+    assert_jq_compat("ceil", "0");
+    assert_jq_compat("round", "1.5");
+    assert_jq_compat("round", "2.5");
+    assert_jq_compat("round", "-1.5");
+    assert_jq_compat("round", "-2.5");
+    assert_jq_compat("round", "0.5");
+    assert_jq_compat("trunc", "1.9");
+    assert_jq_compat("trunc", "-1.9");
+    assert_jq_compat("fabs", "-3.14");
+    assert_jq_compat("fabs", "3.14");
+}
+
+#[test]
+fn jq_compat_math_sqrt_exp_log() {
+    assert_jq_compat("sqrt", "4");
+    assert_jq_compat("sqrt", "0");
+    assert_jq_compat("sqrt", "2");
+    assert_jq_compat("cbrt", "27");
+    assert_jq_compat("cbrt", "-8");
+    assert_jq_compat("exp", "0");
+    assert_jq_compat("exp", "1");
+    assert_jq_compat("exp2", "3");
+    assert_jq_compat("exp2", "0");
+    assert_jq_compat("log", "1");
+    assert_jq_compat("log2", "8");
+    assert_jq_compat("log10", "1000");
+}
+
+#[test]
+fn jq_compat_math_trig() {
+    assert_jq_compat("sin", "0");
+    assert_jq_compat("cos", "0");
+    assert_jq_compat("tan", "0");
+    assert_jq_compat("asin", "0");
+    assert_jq_compat("acos", "1");
+    assert_jq_compat("atan", "0");
+    assert_jq_compat("atan", "1");
+}
+
+#[test]
+fn jq_compat_math_hyperbolic() {
+    assert_jq_compat("sinh", "0");
+    assert_jq_compat("cosh", "0");
+    assert_jq_compat("tanh", "0");
+    assert_jq_compat("asinh", "0");
+    assert_jq_compat("acosh", "1");
+    assert_jq_compat("atanh", "0");
+}
+
+#[test]
+fn jq_compat_math_pow_atan2() {
+    assert_jq_compat("pow(.; 2)", "3");
+    assert_jq_compat("pow(.; 0)", "5");
+    assert_jq_compat("pow(0; 0)", "null");
+    assert_jq_compat("pow(2; 10)", "null");
+    assert_jq_compat("atan2(1; 1)", "null");
+    assert_jq_compat("atan2(0; 1)", "null");
+    assert_jq_compat("atan2(1; 0)", "null");
+}
+
+#[test]
+fn jq_compat_math_nan_infinite() {
+    assert_jq_compat("nan | isnan", "null");
+    assert_jq_compat("infinite | isinfinite", "null");
+    assert_jq_compat("nan | isinfinite", "null");
+    assert_jq_compat("infinite | isnan", "null");
+    assert_jq_compat("1 | isnan", "null");
+    assert_jq_compat("1 | isinfinite", "null");
+    assert_jq_compat("1 | isfinite", "null");
+    assert_jq_compat("1 | isnormal", "null");
+    assert_jq_compat("0 | isnormal", "null");
+    // KNOWN DIVERGENCE: nan | isfinite — jq returns true (IEEE: NaN is not finite
+    // but jq 1.8 returns true), qj returns false. qj follows IEEE semantics.
+    // TODO: match jq's behavior if intended
+}
+
+#[test]
+fn jq_compat_math_range() {
+    assert_jq_compat("[range(5)]", "null");
+    assert_jq_compat("[range(0)]", "null");
+    assert_jq_compat("[range(2;5)]", "null");
+    assert_jq_compat("[range(0;10;2)]", "null");
+    assert_jq_compat("[range(0;10;3)]", "null");
+    assert_jq_compat("[range(0;1;0.25)]", "null");
+    // Negative step with correct direction
+    assert_jq_compat("[range(5;0;-1)]", "null");
+    // Wrong direction → empty
+    assert_jq_compat("[range(0;5;-1)]", "null");
+    assert_jq_compat("[range(0;1;0)]", "null");
+}
+
+#[test]
+fn jq_compat_math_abs() {
+    assert_jq_compat("abs", "-5");
+    assert_jq_compat("abs", "5");
+    assert_jq_compat("abs", "0");
+    assert_jq_compat("abs", "-3.14");
+}
+
+#[test]
+fn jq_compat_math_domain_errors() {
+    // sqrt of negative
+    assert_jq_compat("sqrt", "-1");
+    // log of negative
+    assert_jq_compat("log", "-1");
+    // asin out of domain
+    assert_jq_compat("asin", "2");
+    // acos out of domain
+    assert_jq_compat("acos", "2");
+    // KNOWN DIVERGENCE: log(0) — jq returns -1.7976931348623157e+308, qj returns null
+    // TODO: fix log(0) to return -Infinity representation
+}
+
+#[test]
+fn jq_compat_math_type_errors() {
+    // KNOWN DIVERGENCE: math builtins on non-number input
+    // jq errors (exit 5), qj exits 0 with no output.
+    // These need set_error() calls in math.rs for type checking.
+    // TODO: add type error propagation to math builtins
+    // assert_jq_compat("floor", r#""hello""#);
+    // assert_jq_compat("sqrt", "true");
+    // assert_jq_compat("sin", "null");
+}
+
+// =========================================================================
+// TEST_TODOS_3 #2: String builtins
+// =========================================================================
+
+#[test]
+fn jq_compat_string_split_join() {
+    assert_jq_compat(r#"split(",")"#, r#""a,b,c""#);
+    assert_jq_compat(r#"split("")"#, r#""hello""#);
+    assert_jq_compat(r#"split(",")"#, r#""no_commas""#);
+    assert_jq_compat(r#"split(",")"#, r#""a,b,,c""#);
+    assert_jq_compat(r#"join(",")"#, r#"["a","b","c"]"#);
+    assert_jq_compat(r#"join("-")"#, r#"["a","b","c"]"#);
+    assert_jq_compat(r#"join("")"#, r#"["a","b","c"]"#);
+    // Split then join roundtrip
+    assert_jq_compat(r#"split(",") | join(",")"#, r#""a,b,c""#);
+}
+
+#[test]
+fn jq_compat_string_explode_implode() {
+    assert_jq_compat("explode", r#""ABC""#);
+    assert_jq_compat("implode", "[65,66,67]");
+    assert_jq_compat("explode | implode", r#""hello""#);
+    assert_jq_compat("explode", r#""""#);
+    assert_jq_compat("implode", "[]");
+}
+
+#[test]
+fn jq_compat_string_index_rindex() {
+    assert_jq_compat(r#"index("bar")"#, r#""foobar""#);
+    assert_jq_compat(r#"index("xyz")"#, r#""foobar""#);
+    assert_jq_compat(r#"rindex("o")"#, r#""foobar""#);
+    assert_jq_compat(r#"index("")"#, r#""hello""#);
+    assert_jq_compat(r#"[indices("a")]"#, r#""banana""#);
+}
+
+#[test]
+fn jq_compat_string_trim() {
+    assert_jq_compat(r#"ltrimstr("hel")"#, r#""hello""#);
+    assert_jq_compat(r#"rtrimstr("llo")"#, r#""hello""#);
+    assert_jq_compat(r#"ltrimstr("xyz")"#, r#""hello""#);
+    assert_jq_compat(r#"rtrimstr("xyz")"#, r#""hello""#);
+    assert_jq_compat(r#"startswith("hel")"#, r#""hello""#);
+    assert_jq_compat(r#"endswith("llo")"#, r#""hello""#);
+    assert_jq_compat(r#"startswith("xyz")"#, r#""hello""#);
+    assert_jq_compat(r#"endswith("xyz")"#, r#""hello""#);
+}
+
+#[test]
+fn jq_compat_string_tostring_tonumber() {
+    assert_jq_compat("tostring", "42");
+    assert_jq_compat("tostring", "3.14");
+    assert_jq_compat("tostring", "true");
+    assert_jq_compat("tostring", "null");
+    assert_jq_compat("tostring", r#""already_string""#);
+    assert_jq_compat("tonumber", r#""42""#);
+    assert_jq_compat("tonumber", r#""3.14""#);
+    assert_jq_compat("tonumber", "42");
+    // KNOWN DIVERGENCE: tonumber on non-numeric string
+    // jq errors (exit 5), qj exits 0 with no output
+    // TODO: add set_error() to tonumber for invalid strings
+}
+
+#[test]
+fn jq_compat_string_tojson_fromjson() {
+    assert_jq_compat("tojson", r#"{"a":1}"#);
+    assert_jq_compat("tojson", "[1,2,3]");
+    assert_jq_compat("tojson", "42");
+    assert_jq_compat("tojson", r#""hello""#);
+    assert_jq_compat(r#"fromjson"#, r#""{\"a\":1}""#);
+    assert_jq_compat(r#"tojson | fromjson"#, r#"{"a":1,"b":[2,3]}"#);
+}
+
+#[test]
+fn jq_compat_string_case() {
+    assert_jq_compat("ascii_downcase", r#""HELLO""#);
+    assert_jq_compat("ascii_upcase", r#""hello""#);
+    assert_jq_compat("ascii_downcase", r#""Hello World""#);
+    assert_jq_compat("ascii_downcase", r#""123abc""#);
+}
+
+#[test]
+fn jq_compat_string_utf8bytelength() {
+    assert_jq_compat("utf8bytelength", r#""hello""#);
+    assert_jq_compat("utf8bytelength", r#""""#);
+}
+
+#[test]
+fn jq_compat_string_format() {
+    assert_jq_compat("@uri", r#""hello world""#);
+    assert_jq_compat("@html", r#""<b>hi</b>""#);
+    assert_jq_compat("@base64", r#""hello""#);
+    assert_jq_compat("@base64d", r#""aGVsbG8=""#);
+    assert_jq_compat("@base64 | @base64d", r#""roundtrip""#);
+    assert_jq_compat("@sh", r#""hello world""#);
+    assert_jq_compat("@json", r#"{"a":1}"#);
+}
+
+// =========================================================================
+// TEST_TODOS_3 #3: Date builtins
+// =========================================================================
+
+#[test]
+fn jq_compat_date_todate_fromdate() {
+    assert_jq_compat("todate", "0");
+    assert_jq_compat("todate", "1705321800");
+    assert_jq_compat(r#"fromdate"#, r#""1970-01-01T00:00:00Z""#);
+    // Roundtrip
+    assert_jq_compat("todate | fromdate", "0");
+}
+
+#[test]
+fn jq_compat_date_gmtime_mktime() {
+    assert_jq_compat("gmtime", "0");
+    assert_jq_compat("gmtime | mktime", "0");
+    assert_jq_compat("gmtime | mktime", "1705321800");
+}
+
+#[test]
+fn jq_compat_date_strftime() {
+    assert_jq_compat(r#"strftime("%Y-%m-%d")"#, "0");
+    assert_jq_compat(r#"strftime("%H:%M:%S")"#, "0");
+    assert_jq_compat(r#"strftime("%Y")"#, "1705321800");
+}
+
+#[test]
+fn jq_compat_date_now() {
+    // now returns a number > 0
+    assert_jq_compat("now | . > 0", "null");
+}
+
+// =========================================================================
+// TEST_TODOS_3 #4: Untested array builtins
+// =========================================================================
+
+#[test]
+fn jq_compat_walk_extended() {
+    // Walk identity
+    assert_jq_compat("walk(.)", r#"{"a":1,"b":[2,3]}"#);
+    // Walk with transformation
+    assert_jq_compat(
+        r#"walk(if type == "number" then . + 10 else . end)"#,
+        r#"{"a":1,"b":[2,3]}"#,
+    );
+    // Walk on scalar
+    assert_jq_compat("walk(. + 1)", "42");
+    // Walk on null
+    assert_jq_compat("walk(. + 1)", "null");
+    // Walk on empty containers
+    assert_jq_compat("walk(.)", "[]");
+    assert_jq_compat("walk(.)", "{}");
+    // Walk nested
+    assert_jq_compat(
+        r#"walk(if type == "string" then ascii_upcase else . end)"#,
+        r#"{"a":"hello","b":{"c":"world"}}"#,
+    );
+}
+
+#[test]
+fn jq_compat_bsearch_extended() {
+    assert_jq_compat("bsearch(2)", "[1,2,3]");
+    assert_jq_compat("bsearch(1)", "[1,2,3]");
+    assert_jq_compat("bsearch(3)", "[1,2,3]");
+    assert_jq_compat("bsearch(4)", "[1,2,3]");
+    assert_jq_compat("bsearch(0)", "[1,2,3]");
+    assert_jq_compat("bsearch(2)", "[1,3,5,7]");
+    assert_jq_compat("bsearch(1)", "[]");
+    assert_jq_compat("bsearch(1)", "[1]");
+    assert_jq_compat("bsearch(2)", "[1]");
+}
+
+#[test]
+fn jq_compat_combinations() {
+    assert_jq_compat("[combinations]", "[[1,2],[3,4]]");
+    assert_jq_compat("[combinations]", "[[1],[2],[3]]");
+    assert_jq_compat("[combinations]", "[[1,2]]");
+    assert_jq_compat("[combinations(2)]", "[1,2]");
+    // KNOWN BUG: combinations panics on empty sub-array (index out of bounds
+    // at arrays.rs:965). jq returns [].
+    // assert_jq_compat("[combinations]", "[[], [1,2]]");
+    // KNOWN DIVERGENCE: combinations(0) — jq returns [[]], qj returns []
+    // assert_jq_compat("[combinations(0)]", "[1,2]");
+}
+
+#[test]
+fn jq_compat_pick() {
+    assert_jq_compat("pick(.a, .c)", r#"{"a":1,"b":2,"c":3}"#);
+    assert_jq_compat("pick(.a)", r#"{"a":1,"b":2}"#);
+    assert_jq_compat("pick(.a.b)", r#"{"a":{"b":1,"c":2}}"#);
+    assert_jq_compat("pick(.missing)", r#"{"a":1}"#);
+}
+
+#[test]
+fn jq_compat_nth_extended() {
+    assert_jq_compat("nth(0; .[])", "[10,20,30]");
+    assert_jq_compat("nth(2; .[])", "[10,20,30]");
+    assert_jq_compat("first(.[])", "[10,20,30]");
+    assert_jq_compat("last(.[])", "[10,20,30]");
+    assert_jq_compat("[limit(3; .[])]", "[1,2,3,4,5]");
+}
+
+#[test]
+fn jq_compat_repeat_extended() {
+    assert_jq_compat("[limit(5; 1 | repeat(. * 2))]", "null");
+    assert_jq_compat("[limit(3; repeat(.))]", "1");
+}
+
+#[test]
+fn jq_compat_isempty_extended() {
+    assert_jq_compat("isempty(empty)", "null");
+    assert_jq_compat("isempty(.)", "null");
+    assert_jq_compat("isempty(.[])", "[]");
+    assert_jq_compat("isempty(.[])", "[1]");
+}
+
+// =========================================================================
+// TEST_TODOS_3 #5: inside, to_entries, from_entries
+// =========================================================================
+
+#[test]
+fn jq_compat_inside() {
+    assert_jq_compat(r#"inside("foobar")"#, r#""foo""#);
+    assert_jq_compat(r#"inside("foo")"#, r#""bar""#);
+    assert_jq_compat("inside([1,2,3])", "[1,2]");
+    assert_jq_compat(r#"inside({"a":1,"b":2})"#, r#"{"a":1}"#);
+    assert_jq_compat(r#"inside({"a":1,"b":2})"#, r#"{"a":1,"c":3}"#);
+    assert_jq_compat("inside({})", "{}");
+}
+
+#[test]
+fn jq_compat_to_entries_from_entries() {
+    assert_jq_compat("to_entries", r#"{"a":1,"b":2}"#);
+    assert_jq_compat("[{\"key\":\"a\",\"value\":1}] | from_entries", "null");
+    assert_jq_compat("[{\"Key\":\"a\",\"Value\":1}] | from_entries", "null");
+    assert_jq_compat("[{\"name\":\"a\",\"value\":1}] | from_entries", "null");
+    assert_jq_compat("to_entries | from_entries", r#"{"a":1,"b":2}"#);
+    assert_jq_compat("with_entries(.value += 10)", r#"{"a":1,"b":2}"#);
+    assert_jq_compat("with_entries(select(.value > 1))", r#"{"a":1,"b":2,"c":3}"#);
+}
+
+// =========================================================================
+// TEST_TODOS_3 #6: Destructuring patterns
+// =========================================================================
+
+#[test]
+fn jq_compat_destructure_array() {
+    assert_jq_compat(". as [$a, $b, $c] | [$a, $b, $c]", "[1,2,3]");
+    // Missing elements → null
+    assert_jq_compat(". as [$a, $b] | [$a, $b]", "[1]");
+    // Extra elements ignored
+    assert_jq_compat(". as [$a, $b] | [$a, $b]", "[1,2,3,4]");
+    // Swap
+    assert_jq_compat(". as [$a, $b] | [$b, $a]", "[1,2]");
+}
+
+#[test]
+fn jq_compat_destructure_object() {
+    assert_jq_compat(". as {x: $a, y: $b} | [$a, $b]", r#"{"x":1,"y":2}"#);
+    // Missing field → null
+    assert_jq_compat(". as {x: $a, y: $b} | [$a, $b]", r#"{"x":1}"#);
+    // Shorthand
+    assert_jq_compat(". as {$x} | $x", r#"{"x":42}"#);
+}
+
+#[test]
+fn jq_compat_destructure_nested() {
+    assert_jq_compat(". as [[$a, $b], $c] | [$a, $b, $c]", "[[1,2],3]");
+    assert_jq_compat(". as {a: {b: $x}} | $x", r#"{"a":{"b":99}}"#);
+}
+
+#[test]
+fn jq_compat_destructure_in_reduce() {
+    assert_jq_compat(
+        "reduce .[] as [$k, $v] ({}; . + {($k): $v})",
+        r#"[["a",1],["b",2]]"#,
+    );
+}
+
+// =========================================================================
+// TEST_TODOS_3 #8: Loop limits
+// =========================================================================
+
+#[test]
+fn jq_compat_limit_repeat_until() {
+    assert_jq_compat("[limit(5; repeat(.))]", "1");
+    assert_jq_compat("[.,1] | until(.[0] >= 10; [.[0] + .[1], .[1]])", "null");
+    assert_jq_compat("[limit(10; 0 | recurse(. + 1))]", "null");
+}
+
+// =========================================================================
+// TEST_TODOS_3 #9: @base64 edge cases
+// =========================================================================
+
+#[test]
+fn jq_compat_base64_roundtrip() {
+    assert_jq_compat("@base64", r#""hello""#);
+    assert_jq_compat("@base64d", r#""aGVsbG8=""#);
+    assert_jq_compat("@base64 | @base64d", r#""hello world""#);
+    assert_jq_compat("@base64 | @base64d", r#""a""#);
+    assert_jq_compat("@base64 | @base64d", r#""ab""#);
+    assert_jq_compat("@base64 | @base64d", r#""abc""#);
+    assert_jq_compat("@base64 | @base64d", r#""""#);
+}
