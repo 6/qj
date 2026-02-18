@@ -1981,6 +1981,9 @@ fn jq_compat_null_add_identity() {
 /// like the null*number bug (610b937).
 #[test]
 fn jq_compat_exhaustive_arithmetic_type_pairs() {
+    if !jq_available() {
+        return;
+    }
     // Representative values for each type. Literals used as filter expressions
     // (jq evaluates `null`, `true`, `1`, `"s"`, `[]`, `{}` as constants).
     let values = [
@@ -2001,27 +2004,47 @@ fn jq_compat_exhaustive_arithmetic_type_pairs() {
     ];
     let ops = ["+", "-", "*", "/", "%"];
 
-    let mut failures = Vec::new();
+    // Build all expressions as try/catch so both success and error cases
+    // produce exactly one output line per expression. This lets us batch
+    // all 980 combos into a single qj + jq invocation (~2 process spawns
+    // instead of ~1960).
+    let mut labels = Vec::new();
+    let mut try_exprs = Vec::new();
     for a in &values {
         for b in &values {
             for op in &ops {
-                let filter = format!("{a} {op} {b}");
-                if !jq_available() {
-                    return;
-                }
-                let (qj_stdout, _qj_stderr, qj_ok) =
-                    run_tool_full(env!("CARGO_BIN_EXE_qj"), &["-c", &filter], "null");
-                let (jq_stdout, _jq_stderr, jq_ok) = run_tool_full("jq", &["-c", &filter], "null");
-
-                if qj_stdout.trim() != jq_stdout.trim() || qj_ok != jq_ok {
-                    failures.push(format!(
-                        "  {filter}\n    stdout: qj={:?} jq={:?}\n    exit:   qj_ok={qj_ok} jq_ok={jq_ok}",
-                        qj_stdout.trim(),
-                        jq_stdout.trim(),
-                    ));
-                }
+                let expr = format!("{a} {op} {b}");
+                try_exprs.push(format!("try ({expr}) catch \"CATCH\""));
+                labels.push(expr);
             }
         }
+    }
+    let filter = try_exprs.join(", ");
+
+    let (qj_stdout, _, _) =
+        run_tool_full(env!("CARGO_BIN_EXE_qj"), &["-cn", &filter], "null");
+    let (jq_stdout, _, _) = run_tool_full("jq", &["-cn", &filter], "null");
+
+    let qj_lines: Vec<&str> = qj_stdout.lines().collect();
+    let jq_lines: Vec<&str> = jq_stdout.lines().collect();
+
+    let mut failures = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let qj_line = qj_lines.get(i).map(|s| *s).unwrap_or("<missing>");
+        let jq_line = jq_lines.get(i).map(|s| *s).unwrap_or("<missing>");
+        if qj_line != jq_line {
+            failures.push(format!(
+                "  {label}\n    qj={qj_line:?} jq={jq_line:?}",
+            ));
+        }
+    }
+
+    if qj_lines.len() != jq_lines.len() {
+        failures.push(format!(
+            "  output line count: qj={} jq={}",
+            qj_lines.len(),
+            jq_lines.len()
+        ));
     }
 
     if !failures.is_empty() {
