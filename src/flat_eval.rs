@@ -1781,12 +1781,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Exhaustive builtin × input-type differential tests
+    // Exhaustive differential tests for ALL independently-handled arms
     //
-    // Every builtin that flat_eval handles independently must produce
-    // identical output to the normal evaluator for all JSON types.
-    // This prevents the class of bug where a fix in arrays.rs/eval.rs
-    // doesn't get mirrored in flat_eval.rs (e.g., the map-on-objects bug).
+    // Every match arm in eval_flat() that does NOT fall through to the
+    // catch-all materializer must produce identical output to the normal
+    // evaluator for all JSON types. This prevents the class of bug where
+    // a fix in one eval path doesn't get mirrored in the other
+    // (e.g., the map-on-objects bug, map_values scalar passthrough).
     // -----------------------------------------------------------------------
 
     const DIVERSE_INPUTS: &[&[u8]] = &[
@@ -1913,9 +1914,300 @@ mod tests {
             (".x | keys", br#"{"x":{"b":2,"a":1}}"#),
             ("map(tojson)", b"[1,null,true]"),
             ("map(tojson)", br#"{"a":1,"b":null}"#),
+            // Pipe + Select
+            (".[] | select(. > 1)", b"[1,2,3]"),
+            (".[] | select(type == \"string\")", br#"[1,"a",null,"b"]"#),
+            // Pipe + Alternative
+            (".x // \"default\"", br#"{"a":1}"#),
+            (".x // [] | .[]", br#"{"x":[1,2]}"#),
+            // Pipe + Try
+            (".[] | try .x", br#"[{"x":1},2,"hi"]"#),
+            // ArrayConstruct + Pipe
+            ("[.[] | . + 1]", b"[1,2,3]"),
+            ("[.[] | type]", br#"{"a":1,"b":"hi"}"#),
+            // ObjectConstruct + Pipe
+            ("{a: .x, b: (.y + 1)}", br#"{"x":1,"y":2}"#),
+            // Reduce + Pipe
+            ("reduce .[] as $x (0; . + $x)", b"[1,2,3]"),
+            // IfThenElse + Pipe
+            (
+                ".[] | if . > 2 then \"big\" else \"small\" end",
+                b"[1,2,3,4]",
+            ),
         ];
         for (filter, input) in cases {
             assert_equiv(filter, input);
+        }
+    }
+
+    // --- Remaining independently-handled arms ---
+
+    #[test]
+    fn differential_identity() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv(".", input);
+        }
+    }
+
+    #[test]
+    fn differential_field() {
+        let filters = [".a", ".b", ".x", ".missing"];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_iterate() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv(".[]", input);
+        }
+    }
+
+    #[test]
+    fn differential_index() {
+        let filters = [".[0]", ".[1]", ".[-1]", ".[99]"];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_literal() {
+        // Literal doesn't depend on input, but flat_eval handles it directly
+        let filters = ["null", "true", "false", "42", r#""hello""#];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_comma() {
+        let filters = ["., .", ".a, .b", "type, length"];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_pipe() {
+        let filters = [". | .", ". | type", ". | length", ".a | .b"];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_select() {
+        let filters = [
+            "select(. != null)",
+            "select(type == \"number\")",
+            "select(. > 0)",
+            "select(true)",
+            "select(false)",
+        ];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_alternative() {
+        let filters = [
+            ". // \"fallback\"",
+            ".x // \"default\"",
+            "null // 42",
+            "false // true",
+        ];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_try() {
+        let filters = ["try .x", "try .[]", "try (. + 1)", "try error"];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_if_then_else() {
+        let filters = [
+            "if . then \"truthy\" else \"falsy\" end",
+            "if type == \"array\" then length else 0 end",
+            "if . == null then \"nil\" elif . == true then \"yes\" else \"other\" end",
+        ];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_not() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv("not", input);
+        }
+    }
+
+    #[test]
+    fn differential_neg() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv("-(. // 0)", input);
+        }
+    }
+
+    #[test]
+    fn differential_compare() {
+        let filters = [
+            ". == null",
+            ". != 0",
+            ". < 10",
+            ". <= \"hello\"",
+            ". > false",
+            ". >= []",
+        ];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_bool_op() {
+        let filters = [
+            ". and true",
+            ". or false",
+            "(. != null) and (. != false)",
+            "(. == null) or (. == false)",
+        ];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_arith() {
+        // Use try to suppress errors from type mismatches (so we compare behavior, not just errors)
+        let filters = [
+            "try (. + 1)",
+            "try (. - 1)",
+            "try (. * 2)",
+            "try (. / 2)",
+            "try (. % 3)",
+        ];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_array_construct() {
+        let filters = ["[.]", "[., .]", "[.[] | . + 1]", "[type, length]"];
+        let inputs: &[&[u8]] = &[
+            b"null",
+            b"42",
+            br#""hello""#,
+            b"[1,2,3]",
+            br#"{"a":1,"b":2}"#,
+        ];
+        for filter in &filters {
+            for input in inputs {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_object_construct() {
+        let filters = ["{a: 1}", "{a: ., b: type}", "{a: length}", "{x: .a, y: .b}"];
+        let inputs: &[&[u8]] = &[
+            b"null",
+            b"42",
+            br#""hello""#,
+            b"[1,2,3]",
+            br#"{"a":1,"b":2}"#,
+        ];
+        for filter in &filters {
+            for input in inputs {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_bind() {
+        let filters = [
+            ". as $x | $x",
+            ". as $x | type",
+            "(.a // 0) as $x | . as $y | {x: $x}",
+        ];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_reduce() {
+        let inputs: &[&[u8]] = &[
+            b"[]",
+            b"[1,2,3]",
+            b"[1,2,3,4,5]",
+            br#"["a","b","c"]"#,
+            br#"{"a":1,"b":2}"#,
+            b"null",
+            b"42",
+        ];
+        let filters = [
+            "reduce .[] as $x (0; . + $x)",
+            "reduce .[] as $x (\"\"; . + $x)",
+            "reduce .[] as $x ([]; . + [$x])",
+        ];
+        for filter in &filters {
+            for input in inputs {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_def() {
+        let filters = [
+            "def double: . * 2; double",
+            "def addone: . + 1; [.[] | addone]",
+            "def mytype: type; mytype",
+        ];
+        let inputs: &[&[u8]] = &[b"null", b"42", br#""hello""#, b"[1,2,3]", br#"{"a":1}"#];
+        for filter in &filters {
+            for input in inputs {
+                assert_equiv(filter, input);
+            }
         }
     }
 }
