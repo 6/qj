@@ -133,25 +133,46 @@ fn eval_flat_nav<'a>(filter: &Filter, flat: FlatValue<'a>, env: &Env) -> NavResu
         Filter::Pipe(left, right) => match eval_flat_nav(left, flat, env) {
             NavResult::Flat(mid) => eval_flat_nav(right, mid, env),
             NavResult::FlatMany(mids) => {
-                let mut all_flat = Vec::new();
-                let mut all_values = Vec::new();
+                // Track whether any Values results appeared. If all results
+                // are Flat/FlatMany, we can stay zero-copy. Otherwise we
+                // materialize everything to preserve insertion order.
+                let mut results: Vec<NavResult<'a>> = Vec::new();
+                let mut has_values = false;
                 for mid in mids {
                     // Stop if an error was raised (match regular eval Pipe behavior)
                     if crate::filter::eval::has_last_error() {
                         break;
                     }
-                    match eval_flat_nav(right, mid, env) {
-                        NavResult::Flat(child) => all_flat.push(child),
-                        NavResult::FlatMany(children) => all_flat.extend(children),
-                        NavResult::Values(values) => all_values.extend(values),
+                    let r = eval_flat_nav(right, mid, env);
+                    if matches!(&r, NavResult::Values(_)) {
+                        has_values = true;
                     }
+                    results.push(r);
                 }
-                if all_values.is_empty() {
+                if !has_values {
+                    // All results are Flat/FlatMany — collect into FlatMany
+                    let mut all_flat = Vec::new();
+                    for r in results {
+                        match r {
+                            NavResult::Flat(child) => all_flat.push(child),
+                            NavResult::FlatMany(children) => all_flat.extend(children),
+                            NavResult::Values(_) => unreachable!(),
+                        }
+                    }
                     NavResult::FlatMany(all_flat)
                 } else {
-                    let mut combined: Vec<Value> =
-                        all_flat.into_iter().map(|f| f.to_value()).collect();
-                    combined.extend(all_values);
+                    // Mixed results — materialize in order to preserve
+                    // correct output ordering
+                    let mut combined = Vec::new();
+                    for r in results {
+                        match r {
+                            NavResult::Flat(child) => combined.push(child.to_value()),
+                            NavResult::FlatMany(children) => {
+                                combined.extend(children.into_iter().map(|c| c.to_value()));
+                            }
+                            NavResult::Values(values) => combined.extend(values),
+                        }
+                    }
                     NavResult::Values(combined)
                 }
             }
