@@ -1891,25 +1891,10 @@ fn run_jq(args: &[&str], input: &str) -> Option<String> {
     Some(String::from_utf8(output.stdout).ok()?)
 }
 
-/// Assert that qj and jq produce identical output for a given filter+input.
-fn assert_jq_compat(filter: &str, input: &str) {
-    if !jq_available() {
-        return;
-    }
-    let qj_out = qj_compact(filter, input);
-    let jq_out = run_jq_compact(filter, input)
-        .unwrap_or_else(|| panic!("jq failed on filter={filter:?} input={input:?}"));
-    assert_eq!(
-        qj_out.trim(),
-        jq_out.trim(),
-        "qj vs jq mismatch: filter={filter:?} input={input:?}"
-    );
-}
-
 /// Assert that qj and jq produce identical stdout AND agree on success/failure.
 /// Works for both success and error cases. Error messages (stderr) may differ —
 /// only stdout and exit status are compared.
-fn assert_jq_compat_full(filter: &str, input: &str) {
+fn assert_jq_compat(filter: &str, input: &str) {
     if !jq_available() {
         return;
     }
@@ -2040,39 +2025,39 @@ fn jq_compat_exhaustive_arithmetic_type_pairs() {
 #[test]
 fn jq_compat_arithmetic_edge_cases() {
     // String repetition
-    assert_jq_compat_full(r#""ab" * 3"#, "null");
-    assert_jq_compat_full(r#""ab" * 0"#, "null");
-    assert_jq_compat_full(r#""ab" * -1"#, "null");
-    assert_jq_compat_full(r#"3 * "ab""#, "null");
+    assert_jq_compat(r#""ab" * 3"#, "null");
+    assert_jq_compat(r#""ab" * 0"#, "null");
+    assert_jq_compat(r#""ab" * -1"#, "null");
+    assert_jq_compat(r#"3 * "ab""#, "null");
 
     // String split
-    assert_jq_compat_full(r#""a,b,c" / ",""#, "null");
-    assert_jq_compat_full(r#""hello" / """#, "null");
+    assert_jq_compat(r#""a,b,c" / ",""#, "null");
+    assert_jq_compat(r#""hello" / """#, "null");
 
     // Division by zero
-    assert_jq_compat_full("1 / 0", "null");
-    assert_jq_compat_full("1.0 / 0", "null");
-    assert_jq_compat_full("1 % 0", "null");
+    assert_jq_compat("1 / 0", "null");
+    assert_jq_compat("1.0 / 0", "null");
+    assert_jq_compat("1 % 0", "null");
 
     // Object recursive merge
-    assert_jq_compat_full(r#"{"a":{"x":1}} * {"a":{"y":2}}"#, "null");
-    assert_jq_compat_full(r#"{"a":1} * {"b":2}"#, "null");
+    assert_jq_compat(r#"{"a":{"x":1}} * {"a":{"y":2}}"#, "null");
+    assert_jq_compat(r#"{"a":1} * {"b":2}"#, "null");
 
     // Array operations
-    assert_jq_compat_full("[1,2] + [3,4]", "null");
-    assert_jq_compat_full("[1,2,3] - [2]", "null");
+    assert_jq_compat("[1,2] + [3,4]", "null");
+    assert_jq_compat("[1,2,3] - [2]", "null");
 
     // Null identity for addition (all types)
-    assert_jq_compat_full("null + []", "null");
-    assert_jq_compat_full("null + {}", "null");
-    assert_jq_compat_full("[] + null", "null");
-    assert_jq_compat_full("{} + null", "null");
+    assert_jq_compat("null + []", "null");
+    assert_jq_compat("null + {}", "null");
+    assert_jq_compat("[] + null", "null");
+    assert_jq_compat("{} + null", "null");
 
     // Overflow promotion
-    assert_jq_compat_full("9223372036854775807 + 1", "null");
-    assert_jq_compat_full("9223372036854775807 * 2", "null");
+    assert_jq_compat("9223372036854775807 + 1", "null");
+    assert_jq_compat("9223372036854775807 * 2", "null");
     // Use (0-N) since bare -N is parsed as CLI flag or unary minus
-    assert_jq_compat_full("(0 - 9223372036854775807) - 9223372036854775807", "null");
+    assert_jq_compat("(0 - 9223372036854775807) - 9223372036854775807", "null");
 }
 
 #[test]
