@@ -6917,3 +6917,244 @@ fn cross_mode_file_vs_stdin_ndjson_select() {
         "file vs stdin mismatch for NDJSON select"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #11: Decompression path differential testing
+// Verifies .json.gz and .json.zst produce identical output to .json
+// ---------------------------------------------------------------------------
+
+fn qj_file(args: &[&str], path: &str) -> String {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.arg(path);
+    let output = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to run qj");
+    assert!(
+        output.status.success(),
+        "qj exited with {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
+}
+
+fn assert_decompressed_matches(json: &str, filter: &str) {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // Write plain JSON
+    let json_path = dir.path().join("input.json");
+    std::fs::write(&json_path, json).unwrap();
+    let plain_out = qj_file(&["-c", filter], json_path.to_str().unwrap());
+
+    // Write gzip compressed
+    let gz_path = dir.path().join("input.json.gz");
+    let gz_file = std::fs::File::create(&gz_path).unwrap();
+    let mut encoder = flate2::write::GzEncoder::new(gz_file, flate2::Compression::fast());
+    encoder.write_all(json.as_bytes()).unwrap();
+    encoder.finish().unwrap();
+    let gz_out = qj_file(&["-c", filter], gz_path.to_str().unwrap());
+
+    assert_eq!(
+        plain_out, gz_out,
+        "gzip output differs from plain for filter={filter}"
+    );
+
+    // Write zstd compressed
+    let zst_path = dir.path().join("input.json.zst");
+    let zst_data = zstd::encode_all(json.as_bytes(), 1).unwrap();
+    std::fs::write(&zst_path, zst_data).unwrap();
+    let zst_out = qj_file(&["-c", filter], zst_path.to_str().unwrap());
+
+    assert_eq!(
+        plain_out, zst_out,
+        "zstd output differs from plain for filter={filter}"
+    );
+}
+
+#[test]
+fn decompress_identity() {
+    assert_decompressed_matches(r#"{"a":1,"b":"hello","c":null}"#, ".");
+}
+
+#[test]
+fn decompress_field_access() {
+    assert_decompressed_matches(r#"{"name":"alice","age":30}"#, ".name");
+}
+
+#[test]
+fn decompress_filter() {
+    assert_decompressed_matches(r#"{"items":[{"x":1},{"x":2},{"x":3}]}"#, "[.items[] | .x]");
+}
+
+#[test]
+fn decompress_ndjson() {
+    let ndjson = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n";
+    assert_decompressed_matches(ndjson, ".a");
+}
+
+#[test]
+fn decompress_diverse_values() {
+    assert_decompressed_matches(
+        r#"{"int":42,"float":3.14,"str":"hello","bool":true,"null":null,"arr":[1,2],"obj":{"x":1}}"#,
+        ".",
+    );
+}
+
+#[test]
+fn decompress_unicode() {
+    assert_decompressed_matches(r#"{"emoji":"hello \u0041\u0042\u0043","key":"value"}"#, ".");
+}
+
+#[test]
+fn decompress_large_array() {
+    // Generate a larger payload to exercise chunked decompression
+    let mut items: Vec<String> = Vec::new();
+    for i in 0..100 {
+        items.push(format!(r#"{{"id":{i},"val":"item_{i}"}}"#));
+    }
+    let json = format!("[{}]", items.join(","));
+    assert_decompressed_matches(&json, ".[50].val");
+}
+
+#[test]
+fn decompress_type_and_length() {
+    assert_decompressed_matches(r#"{"a":[1,2,3]}"#, ".a | length");
+    assert_decompressed_matches(r#"{"a":[1,2,3]}"#, "type");
+}
+
+// ---------------------------------------------------------------------------
+// #12: Output mode value identity testing
+// Verifies compact, pretty, and raw output represent the same values
+// ---------------------------------------------------------------------------
+
+fn qj_with_args(args: &[&str], input: &str) -> String {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
+    cmd.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let output = cmd
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run qj");
+    assert!(
+        output.status.success(),
+        "qj exited with {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
+}
+
+/// Assert compact and pretty output are semantically identical
+/// by re-parsing both through qj with -c and comparing.
+fn assert_compact_pretty_agree(filter: &str, input: &str) {
+    let compact = qj_with_args(&["-c", filter], input);
+    let pretty = qj_with_args(&[filter], input);
+
+    // Re-compact the pretty output to normalize
+    let re_compacted = qj_with_args(&["-c", "."], pretty.trim());
+
+    assert_eq!(
+        compact.trim(),
+        re_compacted.trim(),
+        "compact vs pretty disagree for filter={filter} input={input}"
+    );
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_object() {
+    assert_compact_pretty_agree(".", r#"{"a":1,"b":"hello","c":null,"d":true}"#);
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_array() {
+    assert_compact_pretty_agree(".", r#"[1,"two",null,true,[5],{"a":6}]"#);
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_nested() {
+    assert_compact_pretty_agree(".", r#"{"a":{"b":{"c":[1,2,{"d":3}]}}}"#);
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_filter() {
+    assert_compact_pretty_agree("[.[] | . + 1]", "[1,2,3]");
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_scalars() {
+    assert_compact_pretty_agree(".", "42");
+    assert_compact_pretty_agree(".", r#""hello""#);
+    assert_compact_pretty_agree(".", "null");
+    assert_compact_pretty_agree(".", "true");
+    assert_compact_pretty_agree(".", "3.14");
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_empty() {
+    assert_compact_pretty_agree(".", "[]");
+    assert_compact_pretty_agree(".", "{}");
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_sort_keys() {
+    let compact = qj_with_args(&["-c", "-S", "."], r#"{"b":2,"a":1,"c":3}"#);
+    let pretty = qj_with_args(&["-S", "."], r#"{"b":2,"a":1,"c":3}"#);
+    let re_compacted = qj_with_args(&["-c", "."], pretty.trim());
+    assert_eq!(compact.trim(), re_compacted.trim());
+}
+
+#[test]
+fn output_mode_raw_strings() {
+    // -r strips quotes from string output
+    let raw = qj_with_args(&["-r", ".name"], r#"{"name":"alice"}"#);
+    assert_eq!(raw.trim(), "alice");
+
+    // Non-string values should be identical between -r and -c
+    let raw_num = qj_with_args(&["-r", ".age"], r#"{"age":30}"#);
+    let compact_num = qj_with_args(&["-c", ".age"], r#"{"age":30}"#);
+    assert_eq!(raw_num.trim(), compact_num.trim());
+
+    let raw_null = qj_with_args(&["-r", ".x"], r#"{"x":null}"#);
+    let compact_null = qj_with_args(&["-c", ".x"], r#"{"x":null}"#);
+    assert_eq!(raw_null.trim(), compact_null.trim());
+
+    let raw_arr = qj_with_args(&["-r", ".x"], r#"{"x":[1,2]}"#);
+    let compact_arr = qj_with_args(&["-c", ".x"], r#"{"x":[1,2]}"#);
+    assert_eq!(raw_arr.trim(), compact_arr.trim());
+}
+
+#[test]
+fn output_mode_raw_escapes() {
+    // -r should unescape strings
+    let raw = qj_with_args(&["-r", "."], r#""hello\nworld""#);
+    assert_eq!(raw.trim(), "hello\nworld");
+
+    let raw_tab = qj_with_args(&["-r", "."], r#""a\tb""#);
+    assert_eq!(raw_tab.trim(), "a\tb");
+}
+
+#[test]
+fn output_mode_compact_vs_pretty_multivalue() {
+    // Filters producing multiple values
+    let compact = qj_with_args(&["-c", ".[]"], "[1,2,3]");
+    let pretty = qj_with_args(&[".[]"], "[1,2,3]");
+    assert_eq!(compact.trim(), pretty.trim());
+}

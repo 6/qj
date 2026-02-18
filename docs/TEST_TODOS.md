@@ -303,7 +303,7 @@ Add cross-mode tests that:
 
 ## 11. Decompression path differential testing
 
-**Status:** Open
+**Status:** Done
 **Priority:** Low — standard library decompression, unlikely to diverge
 **Effort:** Small (new test function)
 
@@ -311,30 +311,31 @@ Add cross-mode tests that:
 
 Compressed files (`.gz`, `.zst`/`.zstd`) are decompressed to memory, then processed through the normal pipeline. No test verifies that `qj '.field' data.json.gz` produces identical output to `qj '.field' data.json`.
 
-Risk is low since decompression uses standard libraries (flate2, zstd), but the decompressed bytes follow a slightly different routing path in `process_file()` (lines 1006-1055) vs uncompressed files which may use mmap (lines 1057-1189).
+### What was done
 
-### Approach
+Added 8 `decompress_*` tests in `tests/e2e.rs` with `assert_decompressed_matches` helper that writes JSON to plain, gzip, and zstd temp files and compares qj output across all three. Covers identity, field access, filters, NDJSON, diverse value types, unicode, large arrays, and builtin pipes.
 
-Add test that:
-1. Creates a small JSON file and its gzip/zstd compressed version
-2. Processes both with same filter
-3. Asserts identical output
+No divergences found.
 
 ---
 
 ## 12. Output mode value identity testing
 
-**Status:** Open
+**Status:** Done
 **Priority:** Low — shared code paths make divergence unlikely
 **Effort:** Small
 
 ### Problem
 
-Pretty, compact, and raw output modes use different formatting code paths. No test verifies that the underlying Value representation is preserved across modes — i.e., that `compact` and `pretty` output parse back to identical JSON values.
+Pretty, compact, and raw output modes use different formatting code paths. No test verifies that the underlying Value representation is preserved across modes.
 
-### Approach
+### What was done
 
-Add test that processes same input with `-c` (compact) and default (pretty), parses both outputs back to Values, asserts equality. Also test `-r` (raw) on string values.
+Added 10 `output_mode_*` tests in `tests/e2e.rs`:
+- `assert_compact_pretty_agree` helper re-compacts pretty output and compares against compact output
+- Tests: objects, arrays, nested structures, filters, scalars (int/float/string/null/bool), empty containers, sort-keys flag, raw string output, raw escapes, multi-value output
+
+No divergences found.
 
 ---
 
@@ -352,7 +353,7 @@ Add test that processes same input with `-c` (compact) and default (pretty), par
 | 8 | Passthrough fast path differential | Open | C++ vs Rust divergences | Medium |
 | 9 | Input parsing fallback differential | Open | Parser divergences | Small-medium |
 | 10 | Cross-mode routing differential | Open | Routing divergences | Medium |
-| 11 | Decompression path differential | Open | Decompression routing | Small |
-| 12 | Output mode value identity | Open | Output formatting | Small |
+| 11 | Decompression path differential | **Done** | Decompression routing | Small |
+| 12 | Output mode value identity | **Done** | Output formatting | Small |
 
 #1–#7 done. #8–#10 are the next priorities (parallel execution paths with independent implementations). #11–#12 are low risk.
