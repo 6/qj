@@ -1235,6 +1235,18 @@ fn builtin_flatten_depth() {
     assert_jq_compat("flatten(1)", "[[1,[2]],3]");
 }
 
+#[test]
+fn builtin_flatten_object() {
+    // jq extracts values from objects, then flattens
+    assert_eq!(
+        qj_compact("flatten", r#"{"a":1,"b":[2,3],"c":4}"#).trim(),
+        "[1,2,3,4]"
+    );
+    assert_jq_compat("flatten", r#"{"a":1,"b":[2,3],"c":4}"#);
+    assert_jq_compat("flatten", r#"{"a":null}"#);
+    assert_jq_compat("flatten(1)", r#"{"a":[1,[2]],"b":3}"#);
+}
+
 // --- Builtin: first / last ---
 
 #[test]
@@ -3541,6 +3553,28 @@ fn format_json() {
 fn format_text() {
     assert_eq!(qj_compact("@text", "42").trim(), r#""42""#);
     assert_jq_compat("@text", "42");
+}
+
+#[test]
+fn format_strings_on_non_strings() {
+    // jq calls tostring on non-string inputs before applying format strings
+    assert_jq_compat("@html", "null");
+    assert_jq_compat("@html", "42");
+    assert_jq_compat("@html", "true");
+    assert_jq_compat("@html", "[1,2]");
+    assert_jq_compat("@uri", "null");
+    assert_jq_compat("@uri", "42");
+    assert_jq_compat("@sh", "null");
+    assert_jq_compat("@sh", "42");
+    assert_jq_compat("@sh", "true");
+    // @sh on arrays: space-joined, each element escaped
+    assert_jq_compat("@sh", r#"[1,"two",3]"#);
+    assert_jq_compat("@sh", "[true,null]");
+    assert_jq_compat("@base64", "null");
+    assert_jq_compat("@base64", "42");
+    assert_jq_compat("@base64", "true");
+    assert_jq_compat("@urid", "42");
+    assert_jq_compat("@urid", "null");
 }
 
 // --- Builtin: in ---

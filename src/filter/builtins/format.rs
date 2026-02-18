@@ -1,6 +1,31 @@
 use crate::filter::{Env, Filter};
 use crate::value::Value;
 
+/// Convert a value to string the way jq's `tostring` does:
+/// strings pass through, scalars become their text representation,
+/// arrays/objects become compact JSON.
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Int(n) => itoa::Buffer::new().format(*n).to_string(),
+        Value::Double(f, _) => {
+            // Use write_compact to get the same formatting as output
+            let mut buf = Vec::new();
+            crate::output::write_compact(&mut buf, v, false).unwrap();
+            // write_compact wraps in quotes for strings, but for doubles
+            // it writes the bare number — that's what we want
+            String::from_utf8(buf).unwrap_or_else(|_| ryu::Buffer::new().format(*f).to_string())
+        }
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            let mut buf = Vec::new();
+            crate::output::write_compact(&mut buf, v, false).unwrap();
+            String::from_utf8(buf).unwrap_or_default()
+        }
+    }
+}
+
 pub(super) fn eval_format(
     name: &str,
     _args: &[Filter],
@@ -27,73 +52,70 @@ pub(super) fn eval_format(
             }
         },
         "@html" => {
-            if let Value::String(s) = input {
-                let mut out = String::with_capacity(s.len());
-                for c in s.chars() {
-                    match c {
-                        '&' => out.push_str("&amp;"),
-                        '<' => out.push_str("&lt;"),
-                        '>' => out.push_str("&gt;"),
-                        '\'' => out.push_str("&apos;"),
-                        '"' => out.push_str("&quot;"),
-                        _ => out.push(c),
-                    }
+            let s = value_to_string(input);
+            let mut out = String::with_capacity(s.len());
+            for c in s.chars() {
+                match c {
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    '\'' => out.push_str("&apos;"),
+                    '"' => out.push_str("&quot;"),
+                    _ => out.push(c),
                 }
-                output(Value::String(out));
             }
+            output(Value::String(out));
         }
         "@uri" => {
-            if let Value::String(s) = input {
-                let mut out = String::with_capacity(s.len());
-                for byte in s.bytes() {
-                    match byte {
-                        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                            out.push(byte as char)
-                        }
-                        _ => {
-                            out.push('%');
-                            out.push(
-                                char::from_digit((byte >> 4) as u32, 16)
-                                    .unwrap()
-                                    .to_ascii_uppercase(),
-                            );
-                            out.push(
-                                char::from_digit((byte & 0xf) as u32, 16)
-                                    .unwrap()
-                                    .to_ascii_uppercase(),
-                            );
-                        }
+            let s = value_to_string(input);
+            let mut out = String::with_capacity(s.len());
+            for byte in s.bytes() {
+                match byte {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                        out.push(byte as char)
+                    }
+                    _ => {
+                        out.push('%');
+                        out.push(
+                            char::from_digit((byte >> 4) as u32, 16)
+                                .unwrap()
+                                .to_ascii_uppercase(),
+                        );
+                        out.push(
+                            char::from_digit((byte & 0xf) as u32, 16)
+                                .unwrap()
+                                .to_ascii_uppercase(),
+                        );
                     }
                 }
-                output(Value::String(out));
             }
+            output(Value::String(out));
         }
         "@urid" => {
-            if let Value::String(s) = input {
-                let bytes = s.as_bytes();
-                let mut decoded_bytes = Vec::with_capacity(s.len());
-                let mut i = 0;
-                while i < bytes.len() {
-                    if bytes[i] == b'%' && i + 2 < bytes.len() {
-                        let hi = (bytes[i + 1] as char).to_digit(16);
-                        let lo = (bytes[i + 2] as char).to_digit(16);
-                        if let (Some(h), Some(l)) = (hi, lo) {
-                            decoded_bytes.push((h * 16 + l) as u8);
-                            i += 3;
-                            continue;
-                        }
+            let s = value_to_string(input);
+            let bytes = s.as_bytes();
+            let mut decoded_bytes = Vec::with_capacity(s.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'%' && i + 2 < bytes.len() {
+                    let hi = (bytes[i + 1] as char).to_digit(16);
+                    let lo = (bytes[i + 2] as char).to_digit(16);
+                    if let (Some(h), Some(l)) = (hi, lo) {
+                        decoded_bytes.push((h * 16 + l) as u8);
+                        i += 3;
+                        continue;
                     }
-                    if bytes[i] == b'+' {
-                        decoded_bytes.push(b' ');
-                    } else {
-                        decoded_bytes.push(bytes[i]);
-                    }
-                    i += 1;
                 }
-                output(Value::String(
-                    String::from_utf8(decoded_bytes).unwrap_or_default(),
-                ));
+                if bytes[i] == b'+' {
+                    decoded_bytes.push(b' ');
+                } else {
+                    decoded_bytes.push(bytes[i]);
+                }
+                i += 1;
             }
+            output(Value::String(
+                String::from_utf8(decoded_bytes).unwrap_or_default(),
+            ));
         }
         "@csv" => {
             if let Value::Array(arr) = input {
@@ -135,27 +157,46 @@ pub(super) fn eval_format(
             }
         }
         "@sh" => {
-            if let Value::String(s) = input {
-                let escaped = s.replace('\'', "'\\''");
-                output(Value::String(format!("'{escaped}'")));
+            fn sh_escape(v: &Value) -> Result<String, ()> {
+                match v {
+                    Value::String(s) => {
+                        let escaped = s.replace('\'', "'\\''");
+                        Ok(format!("'{escaped}'"))
+                    }
+                    Value::Int(n) => Ok(itoa::Buffer::new().format(*n).to_string()),
+                    Value::Double(f, _) => {
+                        let mut buf = Vec::new();
+                        crate::output::write_compact(&mut buf, v, false).unwrap();
+                        Ok(String::from_utf8(buf)
+                            .unwrap_or_else(|_| ryu::Buffer::new().format(*f).to_string()))
+                    }
+                    Value::Bool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
+                    Value::Null => Ok("null".to_string()),
+                    Value::Array(arr) => {
+                        let parts: Result<Vec<String>, ()> = arr.iter().map(sh_escape).collect();
+                        Ok(parts?.join(" "))
+                    }
+                    Value::Object(_) => Err(()),
+                }
+            }
+            if let Ok(s) = sh_escape(input) {
+                output(Value::String(s));
             }
         }
         "@base64" => {
-            if let Value::String(s) = input {
-                use base64::Engine;
-                output(Value::String(
-                    base64::engine::general_purpose::STANDARD.encode(s.as_bytes()),
-                ));
-            }
+            use base64::Engine;
+            let s = value_to_string(input);
+            output(Value::String(
+                base64::engine::general_purpose::STANDARD.encode(s.as_bytes()),
+            ));
         }
         "@base64d" => {
-            if let Value::String(s) = input {
-                use base64::Engine;
-                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s.as_bytes())
-                    && let Ok(text) = String::from_utf8(decoded)
-                {
-                    output(Value::String(text));
-                }
+            use base64::Engine;
+            let s = value_to_string(input);
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(s.as_bytes())
+                && let Ok(text) = String::from_utf8(decoded)
+            {
+                output(Value::String(text));
             }
         }
         _ => {}

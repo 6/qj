@@ -273,7 +273,41 @@ pub(super) fn eval_arrays(
             }
         }
         "flatten" => {
-            if let Value::Array(arr) = input {
+            // jq: flatten works on arrays directly, on objects extracts values first
+            let arr: Option<&[Value]> = match input {
+                Value::Array(arr) => Some(arr.as_ref()),
+                Value::Object(obj) => {
+                    // Extract values into a temp array, then flatten that
+                    let values: Vec<Value> = obj.iter().map(|(_, v)| v.clone()).collect();
+                    let temp = values; // moved into scope
+                    // Use a closure to handle the temp lifetime
+                    let do_flatten = |arr: &[Value], depth: i64, output: &mut dyn FnMut(Value)| {
+                        let mut result = Vec::new();
+                        flatten_array(arr, depth, &mut result);
+                        output(Value::Array(Arc::new(result)));
+                    };
+                    if let Some(f) = args.first() {
+                        eval(f, input, env, &mut |d| {
+                            let depth = match d {
+                                Value::Int(n) => {
+                                    if n < 0 {
+                                        set_error("flatten depth must not be negative".to_string());
+                                        return;
+                                    }
+                                    n
+                                }
+                                _ => i64::MAX,
+                            };
+                            do_flatten(&temp, depth, output);
+                        });
+                    } else {
+                        do_flatten(&temp, i64::MAX, output);
+                    }
+                    None // already handled
+                }
+                _ => None,
+            };
+            if let Some(arr) = arr {
                 if let Some(f) = args.first() {
                     eval(f, input, env, &mut |d| {
                         let depth = match d {
