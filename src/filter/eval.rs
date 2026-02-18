@@ -3291,14 +3291,16 @@ mod tests {
 
     #[test]
     fn first_empty_array() {
+        // jq returns null for first/last on empty arrays
         let input = Value::Array(Arc::new(vec![]));
-        assert!(eval_all(&parse("first"), &input).is_empty());
+        assert_eq!(eval_one(&parse("first"), &input), Value::Null);
     }
 
     #[test]
     fn last_empty_array() {
+        // jq returns null for first/last on empty arrays
         let input = Value::Array(Arc::new(vec![]));
-        assert!(eval_all(&parse("last"), &input).is_empty());
+        assert_eq!(eval_one(&parse("last"), &input), Value::Null);
     }
 
     #[test]

@@ -130,9 +130,53 @@ The only remaining value would be if the feature matrix report itself is a deliv
 
 ---
 
-## 6. Systemic silent error drops in builtins
+## 6. flat_eval ↔ normal eval differential testing
 
-**Status:** Open
+**Status:** Done
+**Priority:** Highest — structural gap, caused the `map` on objects bug ([3bd6b06](https://github.com/6/qj/commit/3bd6b06))
+**Effort:** Small-medium (one test function)
+**Files:** `src/flat_eval.rs` (unit tests)
+
+### Problem
+
+`src/flat_eval.rs` re-implements builtins independently from `src/filter/builtins/`. When a bug is fixed in one path, the other can still have the old behavior. No test systematically compared the two paths against each other across input types.
+
+The `map` on objects bug is the proof: `arrays.rs` was fixed to handle `Value::Object`, but `flat_eval.rs` still silently dropped objects. The proptest differential suite (#2) couldn't catch it because it pipes single JSON docs through stdin, which uses the normal eval path — flat_eval is only reached via NDJSON processing.
+
+### Builtins with independent flat_eval implementations
+
+| Builtin | flat_eval handles | In `is_flat_safe`? |
+|---|---|---|
+| `map` | array, object | Yes |
+| `map_values` | array, object, scalars | Yes |
+| `length` | array, object, string, null | Yes |
+| `type` | all types | Yes |
+| `keys` | array, object | Yes |
+| `tojson` | all types | Yes (catch-all) |
+| `sort_by` | array only | No (catch-all) |
+| `group_by` | array only | No (catch-all) |
+
+Plus flat_eval handles `Iterate`, `Field`, `Select`, `Compare`, `Not`, `Neg`, `Arith`, `BoolOp`, `Alternative`, `IfThenElse`, `Reduce`, `Bind`, `StringInterp`, `ObjectConstruct`, `ArrayConstruct`, `PostfixSlice` — all independently from the normal eval path.
+
+### What was done
+
+Added 10 `differential_*` tests in `src/flat_eval.rs` that use the existing `assert_equiv` helper (which calls both `eval_flat` and `eval_filter_with_env` on the same input and compares outputs). Tests cover every builtin that flat_eval handles independently, across 15 diverse input types (null, bool, int, float, string, empty/non-empty arrays, mixed arrays, empty/non-empty objects, nested objects).
+
+Tests: `differential_map`, `differential_map_values`, `differential_length`, `differential_type`, `differential_keys`, `differential_tojson`, `differential_sort_by`, `differential_group_by`, `differential_postfix_slice`, `differential_composite_pipes`.
+
+**Found 2 divergences on first run:**
+1. `map_values(.)` on null — flat_eval produced nothing, normal eval passed through `null` (fixed: added scalar passthrough)
+2. `map_values(. + 1)` on objects with mixed types — flat_eval dropped entries where the inner filter errored, normal eval kept entries with `Null` default (fixed: changed flat_eval to use `let mut new_val = Null` + overwrite pattern)
+
+### Why not just more proptest?
+
+Proptest (#2) tests qj vs jq on single-doc input. It can't catch flat_eval divergences because single-doc input doesn't use flat_eval. The gap is specifically between qj's two internal eval paths. These unit tests run in <1ms and catch the exact class of bug.
+
+---
+
+## 7. Systemic silent error drops in builtins
+
+**Status:** Done
 **Priority:** Medium — causes exit code divergences from jq on invalid inputs
 **Effort:** Medium-large (touches many builtins across multiple files)
 
@@ -147,19 +191,23 @@ This is a systemic pattern affecting 20+ builtins. Examples:
 - `group_by` on a number → jq errors, qj silent
 - `@csv`/`@tsv` with nested arrays/objects → jq errors, qj silent
 
-### Why it matters
+### What was done
 
-Silent errors are worse than wrong output — the user gets no indication that their filter didn't apply. The proptest differential suite (#2) catches these as exit code mismatches, but fixing them requires an error propagation mechanism that qj currently lacks for builtin evaluation.
+Used TDD approach: wrote `jq_compat_builtin_type_errors` e2e test first (31 `assert_jq_compat` calls covering all affected builtins with non-array/non-iterable inputs), confirmed it failed, then fixed systematically.
 
-### Approach
+**Files modified:**
 
-1. Add an error/diagnostic callback to the builtin eval signature (or return `Result`)
-2. Replace `if let Value::Array` early-returns with explicit type-check errors
-3. Match jq's error messages where possible (users may parse stderr)
+1. **`src/filter/builtins/arrays.rs`** — Added `set_error()` calls to 16 builtins: `keys`/`keys_unsorted` (null passthrough), `sort`, `sort_by`, `group_by`, `unique`, `unique_by`, `flatten`, `first`, `last`, `reverse`, `min`, `max`, `min_by`, `max_by`, `transpose`, `add`. Error messages match jq's format.
 
-### Builtins affected (non-exhaustive)
+2. **`src/filter/builtins/format.rs`** — Added `set_error()` for `@csv`/`@tsv` on non-array inputs and nested array/object elements.
 
-`sort`, `sort_by`, `group_by`, `unique`, `unique_by`, `flatten`, `first`, `last`, `reverse`, `min`, `max`, `min_by`, `max_by`, `add`, `transpose`, `limit`, `skip`, `until`, `while`, `repeat`, `nth`, `combinations`, `@csv`, `@tsv`
+3. **`src/flat_eval.rs`** — Added matching `set_last_error()` calls to `sort_by`, `group_by`, and `map` handlers (which are intercepted by flat_eval before reaching `arrays.rs`). Required because `main.rs` routes all single-doc JSON through flat_eval unconditionally.
+
+**Bonus fixes:**
+- `first`/`last` on empty arrays now return `null` (matching jq), previously returned nothing
+- `first`/`last` on `null` now return `null` (matching jq), previously errored
+- `reverse` on strings reverses characters (matching jq), previously errored
+- `reverse` on `null` returns `[]` (matching jq), previously errored
 
 ---
 
@@ -168,10 +216,11 @@ Silent errors are worse than wrong output — the user gets no indication that t
 | # | Improvement | Status | Catches future bugs? | Effort |
 |---|---|---|---|---|
 | 1 | Exhaustive type-pair arithmetic | **Done** | All arithmetic | Small |
-| 2 | Property-based differential testing | **Done** | All features | Medium |
+| 2 | Property-based differential testing | **Done** | All features (single-doc path) | Medium |
 | 3 | Grammar-aware fuzz_eval | **Done** | All features (crash + divergence) | Medium |
 | 4 | Arithmetic unit tests | Superseded by #1 | Arithmetic only (faster feedback) | Small |
 | 5 | features.toml type edges | Superseded by #1 | Tested features only | Small |
-| 6 | Systemic silent error drops | Open | Error behavior fidelity | Medium-large |
+| 6 | flat_eval ↔ normal eval differential | **Done** | Dual-path divergences | Small-medium |
+| 7 | Systemic silent error drops | **Done** | Error behavior fidelity | Medium-large |
 
-All high-priority items (#1, #2, #3) are done. #4 and #5 are low priority given #1's coverage. #6 is a new finding from the proptest differential suite.
+All items complete.

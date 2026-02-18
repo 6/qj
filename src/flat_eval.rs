@@ -510,6 +510,13 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                     eval_flat(f, v, env, &mut |v| result.push(v));
                 }
                 output(Value::Array(Arc::new(result)));
+            } else {
+                let value = flat.to_value();
+                crate::filter::eval::set_last_error(Value::String(format!(
+                    "Cannot iterate over {} ({})",
+                    value.type_name(),
+                    value.short_desc()
+                )));
             }
         }
 
@@ -524,11 +531,15 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
             } else if flat.is_object() {
                 let mut result = Vec::new();
                 for (k, v) in flat.object_iter() {
-                    eval_flat(f, v, env, &mut |new_v| {
-                        result.push((k.to_string(), new_v));
-                    });
+                    // Match normal eval: default to Null if inner filter produces nothing
+                    let mut new_val = Value::Null;
+                    eval_flat(f, v, env, &mut |nv| new_val = nv);
+                    result.push((k.to_string(), new_val));
                 }
                 output(Value::Object(Arc::new(result)));
+            } else {
+                // Normal eval passes through scalars; match that behavior
+                output(flat.to_value());
             }
         }
 
@@ -781,6 +792,13 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                     .map(|(_, i)| elems[i].to_value())
                     .collect();
                 output(Value::Array(Arc::new(sorted)));
+            } else {
+                let value = flat.to_value();
+                crate::filter::eval::set_last_error(Value::String(format!(
+                    "{} ({}) cannot be sorted, as it is not an array",
+                    value.type_name(),
+                    value.short_desc()
+                )));
             }
         }
 
@@ -817,6 +835,13 @@ pub fn eval_flat(filter: &Filter, flat: FlatValue<'_>, env: &Env, output: &mut d
                     groups.push(Value::Array(Arc::new(current_group)));
                 }
                 output(Value::Array(Arc::new(groups)));
+            } else {
+                let value = flat.to_value();
+                crate::filter::eval::set_last_error(Value::String(format!(
+                    "{} ({}) cannot be grouped, as it is not an array",
+                    value.type_name(),
+                    value.short_desc()
+                )));
             }
         }
 
@@ -1753,5 +1778,144 @@ mod tests {
     #[test]
     fn postfix_slice_in_pipe() {
         assert_equiv("[.[] | .x][:2]", br#"[{"x":1},{"x":2},{"x":3}]"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // Exhaustive builtin × input-type differential tests
+    //
+    // Every builtin that flat_eval handles independently must produce
+    // identical output to the normal evaluator for all JSON types.
+    // This prevents the class of bug where a fix in arrays.rs/eval.rs
+    // doesn't get mirrored in flat_eval.rs (e.g., the map-on-objects bug).
+    // -----------------------------------------------------------------------
+
+    const DIVERSE_INPUTS: &[&[u8]] = &[
+        b"null",
+        b"true",
+        b"false",
+        b"0",
+        b"42",
+        b"-1",
+        b"3.14",
+        br#""hello""#,
+        br#""""#,
+        b"[]",
+        b"[1,2,3]",
+        br#"[1,"two",null,true,[5],{"a":6}]"#,
+        b"{}",
+        br#"{"a":1,"b":2}"#,
+        br#"{"a":null,"b":"hi","c":[1,2],"d":{"x":1}}"#,
+    ];
+
+    #[test]
+    fn differential_map() {
+        let filters = ["map(.)", "map(type)", "map(. + 1)", "map(length)"];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_map_values() {
+        let filters = ["map_values(.)", "map_values(type)", "map_values(. + 1)"];
+        for filter in &filters {
+            for input in DIVERSE_INPUTS {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_length() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv("length", input);
+        }
+    }
+
+    #[test]
+    fn differential_type() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv("type", input);
+        }
+    }
+
+    #[test]
+    fn differential_keys() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv("keys", input);
+        }
+    }
+
+    #[test]
+    fn differential_tojson() {
+        for input in DIVERSE_INPUTS {
+            assert_equiv("tojson", input);
+        }
+    }
+
+    #[test]
+    fn differential_sort_by() {
+        let inputs: &[&[u8]] = &[
+            b"[]",
+            b"[1,2,3]",
+            br#"[{"x":3},{"x":1},{"x":2}]"#,
+            br#"[{"x":"b"},{"x":"a"}]"#,
+            // Non-array inputs — flat_eval and normal eval should agree
+            b"null",
+            b"42",
+            br#""hello""#,
+            br#"{"a":1}"#,
+        ];
+        for input in inputs {
+            assert_equiv("sort_by(.x)", input);
+        }
+    }
+
+    #[test]
+    fn differential_group_by() {
+        let inputs: &[&[u8]] = &[
+            b"[]",
+            br#"[{"t":1},{"t":2},{"t":1}]"#,
+            // Non-array inputs
+            b"null",
+            b"42",
+            br#""hello""#,
+            br#"{"a":1}"#,
+        ];
+        for input in inputs {
+            assert_equiv("group_by(.t)", input);
+        }
+    }
+
+    #[test]
+    fn differential_postfix_slice() {
+        let filters = [".[1:3]", ".[:2]", ".[-2:]"];
+        let inputs: &[&[u8]] = &[b"[1,2,3,4,5]", br#""hello""#, b"null", b"[]", br#""""#];
+        for filter in &filters {
+            for input in inputs {
+                assert_equiv(filter, input);
+            }
+        }
+    }
+
+    #[test]
+    fn differential_composite_pipes() {
+        // Filters that combine builtins handled by flat_eval
+        let cases: &[(&str, &[u8])] = &[
+            ("map(type) | length", br#"{"a":1,"b":null,"c":"hi"}"#),
+            ("map(length)", br#"{"a":[1,2],"b":[3]}"#),
+            ("keys | map(length)", br#"{"ab":1,"cde":2}"#),
+            ("map(. + 1) | map(. * 2)", b"[1,2,3]"),
+            (".x | map(type)", br#"{"x":[1,"a",null]}"#),
+            (".x | length", br#"{"x":[1,2,3]}"#),
+            (".x | keys", br#"{"x":{"b":2,"a":1}}"#),
+            ("map(tojson)", b"[1,null,true]"),
+            ("map(tojson)", br#"{"a":1,"b":null}"#),
+        ];
+        for (filter, input) in cases {
+            assert_equiv(filter, input);
+        }
     }
 }

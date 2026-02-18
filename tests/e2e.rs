@@ -2549,21 +2549,45 @@ fn map_on_object() {
 }
 
 #[test]
-fn csv_tsv_reject_nested() {
-    // jq errors on arrays/objects as CSV/TSV elements; qj silently drops
-    // (exit code divergence is a known systemic issue — qj doesn't propagate
-    // errors from format builtins). Both produce empty stdout.
-    let out = qj_compact("@csv", r#"[1,[2,3],4]"#);
-    assert_eq!(out.trim(), "");
-    let out = qj_compact("@tsv", r#"[1,[2,3],4]"#);
-    assert_eq!(out.trim(), "");
-    let out = qj_compact("@csv", r#"[1,{"a":2},3]"#);
-    assert_eq!(out.trim(), "");
-    let out = qj_compact("@tsv", r#"[1,{"a":2},3]"#);
-    assert_eq!(out.trim(), "");
+fn jq_compat_builtin_type_errors() {
+    // Array-only builtins on non-array inputs should error (exit 5), not silently drop.
+    // Using non-null inputs since jq has special null handling for some builtins.
+    assert_jq_compat("sort", r#"{"a":1}"#);
+    assert_jq_compat("sort", r#"42"#);
+    assert_jq_compat("sort", r#""hello""#);
+    assert_jq_compat("reverse", r#"42"#);
+    assert_jq_compat("unique", r#"{"a":1}"#);
+    assert_jq_compat("unique", r#"42"#);
+    assert_jq_compat("group_by(.x)", r#""hello""#);
+    assert_jq_compat("group_by(.x)", r#"42"#);
+    assert_jq_compat("sort_by(.x)", r#"42"#);
+    assert_jq_compat("sort_by(.x)", r#""hello""#);
+    assert_jq_compat("flatten", r#"42"#);
+    assert_jq_compat("flatten", r#""hello""#);
+    assert_jq_compat("min", r#"42"#);
+    assert_jq_compat("max", r#""hello""#);
+    assert_jq_compat("unique_by(.x)", r#"true"#);
+    assert_jq_compat("unique_by(.x)", r#"42"#);
+    assert_jq_compat("transpose", r#"42"#);
+    assert_jq_compat("transpose", r#""hello""#);
+    assert_jq_compat("add", r#"42"#);
+    assert_jq_compat("add", r#""hello""#);
+    assert_jq_compat("min_by(.x)", r#""hi""#);
+    assert_jq_compat("max_by(.x)", r#"true"#);
+
+    // @csv/@tsv on non-array input
+    assert_jq_compat("@csv", r#"42"#);
+    assert_jq_compat("@tsv", r#""hello""#);
+    // @csv/@tsv with nested arrays/objects as elements
+    assert_jq_compat("@csv", r#"[1,[2],3]"#);
+    assert_jq_compat("@tsv", r#"[1,{"a":2},3]"#);
+
     // Valid inputs still work
     assert_jq_compat("@csv", r#"[1,"two",3]"#);
     assert_jq_compat("@tsv", r#"[1,"two",3]"#);
+    assert_jq_compat("sort", r#"[3,1,2]"#);
+    assert_jq_compat("reverse", r#"[1,2,3]"#);
+    assert_jq_compat("unique", r#"[1,1,2,3,2]"#);
 }
 
 #[test]

@@ -36,7 +36,14 @@ pub(super) fn eval_arrays(
                 let keys: Vec<Value> = (0..arr.len() as i64).map(Value::Int).collect();
                 output(Value::Array(Arc::new(keys)));
             }
-            _ => {}
+            Value::Null => output(Value::Null),
+            _ => {
+                set_error(format!(
+                    "{} ({}) has no keys",
+                    input.type_name(),
+                    input.short_desc()
+                ));
+            }
         },
         "values" => {
             // values = select(. != null): passes through any non-null input
@@ -107,7 +114,13 @@ pub(super) fn eval_arrays(
                         output(acc);
                     }
                     Value::Array(_) => output(Value::Null),
-                    _ => {}
+                    _ => {
+                        set_error(format!(
+                            "Cannot iterate over {} ({})",
+                            input.type_name(),
+                            input.short_desc()
+                        ));
+                    }
                 }
             }
         }
@@ -202,6 +215,12 @@ pub(super) fn eval_arrays(
                 let mut sorted: Vec<Value> = arr.as_ref().clone();
                 sorted.sort_by(|a, b| values_order(a, b).unwrap_or(std::cmp::Ordering::Equal));
                 output(Value::Array(Arc::new(sorted)));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be sorted, as it is not an array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "sort_by" => {
@@ -227,6 +246,12 @@ pub(super) fn eval_arrays(
                 output(Value::Array(Arc::new(
                     pairs.into_iter().map(|(_, v)| v).collect(),
                 )));
+            } else if !matches!(input, Value::Array(_)) {
+                set_error(format!(
+                    "{} ({}) cannot be sorted, as it is not an array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "group_by" => {
@@ -260,6 +285,12 @@ pub(super) fn eval_arrays(
                     groups.push(Value::Array(Arc::new(current_group)));
                 }
                 output(Value::Array(Arc::new(groups)));
+            } else if !matches!(input, Value::Array(_)) {
+                set_error(format!(
+                    "{} ({}) cannot be grouped, as it is not an array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "unique" => {
@@ -268,6 +299,12 @@ pub(super) fn eval_arrays(
                 sorted.sort_by(|a, b| values_order(a, b).unwrap_or(std::cmp::Ordering::Equal));
                 sorted.dedup_by(|a, b| values_equal(a, b));
                 output(Value::Array(Arc::new(sorted)));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be unique'd, as it is not an array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "unique_by" => {
@@ -283,6 +320,12 @@ pub(super) fn eval_arrays(
                     }
                 }
                 output(Value::Array(Arc::new(result)));
+            } else if !matches!(input, Value::Array(_)) {
+                set_error(format!(
+                    "{} ({}) cannot be unique'd, as it is not an array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "flatten" => {
@@ -318,7 +361,14 @@ pub(super) fn eval_arrays(
                     }
                     None // already handled
                 }
-                _ => None,
+                _ => {
+                    set_error(format!(
+                        "{} ({}) cannot be flattened, as it is not an array",
+                        input.type_name(),
+                        input.short_desc()
+                    ));
+                    None
+                }
             };
             if let Some(arr) = arr {
                 if let Some(f) = args.first() {
@@ -353,10 +403,16 @@ pub(super) fn eval_arrays(
                         found = true;
                     }
                 });
-            } else if let Value::Array(arr) = input
-                && let Some(v) = arr.first()
-            {
-                output(v.clone());
+            } else {
+                match input {
+                    Value::Array(arr) => {
+                        output(arr.first().cloned().unwrap_or(Value::Null));
+                    }
+                    Value::Null => output(Value::Null),
+                    _ => {
+                        set_error(format!("Cannot index {} with number", input.type_name()));
+                    }
+                }
             }
         }
         "last" => {
@@ -366,21 +422,36 @@ pub(super) fn eval_arrays(
                 if let Some(v) = last {
                     output(v);
                 }
-            } else if let Value::Array(arr) = input
-                && let Some(v) = arr.last()
-            {
-                output(v.clone());
+            } else {
+                match input {
+                    Value::Array(arr) => {
+                        output(arr.last().cloned().unwrap_or(Value::Null));
+                    }
+                    Value::Null => output(Value::Null),
+                    _ => {
+                        set_error(format!("Cannot index {} with number", input.type_name()));
+                    }
+                }
             }
         }
-        "reverse" => {
-            if let Value::Array(arr) = input {
+        "reverse" => match input {
+            Value::Array(arr) => {
                 let mut result: Vec<Value> = arr.as_ref().clone();
                 result.reverse();
                 output(Value::Array(Arc::new(result)));
-            } else if let Value::String(s) = input {
+            }
+            Value::String(s) => {
                 output(Value::String(s.chars().rev().collect()));
             }
-        }
+            Value::Null => output(Value::Array(Arc::new(vec![]))),
+            _ => {
+                set_error(format!(
+                    "{} ({}) cannot be reversed, as it is not an array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
+            }
+        },
         "min" => {
             if let Value::Array(arr) = input {
                 if let Some(min) = arr
@@ -391,6 +462,12 @@ pub(super) fn eval_arrays(
                 } else {
                     output(Value::Null);
                 }
+            } else {
+                set_error(format!(
+                    "Cannot iterate over {} ({})",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "max" => {
@@ -403,6 +480,12 @@ pub(super) fn eval_arrays(
                 } else {
                     output(Value::Null);
                 }
+            } else {
+                set_error(format!(
+                    "Cannot iterate over {} ({})",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "min_by" => {
@@ -422,6 +505,12 @@ pub(super) fn eval_arrays(
                 } else {
                     output(Value::Null);
                 }
+            } else if !matches!(input, Value::Array(_)) {
+                set_error(format!(
+                    "Cannot iterate over {} ({})",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "max_by" => {
@@ -444,6 +533,12 @@ pub(super) fn eval_arrays(
                 } else {
                     output(Value::Null);
                 }
+            } else if !matches!(input, Value::Array(_)) {
+                set_error(format!(
+                    "Cannot iterate over {} ({})",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "del" => {
@@ -536,6 +631,12 @@ pub(super) fn eval_arrays(
                     result.push(Value::Array(Arc::new(col)));
                 }
                 output(Value::Array(Arc::new(result)));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be transposed, as it is not an array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "map_values" => {

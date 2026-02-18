@@ -1,3 +1,4 @@
+use super::set_error;
 use crate::filter::{Env, Filter};
 use crate::value::Value;
 
@@ -119,11 +120,15 @@ pub(super) fn eval_format(
         }
         "@csv" => {
             if let Value::Array(arr) = input {
-                // jq errors on arrays/objects as CSV elements
-                if arr
+                if let Some(bad) = arr
                     .iter()
-                    .any(|v| matches!(v, Value::Array(_) | Value::Object(_)))
+                    .find(|v| matches!(v, Value::Array(_) | Value::Object(_)))
                 {
+                    set_error(format!(
+                        "{} ({}) is not valid in a csv row",
+                        bad.type_name(),
+                        bad.short_desc()
+                    ));
                     return;
                 }
                 let parts: Vec<String> = arr
@@ -141,15 +146,25 @@ pub(super) fn eval_format(
                     })
                     .collect();
                 output(Value::String(parts.join(",")));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be csv-formatted, only array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "@tsv" => {
             if let Value::Array(arr) = input {
-                // jq errors on arrays/objects as TSV elements
-                if arr
+                if let Some(bad) = arr
                     .iter()
-                    .any(|v| matches!(v, Value::Array(_) | Value::Object(_)))
+                    .find(|v| matches!(v, Value::Array(_) | Value::Object(_)))
                 {
+                    set_error(format!(
+                        "{} ({}) is not valid in a tsv row",
+                        bad.type_name(),
+                        bad.short_desc()
+                    ));
                     return;
                 }
                 let parts: Vec<String> = arr
@@ -168,6 +183,12 @@ pub(super) fn eval_format(
                     })
                     .collect();
                 output(Value::String(parts.join("\t")));
+            } else {
+                set_error(format!(
+                    "{} ({}) cannot be tsv-formatted, only array",
+                    input.type_name(),
+                    input.short_desc()
+                ));
             }
         }
         "@sh" => {
