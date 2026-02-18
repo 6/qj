@@ -127,6 +127,11 @@ jobs:
             echo "> Treat these numbers as directional — for authoritative results, run on dedicated hardware."
             echo ""
 
+            # Debug: show artifact structure
+            echo "::group::Artifact structure"
+            find benches/artifacts/ -type f 2>/dev/null || echo "(no artifacts found)"
+            echo "::endgroup::"
+
             for bench_type in ndjson json; do
               type_label=$(echo "$bench_type" | tr '[:lower:]' '[:upper:]')
               echo "---"
@@ -136,8 +141,8 @@ jobs:
               for dir in benches/artifacts/benchmarks-*/; do
                 [ -d "$dir" ] || continue
                 platform=$(basename "$dir" | sed 's/benchmarks-//')
-                f="$dir/benches/results_${bench_type}_ci.md"
-                if [ -f "$f" ]; then
+                f=$(find "$dir" -name "results_${bench_type}_ci.md" -type f | head -1)
+                if [ -n "$f" ]; then
                   echo "### $platform"
                   echo ""
                   cat "$f"
@@ -150,8 +155,8 @@ jobs:
               for dir in benches/artifacts/benchmarks-*/; do
                 [ -d "$dir" ] || continue
                 platform=$(basename "$dir" | sed 's/benchmarks-//')
-                f="$dir/benches/results_mem_${bench_type}_ci.md"
-                if [ -f "$f" ]; then
+                f=$(find "$dir" -name "results_mem_${bench_type}_ci.md" -type f | head -1)
+                if [ -n "$f" ]; then
                   echo "### $platform"
                   echo ""
                   cat "$f"
