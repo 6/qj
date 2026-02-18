@@ -886,9 +886,17 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
             )),
         },
         ArithOp::Mul => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Ok(a
-                .checked_mul(*b)
-                .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int)),
+            (Value::Int(a), Value::Int(b)) => {
+                let result = a
+                    .checked_mul(*b)
+                    .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int);
+                // jq: 0 * negative = -0 (negative zero)
+                if result == Value::Int(0) && ((*a < 0) != (*b < 0)) {
+                    Ok(Value::Double(-0.0, None))
+                } else {
+                    Ok(result)
+                }
+            }
             (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a * b, None)),
             (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 * b, None)),
             (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a * *b as f64, None)),
@@ -941,7 +949,12 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                 // i64::MIN / -1 overflows (panics in debug, wraps in release)
                 if let Some(q) = a.checked_div(*b) {
                     if a % b == 0 {
-                        Ok(Value::Int(q))
+                        // jq: 0 / negative = -0 (negative zero)
+                        if q == 0 && ((*a < 0) != (*b < 0)) {
+                            Ok(Value::Double(-0.0, None))
+                        } else {
+                            Ok(Value::Int(q))
+                        }
                     } else {
                         Ok(Value::Double(*a as f64 / *b as f64, None))
                     }
@@ -966,11 +979,21 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
             (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 / b, None)),
             (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a / *b as f64, None)),
             (Value::String(s), Value::String(sep)) => {
-                let parts: Vec<Value> = s
-                    .split(sep.as_str())
-                    .map(|part| Value::String(part.into()))
-                    .collect();
-                Ok(Value::Array(Arc::new(parts)))
+                if s.is_empty() {
+                    // jq: "" / anything = []
+                    Ok(Value::Array(Arc::new(vec![])))
+                } else if sep.is_empty() {
+                    // jq: "abc" / "" = ["a","b","c"] (split into characters)
+                    let parts: Vec<Value> =
+                        s.chars().map(|c| Value::String(c.to_string())).collect();
+                    Ok(Value::Array(Arc::new(parts)))
+                } else {
+                    let parts: Vec<Value> = s
+                        .split(sep.as_str())
+                        .map(|part| Value::String(part.into()))
+                        .collect();
+                    Ok(Value::Array(Arc::new(parts)))
+                }
             }
             _ => Err(format!(
                 "{} and {} cannot be divided",
@@ -986,42 +1009,47 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
             )),
             // i64::MIN % -1 can panic in debug mode; mathematically it's 0
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_rem(*b).unwrap_or(0))),
-            // Float modulo by zero
-            (Value::Double(_, _), Value::Double(b, _)) if *b == 0.0 => Err(format!(
-                "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
-                value_desc(left)
-            )),
-            (Value::Int(_), Value::Double(b, _)) if *b == 0.0 => Err(format!(
-                "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
-                value_desc(left)
-            )),
+            // jq truncates floats to integers before modulo, then checks for zero
             (Value::Double(_, _), Value::Int(b)) if *b == 0 => Err(format!(
                 "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
                 value_desc(left)
             )),
             (Value::Double(a, _), Value::Double(b, _)) => {
-                let r = a % b;
-                // jq: inf % n → 0 (NaN result from non-NaN operands becomes 0)
-                if r.is_nan() && !a.is_nan() && !b.is_nan() {
+                if a.is_nan() || b.is_nan() || a.is_infinite() || b.is_infinite() {
                     Ok(Value::Double(0.0, None))
                 } else {
-                    Ok(Value::Double(r, None))
+                    let bi = *b as i64;
+                    if bi == 0 {
+                        return Err(format!(
+                            "number ({}) and number ({}) cannot be divided (remainder) because the divisor is zero",
+                            value_desc(left),
+                            value_desc(right)
+                        ));
+                    }
+                    Ok(Value::Int((*a as i64).checked_rem(bi).unwrap_or(0)))
                 }
             }
             (Value::Int(a), Value::Double(b, _)) => {
-                let r = *a as f64 % b;
-                if r.is_nan() && !b.is_nan() {
+                if b.is_nan() || b.is_infinite() {
                     Ok(Value::Double(0.0, None))
                 } else {
-                    Ok(Value::Double(r, None))
+                    let bi = *b as i64;
+                    if bi == 0 {
+                        return Err(format!(
+                            "number ({}) and number ({}) cannot be divided (remainder) because the divisor is zero",
+                            value_desc(left),
+                            value_desc(right)
+                        ));
+                    }
+                    Ok(Value::Int(a.checked_rem(bi).unwrap_or(0)))
                 }
             }
             (Value::Double(a, _), Value::Int(b)) => {
-                let r = a % *b as f64;
-                if r.is_nan() && !a.is_nan() {
+                let ai = *a as i64;
+                if a.is_nan() || a.is_infinite() {
                     Ok(Value::Double(0.0, None))
                 } else {
-                    Ok(Value::Double(r, None))
+                    Ok(Value::Int(ai.checked_rem(*b).unwrap_or(0)))
                 }
             }
             _ => Err(format!(

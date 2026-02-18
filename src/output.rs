@@ -506,10 +506,6 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
     if f.is_infinite() {
         return w.write_all(b"null");
     }
-    // Normalize computed negative zero to positive zero.
-    // Only affects computed doubles (no raw text) — input -0 is preserved
-    // via the raw text path below.
-    let f = if f == 0.0 { 0.0 } else { f };
     // Use raw JSON text when available (literal preservation)
     if let Some(text) = raw {
         return w.write_all(text.as_bytes());
@@ -620,7 +616,7 @@ mod tests {
         assert_eq!(compact(&Value::Double(3.14, None)), "3.14");
         // Integer-valued doubles render without .0
         assert_eq!(compact(&Value::Double(1.0, None)), "1");
-        assert_eq!(compact(&Value::Double(-0.0, None)), "0");
+        assert_eq!(compact(&Value::Double(-0.0, None)), "-0");
     }
 
     #[test]

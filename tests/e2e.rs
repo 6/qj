@@ -1906,6 +1906,31 @@ fn assert_jq_compat(filter: &str, input: &str) {
     );
 }
 
+/// Assert that qj and jq produce identical stdout AND agree on success/failure.
+/// Works for both success and error cases. Error messages (stderr) may differ —
+/// only stdout and exit status are compared.
+fn assert_jq_compat_full(filter: &str, input: &str) {
+    if !jq_available() {
+        return;
+    }
+    let (qj_stdout, _qj_stderr, qj_ok) =
+        run_tool_full(env!("CARGO_BIN_EXE_qj"), &["-c", filter], input);
+    let (jq_stdout, _jq_stderr, jq_ok) = run_tool_full("jq", &["-c", filter], input);
+
+    assert_eq!(
+        qj_stdout.trim(),
+        jq_stdout.trim(),
+        "stdout mismatch: filter={filter:?} input={input:?}\nqj_ok={qj_ok}, jq_ok={jq_ok}"
+    );
+    assert_eq!(
+        qj_ok, jq_ok,
+        "exit status mismatch: filter={filter:?} input={input:?}\n\
+         qj_ok={qj_ok}, jq_ok={jq_ok}\n\
+         qj stdout: {qj_stdout}\njq stdout: {jq_stdout}\n\
+         qj stderr: {_qj_stderr}\njq stderr: {_jq_stderr}"
+    );
+}
+
 #[test]
 fn jq_compat_number_formatting() {
     assert_jq_compat(".x", r#"{"x":75.80}"#);
@@ -1952,6 +1977,102 @@ fn jq_compat_null_add_identity() {
     assert_jq_compat("null + 1", "null");
     assert_jq_compat("1 + null", "null");
     assert_jq_compat("null + \"hello\"", "null");
+}
+
+/// Exhaustive type-pair test: every combination of value types × arithmetic operators.
+/// Compares both stdout and exit status against jq to catch silent divergences
+/// like the null*number bug (610b937).
+#[test]
+fn jq_compat_exhaustive_arithmetic_type_pairs() {
+    // Representative values for each type. Literals used as filter expressions
+    // (jq evaluates `null`, `true`, `1`, `"s"`, `[]`, `{}` as constants).
+    let values = [
+        "null",
+        "true",
+        "false",
+        "0",
+        "1",
+        "2",
+        "1.5",
+        "(0-1)", // negative via expression (bare -1 is a CLI flag)
+        r#""hello""#,
+        r#""""#,
+        "[]",
+        "[1,2]",
+        "{}",
+        r#"{"a":1}"#,
+    ];
+    let ops = ["+", "-", "*", "/", "%"];
+
+    let mut failures = Vec::new();
+    for a in &values {
+        for b in &values {
+            for op in &ops {
+                let filter = format!("{a} {op} {b}");
+                if !jq_available() {
+                    return;
+                }
+                let (qj_stdout, _qj_stderr, qj_ok) =
+                    run_tool_full(env!("CARGO_BIN_EXE_qj"), &["-c", &filter], "null");
+                let (jq_stdout, _jq_stderr, jq_ok) = run_tool_full("jq", &["-c", &filter], "null");
+
+                if qj_stdout.trim() != jq_stdout.trim() || qj_ok != jq_ok {
+                    failures.push(format!(
+                        "  {filter}\n    stdout: qj={:?} jq={:?}\n    exit:   qj_ok={qj_ok} jq_ok={jq_ok}",
+                        qj_stdout.trim(),
+                        jq_stdout.trim(),
+                    ));
+                }
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} arithmetic type-pair mismatches vs jq:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+}
+
+/// Targeted arithmetic edge cases compared against jq.
+#[test]
+fn jq_compat_arithmetic_edge_cases() {
+    // String repetition
+    assert_jq_compat_full(r#""ab" * 3"#, "null");
+    assert_jq_compat_full(r#""ab" * 0"#, "null");
+    assert_jq_compat_full(r#""ab" * -1"#, "null");
+    assert_jq_compat_full(r#"3 * "ab""#, "null");
+
+    // String split
+    assert_jq_compat_full(r#""a,b,c" / ",""#, "null");
+    assert_jq_compat_full(r#""hello" / """#, "null");
+
+    // Division by zero
+    assert_jq_compat_full("1 / 0", "null");
+    assert_jq_compat_full("1.0 / 0", "null");
+    assert_jq_compat_full("1 % 0", "null");
+
+    // Object recursive merge
+    assert_jq_compat_full(r#"{"a":{"x":1}} * {"a":{"y":2}}"#, "null");
+    assert_jq_compat_full(r#"{"a":1} * {"b":2}"#, "null");
+
+    // Array operations
+    assert_jq_compat_full("[1,2] + [3,4]", "null");
+    assert_jq_compat_full("[1,2,3] - [2]", "null");
+
+    // Null identity for addition (all types)
+    assert_jq_compat_full("null + []", "null");
+    assert_jq_compat_full("null + {}", "null");
+    assert_jq_compat_full("[] + null", "null");
+    assert_jq_compat_full("{} + null", "null");
+
+    // Overflow promotion
+    assert_jq_compat_full("9223372036854775807 + 1", "null");
+    assert_jq_compat_full("9223372036854775807 * 2", "null");
+    // Use (0-N) since bare -N is parsed as CLI flag or unary minus
+    assert_jq_compat_full("(0 - 9223372036854775807) - 9223372036854775807", "null");
 }
 
 #[test]
@@ -2372,9 +2493,9 @@ fn jq_compat_object_merge() {
 
 #[test]
 fn float_modulo() {
+    // jq truncates floats to integers before modulo: 10.5 % 3 = 10 % 3 = 1
     let out = qj_compact(". % 3", "10.5");
-    assert_eq!(out.trim(), "1.5");
-    // Note: jq truncates to integer for %, qj does float modulo. Intentional difference.
+    assert_eq!(out.trim(), "1");
 }
 
 #[test]

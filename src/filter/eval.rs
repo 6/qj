@@ -2274,11 +2274,9 @@ mod tests {
 
     #[test]
     fn eval_float_modulo() {
+        // jq truncates floats to integers before modulo: 10.5 % 3 = 10 % 3 = 1
         let result = arith_values(&Value::Double(10.5, None), &ArithOp::Mod, &Value::Int(3));
-        match result {
-            Ok(Value::Double(f, _)) => assert!((f - 1.5).abs() < 1e-10),
-            other => panic!("expected Double(1.5), got {other:?}"),
-        }
+        assert_eq!(result, Ok(Value::Int(1)));
     }
 
     #[test]
