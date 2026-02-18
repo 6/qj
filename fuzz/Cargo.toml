@@ -64,3 +64,9 @@ name = "fuzz_double_format"
 path = "fuzz_targets/fuzz_double_format.rs"
 doc = false
 test = false
+
+[[bin]]
+name = "fuzz_bridge_map"
+path = "fuzz_targets/fuzz_bridge_map.rs"
+doc = false
+test = false

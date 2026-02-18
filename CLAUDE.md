@@ -92,7 +92,7 @@ diff <(./target/release/qj '.field' test.json) <(jq '.field' test.json)
 
 ## Fuzzing
 
-Eight fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
+Nine fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
 
 Fuzz binaries use libfuzzer which runs indefinitely without `-max_total_time`.
 All `[[bin]]` entries have `test = false` to prevent `cargo test` from picking them up.
@@ -104,9 +104,10 @@ sanitizers: `cargo +nightly fuzz run <target> -s none -- -max_total_time=N`.
 
 **FFI boundary** (run after changing `src/simdjson/`):
 ```
-cargo +nightly fuzz run fuzz_parse   -s none -- -max_total_time=120
-cargo +nightly fuzz run fuzz_dom     -s none -- -max_total_time=120
-cargo +nightly fuzz run fuzz_ndjson  -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_parse       -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_dom         -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_ndjson      -s none -- -max_total_time=120
+cargo +nightly fuzz run fuzz_bridge_map  -s none -- -max_total_time=120
 ```
 
 **Filter pipeline** (run after changing `src/filter/`):

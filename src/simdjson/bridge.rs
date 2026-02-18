@@ -1543,6 +1543,105 @@ mod tests {
         );
     }
 
+    // --- DomParser edge cases (#5) ---
+
+    #[test]
+    fn dom_parser_field_has_present() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"a":1,"b":2}"#;
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dp.field_has(&buf, json.len(), &["a"], "nonexist").unwrap(),
+            None
+        );
+        // field_has navigates to field chain then checks has — with chain ["a"]
+        // the target is 1 (not an object), so returns None (fallback).
+    }
+
+    #[test]
+    fn dom_parser_field_has_on_nested_object() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"outer":{"inner":1}}"#;
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dp.field_has(&buf, json.len(), &["outer"], "inner").unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            dp.field_has(&buf, json.len(), &["outer"], "missing")
+                .unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn dom_parser_error_recovery() {
+        let mut dp = DomParser::new().unwrap();
+        // Valid doc
+        let json1 = br#"{"a":1}"#;
+        let buf1 = pad_buffer(json1);
+        assert!(dp.find_field_raw(&buf1, json1.len(), &["a"]).is_ok());
+        // Invalid doc — may error or return garbage, either is fine
+        let json2 = b"{{{{invalid";
+        let buf2 = pad_buffer(json2);
+        let _ = dp.find_field_raw(&buf2, json2.len(), &["a"]);
+        // Valid doc again — parser should recover after invalid input
+        let json3 = br#"{"b":"ok"}"#;
+        let buf3 = pad_buffer(json3);
+        let out = dp.find_field_raw(&buf3, json3.len(), &["b"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#""ok""#);
+    }
+
+    #[test]
+    fn dom_parser_mixed_operations() {
+        let mut dp = DomParser::new().unwrap();
+        let json = br#"{"arr":[1,2,3],"obj":{"x":1,"y":2},"str":"hi"}"#;
+        let buf = pad_buffer(json);
+        // find_field_raw
+        let raw = dp.find_field_raw(&buf, json.len(), &["str"]).unwrap();
+        assert_eq!(std::str::from_utf8(&raw).unwrap(), r#""hi""#);
+        // field_length
+        let len = dp
+            .field_length(&buf, json.len(), &["arr"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&len).unwrap(), "3");
+        // field_keys
+        let keys = dp
+            .field_keys(&buf, json.len(), &["obj"], true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&keys).unwrap(), r#"["x","y"]"#);
+        // field_has
+        let has = dp.field_has(&buf, json.len(), &["obj"], "x").unwrap();
+        assert_eq!(has, Some(true));
+    }
+
+    #[test]
+    fn dom_parser_empty_document_handling() {
+        let mut dp = DomParser::new().unwrap();
+        // Empty doc should error
+        let empty = b"";
+        let buf = pad_buffer(empty);
+        assert!(dp.find_field_raw(&buf, empty.len(), &["a"]).is_err());
+        // Recover with valid doc
+        let json = br#"{"a":42}"#;
+        let buf2 = pad_buffer(json);
+        let out = dp.find_field_raw(&buf2, json.len(), &["a"]).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "42");
+    }
+
+    #[test]
+    fn dom_parser_reuse_stress() {
+        let mut dp = DomParser::new().unwrap();
+        for i in 0..500 {
+            let json = format!(r#"{{"i":{},"s":"val_{i}"}}"#, i);
+            let buf = pad_buffer(json.as_bytes());
+            let out = dp.find_field_raw(&buf, json.len(), &["i"]).unwrap();
+            assert_eq!(std::str::from_utf8(&out).unwrap(), i.to_string());
+        }
+    }
+
     // --- dom_parse_to_value_fast (DOM tape walk) ---
 
     /// Helper: assert that dom_parse_to_value_fast produces identical output
@@ -1701,5 +1800,666 @@ mod tests {
         let json = b"";
         let buf = pad_buffer(json);
         assert!(dom_parse_to_value_fast(&buf, json.len()).is_err());
+    }
+
+    // --- Flat buffer / On-Demand edge cases (#6) ---
+
+    #[test]
+    fn fast_parse_unicode_strings() {
+        assert_fast_matches_standard(br#"{"emoji":"\u2764","cjk":"\u4e16\u754c"}"#);
+        assert_fast_matches_standard("\"héllo wörld\"".as_bytes());
+    }
+
+    #[test]
+    fn fast_parse_large_array() {
+        let mut json = String::from("[");
+        for i in 0..500 {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&i.to_string());
+        }
+        json.push(']');
+        assert_fast_matches_standard(json.as_bytes());
+    }
+
+    #[test]
+    fn fast_parse_large_object() {
+        let mut json = String::from("{");
+        for i in 0..200 {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(r#""k{i}":{i}"#));
+        }
+        json.push('}');
+        assert_fast_matches_standard(json.as_bytes());
+    }
+
+    #[test]
+    fn fast_parse_deep_nesting() {
+        let depth = 20;
+        let mut json = String::new();
+        for _ in 0..depth {
+            json.push_str(r#"{"x":"#);
+        }
+        json.push_str("1");
+        for _ in 0..depth {
+            json.push('}');
+        }
+        assert_fast_matches_standard(json.as_bytes());
+    }
+
+    #[test]
+    fn fast_parse_precision_boundaries() {
+        // Max safe integer for f64
+        assert_fast_matches_standard(b"9007199254740992");
+        // Just beyond
+        assert_fast_matches_standard(b"9007199254740993");
+        // Very small double
+        assert_fast_matches_standard(b"5e-324");
+        // Negative zero
+        assert_fast_matches_standard(b"-0.0");
+    }
+
+    #[test]
+    fn fast_parse_all_escape_sequences() {
+        assert_fast_matches_standard(br#"{"s":"a\nb\tc\rd\\e\"f\/g\u0041"}"#);
+    }
+
+    #[test]
+    fn fast_parse_mixed_nested() {
+        let json = br#"[{"a":[{"b":1},{"b":2}]},{"a":[{"b":3}]},{"a":[]}]"#;
+        assert_fast_matches_standard(json);
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_validate() tests (#2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_single_object() {
+        let json = br#"{"a":1}"#;
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_ok());
+    }
+
+    #[test]
+    fn validate_single_array() {
+        let json = b"[1,2,3]";
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_ok());
+    }
+
+    #[test]
+    fn validate_scalar() {
+        for json in &[
+            &b"42"[..],
+            &b"\"hello\""[..],
+            &b"null"[..],
+            &b"true"[..],
+            &b"false"[..],
+        ] {
+            let buf = pad_buffer(json);
+            assert!(dom_validate(&buf, json.len()).is_ok());
+        }
+    }
+
+    #[test]
+    fn validate_rejects_multi_doc() {
+        let json = br#"{"a":1}{"b":2}"#;
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_multi_doc_newline() {
+        let json = b"{\"a\":1}\n{\"b\":2}";
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_trailing_garbage() {
+        let json = br#"{"a":1} garbage"#;
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty() {
+        let json = b"";
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only() {
+        let json = b"   \n\t  ";
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_json() {
+        let json = b"{a:1}";
+        let buf = pad_buffer(json);
+        assert!(dom_validate(&buf, json.len()).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_field_has() tests (#2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn field_has_present() {
+        let json = br#"{"a":1,"b":2}"#;
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_field_has(&buf, json.len(), &[], "a").unwrap(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn field_has_absent() {
+        let json = br#"{"a":1}"#;
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_field_has(&buf, json.len(), &[], "missing").unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn field_has_null_value() {
+        let json = br#"{"a":null}"#;
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_field_has(&buf, json.len(), &[], "a").unwrap(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn field_has_nested() {
+        let json = br#"{"a":{"b":1,"c":2}}"#;
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_field_has(&buf, json.len(), &["a"], "b").unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            dom_field_has(&buf, json.len(), &["a"], "missing").unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn field_has_non_object_returns_none() {
+        let json = b"[1,2,3]";
+        let buf = pad_buffer(json);
+        assert_eq!(dom_field_has(&buf, json.len(), &[], "a").unwrap(), None);
+    }
+
+    #[test]
+    fn field_has_empty_object() {
+        let json = b"{}";
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_field_has(&buf, json.len(), &[], "a").unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn field_has_empty_string_key() {
+        let json = br#"{"":1,"a":2}"#;
+        let buf = pad_buffer(json);
+        assert_eq!(
+            dom_field_has(&buf, json.len(), &[], "").unwrap(),
+            Some(true)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // minify() extended tests (#4)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn minify_array_with_whitespace() {
+        let json = b"[ 1 , 2 , 3 ]";
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "[1,2,3]");
+    }
+
+    #[test]
+    fn minify_nested_structure() {
+        let json = br#"{  "a" : {  "b" : [ 1 , { "c" : true } ] }  }"#;
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            r#"{"a":{"b":[1,{"c":true}]}}"#
+        );
+    }
+
+    #[test]
+    fn minify_string_escapes_preserved() {
+        let json = br#"{"s": "a\"b\\c\n\t"}"#;
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#"{"s":"a\"b\\c\n\t"}"#);
+    }
+
+    #[test]
+    fn minify_unicode() {
+        let json = br#"{"emoji": "\u0041\u0042\u0043"}"#;
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        // simdjson may normalize unicode escapes
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.contains("emoji"));
+    }
+
+    #[test]
+    fn minify_numbers() {
+        let json = b"[ -0 , 3.14 , 1e10 , -1.5e-3 ]";
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.starts_with('['));
+        assert!(s.ends_with(']'));
+        assert!(!s.contains(' '));
+    }
+
+    #[test]
+    fn minify_booleans_and_null() {
+        let json = b"[ true , false , null ]";
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "[true,false,null]");
+    }
+
+    #[test]
+    fn minify_empty_containers() {
+        for json in &[&b"{ }"[..], &b"[ ]"[..]] {
+            let buf = pad_buffer(json);
+            let out = minify(&buf, json.len()).unwrap();
+            let s = std::str::from_utf8(&out).unwrap();
+            assert!(!s.contains(' '));
+        }
+    }
+
+    #[test]
+    fn minify_string_value() {
+        let json = br#""hello world""#;
+        let buf = pad_buffer(json);
+        let out = minify(&buf, json.len()).unwrap();
+        assert_eq!(std::str::from_utf8(&out).unwrap(), r#""hello world""#);
+    }
+
+    #[test]
+    fn minify_large_object() {
+        let mut json = String::from("{");
+        for i in 0..50 {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(r#" "key_{}" : {} "#, i, i));
+        }
+        json.push('}');
+        let buf = pad_buffer(json.as_bytes());
+        let out = minify(&buf, json.len()).unwrap();
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(!s.contains(' '));
+        assert!(s.contains("\"key_0\":0"));
+        assert!(s.contains("\"key_49\":49"));
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_array_map_field() tests (#1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn array_map_field_simple() {
+        let json = br#"[{"a":1},{"a":2},{"a":3}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            "[1,2,3]"
+        );
+    }
+
+    #[test]
+    fn array_map_field_missing() {
+        let json = br#"[{"a":1},{"b":2},{"a":3}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            "[1,null,3]"
+        );
+    }
+
+    #[test]
+    fn array_map_field_nested() {
+        let json = br#"[{"a":{"b":1}},{"a":{"b":2}}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a", "b"], true).unwrap();
+        assert_eq!(std::str::from_utf8(out.as_ref().unwrap()).unwrap(), "[1,2]");
+    }
+
+    #[test]
+    fn array_map_field_empty_array() {
+        let json = b"[]";
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        assert_eq!(std::str::from_utf8(out.as_ref().unwrap()).unwrap(), "[]");
+    }
+
+    #[test]
+    fn array_map_field_with_prefix() {
+        let json = br#"{"items":[{"x":10},{"x":20}]}"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &["items"], &["x"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            "[10,20]"
+        );
+    }
+
+    #[test]
+    fn array_map_field_non_array_returns_none() {
+        let json = br#"{"a":1}"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn array_map_field_wrap_false() {
+        let json = br#"[{"a":1},{"a":2}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], false).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        // wrap_array=false emits newline-delimited values (no trailing newline)
+        assert_eq!(s, "1\n2");
+    }
+
+    #[test]
+    fn array_map_field_null_elements() {
+        let json = br#"[null,{"a":1},null]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            "[null,1,null]"
+        );
+    }
+
+    #[test]
+    fn array_map_field_mixed_types() {
+        // Arrays with non-object elements cause the C++ to return None (fallback
+        // to Rust evaluator), since field extraction only applies to objects.
+        let json = br#"[1,"str",true,{"a":42},null]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn array_map_field_string_values() {
+        let json = br#"[{"name":"alice"},{"name":"bob"}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["name"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            r#"["alice","bob"]"#
+        );
+    }
+
+    #[test]
+    fn array_map_field_large_array() {
+        let mut json = String::from("[");
+        for i in 0..100 {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(r#"{{"v":{}}}"#, i));
+        }
+        json.push(']');
+        let buf = pad_buffer(json.as_bytes());
+        let out = dom_array_map_field(&buf, json.len(), &[], &["v"], true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.starts_with('['));
+        assert!(s.ends_with(']'));
+        assert!(s.contains("99"));
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_array_map_fields_obj() tests (#1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn array_map_fields_obj_simple() {
+        let json = br#"[{"a":1,"b":2},{"a":3,"b":4}]"#;
+        let buf = pad_buffer(json);
+        let keys = [&b"\"a\""[..], &b"\"b\""[..]];
+        let out =
+            dom_array_map_fields_obj(&buf, json.len(), &[], &keys, &["a", "b"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            r#"[{"a":1,"b":2},{"a":3,"b":4}]"#
+        );
+    }
+
+    #[test]
+    fn array_map_fields_obj_missing_field() {
+        let json = br#"[{"a":1},{"a":2,"b":3}]"#;
+        let buf = pad_buffer(json);
+        let keys = [&b"\"a\""[..], &b"\"b\""[..]];
+        let out =
+            dom_array_map_fields_obj(&buf, json.len(), &[], &keys, &["a", "b"], true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.contains("null")); // missing b → null
+    }
+
+    #[test]
+    fn array_map_fields_obj_single_field() {
+        let json = br#"[{"a":1},{"a":2}]"#;
+        let buf = pad_buffer(json);
+        let keys = [&b"\"a\""[..]];
+        let out = dom_array_map_fields_obj(&buf, json.len(), &[], &keys, &["a"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            r#"[{"a":1},{"a":2}]"#
+        );
+    }
+
+    #[test]
+    fn array_map_fields_obj_empty_array() {
+        let json = b"[]";
+        let buf = pad_buffer(json);
+        let keys = [&b"\"a\""[..]];
+        let out = dom_array_map_fields_obj(&buf, json.len(), &[], &keys, &["a"], true).unwrap();
+        assert_eq!(std::str::from_utf8(out.as_ref().unwrap()).unwrap(), "[]");
+    }
+
+    #[test]
+    fn array_map_fields_obj_non_array_returns_none() {
+        let json = br#"{"a":1}"#;
+        let buf = pad_buffer(json);
+        let keys = [&b"\"a\""[..]];
+        let out = dom_array_map_fields_obj(&buf, json.len(), &[], &keys, &["a"], true).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn array_map_fields_obj_with_prefix() {
+        let json = br#"{"data":[{"x":1,"y":2}]}"#;
+        let buf = pad_buffer(json);
+        let keys = [&b"\"x\""[..], &b"\"y\""[..]];
+        let out = dom_array_map_fields_obj(&buf, json.len(), &["data"], &keys, &["x", "y"], true)
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            r#"[{"x":1,"y":2}]"#
+        );
+    }
+
+    #[test]
+    fn array_map_fields_obj_wrap_false() {
+        let json = br#"[{"a":1},{"a":2}]"#;
+        let buf = pad_buffer(json);
+        let keys = [&b"\"a\""[..]];
+        let out = dom_array_map_fields_obj(&buf, json.len(), &[], &keys, &["a"], false).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.contains('\n')); // newline-delimited
+    }
+
+    // -----------------------------------------------------------------------
+    // dom_array_map_builtin() tests (#1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn array_map_builtin_length() {
+        let json = br#"[{"a":1,"b":2},[1,2,3],"hello"]"#;
+        let buf = pad_buffer(json);
+        // op=0 is length
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 0, true, "", true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            "[2,3,5]"
+        );
+    }
+
+    #[test]
+    fn array_map_builtin_keys_sorted() {
+        let json = br#"[{"b":2,"a":1}]"#;
+        let buf = pad_buffer(json);
+        // op=1, sorted=true is keys
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 1, true, "", true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.contains(r#"["a","b"]"#));
+    }
+
+    #[test]
+    fn array_map_builtin_keys_unsorted() {
+        let json = br#"[{"b":2,"a":1}]"#;
+        let buf = pad_buffer(json);
+        // op=1, sorted=false is keys_unsorted
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 1, false, "", true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.contains(r#"["b","a"]"#));
+    }
+
+    #[test]
+    fn array_map_builtin_type() {
+        let json = br#"[1,"str",null,true,[],{}]"#;
+        let buf = pad_buffer(json);
+        // op=2 is type
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 2, false, "", true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.contains("\"number\""));
+        assert!(s.contains("\"string\""));
+        assert!(s.contains("\"null\""));
+        assert!(s.contains("\"boolean\""));
+        assert!(s.contains("\"array\""));
+        assert!(s.contains("\"object\""));
+    }
+
+    #[test]
+    fn array_map_builtin_has() {
+        let json = br#"[{"a":1},{"b":2},{"a":3,"b":4}]"#;
+        let buf = pad_buffer(json);
+        // op=3 is has
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 3, false, "a", true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            "[true,false,true]"
+        );
+    }
+
+    #[test]
+    fn array_map_builtin_empty_array() {
+        let json = b"[]";
+        let buf = pad_buffer(json);
+        for op in 0..=3 {
+            let out = dom_array_map_builtin(&buf, json.len(), &[], op, true, "a", true).unwrap();
+            assert_eq!(std::str::from_utf8(out.as_ref().unwrap()).unwrap(), "[]");
+        }
+    }
+
+    #[test]
+    fn array_map_builtin_non_array_returns_none() {
+        let json = br#"{"a":1}"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 0, true, "", true).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn array_map_builtin_with_prefix() {
+        let json = br#"{"items":[{"x":1},{"x":2}]}"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_builtin(&buf, json.len(), &["items"], 0, true, "", true).unwrap();
+        assert_eq!(std::str::from_utf8(out.as_ref().unwrap()).unwrap(), "[1,1]");
+    }
+
+    #[test]
+    fn array_map_builtin_wrap_false() {
+        let json = br#"[{"a":1},{"a":2}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 0, true, "", false).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.contains('\n')); // newline-delimited
+    }
+
+    #[test]
+    fn array_map_builtin_length_on_null_elements() {
+        let json = br#"[null,"hi",[1,2]]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 0, true, "", true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        // NOTE: jq returns [0,2,2] (null|length=0), but the C++ bridge returns
+        // null for length of null. This divergence is handled at the Rust eval
+        // layer when the passthrough result is used.
+        assert_eq!(s, "[null,2,2]");
+    }
+
+    #[test]
+    fn array_map_builtin_type_on_mixed() {
+        let json = br#"[42,3.14,"s",true,false,null,[],{}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_builtin(&buf, json.len(), &[], 2, false, "", true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            s,
+            r#"["number","number","string","boolean","boolean","null","array","object"]"#
+        );
+    }
+
+    #[test]
+    fn array_map_field_object_values() {
+        let json = br#"[{"a":{"x":1}},{"a":{"y":2}}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        let s = std::str::from_utf8(out.as_ref().unwrap()).unwrap();
+        assert!(s.contains(r#"{"x":1}"#));
+        assert!(s.contains(r#"{"y":2}"#));
+    }
+
+    #[test]
+    fn array_map_field_array_values() {
+        let json = br#"[{"a":[1,2]},{"a":[3]}]"#;
+        let buf = pad_buffer(json);
+        let out = dom_array_map_field(&buf, json.len(), &[], &["a"], true).unwrap();
+        assert_eq!(
+            std::str::from_utf8(out.as_ref().unwrap()).unwrap(),
+            "[[1,2],[3]]"
+        );
     }
 }
