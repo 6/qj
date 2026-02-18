@@ -92,7 +92,7 @@ diff <(./target/release/qj '.field' test.json) <(jq '.field' test.json)
 
 ## Fuzzing
 
-Nine fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
+Ten fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
 
 Fuzz binaries use libfuzzer which runs indefinitely without `-max_total_time`.
 All `[[bin]]` entries have `test = false` to prevent `cargo test` from picking them up.
@@ -119,6 +119,11 @@ cargo +nightly fuzz run fuzz_eval         -s none -- -max_total_time=120
 **NDJSON fast-path differential** (run after changing `src/parallel/`):
 ```
 cargo +nightly fuzz run fuzz_ndjson_diff  -s none -- -max_total_time=120
+```
+
+**flat_eval vs eval differential** (run after changing `src/flat_eval.rs`):
+```
+cargo +nightly fuzz run fuzz_flat_eval_diff -s none -- -max_total_time=120
 ```
 
 **Output formatting** (run after changing `src/output.rs`):
