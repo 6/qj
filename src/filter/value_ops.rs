@@ -1015,9 +1015,11 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                 value_desc(left)
             )),
             (Value::Double(a, _), Value::Double(b, _)) => {
-                if a.is_nan() || b.is_nan() || a.is_infinite() || b.is_infinite() {
-                    Ok(Value::Double(0.0, None))
+                if a.is_nan() || b.is_nan() {
+                    Ok(Value::Double(f64::NAN, None))
                 } else {
+                    // jq truncates to i64 for modulo (inf→i64::MAX, -inf→i64::MIN)
+                    let ai = *a as i64;
                     let bi = *b as i64;
                     if bi == 0 {
                         return Err(format!(
@@ -1026,12 +1028,12 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                             value_desc(right)
                         ));
                     }
-                    Ok(Value::Int((*a as i64).checked_rem(bi).unwrap_or(0)))
+                    Ok(Value::Int(ai.checked_rem(bi).unwrap_or(0)))
                 }
             }
             (Value::Int(a), Value::Double(b, _)) => {
-                if b.is_nan() || b.is_infinite() {
-                    Ok(Value::Double(0.0, None))
+                if b.is_nan() {
+                    Ok(Value::Double(f64::NAN, None))
                 } else {
                     let bi = *b as i64;
                     if bi == 0 {
@@ -1045,10 +1047,10 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                 }
             }
             (Value::Double(a, _), Value::Int(b)) => {
-                let ai = *a as i64;
-                if a.is_nan() || a.is_infinite() {
-                    Ok(Value::Double(0.0, None))
+                if a.is_nan() {
+                    Ok(Value::Double(f64::NAN, None))
                 } else {
+                    let ai = *a as i64;
                     Ok(Value::Int(ai.checked_rem(*b).unwrap_or(0)))
                 }
             }

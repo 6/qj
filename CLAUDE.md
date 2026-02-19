@@ -55,9 +55,8 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
   suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against qj and reports pass rate.
   Also includes `jq_conformance_ndjson` which runs each object/array test case through both
   single-doc and NDJSON paths, asserting identical output (catches NDJSON path divergences).
-- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 43 individual tests for
-  jq.test edge cases, categorized by feature (modules, bignum, etc.) with fix suggestions in
-  comments. 18 now pass; 25 remain (mostly modules and bignum). Run by category to track progress.
+- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 9 remaining tests for
+  jq.test edge cases (all bignum/arbitrary-precision). See `docs/CONFORMANCE_100.md` for analysis.
 - **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test
   against qj, jq, jaq, and gojq. Writes `tests/jq_compat/results.md`.
 - **Feature compatibility suite** (`#[ignore]`): `tests/jq_compat/features.toml` — TOML-defined
