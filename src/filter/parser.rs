@@ -375,12 +375,12 @@ impl<'a> Parser<'a> {
                 };
                 Ok(Value::Int(n))
             }
-            Some(Token::Float(_)) => {
-                let f = match self.advance().unwrap() {
-                    Token::Float(f) => *f,
+            Some(Token::Float(..)) => {
+                let (f, raw) = match self.advance().unwrap() {
+                    Token::Float(f, raw) => (*f, raw.clone()),
                     _ => unreachable!(),
                 };
-                Ok(Value::Double(f, None))
+                Ok(Value::Double(f, raw))
             }
             Some(Token::Str(_)) => {
                 let s = match self.advance().unwrap() {
@@ -907,12 +907,12 @@ impl<'a> Parser<'a> {
                 };
                 Ok(Filter::Literal(Value::Int(n)))
             }
-            Some(Token::Float(_)) => {
-                let f = match self.advance().unwrap() {
-                    Token::Float(f) => *f,
+            Some(Token::Float(..)) => {
+                let (f, raw) = match self.advance().unwrap() {
+                    Token::Float(f, raw) => (*f, raw.clone()),
                     _ => unreachable!(),
                 };
-                Ok(Filter::Literal(Value::Double(f, None)))
+                Ok(Filter::Literal(Value::Double(f, raw)))
             }
             Some(Token::Str(_)) => {
                 let s = match self.advance().unwrap() {

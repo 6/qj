@@ -13,14 +13,17 @@ pub fn jq_compat() -> bool {
     *JQ_COMPAT
 }
 
-/// Create a Value from an i64. In compat mode, integers outside the f64
-/// exact range (|n| > 2^53) are converted to f64 to match jq behavior.
+/// Create a Value from an i64. Always stores as Int; compat-mode truncation
+/// to f64 happens at arithmetic time, not parse time, to preserve precision
+/// for tostring/tojson while matching jq's arithmetic behavior.
 pub fn int_value(i: i64) -> Value {
-    if *JQ_COMPAT && !(-F64_INT_MAX..=F64_INT_MAX).contains(&i) {
-        Value::Double(i as f64, None)
-    } else {
-        Value::Int(i)
-    }
+    Value::Int(i)
+}
+
+/// In compat mode, returns true if the integer exceeds f64's exact range (2^53).
+/// Used by arithmetic operations to decide when to truncate to f64.
+pub fn needs_f64_truncation(n: i64) -> bool {
+    *JQ_COMPAT && !(-F64_INT_MAX..=F64_INT_MAX).contains(&n)
 }
 
 /// JSON value representation.

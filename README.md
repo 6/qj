@@ -9,7 +9,7 @@ Benchmarked on M4 MacBook Pro:
 
 ## qj vs jq
 
-**Near drop-in replacement.** 98% pass rate on jq's official test suite (99.8% with `QJ_JQ_COMPAT=1`), broad coverage of everyday filters, builtins, and flags - optimized for speed.
+**Near drop-in replacement.** 98% pass rate on jq's official test suite, broad coverage of everyday filters, builtins, and flags - optimized for speed.
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
@@ -80,5 +80,5 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 
 Limitations vs jq:
 
-- No arbitrary precision arithmetic: qj uses i64/f64 internally. Integers up to 2^63 are exact; beyond that, precision is lost. Set `QJ_JQ_COMPAT=1` to match jq's f64 precision-loss behavior for integers > 2^53 (496/497 conformance, 99.8%).
+- No arbitrary precision arithmetic: qj uses i64/f64 internally. Integers up to 2^63 are exact; beyond that, precision is lost. Set `QJ_JQ_COMPAT=1` to match jq's precision behavior — arithmetic truncates to f64 for numbers > 2^53, while display operations preserve precision (497/497 conformance, 100%).
 - Single-document JSON >4 GB falls back to serde_json (simdjson's limit). Still faster than jq but ~3-6x slower than simdjson's fast path. **NDJSON (JSONL) is unaffected** since each line is parsed independently.

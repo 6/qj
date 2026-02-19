@@ -55,8 +55,9 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
   suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against qj and reports pass rate.
   Also includes `jq_conformance_ndjson` which runs each object/array test case through both
   single-doc and NDJSON paths, asserting identical output (catches NDJSON path divergences).
-- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 9 remaining tests for
-  jq.test edge cases (all bignum/arbitrary-precision). See `docs/CONFORMANCE_100.md` for analysis.
+- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 9 tests for
+  jq.test bignum/precision edge cases. All pass with `QJ_JQ_COMPAT=1` (497/497).
+  See `docs/CONFORMANCE_100.md` for analysis.
 - **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test
   against qj, jq, jaq, and gojq. Writes `tests/jq_compat/results.md`.
 - **Feature compatibility suite** (`#[ignore]`): `tests/jq_compat/features.toml` — TOML-defined
@@ -201,8 +202,9 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
   (floor 8 MB). Larger values use more memory but may help on machines with many cores.
 - `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
 - `QJ_NO_FAST_PATH=1` — Disable NDJSON fast paths (for A/B benchmarking).
-- `QJ_JQ_COMPAT=1` — Store integers > 2^53 as f64 to match jq's precision-loss behavior.
-  Enables 496/497 (99.8%) conformance. See `docs/CONFORMANCE_100.md`.
+- `QJ_JQ_COMPAT=1` — Match jq's precision behavior: arithmetic truncates to f64 for numbers
+  > 2^53, extreme exponents preserved, `have_decnum=true`. Enables 497/497 (100%) conformance.
+  See `docs/CONFORMANCE_100.md`.
 
 ### Important
 Never run benchmarks concurrently with tests or other CPU-intensive processes.

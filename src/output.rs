@@ -500,6 +500,10 @@ fn write_json_string_ascii<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
 /// trailing zeros, scientific notation, etc.) to match jq 1.7+ behavior.
 /// Otherwise uses ryu for computed values.
 fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()> {
+    // Use raw text when available (literal preservation, including extreme exponents)
+    if let Some(text) = raw {
+        return w.write_all(text.as_bytes());
+    }
     if f.is_nan() {
         return w.write_all(b"null");
     }
@@ -510,10 +514,6 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
         } else {
             return w.write_all(b"-1.7976931348623157e+308");
         }
-    }
-    // Use raw JSON text when available (literal preservation)
-    if let Some(text) = raw {
-        return w.write_all(text.as_bytes());
     }
     // For computed doubles (no raw text), use ryu for the shortest
     // representation, then adjust formatting for integer-valued results
@@ -560,12 +560,6 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
         return w.write_all(exp_str.as_bytes());
     }
     w.write_all(s.as_bytes())
-}
-
-/// Write a double value to a Vec<u8> buffer, using the same formatting as
-/// JSON output (integer expansion for whole numbers, etc.).
-pub(crate) fn write_double_to_buf(buf: &mut Vec<u8>, f: f64, raw: Option<&str>) {
-    let _ = write_double(buf, f, raw);
 }
 
 #[cfg(test)]

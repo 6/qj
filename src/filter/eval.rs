@@ -607,7 +607,24 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
                     n.checked_neg()
                         .map_or_else(|| Value::Double(-(n as f64), None), Value::Int),
                 ),
-                Value::Double(f, _) => output(Value::Double(-f, None)),
+                Value::Double(f, raw) => {
+                    // In compat mode (have_decnum=true), preserve raw text through
+                    // negation to maintain precision. Otherwise, only preserve for
+                    // extreme exponents (inf/0) where f64 loses the representation.
+                    let preserve = crate::value::jq_compat() || f.is_infinite() || f == 0.0;
+                    let neg_raw = if preserve {
+                        raw.as_ref().map(|s| {
+                            if let Some(rest) = s.strip_prefix('-') {
+                                rest.into()
+                            } else {
+                                format!("-{s}").into_boxed_str()
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    output(Value::Double(-f, neg_raw));
+                }
                 _ => {
                     LAST_ERROR.with(|e| {
                         *e.borrow_mut() = Some(Value::String(format!(

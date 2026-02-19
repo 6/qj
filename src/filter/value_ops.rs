@@ -28,9 +28,12 @@ pub(super) fn input_as_f64(v: &Value) -> Option<f64> {
 
 pub(super) fn f64_to_value(f: f64) -> Value {
     if crate::value::jq_compat() {
-        // In compat mode, only convert to i64 within f64's exact integer range
+        // In compat mode, use strict bounds: values at exactly ±2^53 stay as
+        // Double so that comparisons with original Int values go through the
+        // Int/Double path (which converts Int to f64), matching jq's behavior
+        // where `$n+0 == $n` is true for large integers.
         let limit = (1i64 << 53) as f64;
-        if f.fract() == 0.0 && f >= -limit && f <= limit {
+        if f.fract() == 0.0 && f > -limit && f < limit {
             Value::Int(f as i64)
         } else {
             Value::Double(f, None)
@@ -840,9 +843,15 @@ fn value_desc(v: &Value) -> String {
 pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, String> {
     match op {
         ArithOp::Add => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Ok(a
-                .checked_add(*b)
-                .map_or_else(|| Value::Double(*a as f64 + *b as f64, None), Value::Int)),
+            (Value::Int(a), Value::Int(b)) => {
+                if crate::value::needs_f64_truncation(*a) || crate::value::needs_f64_truncation(*b)
+                {
+                    Ok(f64_to_value(*a as f64 + *b as f64))
+                } else {
+                    Ok(a.checked_add(*b)
+                        .map_or_else(|| Value::Double(*a as f64 + *b as f64, None), Value::Int))
+                }
+            }
             (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a + b, None)),
             (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 + b, None)),
             (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a + *b as f64, None)),
@@ -873,9 +882,15 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
             )),
         },
         ArithOp::Sub => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Ok(a
-                .checked_sub(*b)
-                .map_or_else(|| Value::Double(*a as f64 - *b as f64, None), Value::Int)),
+            (Value::Int(a), Value::Int(b)) => {
+                if crate::value::needs_f64_truncation(*a) || crate::value::needs_f64_truncation(*b)
+                {
+                    Ok(f64_to_value(*a as f64 - *b as f64))
+                } else {
+                    Ok(a.checked_sub(*b)
+                        .map_or_else(|| Value::Double(*a as f64 - *b as f64, None), Value::Int))
+                }
+            }
             (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a - b, None)),
             (Value::Int(a), Value::Double(b, _)) => Ok(Value::Double(*a as f64 - b, None)),
             (Value::Double(a, _), Value::Int(b)) => Ok(Value::Double(a - *b as f64, None)),
@@ -897,14 +912,19 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
         },
         ArithOp::Mul => match (left, right) {
             (Value::Int(a), Value::Int(b)) => {
-                let result = a
-                    .checked_mul(*b)
-                    .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int);
-                // jq: 0 * negative = -0 (negative zero)
-                if result == Value::Int(0) && ((*a < 0) != (*b < 0)) {
-                    Ok(Value::Double(-0.0, None))
+                if crate::value::needs_f64_truncation(*a) || crate::value::needs_f64_truncation(*b)
+                {
+                    Ok(f64_to_value(*a as f64 * *b as f64))
                 } else {
-                    Ok(result)
+                    let result = a
+                        .checked_mul(*b)
+                        .map_or_else(|| Value::Double(*a as f64 * *b as f64, None), Value::Int);
+                    // jq: 0 * negative = -0 (negative zero)
+                    if result == Value::Int(0) && ((*a < 0) != (*b < 0)) {
+                        Ok(Value::Double(-0.0, None))
+                    } else {
+                        Ok(result)
+                    }
                 }
             }
             (Value::Double(a, _), Value::Double(b, _)) => Ok(Value::Double(a * b, None)),
@@ -956,20 +976,25 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                 value_desc(left)
             )),
             (Value::Int(a), Value::Int(b)) => {
-                // i64::MIN / -1 overflows (panics in debug, wraps in release)
-                if let Some(q) = a.checked_div(*b) {
-                    if a % b == 0 {
-                        // jq: 0 / negative = -0 (negative zero)
-                        if q == 0 && ((*a < 0) != (*b < 0)) {
-                            Ok(Value::Double(-0.0, None))
+                if crate::value::needs_f64_truncation(*a) || crate::value::needs_f64_truncation(*b)
+                {
+                    Ok(f64_to_value(*a as f64 / *b as f64))
+                } else {
+                    // i64::MIN / -1 overflows (panics in debug, wraps in release)
+                    if let Some(q) = a.checked_div(*b) {
+                        if a % b == 0 {
+                            // jq: 0 / negative = -0 (negative zero)
+                            if q == 0 && ((*a < 0) != (*b < 0)) {
+                                Ok(Value::Double(-0.0, None))
+                            } else {
+                                Ok(Value::Int(q))
+                            }
                         } else {
-                            Ok(Value::Int(q))
+                            Ok(Value::Double(*a as f64 / *b as f64, None))
                         }
                     } else {
                         Ok(Value::Double(*a as f64 / *b as f64, None))
                     }
-                } else {
-                    Ok(Value::Double(*a as f64 / *b as f64, None))
                 }
             }
             // Float division by zero
@@ -1018,7 +1043,22 @@ pub fn arith_values(left: &Value, op: &ArithOp, right: &Value) -> Result<Value, 
                 value_desc(left)
             )),
             // i64::MIN % -1 can panic in debug mode; mathematically it's 0
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_rem(*b).unwrap_or(0))),
+            (Value::Int(a), Value::Int(b)) => {
+                if crate::value::needs_f64_truncation(*a) || crate::value::needs_f64_truncation(*b)
+                {
+                    let ai = *a as f64 as i64;
+                    let bi = *b as f64 as i64;
+                    if bi == 0 {
+                        return Err(format!(
+                            "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",
+                            value_desc(left)
+                        ));
+                    }
+                    Ok(Value::Int(ai.checked_rem(bi).unwrap_or(0)))
+                } else {
+                    Ok(Value::Int(a.checked_rem(*b).unwrap_or(0)))
+                }
+            }
             // jq truncates floats to integers before modulo, then checks for zero
             (Value::Double(_, _), Value::Int(b)) if *b == 0 => Err(format!(
                 "number ({}) and number (0) cannot be divided (remainder) because the divisor is zero",

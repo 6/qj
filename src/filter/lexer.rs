@@ -34,7 +34,7 @@ pub enum Token {
     InterpStr(Vec<StringSegment>), // "text \(expr) text"
     Format(String),                // @base64, @csv, etc.
     Int(i64),
-    Float(f64),
+    Float(f64, Option<Box<str>>), // optional raw text for extreme exponent preservation
     // Keywords
     True,
     False,
@@ -402,7 +402,7 @@ fn is_value_token(tok: Option<&Token>) -> bool {
                 | Token::RBrace
                 | Token::Ident(_)
                 | Token::Int(_)
-                | Token::Float(_)
+                | Token::Float(..)
                 | Token::Str(_)
                 | Token::InterpStr(_)
                 | Token::True
@@ -592,16 +592,86 @@ fn lex_number(bytes: &[u8], start: usize) -> Result<(Token, usize)> {
 
     if is_float {
         let f: f64 = text.parse()?;
-        Ok((Token::Float(f), consumed))
+        // In compat mode, preserve extreme exponents: f64 overflow (inf) or
+        // underflow (0.0) with nonzero mantissa. Normalized to jq's format.
+        if crate::value::jq_compat()
+            && (f.is_infinite() || (f == 0.0 && has_nonzero_mantissa(text)))
+            && text.contains(['e', 'E'])
+        {
+            let normalized = normalize_extreme_number(text);
+            Ok((Token::Float(f, Some(normalized.into_boxed_str())), consumed))
+        } else {
+            Ok((Token::Float(f, None), consumed))
+        }
     } else {
         let n: i64 = text.parse()?;
-        // In compat mode, large integers become floats to match jq's f64 behavior
-        if crate::value::jq_compat() && !(-(1i64 << 53)..=(1i64 << 53)).contains(&n) {
-            Ok((Token::Float(n as f64), consumed))
-        } else {
-            Ok((Token::Int(n), consumed))
-        }
+        Ok((Token::Int(n), consumed))
     }
+}
+
+/// Check if the mantissa part of a number text has any nonzero digit.
+fn has_nonzero_mantissa(text: &str) -> bool {
+    let mantissa = text.split(['e', 'E']).next().unwrap_or(text);
+    mantissa.bytes().any(|b| b.is_ascii_digit() && b != b'0')
+}
+
+/// Normalize an extreme-exponent number literal to jq's scientific notation format.
+/// Examples:
+///   "9E999999999"            → "9E+999999999"
+///   "9999999999E999999990"   → "9.999999999E+999999999"
+///   "1E-999999999"           → "1E-999999999"
+///   "0.000000001E-999999990" → "1E-999999999"
+fn normalize_extreme_number(text: &str) -> String {
+    // Split into mantissa and exponent parts
+    let (mantissa_str, exp_str) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
+
+    // Parse the sign
+    let (is_negative, mantissa_str) = if let Some(rest) = mantissa_str.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, mantissa_str)
+    };
+
+    // Split mantissa into integer and fractional parts
+    let (int_part, frac_part) = mantissa_str.split_once('.').unwrap_or((mantissa_str, ""));
+
+    // Concatenate all digits
+    let all_digits: String = int_part.chars().chain(frac_part.chars()).collect();
+
+    // Find first nonzero digit
+    let first_nonzero = match all_digits.find(|c: char| c != '0') {
+        Some(p) => p,
+        None => return if is_negative { "-0" } else { "0" }.to_string(),
+    };
+
+    // Significant digits (from first nonzero, stripped of trailing zeros)
+    let sig = all_digits[first_nonzero..].trim_end_matches('0');
+
+    // Parse original exponent (use i128 for safety with huge exponents)
+    let orig_exp: i128 = exp_str.parse().unwrap_or(0);
+
+    // Compute normalized exponent:
+    // Original decimal point is after int_part.len() digits.
+    // Normalized decimal point is after 1 digit (the first significant digit at position first_nonzero).
+    // Adjustment = int_part.len() - 1 - first_nonzero
+    let new_exp = orig_exp + (int_part.len() as i128) - 1 - (first_nonzero as i128);
+
+    // Format the result
+    let mut result = String::new();
+    if is_negative {
+        result.push('-');
+    }
+    result.push_str(&sig[..1]);
+    if sig.len() > 1 {
+        result.push('.');
+        result.push_str(&sig[1..]);
+    }
+    result.push('E');
+    if new_exp >= 0 {
+        result.push('+');
+    }
+    result.push_str(&new_exp.to_string());
+    result
 }
 
 #[cfg(test)]
@@ -723,7 +793,7 @@ mod tests {
 
     #[test]
     fn lex_float() {
-        assert_eq!(lex("3.14").unwrap(), vec![Token::Float(3.14)]);
+        assert_eq!(lex("3.14").unwrap(), vec![Token::Float(3.14, None)]);
     }
 
     #[test]

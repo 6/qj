@@ -7696,10 +7696,10 @@ fn qj_compat(filter: &str, input: &str) -> String {
 
 #[test]
 fn compat_large_int_tostring() {
-    // Large integers > 2^53 should show f64-rounded value in compat mode
+    // In compat mode with have_decnum=true, precision is preserved for display
     assert_eq!(
         qj_compat(".[0] | tostring", "[13911860366432393]"),
-        r#""13911860366432392""#
+        r#""13911860366432393""#
     );
 }
 
@@ -7707,16 +7707,16 @@ fn compat_large_int_tostring() {
 fn compat_large_int_tojson() {
     assert_eq!(
         qj_compat(".x | tojson", r#"{"x":13911860366432393}"#),
-        r#""13911860366432392""#
+        r#""13911860366432393""#
     );
 }
 
 #[test]
 fn compat_large_int_equality() {
-    // In compat mode, these map to the same f64 so they're equal
+    // In compat mode with have_decnum=true, distinct i64 values are not equal
     assert_eq!(
         qj_compat("(13911860366432393 == 13911860366432392)", "null"),
-        "true"
+        "false"
     );
 }
 
@@ -7739,9 +7739,10 @@ fn compat_large_int_arithmetic() {
 
 #[test]
 fn compat_large_int_negate_tojson() {
+    // Unary negation preserves precision (not arithmetic)
     assert_eq!(
         qj_compat("-. | tojson", "13911860366432393"),
-        r#""-13911860366432392""#
+        r#""-13911860366432393""#
     );
 }
 
@@ -7766,4 +7767,63 @@ fn compat_large_int_add_zero() {
         ),
         "[-9007199254740992,\"-9007199254740992\"]\n[9007199254740992,\"9007199254740992\"]\n[13911860366432392,\"13911860366432392\"]"
     );
+}
+
+// ── Extreme exponent number literals (jq.test line 661) ────────────────────
+// These require QJ_JQ_COMPAT=1 for extreme exponent text preservation.
+
+#[test]
+fn extreme_exponent_overflow_preserved() {
+    // 9E999999999 overflows f64 but text should be preserved and normalized
+    assert_eq!(qj_compat("9E999999999", "null"), "9E+999999999");
+}
+
+#[test]
+fn extreme_exponent_normalized_mantissa() {
+    // 9999999999E999999990 normalizes to 9.999999999E+999999999
+    assert_eq!(
+        qj_compat("9999999999E999999990", "null"),
+        "9.999999999E+999999999"
+    );
+}
+
+#[test]
+fn extreme_exponent_underflow_preserved() {
+    // 1E-999999999 underflows f64 to 0 but text should be preserved
+    assert_eq!(qj_compat("1E-999999999", "null"), "1E-999999999");
+}
+
+#[test]
+fn extreme_exponent_underflow_normalized() {
+    // 0.000000001E-999999990 normalizes to 1E-999999999
+    assert_eq!(qj_compat("0.000000001E-999999990", "null"), "1E-999999999");
+}
+
+#[test]
+fn extreme_exponent_combined() {
+    // Full jq.test line 661: all four extreme exponent literals
+    assert_eq!(
+        qj_compat(
+            "9E999999999, 9999999999E999999990, 1E-999999999, 0.000000001E-999999990",
+            "null"
+        ),
+        "9E+999999999\n9.999999999E+999999999\n1E-999999999\n1E-999999999"
+    );
+}
+
+#[test]
+fn extreme_exponent_comparison() {
+    // jq.test line 668: comparisons between extreme exponent values
+    // Works both with and without compat mode (inf > 0 = true)
+    assert_jq_compat(
+        "5E500000000 > 5E-5000000000, 10000E500000000 > 10000E-5000000000",
+        "null",
+    );
+}
+
+#[test]
+fn extreme_exponent_normal_range_unaffected() {
+    // Numbers with exponents within f64 range should be unaffected
+    assert_jq_compat("3.14", "null");
+    assert_jq_compat("0.001", "null");
 }

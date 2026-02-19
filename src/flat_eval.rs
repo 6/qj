@@ -277,13 +277,8 @@ fn write_compact_flat(w: &mut Vec<u8>, flat: FlatValue<'_>) {
     } else if let Some(b) = flat.as_bool() {
         w.extend_from_slice(if b { b"true" } else { b"false" });
     } else if let Some(i) = flat.as_int() {
-        if crate::value::jq_compat() && !(-(1i64 << 53)..=(1i64 << 53)).contains(&i) {
-            // In compat mode, large integers are treated as f64
-            crate::output::write_double_to_buf(w, i as f64, None);
-        } else {
-            let mut buf = itoa::Buffer::new();
-            w.extend_from_slice(buf.format(i).as_bytes());
-        }
+        let mut buf = itoa::Buffer::new();
+        w.extend_from_slice(buf.format(i).as_bytes());
     } else if let Some((f, raw)) = flat.as_f64() {
         if let Some(text) = raw {
             w.extend_from_slice(text.as_bytes());

@@ -335,7 +335,17 @@ pub(super) fn eval_math(
                 n.checked_abs()
                     .map_or_else(|| Value::Double((*n as f64).abs(), None), Value::Int),
             ),
-            Value::Double(f, _) => output(Value::Double(f.abs(), None)),
+            Value::Double(f, raw) => {
+                let abs_raw = if f.is_infinite() || *f == 0.0 {
+                    raw.as_ref().map(|s| {
+                        s.strip_prefix('-')
+                            .map_or_else(|| s.clone(), |rest| rest.into())
+                    })
+                } else {
+                    None
+                };
+                output(Value::Double(f.abs(), abs_raw));
+            }
             _ => output(input.clone()),
         },
         _ => {}

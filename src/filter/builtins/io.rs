@@ -264,8 +264,10 @@ pub(super) fn eval_io(
             super::super::eval::LAST_ERROR.with(|e| *e.borrow_mut() = Some(err_val));
         }
         "have_decnum" | "have_literal_numbers" => {
-            // qj uses i64/f64, not arbitrary precision decimals
-            output(Value::Bool(false));
+            // In compat mode, qj preserves large integer precision (i64) and
+            // extreme exponent text, matching jq-with-decnum behavior.
+            // Without compat, we report false since we lack arbitrary precision.
+            output(Value::Bool(crate::value::jq_compat()));
         }
         "modulemeta" => {
             // Input: module name string. Output: metadata object with deps and defs.
