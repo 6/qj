@@ -868,7 +868,7 @@ fn generate_json_markdown(
 
     // Summary: geometric-mean speedup vs jq
     writeln!(md).unwrap();
-    writeln!(md, "### Summary (times faster than jq)").unwrap();
+    writeln!(md, "### Summary — JSON (times faster than jq)").unwrap();
     writeln!(md).unwrap();
 
     let mut sum_header = String::from("|");
