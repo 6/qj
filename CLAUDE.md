@@ -201,6 +201,8 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
   (floor 8 MB). Larger values use more memory but may help on machines with many cores.
 - `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
 - `QJ_NO_FAST_PATH=1` — Disable NDJSON fast paths (for A/B benchmarking).
+- `QJ_JQ_COMPAT=1` — Store integers > 2^53 as f64 to match jq's precision-loss behavior.
+  Enables 496/497 (99.8%) conformance. See `docs/CONFORMANCE_100.md`.
 
 ### Important
 Never run benchmarks concurrently with tests or other CPU-intensive processes.

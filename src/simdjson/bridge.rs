@@ -203,7 +203,7 @@ pub(crate) fn decode_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
         }
         TAG_INT => {
             let v = read_i64(buf, pos)?;
-            Ok(Value::Int(v))
+            Ok(crate::value::int_value(v))
         }
         TAG_DOUBLE => {
             let v = read_f64(buf, pos)?;

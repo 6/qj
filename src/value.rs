@@ -1,4 +1,27 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+/// Maximum integer magnitude that f64 can represent exactly: 2^53.
+/// Beyond this, f64 loses precision on individual integers.
+const F64_INT_MAX: i64 = 1i64 << 53;
+
+/// When `QJ_JQ_COMPAT=1`, integers > 2^53 are stored as f64 to match jq's
+/// precision-loss behavior. Cached at first access for hot-path performance.
+static JQ_COMPAT: LazyLock<bool> = LazyLock::new(|| std::env::var_os("QJ_JQ_COMPAT").is_some());
+
+/// Returns true when `QJ_JQ_COMPAT=1` is set.
+pub fn jq_compat() -> bool {
+    *JQ_COMPAT
+}
+
+/// Create a Value from an i64. In compat mode, integers outside the f64
+/// exact range (|n| > 2^53) are converted to f64 to match jq behavior.
+pub fn int_value(i: i64) -> Value {
+    if *JQ_COMPAT && !(-F64_INT_MAX..=F64_INT_MAX).contains(&i) {
+        Value::Double(i as f64, None)
+    } else {
+        Value::Int(i)
+    }
+}
 
 /// JSON value representation.
 ///
@@ -105,7 +128,7 @@ impl From<serde_json::Value> for Value {
             serde_json::Value::Bool(b) => Value::Bool(b),
             serde_json::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
-                    Value::Int(i)
+                    int_value(i)
                 } else {
                     Value::Double(n.as_f64().unwrap_or(0.0), None)
                 }

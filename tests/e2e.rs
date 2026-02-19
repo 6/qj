@@ -7666,3 +7666,104 @@ fn jq_compat_map_on_non_iterable() {
     assert_jq_compat("map(.)", r#""hello""#);
     assert_jq_compat("map(.)", "true");
 }
+
+// =========================================================================
+// QJ_JQ_COMPAT=1 mode — f64-compatible large integer handling
+// =========================================================================
+
+/// Run qj with QJ_JQ_COMPAT=1 and return compact output.
+fn qj_compat(filter: &str, input: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_qj"))
+        .args(["-c", "--", filter])
+        .env("QJ_JQ_COMPAT", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run qj");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn compat_large_int_tostring() {
+    // Large integers > 2^53 should show f64-rounded value in compat mode
+    assert_eq!(
+        qj_compat(".[0] | tostring", "[13911860366432393]"),
+        r#""13911860366432392""#
+    );
+}
+
+#[test]
+fn compat_large_int_tojson() {
+    assert_eq!(
+        qj_compat(".x | tojson", r#"{"x":13911860366432393}"#),
+        r#""13911860366432392""#
+    );
+}
+
+#[test]
+fn compat_large_int_equality() {
+    // In compat mode, these map to the same f64 so they're equal
+    assert_eq!(
+        qj_compat("(13911860366432393 == 13911860366432392)", "null"),
+        "true"
+    );
+}
+
+#[test]
+fn compat_large_int_arithmetic() {
+    // Arithmetic truncates to f64 first, so precision is lost
+    assert_eq!(
+        qj_compat(". - 10", "13911860366432393"),
+        "13911860366432382"
+    );
+    assert_eq!(
+        qj_compat(".[0] - 10", "[13911860366432393]"),
+        "13911860366432382"
+    );
+    assert_eq!(
+        qj_compat(".x - 10", r#"{"x":13911860366432393}"#),
+        "13911860366432382"
+    );
+}
+
+#[test]
+fn compat_large_int_negate_tojson() {
+    assert_eq!(
+        qj_compat("-. | tojson", "13911860366432393"),
+        r#""-13911860366432392""#
+    );
+}
+
+#[test]
+fn compat_normal_ints_unaffected() {
+    // Integers within f64 exact range should be unaffected
+    assert_eq!(qj_compat(". + 1", "42"), "43");
+    assert_eq!(qj_compat(". - 10", "100"), "90");
+    assert_eq!(
+        qj_compat(". | tostring", "9007199254740992"),
+        r#""9007199254740992""#
+    );
+}
+
+#[test]
+fn compat_large_int_add_zero() {
+    // jq.test line 2199: $n+0 forces f64 conversion
+    assert_eq!(
+        qj_compat(
+            ".[] as $n | $n+0 | [., tostring]",
+            "[-9007199254740993, 9007199254740993, 13911860366432393]"
+        ),
+        "[-9007199254740992,\"-9007199254740992\"]\n[9007199254740992,\"9007199254740992\"]\n[13911860366432392,\"13911860366432392\"]"
+    );
+}

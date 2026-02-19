@@ -27,12 +27,22 @@ pub(super) fn input_as_f64(v: &Value) -> Option<f64> {
 }
 
 pub(super) fn f64_to_value(f: f64) -> Value {
-    // Use strict < for upper bound: i64::MAX as f64 rounds up to 2^63 which
-    // doesn't fit in i64, so `f as i64` would saturate to i64::MAX.
-    if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 {
-        Value::Int(f as i64)
+    if crate::value::jq_compat() {
+        // In compat mode, only convert to i64 within f64's exact integer range
+        let limit = (1i64 << 53) as f64;
+        if f.fract() == 0.0 && f >= -limit && f <= limit {
+            Value::Int(f as i64)
+        } else {
+            Value::Double(f, None)
+        }
     } else {
-        Value::Double(f, None)
+        // Use strict < for upper bound: i64::MAX as f64 rounds up to 2^63 which
+        // doesn't fit in i64, so `f as i64` would saturate to i64::MAX.
+        if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 {
+            Value::Int(f as i64)
+        } else {
+            Value::Double(f, None)
+        }
     }
 }
 

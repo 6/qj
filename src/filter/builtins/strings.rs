@@ -30,12 +30,11 @@ pub(super) fn eval_strings(
         "tostring" => match input {
             Value::String(_) => output(input.clone()),
             Value::Int(n) => output(Value::String(itoa::Buffer::new().format(*n).into())),
-            Value::Double(f, raw) => {
-                let s = match raw {
-                    Some(r) => r.to_string(),
-                    None => ryu::Buffer::new().format(*f).to_string(),
-                };
-                output(Value::String(s));
+            Value::Double(_, _) => {
+                // Use write_compact for consistent formatting (integer expansion, etc.)
+                let mut buf = Vec::new();
+                crate::output::write_compact(&mut buf, input, false).unwrap();
+                output(Value::String(String::from_utf8(buf).unwrap_or_default()));
             }
             Value::Bool(b) => output(Value::String(if *b { "true" } else { "false" }.into())),
             Value::Null => output(Value::String("null".into())),

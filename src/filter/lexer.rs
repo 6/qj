@@ -595,7 +595,12 @@ fn lex_number(bytes: &[u8], start: usize) -> Result<(Token, usize)> {
         Ok((Token::Float(f), consumed))
     } else {
         let n: i64 = text.parse()?;
-        Ok((Token::Int(n), consumed))
+        // In compat mode, large integers become floats to match jq's f64 behavior
+        if crate::value::jq_compat() && !(-(1i64 << 53)..=(1i64 << 53)).contains(&n) {
+            Ok((Token::Float(n as f64), consumed))
+        } else {
+            Ok((Token::Int(n), consumed))
+        }
     }
 }
 

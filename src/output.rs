@@ -562,6 +562,12 @@ fn write_double<W: Write>(w: &mut W, f: f64, raw: Option<&str>) -> io::Result<()
     w.write_all(s.as_bytes())
 }
 
+/// Write a double value to a Vec<u8> buffer, using the same formatting as
+/// JSON output (integer expansion for whole numbers, etc.).
+pub(crate) fn write_double_to_buf(buf: &mut Vec<u8>, f: f64, raw: Option<&str>) {
+    let _ = write_double(buf, f, raw);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
