@@ -267,6 +267,18 @@ pub(super) fn eval_io(
             // qj uses i64/f64, not arbitrary precision decimals
             output(Value::Bool(false));
         }
+        "modulemeta" => {
+            // Input: module name string. Output: metadata object with deps and defs.
+            // First checks the pre-loaded cache, then tries on-demand loading.
+            if let Value::String(name) = input {
+                if let Some(meta) = super::super::eval::get_module_metadata(name) {
+                    output(meta);
+                } else {
+                    // Try loading on-demand via the module loader search paths
+                    super::super::eval::load_module_metadata_on_demand(name, output);
+                }
+            }
+        }
         "env" | "$ENV" => {
             let vars: Vec<(String, Value)> = std::env::vars()
                 .map(|(k, v)| (k, Value::String(v)))

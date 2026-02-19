@@ -1,6 +1,7 @@
 mod builtins;
 pub mod eval;
 pub mod lexer;
+pub mod module;
 pub mod parser;
 mod value_ops;
 pub use value_ops::{arith_values, compare_values, values_order};
@@ -115,6 +116,22 @@ pub enum Filter {
     PostfixIndex(Box<Filter>, Box<Filter>),
     /// Postfix slice: `A[s:e]` — evaluates A, s, e against same input.
     PostfixSlice(Box<Filter>, Option<Box<Filter>>, Option<Box<Filter>>),
+    /// `import "path" as name; rest` or `import "path" as $var; rest`
+    Import {
+        path: String,
+        alias: String,
+        is_data: bool,
+        metadata: Option<Value>,
+        rest: Box<Filter>,
+    },
+    /// `include "path"; rest`
+    Include {
+        path: String,
+        metadata: Option<Value>,
+        rest: Box<Filter>,
+    },
+    /// `module {metadata}; rest`
+    ModuleDecl { metadata: Value, rest: Box<Filter> },
 }
 
 /// Object construction key — can be a literal string or computed.
@@ -729,6 +746,9 @@ impl Filter {
             Filter::Def { body, rest, .. } => {
                 body.uses_input_builtins() || rest.uses_input_builtins()
             }
+            Filter::Import { rest, .. }
+            | Filter::Include { rest, .. }
+            | Filter::ModuleDecl { rest, .. } => rest.uses_input_builtins(),
             Filter::Label(_, body) => body.uses_input_builtins(),
             Filter::PostfixIndex(base, idx) => {
                 base.uses_input_builtins() || idx.uses_input_builtins()
@@ -834,6 +854,9 @@ impl Filter {
                 body.collect_var_refs(out);
                 rest.collect_var_refs(out);
             }
+            Filter::Import { rest, .. }
+            | Filter::Include { rest, .. }
+            | Filter::ModuleDecl { rest, .. } => rest.collect_var_refs(out),
             Filter::Label(_, body) => body.collect_var_refs(out),
             Filter::PostfixIndex(base, idx) => {
                 base.collect_var_refs(out);

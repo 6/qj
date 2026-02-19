@@ -21,8 +21,10 @@ use std::sync::Arc;
 
 /// Maximum nesting depth for recursive descent parsing.
 /// Each parenthesized expression adds ~2 to depth (parse_pipe + parse_primary),
-/// so 128 allows ~64 levels of explicit nesting — plenty for real-world filters.
-const MAX_PARSE_DEPTH: usize = 128;
+/// so 96 allows ~48 levels of explicit nesting — plenty for real-world filters.
+/// Kept low enough to avoid stack overflow in debug builds with default thread
+/// stack size (2 MB).
+const MAX_PARSE_DEPTH: usize = 96;
 
 struct Parser<'a> {
     tokens: &'a [Token],
@@ -76,9 +78,26 @@ impl<'a> Parser<'a> {
         self.parse_pipe()
     }
 
-    // pipe = def | comma ("|" comma)*
+    // pipe = import | include | module | def | comma ("|" comma)*
     fn parse_pipe(&mut self) -> Result<Filter> {
         self.enter_depth()?;
+
+        // End of tokens: implicit identity (used in module files where
+        // the last `def` has no continuation expression).
+        if self.peek().is_none() {
+            self.leave_depth();
+            return Ok(Filter::Identity);
+        }
+
+        // Check for module system statements
+        if matches!(
+            self.peek(),
+            Some(Token::Import | Token::Include | Token::Module)
+        ) {
+            let result = self.parse_module_stmt();
+            self.leave_depth();
+            return result;
+        }
 
         // Check for `def` at the start of a pipe expression
         if self.peek() == Some(&Token::Def) {
@@ -191,6 +210,205 @@ impl<'a> Parser<'a> {
             Some(Token::Ident(s)) => Ok(s.clone()),
             Some(tok) => bail!("expected parameter name in def, got {tok:?}"),
             None => bail!("expected parameter name in def, got end of input"),
+        }
+    }
+
+    /// Parse `import`, `include`, or `module` statement.
+    fn parse_module_stmt(&mut self) -> Result<Filter> {
+        match self.peek() {
+            Some(Token::Import) => self.parse_import(),
+            Some(Token::Include) => self.parse_include(),
+            Some(Token::Module) => self.parse_module_decl(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Parse `import "path" as name; rest` or `import "path" as $var; rest`
+    /// Optional metadata: `import "path" as name {search: "./"};`
+    fn parse_import(&mut self) -> Result<Filter> {
+        self.advance(); // consume `import`
+
+        // Path must be a constant string
+        let path = match self.peek() {
+            Some(Token::Str(_)) => match self.advance().unwrap() {
+                Token::Str(s) => s.clone(),
+                _ => unreachable!(),
+            },
+            Some(Token::InterpStr(_)) => bail!("Import path must be constant"),
+            Some(tok) => bail!("expected string after 'import', got {tok:?}"),
+            None => bail!("expected string after 'import', got end of input"),
+        };
+
+        self.expect(&Token::As)?;
+
+        // Alias: identifier or $variable
+        let alias = match self.advance() {
+            Some(Token::Ident(s)) => s.clone(),
+            Some(tok) => bail!("expected identifier after 'as', got {tok:?}"),
+            None => bail!("expected identifier after 'as', got end of input"),
+        };
+        let is_data = alias.starts_with('$');
+
+        // Optional metadata object
+        let metadata = if self.peek() == Some(&Token::LBrace) {
+            Some(self.parse_constant_object()?)
+        } else {
+            None
+        };
+
+        self.expect(&Token::Semicolon)?;
+        let rest = self.parse_pipe()?;
+
+        Ok(Filter::Import {
+            path,
+            alias,
+            is_data,
+            metadata,
+            rest: Box::new(rest),
+        })
+    }
+
+    /// Parse `include "path"; rest` or `include "path" {metadata}; rest`
+    fn parse_include(&mut self) -> Result<Filter> {
+        self.advance(); // consume `include`
+
+        let path = match self.peek() {
+            Some(Token::Str(_)) => match self.advance().unwrap() {
+                Token::Str(s) => s.clone(),
+                _ => unreachable!(),
+            },
+            Some(Token::InterpStr(_)) => bail!("Import path must be constant"),
+            Some(tok) => bail!("expected string after 'include', got {tok:?}"),
+            None => bail!("expected string after 'include', got end of input"),
+        };
+
+        let metadata = if self.peek() == Some(&Token::LBrace) {
+            Some(self.parse_constant_object()?)
+        } else {
+            None
+        };
+
+        self.expect(&Token::Semicolon)?;
+        let rest = self.parse_pipe()?;
+
+        Ok(Filter::Include {
+            path,
+            metadata,
+            rest: Box::new(rest),
+        })
+    }
+
+    /// Parse `module {metadata}; rest`
+    fn parse_module_decl(&mut self) -> Result<Filter> {
+        self.advance(); // consume `module`
+
+        let metadata = self.parse_constant_object()?;
+        self.expect(&Token::Semicolon)?;
+        let rest = self.parse_pipe()?;
+
+        Ok(Filter::ModuleDecl {
+            metadata,
+            rest: Box::new(rest),
+        })
+    }
+
+    /// Parse a constant object expression for module metadata: `{key: value, ...}`.
+    /// Only allows constant values (strings, numbers, booleans, null, arrays, objects).
+    fn parse_constant_object(&mut self) -> Result<Value> {
+        // Check that we have a `{`; if not, it might be a non-object metadata
+        if self.peek() != Some(&Token::LBrace) {
+            // Could be a non-constant expression like `(.+1)` or a non-object like `[]`
+            match self.peek() {
+                Some(Token::LParen) => bail!("Module metadata must be constant"),
+                Some(Token::LBrack) => bail!("Module metadata must be an object"),
+                Some(tok) => bail!("Module metadata must be an object, got {tok:?}"),
+                None => bail!("expected module metadata"),
+            }
+        }
+        self.advance(); // consume `{`
+
+        let mut pairs = Vec::new();
+        if self.peek() != Some(&Token::RBrace) {
+            loop {
+                // Parse key
+                let key = match self.advance() {
+                    Some(Token::Ident(s)) => s.clone(),
+                    Some(Token::Str(s)) => s.clone(),
+                    Some(tok) => bail!("expected key in metadata object, got {tok:?}"),
+                    None => bail!("expected key in metadata object"),
+                };
+                self.expect(&Token::Colon)?;
+                let val = self.parse_constant_value()?;
+                pairs.push((key, val));
+
+                if self.peek() != Some(&Token::Comma) {
+                    break;
+                }
+                self.advance(); // consume `,`
+            }
+        }
+        self.expect(&Token::RBrace)?;
+
+        let obj: Vec<(String, Value)> = pairs;
+        Ok(Value::Object(Arc::new(obj)))
+    }
+
+    /// Parse a constant value for module metadata.
+    fn parse_constant_value(&mut self) -> Result<Value> {
+        match self.peek() {
+            Some(Token::Null) => {
+                self.advance();
+                Ok(Value::Null)
+            }
+            Some(Token::True) => {
+                self.advance();
+                Ok(Value::Bool(true))
+            }
+            Some(Token::False) => {
+                self.advance();
+                Ok(Value::Bool(false))
+            }
+            Some(Token::Int(_)) => {
+                let n = match self.advance().unwrap() {
+                    Token::Int(n) => *n,
+                    _ => unreachable!(),
+                };
+                Ok(Value::Int(n))
+            }
+            Some(Token::Float(_)) => {
+                let f = match self.advance().unwrap() {
+                    Token::Float(f) => *f,
+                    _ => unreachable!(),
+                };
+                Ok(Value::Double(f, None))
+            }
+            Some(Token::Str(_)) => {
+                let s = match self.advance().unwrap() {
+                    Token::Str(s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                Ok(Value::String(s))
+            }
+            Some(Token::InterpStr(_)) => bail!("Module metadata must be constant"),
+            Some(Token::LBrace) => self.parse_constant_object(),
+            Some(Token::LBrack) => {
+                self.advance();
+                let mut items = Vec::new();
+                if self.peek() != Some(&Token::RBrack) {
+                    items.push(self.parse_constant_value()?);
+                    while self.peek() == Some(&Token::Comma) {
+                        self.advance();
+                        items.push(self.parse_constant_value()?);
+                    }
+                }
+                self.expect(&Token::RBrack)?;
+                Ok(Value::Array(Arc::new(items)))
+            }
+            Some(Token::Dot) | Some(Token::LParen) => {
+                bail!("Module metadata must be constant")
+            }
+            Some(tok) => bail!("expected constant value in metadata, got {tok:?}"),
+            None => bail!("expected constant value in metadata"),
         }
     }
 
@@ -765,7 +983,43 @@ impl<'a> Parser<'a> {
                 };
                 // Variable reference: $name
                 if name.starts_with('$') {
+                    // Check for $var::name (namespaced data access)
+                    if self.peek() == Some(&Token::DoubleColon) {
+                        self.advance(); // consume ::
+                        let member = match self.advance() {
+                            Some(Token::Ident(s)) => s.clone(),
+                            Some(tok) => bail!("expected identifier after '::', got {tok:?}"),
+                            None => bail!("expected identifier after '::'"),
+                        };
+                        let ns_name = format!("{}::{}", name, member);
+                        return Ok(Filter::Var(ns_name));
+                    }
                     return Ok(Filter::Var(name));
+                }
+                // Check for namespace::member (e.g., foo::bar)
+                if self.peek() == Some(&Token::DoubleColon) {
+                    self.advance(); // consume ::
+                    let member = match self.advance() {
+                        Some(Token::Ident(s)) => s.clone(),
+                        Some(tok) => bail!("expected identifier after '::', got {tok:?}"),
+                        None => bail!("expected identifier after '::'"),
+                    };
+                    let ns_name = format!("{}::{}", name, member);
+                    // Check for function call: ns::func(args)
+                    if self.peek() == Some(&Token::LParen) {
+                        self.advance();
+                        let mut args = Vec::new();
+                        if self.peek() != Some(&Token::RParen) {
+                            args.push(self.parse_expr()?);
+                            while self.peek() == Some(&Token::Semicolon) {
+                                self.advance();
+                                args.push(self.parse_expr()?);
+                            }
+                        }
+                        self.expect(&Token::RParen)?;
+                        return Ok(Filter::Builtin(ns_name, args));
+                    }
+                    return Ok(Filter::Builtin(ns_name, vec![]));
                 }
                 // Check for function call: name(args)
                 if self.peek() == Some(&Token::LParen) {
@@ -865,6 +1119,9 @@ impl<'a> Parser<'a> {
             Token::Foreach => Some("foreach"),
             Token::Select => Some("select"),
             Token::Def => Some("def"),
+            Token::Import => Some("import"),
+            Token::Include => Some("include"),
+            Token::Module => Some("module"),
             Token::Label => Some("label"),
             Token::Break => Some("break"),
             Token::True => Some("true"),
@@ -1611,8 +1868,9 @@ mod tests {
 
     #[test]
     fn parse_deeply_nested_parens_rejected() {
-        // 80 levels of explicit parens → ~160 depth (2 per level) → exceeds 128 limit
-        let deep = "(".repeat(80) + "." + &")".repeat(80);
+        // Each paren level adds ~2 to depth. With MAX_PARSE_DEPTH=96, 50 levels
+        // (~100 depth) should exceed the limit and return an error.
+        let deep = "(".repeat(50) + "." + &")".repeat(50);
         let tokens = lexer::lex(&deep).unwrap();
         let result = parse(&tokens);
         assert!(result.is_err());
@@ -1622,7 +1880,7 @@ mod tests {
 
     #[test]
     fn parse_moderate_nesting_ok() {
-        // 20 levels of nesting should be fine (~40 depth)
+        // 20 levels of nesting should be fine (~40 depth, well under 96 limit)
         let nested = "(".repeat(20) + "." + &")".repeat(20);
         let tokens = lexer::lex(&nested).unwrap();
         assert!(parse(&tokens).is_ok());

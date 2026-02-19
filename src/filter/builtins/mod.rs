@@ -85,7 +85,8 @@ pub(super) fn eval_builtin(
         | "env"
         | "$ENV"
         | "have_decnum"
-        | "have_literal_numbers" => io::eval_io(name, args, input, env, output),
+        | "have_literal_numbers"
+        | "modulemeta" => io::eval_io(name, args, input, env, output),
 
         _ => {
             // Unknown builtin — silently produce no output

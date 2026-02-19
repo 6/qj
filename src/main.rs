@@ -201,6 +201,20 @@ struct Cli {
     /// Number of threads for parallel NDJSON processing
     #[arg(long, value_name = "N")]
     threads: Option<usize>,
+
+    /// Library search path for jq modules (import/include)
+    #[arg(short = 'L', value_name = "DIR")]
+    library_paths: Vec<String>,
+}
+
+/// Check if a filter AST contains import/include/module statements.
+fn has_module_stmts(filter: &qj::filter::Filter) -> bool {
+    matches!(
+        filter,
+        qj::filter::Filter::Import { .. }
+            | qj::filter::Filter::Include { .. }
+            | qj::filter::Filter::ModuleDecl { .. }
+    )
 }
 
 fn main() -> Result<()> {
@@ -276,10 +290,42 @@ fn main() -> Result<()> {
         }
     };
 
+    // Resolve module imports (import/include) if the filter uses them.
+    // The module loader resolves all imports into the Env and strips
+    // the import/include nodes from the filter AST.
+    let (filter, module_loader) = if !cli.library_paths.is_empty() || has_module_stmts(&filter) {
+        let search_paths: Vec<std::path::PathBuf> = cli
+            .library_paths
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        let mut loader = qj::filter::module::ModuleLoader::new(search_paths.clone());
+        match loader.resolve(&filter, qj::filter::Env::empty()) {
+            Ok((resolved_filter, module_env)) => {
+                // Set module metadata cache for modulemeta builtin
+                qj::filter::eval::set_module_metadata(
+                    loader.export_metadata(),
+                    search_paths.clone(),
+                );
+                (resolved_filter, Some((loader, module_env)))
+            }
+            Err(e) => {
+                eprintln!("qj: error: {e:#}");
+                std::process::exit(3);
+            }
+        }
+    } else {
+        (filter, None)
+    };
+
     // Build environment from --arg / --argjson
     // Variable names in the AST include the '$' prefix (e.g., "$name"),
     // so we prepend '$' when binding.
-    let mut env = qj::filter::Env::empty();
+    let mut env = if let Some((_, ref module_env)) = module_loader {
+        module_env.clone()
+    } else {
+        qj::filter::Env::empty()
+    };
     for pair in cli.args.chunks(2) {
         if pair.len() == 2 {
             env = env.bind_var(

@@ -56,6 +56,11 @@ pub enum Token {
     Def,
     Label,
     Break,
+    // Module system
+    Import,
+    Include,
+    Module,
+    DoubleColon, // :: (namespace separator)
     // Logical
     DoubleSlash,         // // (alternative operator)
     QuestionDoubleSlash, // ?// (alternative match operator)
@@ -136,8 +141,13 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 continue;
             }
             b':' => {
-                tokens.push(Token::Colon);
-                i += 1;
+                if i + 1 < bytes.len() && bytes[i + 1] == b':' {
+                    tokens.push(Token::DoubleColon);
+                    i += 2;
+                } else {
+                    tokens.push(Token::Colon);
+                    i += 1;
+                }
                 continue;
             }
             b';' => {
@@ -349,6 +359,9 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                     "foreach" => Token::Foreach,
                     "select" => Token::Select,
                     "def" => Token::Def,
+                    "import" => Token::Import,
+                    "include" => Token::Include,
+                    "module" => Token::Module,
                     "label" => Token::Label,
                     "break" => Token::Break,
                     _ => Token::Ident(word.to_string()),

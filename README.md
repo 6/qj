@@ -9,13 +9,13 @@ Benchmarked on M4 MacBook Pro:
 
 ## qj vs jq
 
-**Near drop-in replacement.** 95% pass rate on jq's official test suite, broad coverage of everyday filters, builtins, and flags - optimized for speed.
+**Near drop-in replacement.** 98% pass rate on jq's official test suite, broad coverage of everyday filters, builtins, and flags - optimized for speed.
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
-**Where jq is better.** If you need jq modules (`import`/`include`) or arbitrary precision arithmetic. qj uses 64-bit integers and floats, so large numbers pass through unchanged but arithmetic may lose precision.
+**Where jq is better.** If you need arbitrary precision arithmetic. qj uses 64-bit integers and floats, so large numbers pass through unchanged but arithmetic may lose precision.
 
 **Memory tradeoff.** qj trades memory for speed. It uses a sliding window so peak RSS stays well below file size (~300 MB for a 3.4 GB file), but jq streams one record at a time (~5 MB).
 
@@ -75,11 +75,10 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 
 ## Compatibility and limitations
 
-**95%** pass rate on jq's official [497-test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test).
-**96%** feature coverage (172/179 features, [details](tests/jq_compat/feature_results.md)).
+**98%** pass rate on jq's official [497-test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test) (486/497).
+**97%** feature coverage (174/179 features, [details](tests/jq_compat/feature_results.md)).
 
 Limitations vs jq:
 
-- No module system: jq's `import`/`include` are not supported.
 - No arbitrary precision arithmetic: qj uses i64/f64 internally. Large numbers are preserved on passthrough but arithmetic uses f64 precision.
 - Single-document JSON >4 GB falls back to serde_json (simdjson's limit). Still faster than jq but ~3-6x slower than simdjson's fast path. **NDJSON (JSONL) is unaffected** since each line is parsed independently.

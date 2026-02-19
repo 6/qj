@@ -205,9 +205,9 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                 (
                     "Read filter from file".into(),
                     Box::new(|tool: &common::Tool| {
-                        // Write filter to a temp file
+                        // Write filter to a per-tool temp file to avoid races
                         let dir = std::env::temp_dir();
-                        let filter_path = dir.join("qj_test_filter.jq");
+                        let filter_path = dir.join(format!("qj_test_filter_{}.jq", tool.name));
                         std::fs::write(&filter_path, ".foo").ok();
                         let mut cmd = Command::new(&tool.path);
                         cmd.args(["-f", filter_path.to_str().unwrap(), "--"]);
@@ -236,7 +236,7 @@ fn hardcoded_tests(tools: &[common::Tool], verbose: bool) -> (Vec<Feature>, Vec<
                     "Read complex filter from file".into(),
                     Box::new(|tool: &common::Tool| {
                         let dir = std::env::temp_dir();
-                        let filter_path = dir.join("qj_test_filter2.jq");
+                        let filter_path = dir.join(format!("qj_test_filter2_{}.jq", tool.name));
                         std::fs::write(&filter_path, "[.[] | . * 2]").ok();
                         let mut cmd = Command::new(&tool.path);
                         cmd.args(["-c", "-f", filter_path.to_str().unwrap(), "--"]);

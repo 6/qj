@@ -87,12 +87,27 @@ fn parse_jq_test_file(content: &str) -> Vec<TestCase> {
     cases
 }
 
+fn needs_module_flag(filter: &str) -> bool {
+    let trimmed = filter.trim_start();
+    trimmed.starts_with("import ")
+        || trimmed.starts_with("include ")
+        || trimmed.starts_with("modulemeta")
+}
+
 fn run_test_case(case: &TestCase) -> TestResult {
     let qj = common::Tool {
         name: "qj".to_string(),
         path: env!("CARGO_BIN_EXE_qj").to_string(),
     };
-    match common::run_tool(&qj, &case.filter, &case.input, &["-c", "--"]) {
+    let modules_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/jq_compat/modules");
+    let modules_str = modules_dir.to_str().unwrap();
+    let extra_args: Vec<&str> = if needs_module_flag(&case.filter) {
+        vec!["-c", "-L", modules_str, "--"]
+    } else {
+        vec!["-c", "--"]
+    };
+    match common::run_tool(&qj, &case.filter, &case.input, &extra_args) {
         Some(output) => {
             let actual_lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
             let expected_lines: Vec<&str> = case.expected.iter().map(|s| s.as_str()).collect();

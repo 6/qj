@@ -13,11 +13,16 @@ mod common;
 
 /// Run qj with a filter and input, return stdout lines.
 fn run_jx(filter: &str, input: &str) -> Vec<String> {
+    run_jx_with_args(filter, input, &["-c", "--"])
+}
+
+/// Run qj with a filter, input, and extra args, return stdout lines.
+fn run_jx_with_args(filter: &str, input: &str, args: &[&str]) -> Vec<String> {
     let qj = common::Tool {
         name: "qj".to_string(),
         path: env!("CARGO_BIN_EXE_qj").to_string(),
     };
-    match common::run_tool(&qj, filter, input, &["-c", "--"]) {
+    match common::run_tool(&qj, filter, input, args) {
         Some(output) => output
             .lines()
             .filter(|l| !l.is_empty())
@@ -30,6 +35,23 @@ fn run_jx(filter: &str, input: &str) -> Vec<String> {
 /// Check if qj output matches expected (JSON-aware comparison).
 fn assert_gap(filter: &str, input: &str, expected: &[&str]) {
     let actual = run_jx(filter, input);
+    let actual_refs: Vec<&str> = actual.iter().map(|s| s.as_str()).collect();
+    assert!(
+        common::json_lines_equal(&actual_refs, expected),
+        "filter: {}\ninput: {}\nexpected: {:?}\nactual:   {:?}",
+        filter,
+        input,
+        expected,
+        actual
+    );
+}
+
+/// Check if qj output matches expected, with module library path.
+fn assert_gap_module(filter: &str, input: &str, expected: &[&str]) {
+    let modules_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/jq_compat/modules");
+    let modules_str = modules_dir.to_str().unwrap().to_string();
+    let actual = run_jx_with_args(filter, input, &["-c", "-L", &modules_str, "--"]);
     let actual_refs: Vec<&str> = actual.iter().map(|s| s.as_str()).collect();
     assert!(
         common::json_lines_equal(&actual_refs, expected),
@@ -293,7 +315,7 @@ fn gap_nan_handling_line1289_1() {
 #[test]
 #[ignore]
 fn gap_module_system_line1862_import_a_as_foo_import_b_as_ba() {
-    assert_gap(
+    assert_gap_module(
         "import \"a\" as foo; import \"b\" as bar; def fooa: foo::a; [fooa, bar::a, bar::b, foo::a]",
         "null",
         &["[\"a\",\"b\",\"c\",\"a\"]"],
@@ -304,7 +326,7 @@ fn gap_module_system_line1862_import_a_as_foo_import_b_as_ba() {
 #[test]
 #[ignore]
 fn gap_module_system_line1866_import_c_as_foo_foo_a_foo_c() {
-    assert_gap(
+    assert_gap_module(
         "import \"c\" as foo; [foo::a, foo::c]",
         "null",
         &["[0,\"acmehbah\"]"],
@@ -315,14 +337,14 @@ fn gap_module_system_line1866_import_c_as_foo_foo_a_foo_c() {
 #[test]
 #[ignore]
 fn gap_module_system_line1870_include_c_a_c() {
-    assert_gap("include \"c\"; [a, c]", "null", &["[0,\"acmehbah\"]"]);
+    assert_gap_module("include \"c\"; [a, c]", "null", &["[0,\"acmehbah\"]"]);
 }
 
 /// jq.test line 1874: `import "data" as $e; import "data" as $d; [$d[].this,$e[].that,$d::d[].this,$e::...`
 #[test]
 #[ignore]
 fn gap_module_system_line1874_import_data_as_e_import_data_a() {
-    assert_gap(
+    assert_gap_module(
         "import \"data\" as $e; import \"data\" as $d; [$d[].this,$e[].that,$d::d[].this,$e::e[].that]|join(\";\")",
         "null",
         &["\"is a test;is too;is a test;is too\""],
@@ -333,7 +355,7 @@ fn gap_module_system_line1874_import_data_as_e_import_data_a() {
 #[test]
 #[ignore]
 fn gap_module_system_line1879_import_data_as_a_import_data_a() {
-    assert_gap(
+    assert_gap_module(
         "import \"data\" as $a; import \"data\" as $b; def f: {$a, $b}; f",
         "null",
         &[
@@ -346,14 +368,14 @@ fn gap_module_system_line1879_import_data_as_a_import_data_a() {
 #[test]
 #[ignore]
 fn gap_module_system_line1883_include_shadow1_e() {
-    assert_gap("include \"shadow1\"; e", "null", &["2"]);
+    assert_gap_module("include \"shadow1\"; e", "null", &["2"]);
 }
 
 /// jq.test line 1887: `include "shadow1"; include "shadow2"; e`
 #[test]
 #[ignore]
 fn gap_module_system_line1887_include_shadow1_include_shadow() {
-    assert_gap(
+    assert_gap_module(
         "include \"shadow1\"; include \"shadow2\"; e",
         "null",
         &["3"],
@@ -364,7 +386,7 @@ fn gap_module_system_line1887_include_shadow1_include_shadow() {
 #[test]
 #[ignore]
 fn gap_module_system_line1891_import_shadow1_as_f_import_sha() {
-    assert_gap(
+    assert_gap_module(
         "import \"shadow1\" as f; import \"shadow2\" as f; import \"shadow1\" as e; [e::e, f::e]",
         "null",
         &["[2,3]"],
@@ -375,7 +397,7 @@ fn gap_module_system_line1891_import_shadow1_as_f_import_sha() {
 #[test]
 #[ignore]
 fn gap_module_system_line1931_modulemeta() {
-    assert_gap(
+    assert_gap_module(
         "modulemeta",
         "\"c\"",
         &[
@@ -388,21 +410,21 @@ fn gap_module_system_line1931_modulemeta() {
 #[test]
 #[ignore]
 fn gap_module_system_line1935_modulemeta_deps_length() {
-    assert_gap("modulemeta | .deps | length", "\"c\"", &["6"]);
+    assert_gap_module("modulemeta | .deps | length", "\"c\"", &["6"]);
 }
 
 /// jq.test line 1939: `modulemeta | .defs | length`
 #[test]
 #[ignore]
 fn gap_module_system_line1939_modulemeta_defs_length() {
-    assert_gap("modulemeta | .defs | length", "\"c\"", &["2"]);
+    assert_gap_module("modulemeta | .defs | length", "\"c\"", &["2"]);
 }
 
 /// jq.test line 1955: `import "test_bind_order" as check; check::check`
 #[test]
 #[ignore]
 fn gap_module_system_line1955_import_test_bind_order_as_chec() {
-    assert_gap(
+    assert_gap_module(
         "import \"test_bind_order\" as check; check::check",
         "null",
         &["true"],

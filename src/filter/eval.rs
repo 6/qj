@@ -5,7 +5,7 @@
 use crate::filter::{ArithOp, AssignOp, BoolOp, Env, Filter, ObjKey, Pattern, PatternKey};
 use crate::value::Value;
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 const MAX_EVAL_DEPTH: usize = 256;
@@ -122,6 +122,14 @@ thread_local! {
     static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
+// HashMap::new() is not const on this Rust version, so these are separate.
+thread_local! {
+    /// Module metadata cache for `modulemeta` builtin, set before evaluation.
+    static MODULE_META_CACHE: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
+    /// Module search paths for on-demand module loading (modulemeta builtin).
+    static MODULE_SEARCH_PATHS: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
 /// RAII guard that decrements the eval depth counter on drop.
 struct EvalDepthGuard;
 
@@ -145,6 +153,45 @@ pub fn set_last_error(err: Value) {
 /// Check if a runtime error is currently set (non-consuming).
 pub fn has_last_error() -> bool {
     LAST_ERROR.with(|e| e.borrow().is_some())
+}
+
+/// Set the module metadata cache and search paths (called before evaluation by main).
+pub fn set_module_metadata(meta: HashMap<String, Value>, search_paths: Vec<std::path::PathBuf>) {
+    MODULE_META_CACHE.with(|m: &RefCell<HashMap<String, Value>>| *m.borrow_mut() = meta);
+    MODULE_SEARCH_PATHS.with(|p: &RefCell<Vec<std::path::PathBuf>>| *p.borrow_mut() = search_paths);
+}
+
+/// Look up module metadata by name (for `modulemeta` builtin).
+pub(super) fn get_module_metadata(name: &str) -> Option<Value> {
+    MODULE_META_CACHE.with(|m: &RefCell<HashMap<String, Value>>| m.borrow().get(name).cloned())
+}
+
+/// Load module metadata on-demand for `modulemeta` builtin.
+pub(super) fn load_module_metadata_on_demand(name: &str, output: &mut dyn FnMut(Value)) {
+    let search_paths =
+        MODULE_SEARCH_PATHS.with(|p: &RefCell<Vec<std::path::PathBuf>>| p.borrow().clone());
+    if search_paths.is_empty() {
+        return;
+    }
+    let mut loader = super::module::ModuleLoader::new(search_paths);
+    // Try to load the module — this resolves all transitive deps
+    let dummy_filter = super::Filter::Identity;
+    let import_filter = super::Filter::Import {
+        path: name.to_string(),
+        alias: name.to_string(),
+        is_data: false,
+        metadata: None,
+        rest: Box::new(dummy_filter),
+    };
+    if loader.resolve(&import_filter, super::Env::empty()).is_ok()
+        && let Some(meta) = loader.get_module_metadata(name)
+    {
+        // Cache for future lookups
+        MODULE_META_CACHE.with(|m: &RefCell<HashMap<String, Value>>| {
+            m.borrow_mut().insert(name.to_string(), meta.clone());
+        });
+        output(meta);
+    }
 }
 
 /// Set the input queue for `input`/`inputs` builtins.
@@ -881,6 +928,14 @@ pub fn eval(filter: &Filter, input: &Value, env: &Env, output: &mut dyn FnMut(Va
             BREAK_SIGNAL.with(|b| {
                 *b.borrow_mut() = Some(name.clone());
             });
+        }
+
+        // Module system nodes should be resolved before evaluation.
+        // If we reach here, the module loader was not invoked.
+        Filter::Import { .. } | Filter::Include { .. } | Filter::ModuleDecl { .. } => {
+            set_last_error(Value::String(
+                "module system (import/include) requires -L library path".into(),
+            ));
         }
     }
 }
