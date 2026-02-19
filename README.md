@@ -15,9 +15,7 @@ Benchmarked on M4 MacBook Pro:
 
 **Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
-**Where jq is better.** If you need arbitrary precision arithmetic. qj uses 64-bit integers and floats, so large numbers pass through unchanged but arithmetic may lose precision.
-
-**Memory tradeoff.** qj trades memory for speed. It uses a sliding window so peak RSS stays well below file size (~300 MB for a 3.4 GB file), but jq streams one record at a time (~5 MB).
+**Where jq is better.** `--stream` is not yet implemented. Memory — qj trades memory for speed, using a sliding window (~300 MB for a 3.4 GB file) vs jq's one-record-at-a-time streaming (~5 MB).
 
 ## Quick start
 
@@ -76,7 +74,7 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 ## Compatibility and limitations
 
 **98%** pass rate on jq's official [497-test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test) (488/497).
-**97%** feature coverage (174/179 features, [details](tests/jq_compat/feature_results.md)).
+**98%** feature coverage (175/179 features, [details](tests/jq_compat/feature_results.md)).
 
 Limitations vs jq:
 

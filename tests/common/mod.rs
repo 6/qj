@@ -14,6 +14,17 @@ pub struct Tool {
     pub path: String,
 }
 
+impl Tool {
+    /// Create a `Command` for this tool, with `QJ_JQ_COMPAT=1` set for qj.
+    pub fn command(&self) -> Command {
+        let mut cmd = Command::new(&self.path);
+        if self.name == "qj" {
+            cmd.env("QJ_JQ_COMPAT", "1");
+        }
+        cmd
+    }
+}
+
 /// Discover qj (built by cargo) plus jq, jaq, gojq if on `$PATH`.
 pub fn discover_tools() -> Vec<Tool> {
     let mut tools = vec![Tool {
@@ -39,7 +50,7 @@ pub fn discover_tools() -> Vec<Tool> {
 /// Run a tool with the given filter and input on stdin. Returns stdout (even on
 /// non-zero exit) or `None` if the process couldn't be spawned.
 pub fn run_tool(tool: &Tool, filter: &str, input: &str, extra_args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new(&tool.path);
+    let mut cmd = tool.command();
     cmd.args(extra_args);
     cmd.arg(filter);
 
