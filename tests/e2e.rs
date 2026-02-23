@@ -8041,3 +8041,204 @@ fn stream_flag_empty_containers() {
     assert_jq_compat_with_flags(&["--stream", "-c", "."], "[]");
     assert_jq_compat_with_flags(&["--stream", "-c", "."], "{}");
 }
+
+// ---------------------------------------------------------------------------
+// --seq CLI flag (RFC 7464)
+// ---------------------------------------------------------------------------
+
+/// Run qj with given args and return raw stdout bytes.
+fn qj_raw_bytes(args: &[&str], input: &[u8]) -> Vec<u8> {
+    let output = Command::new(env!("CARGO_BIN_EXE_qj"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            let _ = child.stdin.take().unwrap().write_all(input);
+            child.wait_with_output()
+        })
+        .expect("failed to run qj");
+    assert!(
+        output.status.success(),
+        "qj {:?} exited with {}: stderr={}",
+        args,
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+/// Run jq with given args and return raw stdout bytes.
+fn jq_raw_bytes(args: &[&str], input: &[u8]) -> Option<Vec<u8>> {
+    let output = Command::new("jq")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            let _ = child.stdin.take().unwrap().write_all(input);
+            child.wait_with_output()
+        })
+        .ok()?;
+    Some(output.stdout)
+}
+
+#[test]
+fn seq_flag_output_has_rs_prefix() {
+    // RS (0x1E) before each output value
+    let input = b"\x1e{\"a\":1}\n";
+    let out = qj_raw_bytes(&["--seq", "-c", "."], input);
+    assert_eq!(out, b"\x1e{\"a\":1}\n");
+}
+
+#[test]
+fn seq_flag_matches_jq() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e{\"a\":1}\n";
+    let qj_out = qj_raw_bytes(&["--seq", "-c", "."], input);
+    let jq_out = jq_raw_bytes(&["--seq", "-c", "."], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq output mismatch");
+}
+
+#[test]
+fn seq_flag_multiple_values() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e{\"a\":1}\n\x1e{\"b\":2}\n";
+    let qj_out = qj_raw_bytes(&["--seq", "-c", ".a, .b"], input);
+    let jq_out = jq_raw_bytes(&["--seq", "-c", ".a, .b"], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq multi-value mismatch");
+}
+
+#[test]
+fn seq_flag_iterator() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e[1,2,3]\n";
+    let qj_out = qj_raw_bytes(&["--seq", "-c", ".[]"], input);
+    let jq_out = jq_raw_bytes(&["--seq", "-c", ".[]"], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq iterator mismatch");
+}
+
+#[test]
+fn seq_flag_pretty_output() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e{\"a\":1}\n";
+    let qj_out = qj_raw_bytes(&["--seq", "."], input);
+    let jq_out = jq_raw_bytes(&["--seq", "."], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq pretty output mismatch");
+}
+
+#[test]
+fn seq_flag_no_rs_input_silent() {
+    // Non-RS input should produce no output (exit 0)
+    let (code, stdout, _stderr) = qj_exit(&["--seq", "-c", "."], "{\"a\":1}");
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty(), "non-RS input should produce no output");
+}
+
+// ---------------------------------------------------------------------------
+// --stream-errors CLI flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stream_errors_valid_object() {
+    // Valid input: identical to --stream
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn stream_errors_valid_array() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "[1,2,3]");
+}
+
+#[test]
+fn stream_errors_valid_scalar() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "42");
+}
+
+#[test]
+fn stream_errors_valid_ndjson() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "{\"a\":1}\n{\"b\":2}\n");
+}
+
+#[test]
+fn stream_errors_with_filter() {
+    assert_jq_compat_with_flags(
+        &["--stream-errors", "-c", "select(length == 2)"],
+        r#"{"a":1,"b":2}"#,
+    );
+}
+
+#[test]
+fn stream_errors_slurp() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-s", "-c", "."], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_errors_null_input_inputs() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-n", "-c", "[inputs]"], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_errors_invalid_input() {
+    // Parse error: should produce ["error msg", []] entry (exit 0)
+    let (code, stdout, _stderr) = qj_exit(&["--stream-errors", "-c", "."], "invalid");
+    assert_eq!(code, 0, "should exit 0 on parse error with --stream-errors");
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1, "should produce one error entry");
+    // Verify structure: ["<error message>", []]
+    let parsed: serde_json::Value = serde_json::from_str(lines[0]).expect("output should be JSON");
+    assert!(parsed.is_array(), "error entry should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "error entry should have 2 elements");
+    assert!(arr[0].is_string(), "first element should be error string");
+    assert_eq!(arr[1], serde_json::json!([]), "second element should be []");
+}
+
+#[test]
+fn stream_errors_mixed_ndjson() {
+    // Mix of valid and invalid lines
+    let input = "{\"a\":1}\ninvalid\n{\"b\":2}\n";
+    let (code, stdout, _stderr) = qj_exit(&["--stream-errors", "-c", "."], input);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    // Valid object: [["a"],1] [["a"]]
+    // Invalid line: ["error...", []]
+    // Valid object: [["b"],2] [["b"]]
+    assert_eq!(lines.len(), 5, "expected 5 output lines, got: {lines:?}");
+    assert_eq!(lines[0], r#"[["a"],1]"#);
+    assert_eq!(lines[1], r#"[["a"]]"#);
+    // lines[2] is the error entry — verify structure
+    let err: serde_json::Value =
+        serde_json::from_str(lines[2]).expect("error entry should be JSON");
+    assert_eq!(err.as_array().unwrap().len(), 2);
+    assert!(err[0].is_string());
+    assert_eq!(err[1], serde_json::json!([]));
+    assert_eq!(lines[3], r#"[["b"],2]"#);
+    assert_eq!(lines[4], r#"[["b"]]"#);
+}
+
+#[test]
+fn stream_errors_empty_containers() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "[]");
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "{}");
+}
+
+#[test]
+fn stream_errors_nested() {
+    assert_jq_compat_with_flags(
+        &["--stream-errors", "-c", "."],
+        r#"{"a":{"b":1},"c":[2,3]}"#,
+    );
+}

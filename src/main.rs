@@ -67,6 +67,39 @@ fn read_file_text(path: &str) -> Result<String> {
     }
 }
 
+/// Extract RS-delimited (RFC 7464) JSON values from a buffer.
+/// Each segment after an RS byte (0x1E) up to the next RS or end of buffer
+/// is parsed as a JSON value. Segments that fail to parse are silently skipped
+/// (with a warning to stderr, matching jq behavior). Content before the first
+/// RS byte is also silently skipped.
+fn collect_seq_values(buf: &[u8], values: &mut Vec<qj::value::Value>) -> Result<()> {
+    let segments: Vec<&[u8]> = buf.split(|&b| b == 0x1E).collect();
+    // The first segment (before any RS) is skipped — jq ignores non-RS-prefixed content
+    for seg in segments.iter().skip(1) {
+        let trimmed: &[u8] =
+            seg.iter()
+                .position(|b| !b.is_ascii_whitespace())
+                .map_or(&[], |start| {
+                    let end = seg
+                        .iter()
+                        .rposition(|b| !b.is_ascii_whitespace())
+                        .unwrap_or(start);
+                    &seg[start..=end]
+                });
+        if trimmed.is_empty() {
+            continue;
+        }
+        let padded = qj::simdjson::pad_buffer(trimmed);
+        match qj::simdjson::dom_parse_to_value(&padded, trimmed.len()) {
+            Ok(v) => values.push(v),
+            Err(e) => {
+                eprintln!("qj: ignoring parse error: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -157,6 +190,14 @@ struct Cli {
     /// Parse input in streaming fashion, emitting [path, value] pairs
     #[arg(long = "stream")]
     stream: bool,
+
+    /// Like --stream but emit parse errors as ["error", []] entries
+    #[arg(long = "stream-errors")]
+    stream_errors: bool,
+
+    /// Use application/json-seq (RFC 7464) RS-delimited I/O
+    #[arg(long = "seq")]
+    seq: bool,
 
     /// Read each line as a raw string instead of parsing as JSON
     #[arg(short = 'R', long = "raw-input")]
@@ -322,9 +363,18 @@ fn main() -> Result<()> {
         (filter, None)
     };
 
+    // --stream-errors implies --stream behavior
+    let effective_stream = cli.stream || cli.stream_errors;
+
     // --stream: wrap filter with `tostream |` for the common case (non-slurp, non-null-input).
     // For slurp and null-input, the expansion happens later at the value level.
-    let filter = if cli.stream && !cli.slurp && !cli.null_input {
+    // For --stream-errors, keep the unwrapped filter for error entries.
+    let unwrapped_filter = if cli.stream_errors && !cli.slurp && !cli.null_input {
+        Some(filter.clone())
+    } else {
+        None
+    };
+    let filter = if effective_stream && !cli.slurp && !cli.null_input {
         qj::filter::Filter::Pipe(
             Box::new(qj::filter::Filter::Builtin("tostream".to_string(), vec![])),
             Box::new(filter),
@@ -467,6 +517,7 @@ fn main() -> Result<()> {
             null_separator: cli.raw_output0,
             ascii_output: cli.ascii_output,
             unbuffered: cli.unbuffered,
+            seq: cli.seq,
         }
     } else if cli.compact {
         qj::output::OutputConfig {
@@ -478,6 +529,7 @@ fn main() -> Result<()> {
             null_separator: false,
             ascii_output: cli.ascii_output,
             unbuffered: cli.unbuffered,
+            seq: cli.seq,
         }
     } else {
         qj::output::OutputConfig {
@@ -493,6 +545,7 @@ fn main() -> Result<()> {
             null_separator: false,
             ascii_output: cli.ascii_output,
             unbuffered: cli.unbuffered,
+            seq: cli.seq,
         }
     };
 
@@ -509,7 +562,8 @@ fn main() -> Result<()> {
         || cli.raw
         || cli.raw_output0
         || cli.exit_status
-        || cli.stream
+        || effective_stream
+        || cli.seq
     {
         None
     } else {
@@ -533,6 +587,14 @@ fn main() -> Result<()> {
                         for line in content.lines() {
                             values.push(qj::value::Value::String(line.to_string()));
                         }
+                    } else if cli.seq {
+                        let buf = if qj::decompress::is_compressed(path) {
+                            qj::decompress::decompress_file(path)?
+                        } else {
+                            std::fs::read(path)
+                                .with_context(|| format!("failed to read file: {path}"))?
+                        };
+                        collect_seq_values(&buf, &mut values)?;
                     } else {
                         collect_file_values(path, cli.jsonl, &mut values)?;
                     }
@@ -547,12 +609,14 @@ fn main() -> Result<()> {
                     for line in text.lines() {
                         values.push(qj::value::Value::String(line.to_string()));
                     }
+                } else if cli.seq {
+                    collect_seq_values(&buf, &mut values)?;
                 } else {
                     qj::input::strip_bom(&mut buf);
                     qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
                 }
             }
-            let values = if cli.stream {
+            let values = if effective_stream {
                 stream_expand_values(&values)
             } else {
                 values
@@ -625,6 +689,111 @@ fn main() -> Result<()> {
                 )?;
             }
         }
+    } else if cli.seq {
+        // --seq: RS-delimited (RFC 7464) input
+        let mut values = Vec::new();
+        if input_files.is_empty() {
+            let mut buf = Vec::new();
+            io::stdin()
+                .read_to_end(&mut buf)
+                .context("failed to read stdin")?;
+            collect_seq_values(&buf, &mut values)?;
+        } else {
+            for path in &input_files {
+                let buf = if qj::decompress::is_compressed(path) {
+                    qj::decompress::decompress_file(path)?
+                } else {
+                    std::fs::read(path).with_context(|| format!("failed to read file: {path}"))?
+                };
+                collect_seq_values(&buf, &mut values)?;
+            }
+        }
+        if cli.slurp {
+            let input = qj::value::Value::Array(Arc::new(values));
+            eval_and_output(
+                &filter,
+                &input,
+                &env,
+                &mut out,
+                &config,
+                &mut had_output,
+                &mut had_error,
+                &mut last_was_falsy,
+            );
+        } else {
+            for value in &values {
+                eval_and_output(
+                    &filter,
+                    value,
+                    &env,
+                    &mut out,
+                    &config,
+                    &mut had_output,
+                    &mut had_error,
+                    &mut last_was_falsy,
+                );
+            }
+        }
+    } else if cli.stream_errors && !cli.slurp && !cli.null_input {
+        // --stream-errors: like --stream but parse errors become ["error msg", []] entries
+        let error_filter = unwrapped_filter.as_ref().unwrap();
+        let mut bufs: Vec<Vec<u8>> = Vec::new();
+        if input_files.is_empty() {
+            let mut buf = Vec::new();
+            io::stdin()
+                .read_to_end(&mut buf)
+                .context("failed to read stdin")?;
+            qj::input::strip_bom(&mut buf);
+            bufs.push(buf);
+        } else {
+            for path in &input_files {
+                let buf = if qj::decompress::is_compressed(path) {
+                    qj::decompress::decompress_file(path)?
+                } else {
+                    std::fs::read(path).with_context(|| format!("failed to read file: {path}"))?
+                };
+                bufs.push(buf);
+            }
+        }
+        for buf in &bufs {
+            if buf
+                .iter()
+                .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+            {
+                continue;
+            }
+            for result in parse_docs_with_errors(buf) {
+                match result {
+                    Ok(value) => {
+                        // Success: apply wrapped filter (tostream | user_filter)
+                        eval_and_output(
+                            &filter,
+                            &value,
+                            &env,
+                            &mut out,
+                            &config,
+                            &mut had_output,
+                            &mut had_error,
+                            &mut last_was_falsy,
+                        );
+                    }
+                    Err(msg) => {
+                        // Parse error: create error entry and apply unwrapped filter
+                        let error_entry = make_stream_error_entry(&msg);
+                        eval_and_output(
+                            error_filter,
+                            &error_entry,
+                            &env,
+                            &mut out,
+                            &config,
+                            &mut had_output,
+                            &mut had_error,
+                            &mut last_was_falsy,
+                        );
+                    }
+                }
+            }
+        }
     } else if cli.slurp {
         // --slurp: collect all values into an array, eval once
         let mut values = Vec::new();
@@ -640,7 +809,7 @@ fn main() -> Result<()> {
                 collect_file_values(path, cli.jsonl, &mut values)?;
             }
         }
-        let values = if cli.stream {
+        let values = if effective_stream {
             stream_expand_values(&values)
         } else {
             values
@@ -857,6 +1026,73 @@ fn format_error(err: &qj::value::Value) -> String {
         qj::value::Value::String(s) => s.clone(),
         other => other.short_desc(),
     }
+}
+
+/// Create a `--stream-errors` error entry: `["error message", []]`.
+fn make_stream_error_entry(msg: &str) -> qj::value::Value {
+    qj::value::Value::Array(Arc::new(vec![
+        qj::value::Value::String(msg.to_string()),
+        qj::value::Value::Array(Arc::new(vec![])),
+    ]))
+}
+
+/// Parse a buffer as one or more JSON documents for `--stream-errors`.
+/// Each successfully parsed document is wrapped in `Ok(value)`.
+/// Parse failures produce `Err(error_message)`.
+/// For NDJSON, each line is tried independently.
+/// Try to parse a single JSON document, validating first to catch malformed input.
+fn parse_single_doc(trimmed: &[u8]) -> std::result::Result<qj::value::Value, String> {
+    let padded = qj::simdjson::pad_buffer(trimmed);
+    // Validate first — dom_parse_to_value may silently accept non-JSON tokens
+    if let Err(e) = qj::simdjson::dom_validate(&padded, trimmed.len()) {
+        return Err(format!("{e}"));
+    }
+    qj::simdjson::dom_parse_to_value(&padded, trimmed.len()).map_err(|e| format!("{e}"))
+}
+
+fn parse_docs_with_errors(buf: &[u8]) -> Vec<std::result::Result<qj::value::Value, String>> {
+    let mut results = Vec::new();
+    // Count non-empty lines to determine if this is multi-doc input
+    let non_empty_lines = buf
+        .split(|&b| b == b'\n')
+        .filter(|line| line.iter().any(|b| !b.is_ascii_whitespace()))
+        .count();
+
+    if non_empty_lines > 1 {
+        // Multi-doc: parse each line independently (error recovery per line)
+        for line in buf.split(|&b| b == b'\n') {
+            let trimmed =
+                line.iter()
+                    .position(|b| !b.is_ascii_whitespace())
+                    .map_or(&[] as &[u8], |start| {
+                        let end = line
+                            .iter()
+                            .rposition(|b| !b.is_ascii_whitespace())
+                            .unwrap_or(start);
+                        &line[start..=end]
+                    });
+            if trimmed.is_empty() {
+                continue;
+            }
+            results.push(parse_single_doc(trimmed));
+        }
+    } else {
+        // Single document
+        let trimmed = buf
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .map_or(buf, |start| {
+                let end = buf
+                    .iter()
+                    .rposition(|b| !b.is_ascii_whitespace())
+                    .unwrap_or(start);
+                &buf[start..=end]
+            });
+        if !trimmed.is_empty() {
+            results.push(parse_single_doc(trimmed));
+        }
+    }
+    results
 }
 
 /// Expand each value through `tostream`, collecting all stream entries.

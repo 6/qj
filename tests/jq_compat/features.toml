@@ -1334,9 +1334,8 @@ tests = [
 [[features]]
 category = "CLI flags"
 name = "--seq"
-# RS (0x1E) bytes in input/output can't be expressed in TOML; hardcoded test needed for full coverage
 tests = [
-  { filter = '.a', input = '{"a":1}', flags = '--seq -c --', expected = "\u001e1\n" },
+  { filter = '.', input = "\u001e{\"a\":1}\n", flags = '--seq -c --', expected = "\u001e{\"a\":1}\n", raw_compare = true },
 ]
 
 [[features]]
