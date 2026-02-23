@@ -87,7 +87,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 | Join output | 1 | **1/1 Y** | 1/1 Y | 1/1 Y | 1/1 Y |
 | --arg/--argjson | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | Color control (-C/-M) | 3 | **3/3 Y** | 3/3 Y | 1/3 ~ | 1/3 ~ |
-| --stream | 1 | **0/1 N** | 1/1 Y | 0/1 N | 1/1 Y |
+| --stream | 1 | **1/1 Y** | 1/1 Y | 0/1 N | 1/1 Y |
 | ASCII output | 2 | **2/2 Y** | 2/2 Y | 0/2 N | 0/2 N |
 | --slurpfile | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
 | --rawfile | 2 | **2/2 Y** | 2/2 Y | 2/2 Y | 2/2 Y |
@@ -281,7 +281,7 @@ Status: **Y** = all tests pass, **~** = partial, **N** = none pass
 
 | Tool | Y | ~ | N | Score |
 |------|--:|--:|--:|------:|
-| **qj** | **177** | **0** | **2** | **98.9%** |
+| **qj** | **178** | **0** | **1** | **99.4%** |
 | jq | 179 | 0 | 0 | 100.0% |
 | jaq | 156 | 7 | 16 | 89.1% |
 | gojq | 174 | 2 | 3 | 97.8% |

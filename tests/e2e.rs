@@ -7953,3 +7953,91 @@ fn tostream_in_builtins_list() {
         r#"["fromstream/1","tostream/0","truncate_stream/1"]"#
     );
 }
+
+// ---------------------------------------------------------------------------
+// --stream CLI flag
+// ---------------------------------------------------------------------------
+
+/// Assert that qj and jq produce the same output with custom flags.
+fn assert_jq_compat_with_flags(args: &[&str], input: &str) {
+    if !jq_available() {
+        return;
+    }
+    let (qj_stdout, _qj_stderr, qj_ok) = run_tool_full(env!("CARGO_BIN_EXE_qj"), args, input);
+    let (jq_stdout, _jq_stderr, jq_ok) = run_tool_full("jq", args, input);
+
+    assert_eq!(
+        qj_stdout.trim(),
+        jq_stdout.trim(),
+        "stdout mismatch: args={args:?} input={input:?}\nqj_ok={qj_ok}, jq_ok={jq_ok}"
+    );
+    assert_eq!(
+        qj_ok, jq_ok,
+        "exit status mismatch: args={args:?} input={input:?}\n\
+         qj_ok={qj_ok}, jq_ok={jq_ok}\n\
+         qj stderr: {_qj_stderr}\njq stderr: {_jq_stderr}"
+    );
+}
+
+#[test]
+fn stream_flag_object() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn stream_flag_array() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "[1,2,3]");
+}
+
+#[test]
+fn stream_flag_scalar() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "42");
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], r#""hello""#);
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "null");
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "true");
+}
+
+#[test]
+fn stream_flag_nested() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], r#"{"a":{"b":1},"c":[2,3]}"#);
+}
+
+#[test]
+fn stream_flag_slurp() {
+    assert_jq_compat_with_flags(&["--stream", "-s", "-c", "."], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_flag_slurp_ndjson() {
+    assert_jq_compat_with_flags(&["--stream", "-s", "-c", "."], "{\"a\":1}\n{\"b\":2}\n");
+}
+
+#[test]
+fn stream_flag_null_input_inputs() {
+    assert_jq_compat_with_flags(&["--stream", "-n", "-c", "[inputs]"], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_flag_null_input_dot() {
+    assert_jq_compat_with_flags(&["--stream", "-n", "-c", "."], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_flag_ndjson() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "{\"a\":1}\n{\"b\":2}\n");
+}
+
+#[test]
+fn stream_flag_with_filter() {
+    // Apply a filter to stream entries: select only leaf entries (length 2)
+    assert_jq_compat_with_flags(
+        &["--stream", "-c", "select(length == 2)"],
+        r#"{"a":1,"b":2}"#,
+    );
+}
+
+#[test]
+fn stream_flag_empty_containers() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "[]");
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "{}");
+}

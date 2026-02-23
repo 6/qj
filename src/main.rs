@@ -154,6 +154,10 @@ struct Cli {
     #[arg(short = 's', long = "slurp")]
     slurp: bool,
 
+    /// Parse input in streaming fashion, emitting [path, value] pairs
+    #[arg(long = "stream")]
+    stream: bool,
+
     /// Read each line as a raw string instead of parsing as JSON
     #[arg(short = 'R', long = "raw-input")]
     raw_input: bool,
@@ -316,6 +320,17 @@ fn main() -> Result<()> {
         }
     } else {
         (filter, None)
+    };
+
+    // --stream: wrap filter with `tostream |` for the common case (non-slurp, non-null-input).
+    // For slurp and null-input, the expansion happens later at the value level.
+    let filter = if cli.stream && !cli.slurp && !cli.null_input {
+        qj::filter::Filter::Pipe(
+            Box::new(qj::filter::Filter::Builtin("tostream".to_string(), vec![])),
+            Box::new(filter),
+        )
+    } else {
+        filter
     };
 
     // Build environment from --arg / --argjson
@@ -494,6 +509,7 @@ fn main() -> Result<()> {
         || cli.raw
         || cli.raw_output0
         || cli.exit_status
+        || cli.stream
     {
         None
     } else {
@@ -536,6 +552,11 @@ fn main() -> Result<()> {
                     qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
                 }
             }
+            let values = if cli.stream {
+                stream_expand_values(&values)
+            } else {
+                values
+            };
             use std::collections::VecDeque;
             qj::filter::eval::set_input_queue(VecDeque::from(values));
         }
@@ -619,6 +640,11 @@ fn main() -> Result<()> {
                 collect_file_values(path, cli.jsonl, &mut values)?;
             }
         }
+        let values = if cli.stream {
+            stream_expand_values(&values)
+        } else {
+            values
+        };
         let input = qj::value::Value::Array(Arc::new(values));
         eval_and_output(
             &filter,
@@ -831,6 +857,17 @@ fn format_error(err: &qj::value::Value) -> String {
         qj::value::Value::String(s) => s.clone(),
         other => other.short_desc(),
     }
+}
+
+/// Expand each value through `tostream`, collecting all stream entries.
+/// Used for `--stream` in slurp and null-input modes where we can't wrap the filter.
+fn stream_expand_values(values: &[qj::value::Value]) -> Vec<qj::value::Value> {
+    let tostream = qj::filter::Filter::Builtin("tostream".to_string(), vec![]);
+    let mut expanded = Vec::new();
+    for value in values {
+        qj::filter::eval::eval_filter(&tostream, value, &mut |v| expanded.push(v));
+    }
+    expanded
 }
 
 /// Try the passthrough fast path on a padded buffer.
