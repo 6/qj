@@ -10,7 +10,7 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::io::{Read, Write};
 
-use crate::filter::{CmpOp, Env, Filter};
+use crate::filter::{BoolOp, CmpOp, Env, Filter};
 use crate::output::{self, OutputConfig};
 use crate::simdjson;
 
@@ -63,6 +63,11 @@ enum NdjsonFastPath {
         op: CmpOp,
         literal_bytes: Vec<u8>,
         entries: Vec<Vec<String>>,
+    },
+    /// `select(.f == lit and .g == lit)` or `select(.f == lit or .g == lit)` — compound conditions
+    SelectCompound {
+        conditions: Vec<(Vec<String>, CmpOp, Vec<u8>)>,
+        bool_op: BoolOp,
     },
     /// `select(.field | test/startswith/endswith/contains("arg"))` — string predicate
     SelectStringPred {
@@ -1127,6 +1132,25 @@ fn process_line(
                 )?;
             }
         }
+        NdjsonFastPath::SelectCompound {
+            conditions,
+            bool_op,
+        } => {
+            if let Some(result) = process_line_select_compound_raw(
+                trimmed, conditions, *bool_op, config, output_buf, had_output,
+            ) {
+                result?;
+            } else {
+                // Fall back to full evaluator for non-compact or ambiguous cases.
+                let padded = prepare_padded(trimmed, scratch);
+                let flat_buf = simdjson::dom_parse_to_flat_buf(padded, trimmed.len())
+                    .context("failed to parse NDJSON line")?;
+                crate::flat_eval::eval_flat(filter, flat_buf.root(), env, &mut |v| {
+                    *had_output = true;
+                    output::write_value(output_buf, &v, config).ok();
+                });
+            }
+        }
         NdjsonFastPath::Length(fields) => {
             process_line_length(
                 trimmed,
@@ -1331,23 +1355,72 @@ fn detect_select_fast_path(filter: &Filter) -> Option<NdjsonFastPath> {
         Filter::Select(inner) => inner,
         _ => return None,
     };
-    let (lhs, op, rhs) = match inner.as_ref() {
-        Filter::Compare(lhs, op, rhs) => (lhs, op, rhs),
-        _ => return None,
-    };
-    // Try both orientations: (.field == lit) and (lit == .field)
-    let (fields, literal_bytes) = if let Some((f, b)) = try_field_literal(lhs, rhs) {
-        (f, b)
-    } else if let Some((f, b)) = try_field_literal(rhs, lhs) {
-        (f, b)
-    } else {
-        return None;
-    };
-    Some(NdjsonFastPath::SelectEq {
-        fields,
-        op: *op,
-        literal_bytes,
-    })
+
+    // Simple: select(.field op literal)
+    if let Filter::Compare(lhs, op, rhs) = inner.as_ref() {
+        let (fields, literal_bytes) = if let Some((f, b)) = try_field_literal(lhs, rhs) {
+            (f, b)
+        } else if let Some((f, b)) = try_field_literal(rhs, lhs) {
+            (f, b)
+        } else {
+            return None;
+        };
+        return Some(NdjsonFastPath::SelectEq {
+            fields,
+            op: *op,
+            literal_bytes,
+        });
+    }
+
+    // Compound: select(.f op lit and/or .g op lit and/or ...)
+    if let Filter::BoolOp(..) = inner.as_ref() {
+        let mut conditions = Vec::new();
+        let mut bool_op = None;
+        if collect_compound_conditions(inner, &mut conditions, &mut bool_op)
+            && let Some(op) = bool_op
+        {
+            return Some(NdjsonFastPath::SelectCompound {
+                conditions,
+                bool_op: op,
+            });
+        }
+    }
+
+    None
+}
+
+/// Recursively flatten a chain of AND/OR conditions.
+/// Returns false if any leaf isn't a simple field-compare-literal, or if
+/// the chain mixes AND and OR (e.g., `a and b or c`).
+fn collect_compound_conditions(
+    filter: &Filter,
+    conditions: &mut Vec<(Vec<String>, CmpOp, Vec<u8>)>,
+    bool_op: &mut Option<BoolOp>,
+) -> bool {
+    match filter {
+        Filter::BoolOp(lhs, op, rhs) => {
+            // Check all operators are the same (no mixed AND/OR)
+            match bool_op {
+                Some(existing) if *existing != *op => return false,
+                Some(_) => {}
+                None => *bool_op = Some(*op),
+            }
+            collect_compound_conditions(lhs, conditions, bool_op)
+                && collect_compound_conditions(rhs, conditions, bool_op)
+        }
+        Filter::Compare(lhs, op, rhs) => {
+            let (fields, literal_bytes) = if let Some((f, b)) = try_field_literal(lhs, rhs) {
+                (f, b)
+            } else if let Some((f, b)) = try_field_literal(rhs, lhs) {
+                (f, b)
+            } else {
+                return false;
+            };
+            conditions.push((fields, *op, literal_bytes));
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Try to decompose (field_chain_side, literal_side) into (fields, serialized_bytes).
@@ -1526,12 +1599,61 @@ fn parse_json_number(bytes: &[u8]) -> Option<f64> {
 // Pure Rust byte scanner for SelectEq — bypasses simdjson FFI entirely.
 // ---------------------------------------------------------------------------
 
+/// memmem-accelerated field search for top-level fields in compact NDJSON.
+///
+/// Uses SIMD-accelerated substring search to jump directly to `"fieldname":`
+/// instead of scanning byte-by-byte from the start. Validates that the match
+/// is a top-level key by checking the preceding byte is `{` or `,`.
+///
+/// Returns `None` if the field isn't found or the match isn't provably top-level,
+/// in which case the caller should fall back to the depth-tracking scan.
+fn find_field_value_memmem<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
+    // Build pattern: "fieldname":
+    let field_bytes = field.as_bytes();
+    let pattern_len = 1 + field_bytes.len() + 2; // " + field + ":
+    let mut pattern = Vec::with_capacity(pattern_len);
+    pattern.push(b'"');
+    pattern.extend_from_slice(field_bytes);
+    pattern.push(b'"');
+    pattern.push(b':');
+
+    let finder = memchr::memmem::find(line, &pattern)?;
+
+    // Validate this is a top-level key: preceding byte must be { or ,
+    if finder == 0 {
+        return None; // no preceding byte
+    }
+    let prev = line[finder - 1];
+    if prev != b'{' && prev != b',' {
+        return None; // nested or inside string — fall back to depth scan
+    }
+
+    // Skip to value start (right after the pattern)
+    let value_start = finder + pattern_len;
+    if value_start >= line.len() {
+        return None;
+    }
+
+    extract_json_value(line, value_start)
+}
+
 /// Find the raw value bytes for a field at depth 1 in a JSON object line.
 ///
 /// Scans byte-by-byte tracking brace depth and string boundaries.
 /// Returns the raw value slice (e.g. `"PushEvent"`, `42`, `true`) or `None`
 /// if the field is not found at the top level.
 fn find_field_value_raw<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
+    // Fast path: use memmem to jump directly to the field in compact NDJSON.
+    // In compact JSON, a top-level key is always preceded by `{` or `,`:
+    //   {"type":"PushEvent","public":true}
+    //     ^                  ^
+    //     preceded by {      preceded by ,
+    // If the preceding byte is anything else (e.g. nested object, inside string),
+    // we fall back to the depth-tracking scan.
+    if let Some(value) = find_field_value_memmem(line, field) {
+        return Some(value);
+    }
+
     let field_bytes = field.as_bytes();
     let len = line.len();
     let mut i = 0;
@@ -1741,6 +1863,82 @@ fn process_line_select_eq_raw(
     }
 }
 
+/// Try the pure Rust byte scanner path for SelectCompound (AND/OR).
+///
+/// For each condition, finds the field and evaluates the predicate.
+/// AND short-circuits on first false, OR on first true.
+/// Returns `None` to fall back to full evaluator on ambiguity.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_compound_raw(
+    trimmed: &[u8],
+    conditions: &[(Vec<String>, CmpOp, Vec<u8>)],
+    bool_op: BoolOp,
+    config: &OutputConfig,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+) -> Option<Result<()>> {
+    if config.mode != output::OutputMode::Compact {
+        return None;
+    }
+
+    let result = match bool_op {
+        BoolOp::And => {
+            // All conditions must be true. Short-circuit on first false.
+            for (fields, op, literal_bytes) in conditions {
+                let raw = find_field_chain_raw(trimmed, fields).unwrap_or(b"null");
+                match evaluate_select_predicate(raw, literal_bytes, *op) {
+                    Some(false) => return Some(Ok(())), // definite non-match, skip line
+                    Some(true) => continue,             // this condition passed
+                    None => return None,                // ambiguous — fall back
+                }
+            }
+            true // all conditions passed
+        }
+        BoolOp::Or => {
+            // Any condition can be true. Short-circuit on first true.
+            let mut any_ambiguous = false;
+            for (fields, op, literal_bytes) in conditions {
+                let raw = find_field_chain_raw(trimmed, fields).unwrap_or(b"null");
+                match evaluate_select_predicate(raw, literal_bytes, *op) {
+                    Some(true) => {
+                        // Definite match — output the line.
+                        *had_output = true;
+                        if trimmed.len() > 1
+                            && trimmed[0] == b'{'
+                            && trimmed[1] != b'"'
+                            && trimmed[1] != b'}'
+                        {
+                            return None;
+                        }
+                        output_buf.extend_from_slice(trimmed);
+                        write_line_terminator(output_buf, config);
+                        return Some(Ok(()));
+                    }
+                    Some(false) => continue, // this condition failed, try next
+                    None => {
+                        any_ambiguous = true;
+                        continue; // can't confirm yet, but a later condition might match
+                    }
+                }
+            }
+            if any_ambiguous {
+                return None; // no definite match but had ambiguity — fall back
+            }
+            false // all conditions definitively failed
+        }
+    };
+
+    if result {
+        *had_output = true;
+        if trimmed.len() > 1 && trimmed[0] == b'{' && trimmed[1] != b'"' && trimmed[1] != b'}' {
+            return None;
+        }
+        output_buf.extend_from_slice(trimmed);
+        write_line_terminator(output_buf, config);
+    }
+    Some(Ok(()))
+}
+
 /// Fused chunk-level scanner for SelectEq in compact mode.
 ///
 /// Instead of memchr for newlines + per-line byte scanner, this does a single
@@ -1760,7 +1958,6 @@ fn process_chunk_select_eq_fused(
     if config.mode != output::OutputMode::Compact || fields.len() != 1 {
         return None;
     }
-    let field_bytes = fields[0].as_bytes();
 
     let len = chunk.len();
     let mut line_start: usize = 0;
@@ -1795,70 +1992,8 @@ fn process_chunk_select_eq_fused(
             return None;
         }
 
-        // Inline field search at depth 1.
-        let tlen = trimmed.len();
-        let mut i: usize = 0;
-        let mut depth: u32 = 0;
-        let mut in_string = false;
-        let mut value: Option<&[u8]> = None;
-
-        'scan: while i < tlen {
-            let b = trimmed[i];
-            if in_string {
-                if b == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if b == b'"' {
-                    in_string = false;
-                }
-                i += 1;
-                continue;
-            }
-            match b {
-                b'"' => {
-                    if depth == 1 {
-                        let key_start = i + 1;
-                        let key_end = key_start + field_bytes.len();
-                        if key_end < tlen
-                            && trimmed[key_end] == b'"'
-                            && trimmed[key_start..key_end] == *field_bytes
-                        {
-                            let mut j = key_end + 1;
-                            while j < tlen && matches!(trimmed[j], b' ' | b'\t' | b'\r' | b'\n') {
-                                j += 1;
-                            }
-                            if j < tlen && trimmed[j] == b':' {
-                                j += 1;
-                                while j < tlen && matches!(trimmed[j], b' ' | b'\t' | b'\r' | b'\n')
-                                {
-                                    j += 1;
-                                }
-                                if j < tlen {
-                                    value = extract_json_value(trimmed, j);
-                                    break 'scan;
-                                }
-                            }
-                        }
-                        in_string = true;
-                    } else {
-                        in_string = true;
-                    }
-                    i += 1;
-                }
-                b'{' | b'[' => {
-                    depth += 1;
-                    i += 1;
-                }
-                b'}' | b']' => {
-                    depth = depth.saturating_sub(1);
-                    i += 1;
-                }
-                _ => {
-                    i += 1;
-                }
-            }
-        }
+        // Find field value — try memmem fast path, then byte-by-byte fallback.
+        let value = find_field_value_raw(trimmed, &fields[0]);
 
         // Evaluate predicate. Missing field → value is null in jq semantics.
         let raw = match value {
@@ -5010,6 +5145,7 @@ pub fn all_fast_path_test_filters() -> Vec<&'static str> {
             NdjsonFastPath::MultiFieldArr { .. } => {}
             NdjsonFastPath::SelectEqObj { .. } => {}
             NdjsonFastPath::SelectEqArr { .. } => {}
+            NdjsonFastPath::SelectCompound { .. } => {}
             NdjsonFastPath::SelectStringPred { .. } => {}
             NdjsonFastPath::SelectStringPredField { .. } => {}
         }
@@ -5058,6 +5194,11 @@ pub fn all_fast_path_test_filters() -> Vec<&'static str> {
         "select(.type == \"PushEvent\") | {name: .name, count: .count}",
         // SelectEqArr
         "select(.type == \"PushEvent\") | [.name, .count]",
+        // SelectCompound (AND / OR)
+        "select(.type == \"PushEvent\" and .active == true)",
+        "select(.type == \"PushEvent\" or .type == \"CreateEvent\")",
+        "select(.count > 10 and .active == true)",
+        "select(.type != \"PushEvent\" or .count < 100)",
         // SelectStringPred
         "select(.name | test(\"^A\"))",
         "select(.name | startswith(\"test\"))",

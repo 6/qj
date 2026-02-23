@@ -134,6 +134,11 @@ const FILTERS: &[&str] = &[
     // Has
     "has(\"name\")",
     ".meta | has(\"x\")",
+    // SelectCompound (AND / OR)
+    "select(.type == \"PushEvent\" and .active == true)",
+    "select(.type == \"PushEvent\" or .type == \"CreateEvent\")",
+    "select(.count > 10 and .active == true)",
+    "select(.type != \"PushEvent\" or .count < 100)",
     // SelectStringPred
     "select(.name | test(\"^A\"))",
     "select(.name | startswith(\"test\"))",
@@ -197,7 +202,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Only compare when both paths succeed. Error disagreements on malformed
     // input are a known architectural issue (on-demand vs DOM parser strictness).
-    if let (Ok((fast_out, _)), Ok((normal_out, _))) = (&fast_result, &normal_result) {
+    if let (Ok((fast_out, _, _)), Ok((normal_out, _, _))) = (&fast_result, &normal_result) {
         if fast_out != normal_out {
             let fast_s = String::from_utf8_lossy(fast_out);
             let normal_s = String::from_utf8_lossy(normal_out);

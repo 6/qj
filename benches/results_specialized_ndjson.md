@@ -22,8 +22,8 @@ All commands write to stdout (piped to `/dev/null` by hyperfine). Times include 
 
 | Tool | Command | Time |
 |------|---------|-----:|
-| **qj** | `qj -c 'select(.type == "PushEvent")' data.ndjson` | **314ms** |
-| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent")' data.ndjson` | 404ms |
+| **qj** | `qj -c 'select(.type == "PushEvent")' data.ndjson` | **248ms** |
+| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent")' data.ndjson` | 481ms |
 | zog | `zog --file data.ndjson type eq PushEvent` | 416ms |
 | ripgrep | `rg '"type":"PushEvent"' data.ndjson` | 636ms |
 
@@ -31,8 +31,8 @@ All commands write to stdout (piped to `/dev/null` by hyperfine). Times include 
 
 | Tool | Command | Time |
 |------|---------|-----:|
-| **qj** | `qj -c 'select(.type == "PublicEvent")' data.ndjson` | **237ms** |
-| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PublicEvent")' data.ndjson` | 392ms |
+| **qj** | `qj -c 'select(.type == "PublicEvent")' data.ndjson` | **224ms** |
+| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PublicEvent")' data.ndjson` | 458ms |
 | zog | `zog --file data.ndjson type eq PublicEvent` | 426ms |
 | ripgrep | `rg '"type":"PublicEvent"' data.ndjson` | 455ms |
 
@@ -40,9 +40,9 @@ All commands write to stdout (piped to `/dev/null` by hyperfine). Times include 
 
 | Tool | Command | Time |
 |------|---------|-----:|
-| qj | `qj -c 'select(.public == true)' data.ndjson` | 1.15s |
-| qj (1 thread) | `qj --threads 1 -c 'select(.public == true)' data.ndjson` | 7.28s |
-| **zog** | `zog --file data.ndjson public eq b:true` | **616ms** |
+| **qj** | `qj -c 'select(.public == true)' data.ndjson` | **302ms** |
+| qj (1 thread) | `qj --threads 1 -c 'select(.public == true)' data.ndjson` | 782ms |
+| zog | `zog --file data.ndjson public eq b:true` | 616ms |
 | ripgrep | `rg '"public":true' data.ndjson` | 907ms |
 
 ### Not-equal
@@ -58,18 +58,18 @@ All commands write to stdout (piped to `/dev/null` by hyperfine). Times include 
 
 | Tool | Command | Time |
 |------|---------|-----:|
-| qj | `qj -c 'select(.type == "PushEvent" and .public == true)' data.ndjson` | 1.61s |
-| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent" and .public == true)' data.ndjson` | 10.2s |
-| **zog** | `zog --file data.ndjson type eq PushEvent AND public eq b:true` | **521ms** |
+| **qj** | `qj -c 'select(.type == "PushEvent" and .public == true)' data.ndjson` | **390ms** |
+| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent" and .public == true)' data.ndjson` | 679ms |
+| zog | `zog --file data.ndjson type eq PushEvent AND public eq b:true` | 521ms |
 | ripgrep | `rg '"type":"PushEvent"' data.ndjson \| rg '"public":true'` | 765ms |
 
 ### Compound OR
 
 | Tool | Command | Time |
 |------|---------|-----:|
-| qj | `qj -c 'select(.type == "PushEvent" or .type == "CreateEvent")' data.ndjson` | 1.66s |
-| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent" or .type == "CreateEvent")' data.ndjson` | 10.2s |
-| **zog** | `zog --file data.ndjson type eq PushEvent OR type eq CreateEvent` | **591ms** |
+| **qj** | `qj -c 'select(.type == "PushEvent" or .type == "CreateEvent")' data.ndjson` | **258ms** |
+| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent" or .type == "CreateEvent")' data.ndjson` | 575ms |
+| zog | `zog --file data.ndjson type eq PushEvent OR type eq CreateEvent` | 591ms |
 | ripgrep | `rg '"type":"(Push\|Create)Event"' data.ndjson` | 719ms |
 
 ### Aggregation — count matching records
@@ -103,6 +103,6 @@ All commands write to stdout (piped to `/dev/null` by hyperfine). Times include 
 
 ### Notes
 
-- **zog wins** on compound conditions (AND/OR), boolean matching, and aggregation — its single-pass byte scanner handles multi-condition queries without fast-path detection, and built-in aggregation avoids piping to `wc -l`.
+- **zog** wins or is competitive single-threaded — its zero-allocation byte scanner is fast for any field position.
 - **ripgrep** is a good baseline but consistently slower than both purpose-built tools on structured queries.
 - zog and ripgrep are single-threaded. qj's single-thread times show the raw per-core performance; parallelism accounts for the rest.
