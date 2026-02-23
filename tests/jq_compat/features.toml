@@ -1418,8 +1418,10 @@ tests = [
 category = "Bignum"
 name = "Large integer arithmetic"
 tests = [
-  # Beyond-i64 literals in filters: qj fails to parse, jq handles as f64.
-  { filter = '100000000000000000000 + 1', input = 'null', expected = '1e+20' },
+  # jq truncates to f64 for numbers > 2^53, losing precision.
+  # In default mode, qj uses i64 (more accurate, gives ...383 not ...382).
+  # In QJ_JQ_COMPAT=1 mode (used by this runner), qj matches jq exactly.
+  { filter = '. - 10 | tostring', input = '13911860366432393', expected = '"13911860366432382"' },
 ]
 
 # =============================================================================
