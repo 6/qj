@@ -812,8 +812,36 @@ fn process_chunk(
     fast_path: &NdjsonFastPath,
     env: &Env,
 ) -> Result<ChunkResult> {
-    let mut output_buf = Vec::new();
+    // Pre-allocate output buffer: for select() filters a large fraction of lines
+    // may match, so reserve generously to avoid realloc/memmove during processing.
+    let mut output_buf = Vec::with_capacity(chunk.len() / 2);
     let mut had_output = false;
+
+    // Try fused chunk-level scanner for SelectEq — single pass, no per-line dispatch.
+    if let NdjsonFastPath::SelectEq {
+        fields,
+        op,
+        literal_bytes,
+    } = fast_path
+    {
+        if let Some(result) = process_chunk_select_eq_fused(
+            chunk,
+            fields,
+            *op,
+            literal_bytes,
+            config,
+            &mut output_buf,
+            &mut had_output,
+        ) {
+            result?;
+            let error_buf = Vec::new();
+            return Ok((output_buf, had_output, error_buf));
+        }
+        // Fused scanner couldn't handle it — fall through to per-line path.
+        output_buf.clear();
+        had_output = false;
+    }
+
     // Reusable scratch buffer for simdjson padding — avoids per-line allocation.
     let mut scratch = Vec::new();
     // Reusable DOM parser — avoids per-line parser construction in fast paths.
@@ -1714,6 +1742,144 @@ fn process_line_select_eq_raw(
         Some(false) => Some(Ok(())),
         None => None, // ambiguous — fall back to simdjson
     }
+}
+
+/// Fused chunk-level scanner for SelectEq in compact mode.
+///
+/// Instead of memchr for newlines + per-line byte scanner, this does a single
+/// pass over the chunk: finds newlines, locates the field, evaluates the
+/// predicate, and emits matching lines — all inline. Returns `None` if this
+/// fast path can't handle the filter (non-compact mode, field chains > 1 deep).
+fn process_chunk_select_eq_fused(
+    chunk: &[u8],
+    fields: &[String],
+    op: CmpOp,
+    literal_bytes: &[u8],
+    config: &OutputConfig,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+) -> Option<Result<()>> {
+    // Only handle compact mode with single top-level field.
+    if config.mode != output::OutputMode::Compact || fields.len() != 1 {
+        return None;
+    }
+    let field_bytes = fields[0].as_bytes();
+
+    let len = chunk.len();
+    let mut line_start: usize = 0;
+
+    while line_start < len {
+        // Find end of line.
+        let nl_pos = memchr::memchr(b'\n', &chunk[line_start..])
+            .map(|p| line_start + p)
+            .unwrap_or(len);
+        let line = &chunk[line_start..nl_pos];
+        line_start = nl_pos + 1;
+
+        // Trim trailing whitespace (CR, space, tab).
+        let end = line
+            .iter()
+            .rposition(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
+            .map_or(0, |p| p + 1);
+        // Trim leading whitespace.
+        let start = line[..end]
+            .iter()
+            .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
+            .unwrap_or(end);
+        let trimmed = &line[start..end];
+
+        if trimmed.is_empty() || trimmed[0] != b'{' {
+            continue;
+        }
+
+        // Quick compactness check: compact NDJSON starts with `{"` or `{}`.
+        if trimmed.len() > 1 && trimmed[1] != b'"' && trimmed[1] != b'}' {
+            // Non-compact line — can't handle, signal fallback for whole chunk.
+            return None;
+        }
+
+        // Inline field search at depth 1.
+        let tlen = trimmed.len();
+        let mut i: usize = 0;
+        let mut depth: u32 = 0;
+        let mut in_string = false;
+        let mut value: Option<&[u8]> = None;
+
+        'scan: while i < tlen {
+            let b = trimmed[i];
+            if in_string {
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            match b {
+                b'"' => {
+                    if depth == 1 {
+                        let key_start = i + 1;
+                        let key_end = key_start + field_bytes.len();
+                        if key_end < tlen
+                            && trimmed[key_end] == b'"'
+                            && trimmed[key_start..key_end] == *field_bytes
+                        {
+                            let mut j = key_end + 1;
+                            while j < tlen && matches!(trimmed[j], b' ' | b'\t' | b'\r' | b'\n') {
+                                j += 1;
+                            }
+                            if j < tlen && trimmed[j] == b':' {
+                                j += 1;
+                                while j < tlen && matches!(trimmed[j], b' ' | b'\t' | b'\r' | b'\n')
+                                {
+                                    j += 1;
+                                }
+                                if j < tlen {
+                                    value = extract_json_value(trimmed, j);
+                                    break 'scan;
+                                }
+                            }
+                        }
+                        in_string = true;
+                    } else {
+                        in_string = true;
+                    }
+                    i += 1;
+                }
+                b'{' | b'[' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b'}' | b']' => {
+                    depth = depth.saturating_sub(1);
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        // Evaluate predicate. Missing field → value is null in jq semantics.
+        let raw = match value {
+            Some(v) => v,
+            None => b"null" as &[u8],
+        };
+        match evaluate_select_predicate(raw, literal_bytes, op) {
+            Some(true) => {
+                *had_output = true;
+                output_buf.extend_from_slice(trimmed);
+                write_line_terminator(output_buf, config);
+            }
+            Some(false) => {}    // no match
+            None => return None, // ambiguous — need simdjson fallback for whole chunk
+        }
+    }
+
+    Some(Ok(()))
 }
 
 /// Process a line with the select(.field op literal) fast path.
