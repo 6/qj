@@ -1326,6 +1326,21 @@ tests = [
 
 [[features]]
 category = "CLI flags"
+name = "--stream-errors"
+tests = [
+  { filter = '.', input = '[1,2]', flags = '--stream-errors -c --', expected = "[[0],1]\n[[1],2]\n[[1]]" },
+]
+
+[[features]]
+category = "CLI flags"
+name = "--seq"
+# RS (0x1E) bytes in input/output can't be expressed in TOML; hardcoded test needed for full coverage
+tests = [
+  { filter = '.a', input = '{"a":1}', flags = '--seq -c --', expected = "\u001e1\n" },
+]
+
+[[features]]
+category = "CLI flags"
 name = "ASCII output"
 tests = [
   { filter = '.', input = '"\u00e9"', flags = '-a --', expected = '"\u00e9"' },
