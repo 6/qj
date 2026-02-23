@@ -152,7 +152,6 @@ fn process_ndjson_file_mmap<W: Write>(
         return Ok(None);
     }
     let fd = file.as_raw_fd();
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
 
     // mmap the entire file at once. Single mmap + MADV_SEQUENTIAL gives the
     // kernel full context for aggressive read-ahead, which is much faster than
@@ -200,16 +199,8 @@ fn process_ndjson_file_mmap<W: Write>(
     };
 
     let ws = window_size();
-    // QJ_MADVISE: controls page management strategy.
-    //   1 = MADV_DONTNEED + MADV_WILLNEED (release pages + prefetch next window)
-    //   2 = MADV_WILLNEED only (prefetch, let kernel handle eviction via MADV_SEQUENTIAL)
-    //   unset = progressive munmap (default, bounds RSS)
-    let madvise_mode: u8 = std::env::var_os("QJ_MADVISE")
-        .and_then(|v| v.to_str().and_then(|s| s.parse().ok()))
-        .unwrap_or(0);
     let mut had_output = false;
     let mut file_offset: usize = 0;
-    let mut unmapped_up_to: usize = 0;
 
     while file_offset < file_len {
         let raw_end = (file_offset + ws).min(file_len);
@@ -268,65 +259,27 @@ fn process_ndjson_file_mmap<W: Write>(
 
         file_offset += process_len;
 
-        if madvise_mode > 0 {
-            if madvise_mode == 1 {
-                // MADV_DONTNEED: tell kernel to drop processed pages from RSS
-                // without the expensive page table teardown of munmap.
-                let safe_release_end = file_offset & !(page_size - 1);
-                if safe_release_end > unmapped_up_to {
-                    unsafe {
-                        libc::madvise(
-                            (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
-                            safe_release_end - unmapped_up_to,
-                            libc::MADV_DONTNEED,
-                        );
-                    }
-                    unmapped_up_to = safe_release_end;
-                }
-            }
-
-            // Prefetch next window: MADV_WILLNEED triggers asynchronous page-in
-            // while we write output / loop overhead.
-            if file_offset < file_len {
-                let prefetch_end = (file_offset + ws).min(file_len);
-                unsafe {
-                    libc::madvise(
-                        (base_ptr as *const u8).add(file_offset) as *mut libc::c_void,
-                        prefetch_end - file_offset,
-                        libc::MADV_WILLNEED,
-                    );
-                }
-            }
-        } else {
-            // Progressive munmap: release processed pages to bound RSS.
-            let safe_unmap_end = file_offset & !(page_size - 1);
-            if safe_unmap_end > unmapped_up_to {
-                unsafe {
-                    libc::munmap(
-                        (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
-                        safe_unmap_end - unmapped_up_to,
-                    );
-                }
-                unmapped_up_to = safe_unmap_end;
+        // Prefetch next window: MADV_WILLNEED forces the kernel to start
+        // paging in the next region asynchronously. Without this, even with
+        // MADV_SEQUENTIAL, the processing loop outruns natural readahead and
+        // stalls on page faults.
+        if file_offset < file_len {
+            let prefetch_end = (file_offset + ws).min(file_len);
+            unsafe {
+                libc::madvise(
+                    (base_ptr as *const u8).add(file_offset) as *mut libc::c_void,
+                    prefetch_end - file_offset,
+                    libc::MADV_WILLNEED,
+                );
             }
         }
     }
 
-    if madvise_mode > 0 {
-        // Single munmap for the entire mapping.
-        unsafe {
-            libc::munmap(base_ptr, file_len);
-        }
-    } else {
-        // Unmap any remaining tail (last partial page).
-        if unmapped_up_to < file_len {
-            unsafe {
-                libc::munmap(
-                    (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
-                    file_len - unmapped_up_to,
-                );
-            }
-        }
+    // Single munmap for the entire mapping. MADV_SEQUENTIAL already tells the
+    // kernel to evict pages behind, so progressive munmap is unnecessary and
+    // its page table teardown adds overhead.
+    unsafe {
+        libc::munmap(base_ptr, file_len);
     }
 
     Ok(Some(had_output))
