@@ -604,8 +604,14 @@ fn lex_number(bytes: &[u8], start: usize) -> Result<(Token, usize)> {
             Ok((Token::Float(f, None), consumed))
         }
     } else {
-        let n: i64 = text.parse()?;
-        Ok((Token::Int(n), consumed))
+        match text.parse::<i64>() {
+            Ok(n) => Ok((Token::Int(n), consumed)),
+            Err(_) => {
+                // Beyond i64 range — promote to f64 (matches jq behavior)
+                let f: f64 = text.parse()?;
+                Ok((Token::Float(f, None), consumed))
+            }
+        }
     }
 }
 

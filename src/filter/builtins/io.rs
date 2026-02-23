@@ -205,6 +205,9 @@ pub(super) fn eval_io(
                 ("have_literal_numbers", 0),
                 ("@urid", 0),
                 ("trimstr", 1),
+                ("tostream", 0),
+                ("fromstream", 1),
+                ("truncate_stream", 1),
             ];
             let arr: Vec<Value> = builtins
                 .iter()

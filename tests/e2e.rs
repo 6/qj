@@ -7767,3 +7767,478 @@ fn extreme_exponent_normal_range_unaffected() {
     assert_jq_compat("3.14", "null");
     assert_jq_compat("0.001", "null");
 }
+
+// ---------------------------------------------------------------------------
+// Streaming: tostream, fromstream, truncate_stream
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tostream_simple_object() {
+    let out = qj_compact("[tostream]", r#"{"a":1,"b":2}"#);
+    assert_eq!(out.trim(), r#"[[["a"],1],[["b"],2],[["b"]]]"#);
+    assert_jq_compat("[tostream]", r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn tostream_nested_object() {
+    assert_jq_compat("[tostream]", r#"{"a":{"b":1,"c":2}}"#);
+}
+
+#[test]
+fn tostream_array() {
+    assert_jq_compat("[tostream]", "[1,2,3]");
+}
+
+#[test]
+fn tostream_nested_array() {
+    assert_jq_compat("[tostream]", "[1,[2,3]]");
+}
+
+#[test]
+fn tostream_scalar() {
+    assert_jq_compat("[tostream]", "42");
+    assert_jq_compat("[tostream]", r#""hello""#);
+    assert_jq_compat("[tostream]", "null");
+    assert_jq_compat("[tostream]", "true");
+}
+
+#[test]
+fn tostream_empty_containers() {
+    assert_jq_compat("[tostream]", "[]");
+    assert_jq_compat("[tostream]", "{}");
+}
+
+#[test]
+fn tostream_deeply_nested() {
+    assert_jq_compat("[tostream]", r#"{"a":{"b":{"c":1}}}"#);
+}
+
+#[test]
+fn tostream_mixed_nesting() {
+    assert_jq_compat("[tostream]", r#"{"a":[1,2],"b":{"c":3}}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_object() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_nested() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":{"b":1,"c":2}}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_array() {
+    assert_jq_compat("fromstream(tostream)", "[1,2,3]");
+}
+
+#[test]
+fn fromstream_roundtrip_nested_mixed() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":[1,2],"b":{"c":3}}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_scalar() {
+    assert_jq_compat("fromstream(tostream)", "42");
+    assert_jq_compat("fromstream(tostream)", r#""hello""#);
+    assert_jq_compat("fromstream(tostream)", "null");
+}
+
+#[test]
+fn fromstream_with_select() {
+    assert_jq_compat(
+        r#"fromstream(tostream | select(.[0][0] == "b"))"#,
+        r#"{"a":1,"b":2}"#,
+    );
+}
+
+#[test]
+fn fromstream_multiple_scalars() {
+    assert_jq_compat("[fromstream([[],1],[[],2])]", "null");
+}
+
+#[test]
+fn fromstream_explicit_stream() {
+    // Build an object from explicit stream entries
+    assert_jq_compat(r#"[fromstream([[["a"],1],[["b"],2],[["b"]])]"#, "null");
+}
+
+#[test]
+fn tostream_with_nulls() {
+    assert_jq_compat("[tostream]", r#"{"a":null,"b":2}"#);
+    assert_jq_compat("[tostream]", "[null,1,null]");
+}
+
+#[test]
+fn tostream_single_element_containers() {
+    assert_jq_compat("[tostream]", "[1]");
+    assert_jq_compat("[tostream]", r#"{"a":1}"#);
+}
+
+#[test]
+fn tostream_nested_empty_containers() {
+    assert_jq_compat("[tostream]", r#"{"a":[],"b":{}}"#);
+}
+
+#[test]
+fn tostream_array_of_objects() {
+    assert_jq_compat("[tostream]", r#"[{"a":1},{"b":2}]"#);
+}
+
+#[test]
+fn fromstream_roundtrip_empty_containers() {
+    assert_jq_compat("fromstream(tostream)", "[]");
+    assert_jq_compat("fromstream(tostream)", "{}");
+}
+
+#[test]
+fn fromstream_roundtrip_with_nulls() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":null,"b":2}"#);
+    assert_jq_compat("fromstream(tostream)", "[null,1,null]");
+}
+
+#[test]
+fn fromstream_roundtrip_deeply_nested() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":{"b":{"c":{"d":1}}}}"#);
+    assert_jq_compat("fromstream(tostream)", "[[[[1]]]]");
+}
+
+#[test]
+fn fromstream_roundtrip_complex() {
+    assert_jq_compat(
+        "fromstream(tostream)",
+        r#"{"users":[{"name":"alice","scores":[1,2,3]},{"name":"bob","scores":[4,5]}]}"#,
+    );
+}
+
+#[test]
+fn fromstream_empty_stream() {
+    // empty filter produces no stream items → no output
+    assert_jq_compat("[fromstream(empty)]", "null");
+}
+
+#[test]
+fn fromstream_build_array_from_stream() {
+    // Build an array from explicit stream entries
+    assert_jq_compat("[fromstream([[0],10],[[1],20],[[1]])]", "null");
+}
+
+#[test]
+fn fromstream_nested_stream() {
+    // Build nested object from explicit entries
+    assert_jq_compat(
+        r#"[fromstream([[["a","b"],1],[["a","b"]],[["a"]])]"#,
+        "null",
+    );
+}
+
+#[test]
+fn fromstream_with_select_nested() {
+    // Select only entries under "b" key from a nested object
+    assert_jq_compat(
+        r#"fromstream(tostream | select(.[0][0] == "b"))"#,
+        r#"{"a":1,"b":{"c":2}}"#,
+    );
+}
+
+#[test]
+fn tostream_in_builtins_list() {
+    let out = qj_compact(
+        r#"[builtins[] | select(startswith("tostream") or startswith("fromstream") or startswith("truncate_stream"))] | sort"#,
+        "null",
+    );
+    assert_eq!(
+        out.trim(),
+        r#"["fromstream/1","tostream/0","truncate_stream/1"]"#
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --stream CLI flag
+// ---------------------------------------------------------------------------
+
+/// Assert that qj and jq produce the same output with custom flags.
+fn assert_jq_compat_with_flags(args: &[&str], input: &str) {
+    if !jq_available() {
+        return;
+    }
+    let (qj_stdout, _qj_stderr, qj_ok) = run_tool_full(env!("CARGO_BIN_EXE_qj"), args, input);
+    let (jq_stdout, _jq_stderr, jq_ok) = run_tool_full("jq", args, input);
+
+    assert_eq!(
+        qj_stdout.trim(),
+        jq_stdout.trim(),
+        "stdout mismatch: args={args:?} input={input:?}\nqj_ok={qj_ok}, jq_ok={jq_ok}"
+    );
+    assert_eq!(
+        qj_ok, jq_ok,
+        "exit status mismatch: args={args:?} input={input:?}\n\
+         qj_ok={qj_ok}, jq_ok={jq_ok}\n\
+         qj stderr: {_qj_stderr}\njq stderr: {_jq_stderr}"
+    );
+}
+
+#[test]
+fn stream_flag_object() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn stream_flag_array() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "[1,2,3]");
+}
+
+#[test]
+fn stream_flag_scalar() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "42");
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], r#""hello""#);
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "null");
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "true");
+}
+
+#[test]
+fn stream_flag_nested() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], r#"{"a":{"b":1},"c":[2,3]}"#);
+}
+
+#[test]
+fn stream_flag_slurp() {
+    assert_jq_compat_with_flags(&["--stream", "-s", "-c", "."], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_flag_slurp_ndjson() {
+    assert_jq_compat_with_flags(&["--stream", "-s", "-c", "."], "{\"a\":1}\n{\"b\":2}\n");
+}
+
+#[test]
+fn stream_flag_null_input_inputs() {
+    assert_jq_compat_with_flags(&["--stream", "-n", "-c", "[inputs]"], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_flag_null_input_dot() {
+    assert_jq_compat_with_flags(&["--stream", "-n", "-c", "."], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_flag_ndjson() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "{\"a\":1}\n{\"b\":2}\n");
+}
+
+#[test]
+fn stream_flag_with_filter() {
+    // Apply a filter to stream entries: select only leaf entries (length 2)
+    assert_jq_compat_with_flags(
+        &["--stream", "-c", "select(length == 2)"],
+        r#"{"a":1,"b":2}"#,
+    );
+}
+
+#[test]
+fn stream_flag_empty_containers() {
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "[]");
+    assert_jq_compat_with_flags(&["--stream", "-c", "."], "{}");
+}
+
+// ---------------------------------------------------------------------------
+// --seq CLI flag (RFC 7464)
+// ---------------------------------------------------------------------------
+
+/// Run qj with given args and return raw stdout bytes.
+fn qj_raw_bytes(args: &[&str], input: &[u8]) -> Vec<u8> {
+    let output = Command::new(env!("CARGO_BIN_EXE_qj"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            let _ = child.stdin.take().unwrap().write_all(input);
+            child.wait_with_output()
+        })
+        .expect("failed to run qj");
+    assert!(
+        output.status.success(),
+        "qj {:?} exited with {}: stderr={}",
+        args,
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+/// Run jq with given args and return raw stdout bytes.
+fn jq_raw_bytes(args: &[&str], input: &[u8]) -> Option<Vec<u8>> {
+    let output = Command::new("jq")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            let _ = child.stdin.take().unwrap().write_all(input);
+            child.wait_with_output()
+        })
+        .ok()?;
+    Some(output.stdout)
+}
+
+#[test]
+fn seq_flag_output_has_rs_prefix() {
+    // RS (0x1E) before each output value
+    let input = b"\x1e{\"a\":1}\n";
+    let out = qj_raw_bytes(&["--seq", "-c", "."], input);
+    assert_eq!(out, b"\x1e{\"a\":1}\n");
+}
+
+#[test]
+fn seq_flag_matches_jq() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e{\"a\":1}\n";
+    let qj_out = qj_raw_bytes(&["--seq", "-c", "."], input);
+    let jq_out = jq_raw_bytes(&["--seq", "-c", "."], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq output mismatch");
+}
+
+#[test]
+fn seq_flag_multiple_values() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e{\"a\":1}\n\x1e{\"b\":2}\n";
+    let qj_out = qj_raw_bytes(&["--seq", "-c", ".a, .b"], input);
+    let jq_out = jq_raw_bytes(&["--seq", "-c", ".a, .b"], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq multi-value mismatch");
+}
+
+#[test]
+fn seq_flag_iterator() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e[1,2,3]\n";
+    let qj_out = qj_raw_bytes(&["--seq", "-c", ".[]"], input);
+    let jq_out = jq_raw_bytes(&["--seq", "-c", ".[]"], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq iterator mismatch");
+}
+
+#[test]
+fn seq_flag_pretty_output() {
+    if !jq_available() {
+        return;
+    }
+    let input = b"\x1e{\"a\":1}\n";
+    let qj_out = qj_raw_bytes(&["--seq", "."], input);
+    let jq_out = jq_raw_bytes(&["--seq", "."], input).unwrap();
+    assert_eq!(qj_out, jq_out, "qj vs jq --seq pretty output mismatch");
+}
+
+#[test]
+fn seq_flag_no_rs_input_silent() {
+    // Non-RS input should produce no output (exit 0)
+    let (code, stdout, _stderr) = qj_exit(&["--seq", "-c", "."], "{\"a\":1}");
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty(), "non-RS input should produce no output");
+}
+
+// ---------------------------------------------------------------------------
+// --stream-errors CLI flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stream_errors_valid_object() {
+    // Valid input: identical to --stream
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn stream_errors_valid_array() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "[1,2,3]");
+}
+
+#[test]
+fn stream_errors_valid_scalar() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "42");
+}
+
+#[test]
+fn stream_errors_valid_ndjson() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "{\"a\":1}\n{\"b\":2}\n");
+}
+
+#[test]
+fn stream_errors_with_filter() {
+    assert_jq_compat_with_flags(
+        &["--stream-errors", "-c", "select(length == 2)"],
+        r#"{"a":1,"b":2}"#,
+    );
+}
+
+#[test]
+fn stream_errors_slurp() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-s", "-c", "."], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_errors_null_input_inputs() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-n", "-c", "[inputs]"], r#"{"a":1}"#);
+}
+
+#[test]
+fn stream_errors_invalid_input() {
+    // Parse error: should produce ["error msg", []] entry (exit 0)
+    let (code, stdout, _stderr) = qj_exit(&["--stream-errors", "-c", "."], "invalid");
+    assert_eq!(code, 0, "should exit 0 on parse error with --stream-errors");
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1, "should produce one error entry");
+    // Verify structure: ["<error message>", []]
+    let parsed: serde_json::Value = serde_json::from_str(lines[0]).expect("output should be JSON");
+    assert!(parsed.is_array(), "error entry should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "error entry should have 2 elements");
+    assert!(arr[0].is_string(), "first element should be error string");
+    assert_eq!(arr[1], serde_json::json!([]), "second element should be []");
+}
+
+#[test]
+fn stream_errors_mixed_ndjson() {
+    // Mix of valid and invalid lines
+    let input = "{\"a\":1}\ninvalid\n{\"b\":2}\n";
+    let (code, stdout, _stderr) = qj_exit(&["--stream-errors", "-c", "."], input);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    // Valid object: [["a"],1] [["a"]]
+    // Invalid line: ["error...", []]
+    // Valid object: [["b"],2] [["b"]]
+    assert_eq!(lines.len(), 5, "expected 5 output lines, got: {lines:?}");
+    assert_eq!(lines[0], r#"[["a"],1]"#);
+    assert_eq!(lines[1], r#"[["a"]]"#);
+    // lines[2] is the error entry — verify structure
+    let err: serde_json::Value =
+        serde_json::from_str(lines[2]).expect("error entry should be JSON");
+    assert_eq!(err.as_array().unwrap().len(), 2);
+    assert!(err[0].is_string());
+    assert_eq!(err[1], serde_json::json!([]));
+    assert_eq!(lines[3], r#"[["b"],2]"#);
+    assert_eq!(lines[4], r#"[["b"]]"#);
+}
+
+#[test]
+fn stream_errors_empty_containers() {
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "[]");
+    assert_jq_compat_with_flags(&["--stream-errors", "-c", "."], "{}");
+}
+
+#[test]
+fn stream_errors_nested() {
+    assert_jq_compat_with_flags(
+        &["--stream-errors", "-c", "."],
+        r#"{"a":{"b":1},"c":[2,3]}"#,
+    );
+}

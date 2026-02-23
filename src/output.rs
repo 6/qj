@@ -82,6 +82,8 @@ pub struct OutputConfig {
     pub ascii_output: bool,
     /// Flush stdout after each output value (`--unbuffered`).
     pub unbuffered: bool,
+    /// Prefix each output value with ASCII RS (0x1E) for RFC 7464 (`--seq`).
+    pub seq: bool,
 }
 
 impl Default for OutputConfig {
@@ -95,6 +97,7 @@ impl Default for OutputConfig {
             null_separator: false,
             ascii_output: false,
             unbuffered: false,
+            seq: false,
         }
     }
 }
@@ -113,6 +116,9 @@ pub fn format_compact(value: &Value) -> String {
 
 /// Write a value to the output sink, followed by a newline (unless join_output).
 pub fn write_value<W: Write>(w: &mut W, value: &Value, config: &OutputConfig) -> io::Result<()> {
+    if config.seq {
+        w.write_all(b"\x1e")?;
+    }
     match config.mode {
         OutputMode::Pretty => {
             let fmt = PrettyFmt {

@@ -57,11 +57,11 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
   single-doc and NDJSON paths, asserting identical output (catches NDJSON path divergences).
 - **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 9 tests for
   jq.test bignum/precision edge cases. All pass with `QJ_JQ_COMPAT=1` (497/497).
-  See `docs/CONFORMANCE_100.md` for analysis.
+  See `docs/COMPATIBILITY.md` for analysis.
 - **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test
   against qj, jq, jaq, and gojq. Writes `tests/jq_compat/results.md`.
 - **Feature compatibility suite** (`#[ignore]`): `tests/jq_compat/features.toml` — TOML-defined
-  tests, per-feature Y/~/N matrix. Writes `tests/jq_compat/feature_results.md`.
+  tests, per-feature Y/~/N matrix. Writes `docs/COMPATIBILITY.md` (appends below marker).
 - **Differential testing** (`#[ignore]`): `tests/jq_differential.rs` — property-based tests using
   `proptest` that generate random (filter, input) pairs and compare qj vs jq output. Four focused
   tests: general filters, arithmetic, builtins, and format strings. 2000 cases each. Catches
@@ -218,7 +218,7 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
 - `QJ_NO_FAST_PATH=1` — Disable NDJSON fast paths (for A/B benchmarking).
 - `QJ_JQ_COMPAT=1` — Match jq's precision behavior: arithmetic truncates to f64 for numbers
   > 2^53, extreme exponents preserved, `have_decnum=true`. Enables 497/497 (100%) conformance.
-  See `docs/CONFORMANCE_100.md`.
+  See `docs/COMPATIBILITY.md`.
 
 ### Important
 Never run benchmarks concurrently with tests or other CPU-intensive processes.

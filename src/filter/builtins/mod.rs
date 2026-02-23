@@ -6,6 +6,7 @@ mod io;
 mod math;
 mod paths;
 mod regex;
+mod streaming;
 mod strings;
 mod types;
 
@@ -87,6 +88,11 @@ pub(super) fn eval_builtin(
         | "have_decnum"
         | "have_literal_numbers"
         | "modulemeta" => io::eval_io(name, args, input, env, output),
+
+        // Streaming operations
+        "tostream" | "fromstream" | "truncate_stream" => {
+            streaming::eval_streaming(name, args, input, env, output)
+        }
 
         _ => {
             // Unknown builtin — silently produce no output

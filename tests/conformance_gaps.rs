@@ -5,7 +5,7 @@
 /// `have_decnum` conditionals that qj doesn't match either branch of, or
 /// require exponents beyond f64 range.
 ///
-/// See `docs/CONFORMANCE_100.md` for full analysis and options.
+/// See `docs/COMPATIBILITY.md` for full analysis and options.
 ///
 ///   cargo test --release conformance_gaps -- --include-ignored    # all gaps
 ///   cargo test --release gap_bignum -- --include-ignored          # bignum category
@@ -55,7 +55,7 @@ fn assert_gap(filter: &str, input: &str, expected: &[&str]) {
 // qj uses i64/f64; jq with decnum uses arbitrary precision. These tests
 // check `have_decnum` conditionals. qj's i64 is *more accurate* than
 // jq-without-decnum for integers in the i64 range, but doesn't match
-// either branch of the conditional. See docs/CONFORMANCE_100.md.
+// either branch of the conditional. See docs/COMPATIBILITY.md.
 // ======================================================================
 
 /// jq.test line 661: extreme exponents that overflow/underflow f64
