@@ -83,4 +83,4 @@ Limitations vs jq:
 
 ## Credits / Inspiration
 
-Thx to [lemire](https://github.com/lemire)+team for the ultra-speedy simdjson library, [01mf02](https://github.com/01mf02) for pioneering Rust jq rewrite, and [zog](https://github.com/aikoschurmann/zog) for inspiring the raw byte-scan approach to NDJSON filtering.
+thanks to [lemire](https://github.com/lemire)+team for the ultra-speedy simdjson library, [01mf02](https://github.com/01mf02) for pioneering Rust jq rewrite, and [aikoschurmann](https://github.com/aikoschurmann) for inspiring the raw byte-scan approach to NDJSON filtering.
