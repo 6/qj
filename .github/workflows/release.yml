@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
 
       - name: Validate version
         run: |
@@ -29,6 +31,11 @@ jobs:
           fi
           if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
             echo "::error::Tag v${{ inputs.version }} already exists"
+            exit 1
+          fi
+          current=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ "$current" = "${{ inputs.version }}" ]; then
+            echo "::error::Cargo.toml already at version ${{ inputs.version }}"
             exit 1
           fi
 
