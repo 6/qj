@@ -54,6 +54,7 @@ jobs:
       - name: Regression benchmarks (iai-callgrind)
         if: matrix.os == 'ubuntu-24.04'
         run: |
+          sudo apt-get update
           sudo apt-get install -y valgrind
           cargo bench --bench eval_regression
 

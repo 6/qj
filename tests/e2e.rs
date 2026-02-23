@@ -10,12 +10,8 @@ fn qj(filter: &str, input: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -38,12 +34,8 @@ fn qj_compact(filter: &str, input: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -66,12 +58,8 @@ fn qj_raw(filter: &str, input: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -95,12 +83,8 @@ fn qj_exit(args: &[&str], input: &str) -> (i32, String, String) {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -122,12 +106,8 @@ fn qj_result(filter: &str, input: &str) -> (bool, String, String) {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -1084,12 +1064,8 @@ fn qj_err(filter: &str, input: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -1110,12 +1086,8 @@ fn qj_args(args: &[&str], input: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -1863,12 +1835,8 @@ fn run_jq_compact(filter: &str, input: &str) -> Option<String> {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .ok()?;
@@ -1888,12 +1856,8 @@ fn run_jq(args: &[&str], input: &str) -> Option<String> {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .ok()?;
@@ -5684,12 +5648,8 @@ fn run_tool_full(cmd: &str, args: &[&str], input: &str) -> (String, String, bool
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect(&format!("failed to run {cmd}"));
@@ -6002,12 +5962,8 @@ fn negative_zero_ndjson_normal_path() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -6020,12 +5976,8 @@ fn negative_zero_ndjson_normal_path() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run jq");
@@ -6588,12 +6540,8 @@ fn qj_with_env(args: &[&str], input: &str, env_vars: &[(&str, &str)]) -> String 
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -7064,12 +7012,8 @@ fn qj_with_args(args: &[&str], input: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");
@@ -7682,12 +7626,8 @@ fn qj_compat(filter: &str, input: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .expect("failed to run qj");

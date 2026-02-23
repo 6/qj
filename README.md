@@ -4,8 +4,8 @@
 
 Benchmarked on M4 MacBook Pro:
 
-- **NDJSON (3.4GB, 1.2M records):** `qj 'select(.type=="PushEvent")'` is 190 ms vs `jq` 36.4 s (**191x faster**)
-- **JSON (49MB):** `qj '.statuses | map({user, text})'` is 58 ms vs `jq` 695 ms (**12x faster**)
+- **NDJSON (3.4GB):** `qj -c 'select(.type=="PushEvent")'` is 190ms vs `jq` 36.4s (**191x faster**)
+- **JSON (49MB):** `qj -c '.statuses | map({user, text})'` is 58ms vs `jq` 695ms (**12x faster**)
 
 ## qj vs jq
 
@@ -80,3 +80,7 @@ Limitations vs jq:
 
 - No arbitrary precision arithmetic: qj uses i64/f64 internally. Integers up to 2^63 are exact; beyond that, precision is lost. Set `QJ_JQ_COMPAT=1` to match jq's precision behavior — arithmetic truncates to f64 for numbers > 2^53, while display operations preserve precision (497/497 conformance, 100%).
 - Single-document JSON >4 GB falls back to serde_json (simdjson's limit). Still faster than jq but ~3-6x slower than simdjson's fast path. **NDJSON (JSONL) is unaffected** since each line is parsed independently.
+
+## Credits / Inspiration
+
+thanks to [lemire](https://github.com/lemire)+team for the ultra-speedy simdjson library, [01mf02](https://github.com/01mf02) for pioneering Rust jq rewrite, and [aikoschurmann](https://github.com/aikoschurmann) for inspiring the raw byte-scan approach to NDJSON filtering.
