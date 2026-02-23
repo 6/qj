@@ -1,6 +1,6 @@
 [package]
 name = "qj"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 autobenches = false
 description = "A fast, jq-compatible JSON processor powered by simdjson"
