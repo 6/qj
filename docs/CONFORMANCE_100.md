@@ -5,6 +5,22 @@
 - **Default:** 488/497 (98.2%)
 - **`QJ_JQ_COMPAT=1`:** 497/497 (100.0%)
 
+## Why not 100% by default?
+
+qj uses i64 for integers (exact up to 2^63) while jq uses f64 for arithmetic on large numbers (exact only up to 2^53). For integers between 2^53 and 2^63, qj actually gives **more precise** results than jq. The 9 "failing" tests are cases where jq's test suite checks for jq's specific precision-loss behavior — qj doesn't match because it gives the mathematically correct answer.
+
+For example: `13911860366432393 - 10`
+- **qj (default):** `13911860366432383` (correct)
+- **jq:** `13911860366432382` (f64 precision loss)
+
+No real-world jq script depends on getting the wrong answer, so this is safe for drop-in use. But if you need byte-identical output with jq (e.g., for checksumming or diff-testing), set `QJ_JQ_COMPAT=1`:
+
+```bash
+export QJ_JQ_COMPAT=1   # match jq's precision behavior exactly
+```
+
+This makes qj deliberately truncate arithmetic to f64 for numbers above 2^53, matching jq's behavior. All 497 tests pass.
+
 ## Fixed
 
 ### NaN/Infinity modulo (2 tests)
