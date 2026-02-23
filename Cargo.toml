@@ -56,6 +56,11 @@ opt-level = 3
 lto = "thin"
 strip = true
 
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 1
+
 [profile.bench]
 debug = true
 

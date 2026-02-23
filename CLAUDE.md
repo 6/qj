@@ -191,6 +191,20 @@ Use `QJ_GHARCHIVE_HOURS=2` for quick testing with fewer hours of data.
 production DOM tape walk path used by flat eval and the regular eval pipeline. Its parse times
 are ~30% higher than actual production performance. Use `hyperfine` for accurate benchmarks.
 
+### CPU profiling with `sample` (macOS)
+Use `cargo build --profile profiling` for optimized builds with debug symbols.
+The `profiling` profile inherits from release but keeps symbols (`strip = false, debug = 1`).
+```
+# Warm cache first, then run and sample in one shot:
+./target/profiling/qj --threads 1 -c 'select(.type == "PushEvent")' benches/data/gharchive_medium.ndjson > /dev/null
+./target/profiling/qj --threads 1 -c 'select(.type == "PushEvent")' benches/data/gharchive_medium.ndjson > /dev/null &
+sample $! 3 1 -file /tmp/qj_profile.txt
+```
+- Use `--threads 1` to isolate work on a single worker thread (cleaner call stacks).
+- Use `gharchive_medium.ndjson` (3.4GB, ~1s) — xsmall finishes too fast to sample.
+- The profile is a call tree with sample counts; look for the deepest frames to find hotspots.
+- Symbols show Rust function names + source locations (e.g., `ndjson.rs:1076`).
+
 ### Ad-hoc comparison
 Always warm cache with `--warmup 1` (sufficient for file I/O cache; higher values add time without improving accuracy).
 ```

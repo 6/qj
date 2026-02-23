@@ -1073,19 +1073,34 @@ fn process_line(
             op,
             literal_bytes,
         } => {
-            process_line_select_eq(
+            // Try pure Rust byte scanner first (no FFI, no padding, no minify).
+            if let Some(result) = process_line_select_eq_raw(
                 trimmed,
                 fields,
                 *op,
                 literal_bytes,
-                filter,
                 config,
-                env,
                 output_buf,
                 had_output,
-                scratch,
-                dom_parser.as_mut().unwrap(),
-            )?;
+            ) {
+                result?;
+            } else {
+                // Fallback to simdjson path for edge cases (non-compact mode,
+                // ambiguous byte comparisons, field not found by scanner).
+                process_line_select_eq(
+                    trimmed,
+                    fields,
+                    *op,
+                    literal_bytes,
+                    filter,
+                    config,
+                    env,
+                    output_buf,
+                    had_output,
+                    scratch,
+                    dom_parser.as_mut().unwrap(),
+                )?;
+            }
         }
         NdjsonFastPath::Length(fields) => {
             process_line_length(
@@ -1480,6 +1495,225 @@ fn parse_json_number(bytes: &[u8]) -> Option<f64> {
     std::str::from_utf8(bytes)
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
+}
+
+// ---------------------------------------------------------------------------
+// Pure Rust byte scanner for SelectEq — bypasses simdjson FFI entirely.
+// ---------------------------------------------------------------------------
+
+/// Find the raw value bytes for a field at depth 1 in a JSON object line.
+///
+/// Scans byte-by-byte tracking brace depth and string boundaries.
+/// Returns the raw value slice (e.g. `"PushEvent"`, `42`, `true`) or `None`
+/// if the field is not found at the top level.
+fn find_field_value_raw<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
+    let field_bytes = field.as_bytes();
+    let len = line.len();
+    let mut i = 0;
+    let mut depth: u32 = 0;
+    let mut in_string = false;
+
+    while i < len {
+        let b = line[i];
+
+        if in_string {
+            if b == b'\\' {
+                i += 2; // skip escaped character
+                continue;
+            }
+            if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b'"' => {
+                if depth == 1 {
+                    // Potential key at depth 1 — check if it matches the field name.
+                    // We need: "field_name" followed by :
+                    let key_start = i + 1;
+                    let key_end = key_start + field_bytes.len();
+                    if key_end < len
+                        && line[key_end] == b'"'
+                        && line[key_start..key_end] == *field_bytes
+                    {
+                        // Matched key. Skip past closing quote and find colon.
+                        let mut j = key_end + 1;
+                        // Skip whitespace between key and colon
+                        while j < len && matches!(line[j], b' ' | b'\t' | b'\r' | b'\n') {
+                            j += 1;
+                        }
+                        if j < len && line[j] == b':' {
+                            j += 1;
+                            // Skip whitespace between colon and value
+                            while j < len && matches!(line[j], b' ' | b'\t' | b'\r' | b'\n') {
+                                j += 1;
+                            }
+                            if j < len {
+                                // Extract the value
+                                return extract_json_value(line, j);
+                            }
+                        }
+                    }
+                    // Not our field, or no colon — skip this string
+                    in_string = true;
+                } else {
+                    in_string = true;
+                }
+                i += 1;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Extract a JSON value starting at position `start` in `line`.
+/// Returns the slice containing the complete value.
+fn extract_json_value(line: &[u8], start: usize) -> Option<&[u8]> {
+    let len = line.len();
+    if start >= len {
+        return None;
+    }
+
+    match line[start] {
+        b'"' => {
+            // String: find closing unescaped quote
+            let mut i = start + 1;
+            while i < len {
+                match line[i] {
+                    b'\\' => i += 2,
+                    b'"' => return Some(&line[start..=i]),
+                    _ => i += 1,
+                }
+            }
+            None
+        }
+        b'{' | b'[' => {
+            // Object or array: track depth to find matching close
+            let close = if line[start] == b'{' { b'}' } else { b']' };
+            let mut depth: u32 = 1;
+            let mut in_str = false;
+            let mut i = start + 1;
+            while i < len {
+                let b = line[i];
+                if in_str {
+                    if b == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b == b'"' {
+                        in_str = false;
+                    }
+                    i += 1;
+                    continue;
+                }
+                match b {
+                    b'"' => {
+                        in_str = true;
+                        i += 1;
+                    }
+                    b'{' | b'[' => {
+                        depth += 1;
+                        i += 1;
+                    }
+                    b'}' | b']' => {
+                        depth -= 1;
+                        if depth == 0 && b == close {
+                            return Some(&line[start..=i]);
+                        }
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            None
+        }
+        _ => {
+            // Primitive (number, true, false, null): ends at , } ] or whitespace
+            let mut i = start;
+            while i < len {
+                match line[i] {
+                    b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n' => {
+                        return Some(&line[start..i]);
+                    }
+                    _ => i += 1,
+                }
+            }
+            // Value extends to end of line
+            Some(&line[start..len])
+        }
+    }
+}
+
+/// Find a nested field value by following a field chain.
+/// E.g., for fields `["actor", "login"]`, finds `.actor` then `.login` within it.
+fn find_field_chain_raw<'a>(line: &'a [u8], fields: &[String]) -> Option<&'a [u8]> {
+    let mut current = line;
+    for (i, field) in fields.iter().enumerate() {
+        let value = find_field_value_raw(current, field)?;
+        if i + 1 < fields.len() {
+            // Intermediate field: must be an object to navigate into
+            if value.first() != Some(&b'{') {
+                return None;
+            }
+            current = value;
+        } else {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Try the pure Rust byte scanner path for SelectEq.
+///
+/// Returns `Some(Ok(()))` if handled, `Some(Err(...))` on error, `None` to
+/// fall back to the simdjson path.
+#[allow(clippy::too_many_arguments)]
+fn process_line_select_eq_raw(
+    trimmed: &[u8],
+    fields: &[String],
+    op: CmpOp,
+    literal_bytes: &[u8],
+    config: &OutputConfig,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+) -> Option<Result<()>> {
+    // Only handle compact mode — non-compact needs full parse for formatting.
+    if config.mode != output::OutputMode::Compact {
+        return None;
+    }
+
+    let raw = find_field_chain_raw(trimmed, fields)?;
+
+    match evaluate_select_predicate(raw, literal_bytes, op) {
+        Some(true) => {
+            *had_output = true;
+            // Output the raw line directly. If the line contains whitespace
+            // outside strings (not already compact), fall back to simdjson
+            // minify path for correctness.
+            if memchr::memchr2(b' ', b'\t', trimmed).is_some() {
+                return None;
+            }
+            output_buf.extend_from_slice(trimmed);
+            write_line_terminator(output_buf, config);
+            Some(Ok(()))
+        }
+        Some(false) => Some(Ok(())),
+        None => None, // ambiguous — fall back to simdjson
+    }
 }
 
 /// Process a line with the select(.field op literal) fast path.
