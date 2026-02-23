@@ -819,29 +819,50 @@ fn process_chunk(
     let mut output_buf = Vec::with_capacity(chunk.len() / 2);
     let mut had_output = false;
 
-    // Try fused chunk-level scanner for SelectEq — single pass, no per-line dispatch.
-    if let NdjsonFastPath::SelectEq {
-        fields,
-        op,
-        literal_bytes,
-    } = fast_path
-    {
-        if let Some(result) = process_chunk_select_eq_fused(
-            chunk,
+    // Try fused chunk-level scanners — single pass with pre-built Finders.
+    match fast_path {
+        NdjsonFastPath::SelectEq {
             fields,
-            *op,
+            op,
             literal_bytes,
-            config,
-            &mut output_buf,
-            &mut had_output,
-        ) {
-            result?;
-            let error_buf = Vec::new();
-            return Ok((output_buf, had_output, error_buf));
+        } => {
+            if let Some(result) = process_chunk_select_eq_fused(
+                chunk,
+                fields,
+                *op,
+                literal_bytes,
+                config,
+                &mut output_buf,
+                &mut had_output,
+            ) {
+                result?;
+                let error_buf = Vec::new();
+                return Ok((output_buf, had_output, error_buf));
+            }
+            // Fused scanner couldn't handle it — fall through to per-line path.
+            output_buf.clear();
+            had_output = false;
         }
-        // Fused scanner couldn't handle it — fall through to per-line path.
-        output_buf.clear();
-        had_output = false;
+        NdjsonFastPath::SelectCompound {
+            conditions,
+            bool_op,
+        } => {
+            if let Some(result) = process_chunk_select_compound_fused(
+                chunk,
+                conditions,
+                *bool_op,
+                config,
+                &mut output_buf,
+                &mut had_output,
+            ) {
+                result?;
+                let error_buf = Vec::new();
+                return Ok((output_buf, had_output, error_buf));
+            }
+            output_buf.clear();
+            had_output = false;
+        }
+        _ => {}
     }
 
     // Reusable scratch buffer for simdjson padding — avoids per-line allocation.
@@ -1599,37 +1620,38 @@ fn parse_json_number(bytes: &[u8]) -> Option<f64> {
 // Pure Rust byte scanner for SelectEq — bypasses simdjson FFI entirely.
 // ---------------------------------------------------------------------------
 
-/// memmem-accelerated field search for top-level fields in compact NDJSON.
-///
-/// Uses SIMD-accelerated substring search to jump directly to `"fieldname":`
-/// instead of scanning byte-by-byte from the start. Validates that the match
-/// is a top-level key by checking the preceding byte is `{` or `,`.
-///
-/// Returns `None` if the field isn't found or the match isn't provably top-level,
-/// in which case the caller should fall back to the depth-tracking scan.
-fn find_field_value_memmem<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
-    // Build pattern: "fieldname":
+/// Build the memmem search pattern bytes for a field: `"fieldname":`.
+fn build_field_pattern(field: &str) -> Vec<u8> {
     let field_bytes = field.as_bytes();
-    let pattern_len = 1 + field_bytes.len() + 2; // " + field + ":
-    let mut pattern = Vec::with_capacity(pattern_len);
+    let mut pattern = Vec::with_capacity(1 + field_bytes.len() + 2);
     pattern.push(b'"');
     pattern.extend_from_slice(field_bytes);
     pattern.push(b'"');
     pattern.push(b':');
+    pattern
+}
 
-    let finder = memchr::memmem::find(line, &pattern)?;
+/// memmem-accelerated field search using a pre-built Finder.
+///
+/// The Finder should be constructed once (via `memchr::memmem::Finder::new`)
+/// and reused across lines. This avoids per-line SIMD searcher setup.
+fn find_field_value_with_finder<'a>(
+    line: &'a [u8],
+    finder: &memchr::memmem::Finder<'_>,
+    pattern_len: usize,
+) -> Option<&'a [u8]> {
+    let pos = finder.find(line)?;
 
-    // Validate this is a top-level key: preceding byte must be { or ,
-    if finder == 0 {
-        return None; // no preceding byte
+    // Validate top-level: preceding byte must be { or ,
+    if pos == 0 {
+        return None;
     }
-    let prev = line[finder - 1];
+    let prev = line[pos - 1];
     if prev != b'{' && prev != b',' {
-        return None; // nested or inside string — fall back to depth scan
+        return None;
     }
 
-    // Skip to value start (right after the pattern)
-    let value_start = finder + pattern_len;
+    let value_start = pos + pattern_len;
     if value_start >= line.len() {
         return None;
     }
@@ -1637,23 +1659,23 @@ fn find_field_value_memmem<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> 
     extract_json_value(line, value_start)
 }
 
-/// Find the raw value bytes for a field at depth 1 in a JSON object line.
+/// memmem-accelerated field search for top-level fields in compact NDJSON.
 ///
-/// Scans byte-by-byte tracking brace depth and string boundaries.
-/// Returns the raw value slice (e.g. `"PushEvent"`, `42`, `true`) or `None`
-/// if the field is not found at the top level.
-fn find_field_value_raw<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
-    // Fast path: use memmem to jump directly to the field in compact NDJSON.
-    // In compact JSON, a top-level key is always preceded by `{` or `,`:
-    //   {"type":"PushEvent","public":true}
-    //     ^                  ^
-    //     preceded by {      preceded by ,
-    // If the preceding byte is anything else (e.g. nested object, inside string),
-    // we fall back to the depth-tracking scan.
-    if let Some(value) = find_field_value_memmem(line, field) {
-        return Some(value);
-    }
+/// Builds the pattern and Finder on each call. For hot loops, prefer
+/// `build_field_pattern` + `Finder::new` + `find_field_value_with_finder`
+/// to amortize setup cost across lines.
+fn find_field_value_memmem<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
+    let pattern = build_field_pattern(field);
+    let finder = memchr::memmem::Finder::new(&pattern);
+    find_field_value_with_finder(line, &finder, pattern.len())
+}
 
+/// Byte-by-byte depth-tracking scanner for field lookup (fallback path).
+///
+/// Walks the JSON line tracking brace depth and string boundaries to find
+/// a top-level field. Used when the memmem fast path fails (non-compact JSON,
+/// field name appears inside strings, etc.).
+fn find_field_value_scan<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
     let field_bytes = field.as_bytes();
     let len = line.len();
     let mut i = 0;
@@ -1725,6 +1747,36 @@ fn find_field_value_raw<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
         }
     }
     None
+}
+
+/// Find the raw value bytes for a field at depth 1 in a JSON object line.
+///
+/// Tries memmem fast path first (builds Finder per call), then falls back
+/// to the byte-by-byte depth-tracking scan. For hot loops where the same
+/// field is searched across many lines, use `find_field_value_raw_prebuilt`
+/// to amortize Finder construction.
+fn find_field_value_raw<'a>(line: &'a [u8], field: &str) -> Option<&'a [u8]> {
+    // Fast path: use memmem to jump directly to the field in compact NDJSON.
+    if let Some(value) = find_field_value_memmem(line, field) {
+        return Some(value);
+    }
+    find_field_value_scan(line, field)
+}
+
+/// Like `find_field_value_raw` but uses a pre-built memmem Finder.
+///
+/// Avoids per-call Finder construction overhead (~15% of scan time in profiles).
+/// The caller must pre-build the Finder from `build_field_pattern(field)`.
+fn find_field_value_raw_prebuilt<'a>(
+    line: &'a [u8],
+    field: &str,
+    finder: &memchr::memmem::Finder<'_>,
+    pattern_len: usize,
+) -> Option<&'a [u8]> {
+    if let Some(value) = find_field_value_with_finder(line, finder, pattern_len) {
+        return Some(value);
+    }
+    find_field_value_scan(line, field)
 }
 
 /// Extract a JSON value starting at position `start` in `line`.
@@ -1959,6 +2011,12 @@ fn process_chunk_select_eq_fused(
         return None;
     }
 
+    // Pre-build the memmem Finder once for the entire chunk. This avoids
+    // per-line FinderBuilder::build_forward_with_ranker overhead (~15% of
+    // scan time in profiles).
+    let pattern = build_field_pattern(&fields[0]);
+    let finder = memchr::memmem::Finder::new(&pattern);
+
     let len = chunk.len();
     let mut line_start: usize = 0;
 
@@ -1992,8 +2050,8 @@ fn process_chunk_select_eq_fused(
             return None;
         }
 
-        // Find field value — try memmem fast path, then byte-by-byte fallback.
-        let value = find_field_value_raw(trimmed, &fields[0]);
+        // Find field value using pre-built Finder, with byte-by-byte fallback.
+        let value = find_field_value_raw_prebuilt(trimmed, &fields[0], &finder, pattern.len());
 
         // Evaluate predicate. Missing field → value is null in jq semantics.
         let raw = match value {
@@ -2008,6 +2066,127 @@ fn process_chunk_select_eq_fused(
             }
             Some(false) => {}    // no match
             None => return None, // ambiguous — need simdjson fallback for whole chunk
+        }
+    }
+
+    Some(Ok(()))
+}
+
+/// Fused chunk-level scanner for SelectCompound (AND/OR) in compact mode.
+///
+/// Pre-builds memmem Finders for each condition's first field, then loops
+/// over lines evaluating the compound predicate. Returns `None` to fall back
+/// to the per-line path on non-compact data or multi-field chains.
+fn process_chunk_select_compound_fused(
+    chunk: &[u8],
+    conditions: &[(Vec<String>, CmpOp, Vec<u8>)],
+    bool_op: BoolOp,
+    config: &OutputConfig,
+    output_buf: &mut Vec<u8>,
+    had_output: &mut bool,
+) -> Option<Result<()>> {
+    // Only handle compact mode with single-field conditions.
+    if config.mode != output::OutputMode::Compact {
+        return None;
+    }
+    for (fields, _, _) in conditions {
+        if fields.len() != 1 {
+            return None;
+        }
+    }
+
+    // Pre-build Finders for all conditions.
+    let patterns: Vec<Vec<u8>> = conditions
+        .iter()
+        .map(|(fields, _, _)| build_field_pattern(&fields[0]))
+        .collect();
+    let finders: Vec<memchr::memmem::Finder<'_>> =
+        patterns.iter().map(memchr::memmem::Finder::new).collect();
+
+    let len = chunk.len();
+    let mut line_start: usize = 0;
+
+    while line_start < len {
+        let nl_pos = memchr::memchr(b'\n', &chunk[line_start..])
+            .map(|p| line_start + p)
+            .unwrap_or(len);
+        let line = &chunk[line_start..nl_pos];
+        line_start = nl_pos + 1;
+
+        let end = line
+            .iter()
+            .rposition(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
+            .map_or(0, |p| p + 1);
+        let start = line[..end]
+            .iter()
+            .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'))
+            .unwrap_or(end);
+        let trimmed = &line[start..end];
+
+        if trimmed.is_empty() || trimmed[0] != b'{' {
+            continue;
+        }
+
+        if trimmed.len() > 1 && trimmed[1] != b'"' && trimmed[1] != b'}' {
+            return None;
+        }
+
+        let matched = match bool_op {
+            BoolOp::And => {
+                let mut all_true = true;
+                for (i, (fields, op, literal_bytes)) in conditions.iter().enumerate() {
+                    let raw = find_field_value_raw_prebuilt(
+                        trimmed,
+                        &fields[0],
+                        &finders[i],
+                        patterns[i].len(),
+                    )
+                    .unwrap_or(b"null");
+                    match evaluate_select_predicate(raw, literal_bytes, *op) {
+                        Some(false) => {
+                            all_true = false;
+                            break;
+                        }
+                        Some(true) => continue,
+                        None => return None,
+                    }
+                }
+                all_true
+            }
+            BoolOp::Or => {
+                let mut any_true = false;
+                let mut any_ambiguous = false;
+                for (i, (fields, op, literal_bytes)) in conditions.iter().enumerate() {
+                    let raw = find_field_value_raw_prebuilt(
+                        trimmed,
+                        &fields[0],
+                        &finders[i],
+                        patterns[i].len(),
+                    )
+                    .unwrap_or(b"null");
+                    match evaluate_select_predicate(raw, literal_bytes, *op) {
+                        Some(true) => {
+                            any_true = true;
+                            break;
+                        }
+                        Some(false) => continue,
+                        None => {
+                            any_ambiguous = true;
+                            continue;
+                        }
+                    }
+                }
+                if !any_true && any_ambiguous {
+                    return None;
+                }
+                any_true
+            }
+        };
+
+        if matched {
+            *had_output = true;
+            output_buf.extend_from_slice(trimmed);
+            write_line_terminator(output_buf, config);
         }
     }
 
