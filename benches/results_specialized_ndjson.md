@@ -36,6 +36,15 @@ All commands write to stdout (piped to `/dev/null` by hyperfine). Times include 
 | zog | `zog --file data.ndjson type eq PublicEvent` | 426ms |
 | ripgrep | `rg '"type":"PublicEvent"' data.ndjson` | 455ms |
 
+### Aggregation — count matching records
+
+| Tool | Command | Time |
+|------|---------|-----:|
+| qj | `qj -c 'select(.type == "PushEvent")' data.ndjson \| wc -l` | 1.56s |
+| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent")' data.ndjson \| wc -l` | 1.79s |
+| **zog** | `zog --file data.ndjson SELECT count:type WHERE type eq PushEvent` | **537ms** |
+| ripgrep | `rg '"type":"PushEvent"' data.ndjson \| wc -l` | 1.45s |
+
 ### Boolean equality (100% match — every record is public)
 
 | Tool | Command | Time |
@@ -71,15 +80,6 @@ All commands write to stdout (piped to `/dev/null` by hyperfine). Times include 
 | qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent" or .type == "CreateEvent")' data.ndjson` | 575ms |
 | zog | `zog --file data.ndjson type eq PushEvent OR type eq CreateEvent` | 591ms |
 | ripgrep | `rg '"type":"(Push\|Create)Event"' data.ndjson` | 719ms |
-
-### Aggregation — count matching records
-
-| Tool | Command | Time |
-|------|---------|-----:|
-| qj | `qj -c 'select(.type == "PushEvent")' data.ndjson \| wc -l` | 1.56s |
-| qj (1 thread) | `qj --threads 1 -c 'select(.type == "PushEvent")' data.ndjson \| wc -l` | 1.79s |
-| **zog** | `zog --file data.ndjson SELECT count:type WHERE type eq PushEvent` | **537ms** |
-| ripgrep | `rg '"type":"PushEvent"' data.ndjson \| wc -l` | 1.45s |
 
 ### Substring match
 
