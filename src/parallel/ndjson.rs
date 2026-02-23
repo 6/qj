@@ -1701,10 +1701,10 @@ fn process_line_select_eq_raw(
     match evaluate_select_predicate(raw, literal_bytes, op) {
         Some(true) => {
             *had_output = true;
-            // Output the raw line directly. If the line contains whitespace
-            // outside strings (not already compact), fall back to simdjson
-            // minify path for correctness.
-            if memchr::memchr2(b' ', b'\t', trimmed).is_some() {
+            // Output the raw line directly. If the line has structural
+            // whitespace (not already compact), fall back to simdjson minify.
+            // Quick check: compact NDJSON starts with `{"` or `{}`, never `{ `.
+            if trimmed.len() > 1 && trimmed[0] == b'{' && trimmed[1] != b'"' && trimmed[1] != b'}' {
                 return None;
             }
             output_buf.extend_from_slice(trimmed);
