@@ -4,8 +4,8 @@
 
 Benchmarked on M4 MacBook Pro:
 
-- **NDJSON (3.4GB, 1.2M records):** `qj 'select(.type=="PushEvent")'` is 190 ms vs `jq` 36.4 s (**191x faster**)
-- **JSON (49MB):** `qj '.statuses | map({user, text})'` is 58 ms vs `jq` 695 ms (**12x faster**)
+- **NDJSON (3.4GB, 1.2M records):** `qj -c 'select(.type=="PushEvent")'` is 190ms vs `jq` 36.4s (**191x faster**)
+- **JSON (49MB):** `qj '.statuses | map({user, text})'` is 58ms vs `jq` 695ms (**12x faster**)
 
 ## qj vs jq
 
