@@ -7767,3 +7767,189 @@ fn extreme_exponent_normal_range_unaffected() {
     assert_jq_compat("3.14", "null");
     assert_jq_compat("0.001", "null");
 }
+
+// ---------------------------------------------------------------------------
+// Streaming: tostream, fromstream, truncate_stream
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tostream_simple_object() {
+    let out = qj_compact("[tostream]", r#"{"a":1,"b":2}"#);
+    assert_eq!(out.trim(), r#"[[["a"],1],[["b"],2],[["b"]]]"#);
+    assert_jq_compat("[tostream]", r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn tostream_nested_object() {
+    assert_jq_compat("[tostream]", r#"{"a":{"b":1,"c":2}}"#);
+}
+
+#[test]
+fn tostream_array() {
+    assert_jq_compat("[tostream]", "[1,2,3]");
+}
+
+#[test]
+fn tostream_nested_array() {
+    assert_jq_compat("[tostream]", "[1,[2,3]]");
+}
+
+#[test]
+fn tostream_scalar() {
+    assert_jq_compat("[tostream]", "42");
+    assert_jq_compat("[tostream]", r#""hello""#);
+    assert_jq_compat("[tostream]", "null");
+    assert_jq_compat("[tostream]", "true");
+}
+
+#[test]
+fn tostream_empty_containers() {
+    assert_jq_compat("[tostream]", "[]");
+    assert_jq_compat("[tostream]", "{}");
+}
+
+#[test]
+fn tostream_deeply_nested() {
+    assert_jq_compat("[tostream]", r#"{"a":{"b":{"c":1}}}"#);
+}
+
+#[test]
+fn tostream_mixed_nesting() {
+    assert_jq_compat("[tostream]", r#"{"a":[1,2],"b":{"c":3}}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_object() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":1,"b":2}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_nested() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":{"b":1,"c":2}}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_array() {
+    assert_jq_compat("fromstream(tostream)", "[1,2,3]");
+}
+
+#[test]
+fn fromstream_roundtrip_nested_mixed() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":[1,2],"b":{"c":3}}"#);
+}
+
+#[test]
+fn fromstream_roundtrip_scalar() {
+    assert_jq_compat("fromstream(tostream)", "42");
+    assert_jq_compat("fromstream(tostream)", r#""hello""#);
+    assert_jq_compat("fromstream(tostream)", "null");
+}
+
+#[test]
+fn fromstream_with_select() {
+    assert_jq_compat(
+        r#"fromstream(tostream | select(.[0][0] == "b"))"#,
+        r#"{"a":1,"b":2}"#,
+    );
+}
+
+#[test]
+fn fromstream_multiple_scalars() {
+    assert_jq_compat("[fromstream([[],1],[[],2])]", "null");
+}
+
+#[test]
+fn fromstream_explicit_stream() {
+    // Build an object from explicit stream entries
+    assert_jq_compat(r#"[fromstream([[["a"],1],[["b"],2],[["b"]])]"#, "null");
+}
+
+#[test]
+fn tostream_with_nulls() {
+    assert_jq_compat("[tostream]", r#"{"a":null,"b":2}"#);
+    assert_jq_compat("[tostream]", "[null,1,null]");
+}
+
+#[test]
+fn tostream_single_element_containers() {
+    assert_jq_compat("[tostream]", "[1]");
+    assert_jq_compat("[tostream]", r#"{"a":1}"#);
+}
+
+#[test]
+fn tostream_nested_empty_containers() {
+    assert_jq_compat("[tostream]", r#"{"a":[],"b":{}}"#);
+}
+
+#[test]
+fn tostream_array_of_objects() {
+    assert_jq_compat("[tostream]", r#"[{"a":1},{"b":2}]"#);
+}
+
+#[test]
+fn fromstream_roundtrip_empty_containers() {
+    assert_jq_compat("fromstream(tostream)", "[]");
+    assert_jq_compat("fromstream(tostream)", "{}");
+}
+
+#[test]
+fn fromstream_roundtrip_with_nulls() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":null,"b":2}"#);
+    assert_jq_compat("fromstream(tostream)", "[null,1,null]");
+}
+
+#[test]
+fn fromstream_roundtrip_deeply_nested() {
+    assert_jq_compat("fromstream(tostream)", r#"{"a":{"b":{"c":{"d":1}}}}"#);
+    assert_jq_compat("fromstream(tostream)", "[[[[1]]]]");
+}
+
+#[test]
+fn fromstream_roundtrip_complex() {
+    assert_jq_compat(
+        "fromstream(tostream)",
+        r#"{"users":[{"name":"alice","scores":[1,2,3]},{"name":"bob","scores":[4,5]}]}"#,
+    );
+}
+
+#[test]
+fn fromstream_empty_stream() {
+    // empty filter produces no stream items → no output
+    assert_jq_compat("[fromstream(empty)]", "null");
+}
+
+#[test]
+fn fromstream_build_array_from_stream() {
+    // Build an array from explicit stream entries
+    assert_jq_compat("[fromstream([[0],10],[[1],20],[[1]])]", "null");
+}
+
+#[test]
+fn fromstream_nested_stream() {
+    // Build nested object from explicit entries
+    assert_jq_compat(
+        r#"[fromstream([[["a","b"],1],[["a","b"]],[["a"]])]"#,
+        "null",
+    );
+}
+
+#[test]
+fn fromstream_with_select_nested() {
+    // Select only entries under "b" key from a nested object
+    assert_jq_compat(
+        r#"fromstream(tostream | select(.[0][0] == "b"))"#,
+        r#"{"a":1,"b":{"c":2}}"#,
+    );
+}
+
+#[test]
+fn tostream_in_builtins_list() {
+    let out = qj_compact(
+        r#"[builtins[] | select(startswith("tostream") or startswith("fromstream") or startswith("truncate_stream"))] | sort"#,
+        "null",
+    );
+    assert_eq!(
+        out.trim(),
+        r#"["fromstream/1","tostream/0","truncate_stream/1"]"#
+    );
+}

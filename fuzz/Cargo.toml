@@ -76,3 +76,9 @@ name = "fuzz_flat_eval_diff"
 path = "fuzz_targets/fuzz_flat_eval_diff.rs"
 doc = false
 test = false
+
+[[bin]]
+name = "fuzz_streaming"
+path = "fuzz_targets/fuzz_streaming.rs"
+doc = false
+test = false
