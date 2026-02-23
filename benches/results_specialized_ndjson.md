@@ -8,7 +8,7 @@
 
 | Tool | Description | Approach |
 |------|-------------|----------|
-| [qj](https://github.com/peterallenwebb/qj) | Full jq-compatible JSON processor | SIMD parsing (simdjson), parallel chunk processing, raw byte-scan fast paths |
+| [qj](https://github.com/6/qj) | Full jq-compatible JSON processor | SIMD parsing (simdjson), parallel chunk processing, raw byte-scan fast paths |
 | [zog](https://github.com/aikoschurmann/zog) | Purpose-built NDJSON search engine | Zero-allocation SIMD byte scanning, no JSON parsing |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | General-purpose regex search | Optimized regex engine, mmap I/O |
 
