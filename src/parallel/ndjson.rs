@@ -200,6 +200,13 @@ fn process_ndjson_file_mmap<W: Write>(
     };
 
     let ws = window_size();
+    // QJ_MADVISE: controls page management strategy.
+    //   1 = MADV_DONTNEED + MADV_WILLNEED (release pages + prefetch next window)
+    //   2 = MADV_WILLNEED only (prefetch, let kernel handle eviction via MADV_SEQUENTIAL)
+    //   unset = progressive munmap (default, bounds RSS)
+    let madvise_mode: u8 = std::env::var_os("QJ_MADVISE")
+        .and_then(|v| v.to_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(0);
     let mut had_output = false;
     let mut file_offset: usize = 0;
     let mut unmapped_up_to: usize = 0;
@@ -261,27 +268,64 @@ fn process_ndjson_file_mmap<W: Write>(
 
         file_offset += process_len;
 
-        // Progressive munmap: release processed pages to bound RSS.
-        // Align down to page boundary (can't munmap partial pages).
-        let safe_unmap_end = file_offset & !(page_size - 1);
-        if safe_unmap_end > unmapped_up_to {
-            unsafe {
-                libc::munmap(
-                    (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
-                    safe_unmap_end - unmapped_up_to,
-                );
+        if madvise_mode > 0 {
+            if madvise_mode == 1 {
+                // MADV_DONTNEED: tell kernel to drop processed pages from RSS
+                // without the expensive page table teardown of munmap.
+                let safe_release_end = file_offset & !(page_size - 1);
+                if safe_release_end > unmapped_up_to {
+                    unsafe {
+                        libc::madvise(
+                            (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
+                            safe_release_end - unmapped_up_to,
+                            libc::MADV_DONTNEED,
+                        );
+                    }
+                    unmapped_up_to = safe_release_end;
+                }
             }
-            unmapped_up_to = safe_unmap_end;
+
+            // Prefetch next window: MADV_WILLNEED triggers asynchronous page-in
+            // while we write output / loop overhead.
+            if file_offset < file_len {
+                let prefetch_end = (file_offset + ws).min(file_len);
+                unsafe {
+                    libc::madvise(
+                        (base_ptr as *const u8).add(file_offset) as *mut libc::c_void,
+                        prefetch_end - file_offset,
+                        libc::MADV_WILLNEED,
+                    );
+                }
+            }
+        } else {
+            // Progressive munmap: release processed pages to bound RSS.
+            let safe_unmap_end = file_offset & !(page_size - 1);
+            if safe_unmap_end > unmapped_up_to {
+                unsafe {
+                    libc::munmap(
+                        (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
+                        safe_unmap_end - unmapped_up_to,
+                    );
+                }
+                unmapped_up_to = safe_unmap_end;
+            }
         }
     }
 
-    // Unmap any remaining tail (last partial page).
-    if unmapped_up_to < file_len {
+    if madvise_mode > 0 {
+        // Single munmap for the entire mapping.
         unsafe {
-            libc::munmap(
-                (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
-                file_len - unmapped_up_to,
-            );
+            libc::munmap(base_ptr, file_len);
+        }
+    } else {
+        // Unmap any remaining tail (last partial page).
+        if unmapped_up_to < file_len {
+            unsafe {
+                libc::munmap(
+                    (base_ptr as *mut u8).add(unmapped_up_to) as *mut libc::c_void,
+                    file_len - unmapped_up_to,
+                );
+            }
         }
     }
 
