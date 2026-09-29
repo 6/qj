@@ -319,3 +319,9 @@
 {"src": "import \"a\" as foo {search: \"~/x\"}; foo::a", "home": "<unset>"}
 {"src": "1", "home": "<unset>"}
 "import \"dotsearch\" as d {search: \"../jq_compile/modules\"}; d::here"
+"import \"pkg\" as p {search: \"../jq_compile/modules\"}; p::main"
+"import \"pkg2\" as p {search: \"../jq_compile/modules\"}; p::main"
+"import \"datapkg\" as $d {search: \"../jq_compile/modules\"}; $d"
+"import \"both\" as b {search: \"../jq_compile/modules\"}; b::which"
+"import \"both/both\" as b {search: \"../jq_compile/modules\"}; b::which"
+"import \"pkg/jq/main\" as p {search: \"../jq_compile/modules\"}; p::main"

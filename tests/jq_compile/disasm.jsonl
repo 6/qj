@@ -3473,6 +3473,12 @@
 {"exit":3,"home":"<unset>","origin":"corpus.jsonl:319","src":"import \"a\" as foo {search: \"~/x\"}; foo::a","stderr":"jq: error: module not found: a (Could not expand ~/x. (Could not find home directory.))\n\njq: 1 compile error\n","stdout":""}
 {"exit":0,"home":"<unset>","origin":"corpus.jsonl:320","src":"1","stderr":"","stdout":"0000 TOP\n0001 LOADK 1\n0003 RET\n\n"}
 {"exit":3,"origin":"corpus.jsonl:321","src":"import \"dotsearch\" as d {search: \"../jq_compile/modules\"}; d::here","stderr":"jq: error: module not found: nested/inner\n\njq: 1 compile error\n","stdout":""}
+{"exit":0,"origin":"corpus.jsonl:322","src":"import \"pkg\" as p {search: \"../jq_compile/modules\"}; p::main","stderr":"","stdout":"0000 TOP\n0001 CALL_JQ main:0\n0005 RET\nmain:0:\n  0000 LOADK \"pkg/jq/main\"\n  0002 RET\n\n"}
+{"exit":0,"origin":"corpus.jsonl:323","src":"import \"pkg2\" as p {search: \"../jq_compile/modules\"}; p::main","stderr":"","stdout":"0000 TOP\n0001 CALL_JQ main:0\n0005 RET\nmain:0:\n  0000 LOADK \"pkg2/pkg2\"\n  0002 RET\n\n"}
+{"exit":0,"origin":"corpus.jsonl:324","src":"import \"datapkg\" as $d {search: \"../jq_compile/modules\"}; $d","stderr":"","stdout":"0000 STORE_GLOBAL [{\"found\":\"datapkg/jq/main.json\"}]\n0004 TOP\n0005 LOADV $d:0\n0008 RET\n\n"}
+{"exit":0,"origin":"corpus.jsonl:325","src":"import \"both\" as b {search: \"../jq_compile/modules\"}; b::which","stderr":"","stdout":"0000 TOP\n0001 CALL_JQ which:0\n0005 RET\nwhich:0:\n  0000 LOADK \"both.jq\"\n  0002 RET\n\n"}
+{"exit":3,"origin":"corpus.jsonl:326","src":"import \"both/both\" as b {search: \"../jq_compile/modules\"}; b::which","stderr":"jq: error: module names must not have equal consecutive components: both/both\n\njq: 1 compile error\n","stdout":""}
+{"exit":0,"origin":"corpus.jsonl:327","src":"import \"pkg/jq/main\" as p {search: \"../jq_compile/modules\"}; p::main","stderr":"","stdout":"0000 TOP\n0001 CALL_JQ main:0\n0005 RET\nmain:0:\n  0000 LOADK \"pkg/jq/main\"\n  0002 RET\n\n"}
 {"exit":0,"origin":"gen:chain-plus[100000]","stderr":"","stdout":"0000 TOP\n0001 LOADK 100001\n0003 RET\n\n"}
 {"exit":0,"origin":"gen:chain-comma[100000]","stderr":"","stdout":{"fnv64":"1fe69800f23dfcff","len":200034}}
 {"exit":0,"origin":"gen:object-pairs[3400]","stderr":"","stdout":{"fnv64":"a2214354d615d1e6","len":32922}}
