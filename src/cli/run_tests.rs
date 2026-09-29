@@ -71,7 +71,7 @@ fn atoi(s: &[u8]) -> i32 {
 
 /// Port of `jq_testsuite(libdirs, verbose, argc, argv)`.
 pub fn jq_testsuite(lib_dirs: Option<&[Vec<u8>]>, verbose: bool, args: &[Vec<u8>]) -> Outcome {
-    let mut testdata: Box<dyn Read> = Box::new(StdinReader);
+    let mut testdata: Box<dyn Read> = Box::new(StdinReader::new());
     let mut skip = -1;
     let mut take = -1;
     let mut i = 0;

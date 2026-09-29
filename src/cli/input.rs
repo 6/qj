@@ -185,10 +185,26 @@ impl Stream {
 }
 
 /// Standard input, read straight from fd 0 (the stream buffers).
-pub(super) struct StdinReader;
+pub(super) struct StdinReader {
+    /// stdio makes a terminal line-buffered, and flushes line-buffered
+    /// output before reading one.
+    tty: bool,
+}
+
+impl StdinReader {
+    pub(super) fn new() -> StdinReader {
+        // SAFETY: isatty has no memory-safety preconditions.
+        StdinReader {
+            tty: unsafe { libc::isatty(0) } != 0,
+        }
+    }
+}
 
 impl Read for StdinReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.tty {
+            super::run::flush_line_buffered_stdout();
+        }
         // SAFETY: fd 0 stays open for the life of the process, and `buf` is
         // valid for writes of `buf.len()` bytes.
         let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
@@ -207,7 +223,7 @@ pub type Opener = Box<dyn FnMut(&[u8]) -> io::Result<Box<dyn Read>>>;
 /// The file system and standard input.
 fn default_open(name: &[u8]) -> io::Result<Box<dyn Read>> {
     if name == b"-" {
-        Ok(Box::new(StdinReader))
+        Ok(Box::new(StdinReader::new()))
     } else {
         open_file(name)
     }

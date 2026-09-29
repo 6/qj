@@ -153,6 +153,19 @@ fn flush_before_abort() {
     });
 }
 
+/// What stdio does before it reads a line-buffered input (a terminal on
+/// stdin): flush the line-buffered output streams, which stdout is when it's
+/// a terminal. So `jq -j .` shows each result as soon as it's typed.
+pub(super) fn flush_line_buffered_stdout() {
+    STDOUT.with(|s| {
+        if let Ok(mut s) = s.try_borrow_mut()
+            && s.line_buffered
+        {
+            s.flush();
+        }
+    });
+}
+
 /// The `--debug-trace` writer: into the stdout buffer.
 pub(super) struct TraceOut;
 
