@@ -549,6 +549,73 @@ fn run_jq(jq: &str, program: &[u8], input: &[u8]) -> (i32, String, String) {
     )
 }
 
+/// builtin.jq's AST, checked through jq: every upstream test program runs with all of
+/// builtin.jq's definitions prepended, once verbatim and once unparsed from our AST.
+/// User definitions shadow the builtins, so a wrong tree for any builtin changes the
+/// behavior of the tests that use it.
+#[test]
+#[ignore]
+fn builtin_jq_roundtrip_vs_live_jq() {
+    let jq = std::env::var("JQ").unwrap_or_else(|_| "jq".into());
+    let builtin = std::fs::read(Path::new(ROOT).join("tests/jq_lang/builtin.jq")).unwrap();
+    let ast = parse_program(&builtin).unwrap();
+    let unparsed = unparse(&ast);
+    let mut jobs = Vec::new();
+    for (origin, src, input) in upstream_cases() {
+        let Ok(p) = parse_program(&src) else {
+            continue;
+        };
+        // directives must come first, and $__loc__ would see different line numbers
+        if p.module.is_some() || !p.imports.is_empty() || src.windows(8).any(|w| w == b"$__loc__") {
+            continue;
+        }
+        let mut original = builtin.clone();
+        original.push(b'\n');
+        original.extend_from_slice(&src);
+        let mut ours = unparsed.clone().into_bytes();
+        ours.push(b'\n');
+        ours.extend_from_slice(&src);
+        jobs.push((origin, original, ours, input));
+    }
+    let threads = 6;
+    let chunk = jobs.len().div_ceil(threads);
+    let failures: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = jobs
+            .chunks(chunk)
+            .map(|jobs| {
+                let jq = jq.clone();
+                scope.spawn(move || {
+                    let mut failures = Vec::new();
+                    for (origin, original, ours, input) in jobs {
+                        let a = run_jq(&jq, original, input);
+                        let b = run_jq(&jq, ours, input);
+                        let same = a.0 == b.0 && a.1 == b.1 && (a.0 == 3 || a.2 == b.2);
+                        if !same {
+                            failures.push(format!(
+                                "{origin}: jq(builtin.jq): {a:?}\n  jq(unparsed): {b:?}"
+                            ));
+                        }
+                    }
+                    failures
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect()
+    });
+    for f in failures.iter().take(30) {
+        eprintln!("MISMATCH {f}");
+    }
+    eprintln!(
+        "builtin.jq round trip: {}/{} test programs behave identically under jq",
+        jobs.len() - failures.len(),
+        jobs.len()
+    );
+    assert!(failures.is_empty());
+}
+
 #[test]
 #[ignore]
 fn ast_roundtrip_vs_live_jq() {
