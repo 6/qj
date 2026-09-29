@@ -2,20 +2,28 @@
 //!
 //! # Front-end (Track P): source text → AST
 //!
-//! ```ignore
-//! use qj::jq::lang::{parse, parse_program, NoHooks, ParseError, ParseHooks};
+//! ```
 //! use qj::jq::lang::locfile::{LocFile, compile_errors_summary};
+//! use qj::jq::lang::{NoHooks, parse, parse_program};
 //!
-//! match parse_program(".a | {b: .c}") {
-//!     Ok(program) => { /* program: ast::Program */ }
-//!     Err(errors) => {
-//!         let locfile = LocFile::new("<top-level>", src);
-//!         for e in &errors {
-//!             eprintln!("{}", e.render(&locfile)); // jq: error: ... at <top-level>, line 1, column 4: ...
-//!         }
-//!         eprintln!("{}", compile_errors_summary(errors.len())); // plus compile errors, if any
-//!     }
+//! let program = parse_program(".a | {b: .c}").unwrap();
+//! assert_eq!(program.to_sexpr(), r#"(| (index . "a") (object ("b" (index . "c"))))"#);
+//!
+//! // What jq prints for a program that doesn't parse:
+//! let src = b".a b";
+//! let errors = parse(src, &mut NoHooks).unwrap_err();
+//! let locfile = LocFile::new("<top-level>", src);
+//! let mut stderr = String::new();
+//! for e in &errors {
+//!     stderr += &e.render(&locfile);
+//!     stderr += "\n";
 //! }
+//! stderr += &compile_errors_summary(errors.len()); // after any compile errors
+//! assert_eq!(
+//!     stderr,
+//!     "jq: error: syntax error, unexpected IDENT, expecting end of file \
+//!      at <top-level>, line 1, column 4:\n    .a b\n       ^\njq: 1 compile error"
+//! );
 //! ```
 //!
 //! * [`parse`]`(src: &[u8], hooks: &mut dyn ParseHooks) -> Result<ast::Program, Vec<ParseError>>`
