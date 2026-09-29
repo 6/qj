@@ -279,6 +279,17 @@ interface scaffold before spawning it.
   tostream 4.8x, paths 2.4–3.9x, ascii_downcase 3.7x, from_entries 3x, with_entries 1.9x
   slower than the old core), CM (compat mode, plus a closed-stdout bug: `qj -n 1 >&-` exits 0
   where jq reports "writing output failed" and exits 2).
+- 2026-09-29: **CM merged.** `qj -n 1 >&-` now reports "writing output failed" and exits 2,
+  and `qj . <&-` "Bad file descriptor": `src/main.rs` is `#![no_main]` with a C `main`, so
+  Rust's start-up no longer reopens the closed descriptors on /dev/null. `QJ_JQ_COMPAT=1` is
+  "be exactly jq" (`src/compat.rs`): it reproduces jq's stack-overflow SIGSEGV at jq's own
+  depth (modelled from `ulimit -s` at 64 bytes a frame, exact at the default limit),
+  the module-import-cycle SIGSEGV, and the `delpaths([[nan]])` hang including its memory
+  growth, and turns off globbing, decompression and the qj-only options. jq's double free in
+  `jv_dels` is not reproduced: whether it kills jq depends on the heap layout, not the
+  program (see `docs/COMPATIBILITY.md`). jq_diff: 19,944/19,955 strict, plus 4 cases where
+  neither tool finishes; the harness now runs qj even when jq hangs and requires that qj hang
+  too.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before

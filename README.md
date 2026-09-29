@@ -9,7 +9,7 @@ Benchmarked on M4 MacBook Pro, with qj's previous core (being re-measured on the
 
 ## qj vs jq
 
-**Drop-in replacement.** qj runs a port of jq 1.8.1's own implementation, so it matches jq byte for byte: the same stdout, exit codes, and error messages. A differential harness runs 19,916 cases against jq 1.8.1, including jq's own test suites in each input and output mode (2,903 cases, all byte-exact). qj matches 19,909 of them; the other 7 are qj's own help and version text. A differential fuzzer also generates random programs, inputs and flags and compares qj with jq. ([details](docs/COMPATIBILITY.md))
+**Drop-in replacement.** qj runs a port of jq 1.8.1's own implementation, so it matches jq byte for byte: the same stdout, exit codes, and error messages. A differential harness runs 19,955 cases against jq 1.8.1, including jq's own test suites in each input and output mode (2,903 cases, all byte-exact). qj matches 19,944 of them; 7 of the rest are qj's own help and version text, and 4 are programs jq never finishes. A differential fuzzer also generates random programs, inputs and flags and compares qj with jq. ([details](docs/COMPATIBILITY.md))
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, and automatic parallelism across cores. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters (being re-measured: these numbers came from the previous core's NDJSON fast paths). Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
@@ -77,7 +77,9 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 
 See [compatibility details](docs/COMPATIBILITY.md) for how conformance is measured, the test results, what's exempt, and the feature matrix.
 
-Numbers behave exactly as in jq 1.8.1, which uses decNumber. Number literals keep their exact decimal value: `100000000000000000001` prints as written, and `1e2` prints in canonical form as `1E+2`. Arithmetic is f64: `13911860366432393 - 10` is `13911860366432382`. qj no longer does i64 arithmetic, and `QJ_JQ_COMPAT` is obsolete.
+Numbers behave exactly as in jq 1.8.1, which uses decNumber. Number literals keep their exact decimal value: `100000000000000000001` prints as written, and `1e2` prints in canonical form as `1E+2`. Arithmetic is f64: `13911860366432393 - 10` is `13911860366432382`. qj no longer does i64 arithmetic; this is how it behaves in every mode.
+
+Set `QJ_JQ_COMPAT=1` to make qj a drop-in jq 1.8.1, bugs included: it reproduces the few places where jq crashes or hangs and qj returns a sane answer instead (a value nested deeper than jq's C stack allows, a module that imports itself, `delpaths` with a `nan` in a path), and it turns off qj's own additions, so glob patterns, `.gz`/`.zst` names and `--threads`/`--jsonl`/`--debug-timing` behave as they do in jq. Parallel processing stays on — it isn't observable — and qj's help, version and program name stay qj's. See [Being exactly jq](docs/COMPATIBILITY.md#being-exactly-jq).
 
 Limitations vs jq:
 

@@ -55,7 +55,9 @@ bytes, exit code, and stderr with only the program name rewritten: a line-initia
 `jq:`, and the exact line `Use qj --help for help with command-line options,` (the usage hint
 after option errors) to `Use jq --help ...`. Nothing else is normalized, and jq's output is the
 only expectation. Levels: `pass` (all three match),
-`stdout` (stdout + exit code match), `fail`. The scoreboard shows both per suite and mode.
+`stdout` (stdout + exit code match), `fail`. A case counts as `skip` only when jq never
+finishes it (timeout, or the output or memory cap) **and** qj doesn't either; a qj that
+answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode.
 - **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
   `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no
   expected output); `tests/jq_compat/corpus/*.toml` (CLI cases with any argv, files, env or
@@ -277,9 +279,20 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
   localtime/strflocaltime/mktime/strptime, _strindices, modulemeta, labels, $__loc__, or
   modules (see `SEQUENTIAL_BUILTINS` and `parallel_plan` in `src/cli/run.rs`).
 
-Gone with the old core, and ignored now: `QJ_CORE` (`old` selected the old evaluator),
-`QJ_NO_FAST_PATH` (disabled its NDJSON fast paths) and `QJ_JQ_COMPAT` (made it imitate jq's
-number precision, which is simply how qj behaves now).
+Read by everything (`src/compat.rs`):
+- `QJ_JQ_COMPAT=1` — **be exactly jq 1.8.1, bugs included.** Reproduces jq's crashes and
+  hangs (deep values overflow the C stack and SIGSEGV at jq's depth; a module import cycle
+  SIGSEGVs; `delpaths` with a `nan` path element hangs, growing) and turns off qj's own
+  additions (glob expansion, `.gz`/`.zst` decompression, `--threads`/`--jsonl`/
+  `--debug-timing`, which become jq's "Unknown option"). Parallel processing stays on, and
+  qj's help/version text and `qj:` name stay qj's. Read once at start-up; set means
+  anything but empty or `0`. `docs/COMPATIBILITY.md` has the depth model and how exact it
+  is; `tests/jq_compat/corpus/compat_mode.toml` and `tests/compat_mode.rs` are the tests.
+  (It used to make the old evaluator imitate jq's number precision, which is simply how qj
+  behaves now, in every mode.)
+
+Gone with the old core, and ignored now: `QJ_CORE` (`old` selected the old evaluator) and
+`QJ_NO_FAST_PATH` (disabled its NDJSON fast paths).
 
 ### Important
 Never run benchmarks concurrently with tests or other CPU-intensive processes.
@@ -304,6 +317,8 @@ SIGPIPE handling and runs `qj::cli::run::main`.
   runs (`fuzzing.rs`)
 - `src/simdjson/` — the C-linkage bridge to the vendored simdjson (`simdjson/`): its DOM
   parser (`TapeParser`), whose tape `src/io` reads
+- `src/compat.rs` — `QJ_JQ_COMPAT=1`, "be exactly jq": reproducing jq's crashes and hangs
+  (including the model of jq's C stack) and switching qj's own additions off
 - `src/decompress.rs` — which inputs are compressed (`.gz`/`.gzip`, `.zst`/`.zstd`); the readers
   decompress them as streams
 - `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks
