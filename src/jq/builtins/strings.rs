@@ -141,22 +141,33 @@ mod tests {
     #[test]
     fn strindices_on_non_strings_aborts_like_jq() {
         use std::os::unix::process::ExitStatusExt;
-        for (which, assertion) in [
+        use std::process::{Command, Stdio};
+        let cases = [
             ("input", ASSERT_INDEXES_J),
             ("both", ASSERT_INDEXES_J),
             ("needle", ASSERT_INDEXES_K),
-        ] {
-            let out = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "jq::builtins::strings::tests::strindices_abort_child",
-                    "--ignored",
-                    "--nocapture",
-                    "--test-threads=1",
-                ])
-                .env(CHILD_ENV, which)
-                .output()
-                .unwrap();
+        ];
+        // Start the children together, then collect them.
+        let children: Vec<_> = cases
+            .iter()
+            .map(|(which, _)| {
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "jq::builtins::strings::tests::strindices_abort_child",
+                        "--ignored",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD_ENV, which)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for ((which, assertion), child) in cases.into_iter().zip(children) {
+            let out = child.wait_with_output().unwrap();
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert_eq!(
                 out.status.signal(),
