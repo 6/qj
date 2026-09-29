@@ -246,6 +246,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn block_sizes() {
+        // Keep blocks small: every pushed value, frame and fork point is one slot.
+        assert!(std::mem::size_of::<Value>() <= 24);
+        assert!(
+            std::mem::size_of::<Slot>() <= 64,
+            "{}",
+            std::mem::size_of::<Slot>()
+        );
+    }
+
+    #[test]
     fn shared_blocks_are_copied_and_the_limit_is_freed() {
         let mut s = Stack::default();
         let a = s.push_value(0, Value::from(1));

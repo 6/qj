@@ -32,6 +32,7 @@
 //! | `jq_set_attrs`, `jq_set_attr`, `jq_get_attr` | [`Jq::set_attrs`], [`Jq::set_attr`], [`Jq::get_attr`] |
 //! | `jq_get_lib_dirs`, `jq_get_prog_origin`, `jq_get_jq_origin` | [`Jq::lib_dirs`], [`Jq::prog_origin`], [`Jq::jq_origin`] |
 //! | `--debug-trace` output (stdout) | [`Jq::set_trace_writer`] |
+//! | `jq_dump_disassembly` (`--debug-dump-disasm`) | [`Jq::dump_disassembly`] |
 //!
 //! The C builtins reach the VM through the [`Host`] trait, which `Jq` implements.
 //!
@@ -57,6 +58,8 @@ mod trace;
 
 #[cfg(test)]
 mod disasm;
+#[cfg(test)]
+mod suites;
 #[cfg(test)]
 mod tests;
 
@@ -281,6 +284,12 @@ impl Jq {
     /// results). Defaults to this process's stdout.
     pub fn set_trace_writer(&mut self, w: Option<Box<dyn Write>>) {
         self.trace_out = w;
+    }
+
+    /// `jq_dump_disassembly(jq, indent)`: what `--debug-dump-disasm` prints (jq's `main`
+    /// adds one more `\n` after it).
+    pub fn dump_disassembly(&self, indent: usize) -> String {
+        crate::jq::lang::bytecode::dump_disassembly(indent, &self.prog.funcs[0].bc)
     }
 
     /// `jq_set_attrs`: `attrs` must be an object.

@@ -97,7 +97,7 @@ fn t_debug(host: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
     Ok(input)
 }
 
-const OVERRIDES: &[(&str, CFn)] = &[
+pub(super) const OVERRIDES: &[(&str, CFn)] = &[
     ("error", t_error),
     ("length", t_length),
     ("getpath", t_getpath),
@@ -349,6 +349,43 @@ fn label_break() {
     );
 }
 
+/// Outputs that depend on refcounts: jq writes into a uniquely owned array view in
+/// place (revealing storage past the view's end), so these only match when the VM
+/// holds exactly jq's references.
+#[test]
+fn refcount_dependent_outputs() {
+    check("[1,2,3,4] | .[0:2] == .[2:4]", "null");
+    check("[range(4)+1] | .[0:2] | .[3] = 9", "null");
+    check("[range(4)+1] | .[0:2] as $x | $x | .[3] = 9", "null");
+    check("[range(4)+1] | . as $keep | .[0:2] | .[3] = 9", "null");
+    check("[range(4)+1] | (.[0:2] | .[3] = 9), .", "null");
+    check("[range(4)+1] | .[1:3] | .[2] = 0", "null");
+    check(".[0:2] | .[3] = 9", "[1,2,3,4]");
+    check("reduce (.[0:2] | .[3] = 9) as $x (0; . + 1)", "[1,2,3,4]");
+    check("[.[0:2][] ]", "[1,2,3,4]");
+    check(".[0:1] | . + [7] | . as $a | $a", "[1,2,3]");
+}
+
+#[test]
+fn deep_recursion() {
+    // Tail calls reuse the frame; other recursion grows the (heap) stack.
+    check(
+        "def f: if . > 0 then . - 1 | f else \"done\" end; f",
+        "200000",
+    );
+    check(
+        "def f: if . > 0 then . - 1 | f | . + 1 else 0 end; f",
+        "100000",
+    );
+    check("[limit(3; recurse(. + 1))]", "0");
+    check("last(range(200000))", "null");
+    check(
+        "[recurse(if . < 50000 then . + 1 else empty end)] | length",
+        "0",
+    );
+    check("reduce range(100000) as $x (0; . + $x)", "null");
+}
+
 #[test]
 fn destructuring_alternatives() {
     check("[.[] as [$a] ?// $a | $a]", "[[1],2]");
@@ -360,6 +397,12 @@ fn destructuring_alternatives() {
     );
     check(". as [$a] ?// $a | $a", "{\"b\":1}");
     check("[[3] | .[] as [$a] ?// $a | $a]", "null");
+    // An error anywhere in the body (the rest of the pipeline) moves on to the next
+    // alternative, even from outside an enclosing try's body.
+    check("(. as [$a] ?// $a | $a) | error(tojson)", "[1]");
+    check("try (. as [$a] ?// $a | $a) | error(tojson)", "[1]");
+    check("[.[] as [$a] ?// $a | $a | error(tojson)]", "[1]");
+    check("[.[] as [$a] ?// $a | $a] | error(tojson)", "[[1]]");
 }
 
 #[test]

@@ -7,6 +7,8 @@
 //! arity comes from `function_list()` by name; a `CALL_JQ` closure is a subfunction
 //! (`ARG_NEWCLOSURE`) when that frame's subfunction at the index has the printed name,
 //! else a parameter. `STORE_GLOBAL` (whose variable isn't printed) is unsupported.
+//! Constant numbers printed with a lowercase `e` are doubles (`jvp_dtoa_fmt`, e.g. from
+//! constant folding); the others are taken as literals.
 
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -16,7 +18,59 @@ use crate::jq::lang::bytecode::{
     ARG_NEWCLOSURE, Bytecode, DebugInfo, OP_HAS_BRANCH, OP_HAS_CONSTANT, OP_HAS_VARIABLE, Opcode,
     SymbolTable,
 };
-use crate::jq::value::parse_sized;
+use crate::jq::value::{Value, parse_sized};
+
+/// The number tokens of a JSON text, in order.
+fn number_tokens(text: &str) -> Vec<&str> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = i;
+                while i < b.len() && matches!(b[i], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+                {
+                    i += 1;
+                }
+                out.push(&text[start..i]);
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Numbers printed with a lowercase `e` came from `jvp_dtoa_fmt`: they are doubles,
+/// not literals (decNumber prints `E`). Walks `v` in text order.
+fn fix_natives(v: Value, tokens: &mut std::slice::Iter<'_, &str>) -> Value {
+    match v {
+        Value::Number(n) => match tokens.next() {
+            Some(t) if t.contains('e') => Value::number(n.value()),
+            _ => Value::Number(n),
+        },
+        Value::Array(a) => Value::Array(a.into_iter().map(|x| fix_natives(x, tokens)).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| (k.clone(), fix_natives(x.clone(), tokens)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn parse_constant(text: &str) -> Value {
+    let v = parse_sized(text.as_bytes()).expect("constant");
+    let tokens = number_tokens(text);
+    fix_natives(v, &mut tokens.iter())
+}
 
 /// One function of the disassembly.
 #[derive(Default, Debug)]
@@ -175,7 +229,7 @@ fn build(
             }
             Opcode::STORE_GLOBAL => panic!("STORE_GLOBAL is not supported by the loader"),
             _ if d.flags & OP_HAS_CONSTANT != 0 => {
-                let v = parse_sized(arg.as_bytes()).expect("constant");
+                let v = parse_constant(arg);
                 code.push(constants.len() as u16);
                 constants.push(v);
             }
