@@ -62,6 +62,7 @@ fn run_qj(program: &str, input: &str, natives: bool, max_rss: u64) -> (Status, V
         max_output: 1 << 20,
         max_rss,
         merge: Merge::No,
+        close_fds: &[],
     };
     match exec::run(&spec) {
         Ok(o) => (o.status, o.stdout, o.stderr),

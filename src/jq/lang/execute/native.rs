@@ -56,11 +56,15 @@ const MAX_NATIVE_DEPTH: u32 = 64;
 /// The most closure arguments a native builtin takes.
 pub(crate) const MAX_NATIVE_ARGS: usize = 4;
 
-/// Whether natives are disabled for the whole process (`QJ_NO_NATIVE=1`, for A/B checks
-/// against the bytecode definitions).
+/// Whether natives are disabled for the whole process: by `QJ_NO_NATIVE=1` (for A/B
+/// checks against the bytecode definitions), and in compat mode (`QJ_JQ_COMPAT`), which
+/// reproduces the crashes of jq's recursive frees at jq's nesting depths, so values
+/// must be freed where jq's definitions free them.
 pub(super) fn disabled_by_env() -> bool {
     static OFF: OnceLock<bool> = OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("QJ_NO_NATIVE").is_some_and(|v| v == "1"))
+    *OFF.get_or_init(|| {
+        std::env::var_os("QJ_NO_NATIVE").is_some_and(|v| v == "1") || crate::compat::exactly_jq()
+    })
 }
 
 #[cfg(test)]
