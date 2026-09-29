@@ -61,6 +61,16 @@ impl Str {
         self.0.chars().count()
     }
 
+    /// The contents as C sees them through `jv_string_value`: up to the
+    /// first NUL. Use this wherever jq formats a string with `%s` (error
+    /// messages) or passes it to a C string function.
+    pub fn as_c_str(&self) -> &str {
+        match memchr::memchr(0, self.as_bytes()) {
+            Some(i) => &self.0[..i],
+            None => &self.0,
+        }
+    }
+
     /// Mutable access, copying the contents first if they are shared
     /// (jq's refcount-1 in-place mutation).
     #[inline]

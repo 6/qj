@@ -80,14 +80,6 @@ fn parse_slice(len: usize, slice: &Object) -> Result<(usize, usize), Error> {
     Ok((start as usize, end as usize))
 }
 
-/// The C `%s` of a jq string: stops at the first NUL.
-fn c_str(s: &str) -> &str {
-    match s.find('\0') {
-        Some(i) => &s[..i],
-        None => s,
-    }
-}
-
 impl Value {
     /// `jv_get` (`.[k]`): objects by string, arrays by number (truncated,
     /// negative from the end, out of range is `null`), slices by
@@ -132,7 +124,7 @@ impl Value {
                     return Err(Error::msg(format!(
                         "Cannot index {} with string \"{}\"",
                         self.kind_name(),
-                        c_str(key.as_str())
+                        key.as_c_str()
                     )));
                 }
                 Err(Error::msg(format!(
