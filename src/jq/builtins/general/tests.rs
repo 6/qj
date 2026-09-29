@@ -138,6 +138,20 @@ fn fixture_matrix() {
     run_fixture("b1_matrix.json", include_str!("../testdata/b1_matrix.json"));
 }
 
+#[test]
+fn type_names_are_shared_but_copied_before_a_change() {
+    use crate::jq::builtins::binops::f_plus;
+    use crate::jq::builtins::general::f_type;
+    let mut host = TestHost::default();
+    let t = f_type(&mut host, parse("1"), &mut []).unwrap();
+    // `type + "!"` must not append to the cached "number".
+    let mut args = [t, parse("\"!\"")];
+    let r = f_plus(&mut host, Value::Null, &mut args).unwrap();
+    assert_eq!(r.to_json(), "\"number!\"");
+    let again = f_type(&mut host, parse("2"), &mut []).unwrap();
+    assert_eq!(again.to_json(), "\"number\"");
+}
+
 // ---------------------------------------------------------------- host-dependent builtins
 //
 // These builtins talk to the interpreter through `Host`, so they are exercised with a

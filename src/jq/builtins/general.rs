@@ -152,9 +152,25 @@ pub fn f_utf8bytelength(_host: &mut dyn Host, input: Value, _args: &mut [Value])
     }
 }
 
+thread_local! {
+    /// The `jv_kind_name` strings `type` returns, allocated once per thread: `type` runs
+    /// for every node in idioms like `.. | numbers`. (Sharing is invisible: a string is
+    /// copied before it is modified.)
+    static KIND_NAMES: [Value; 6] =
+        ["null", "boolean", "number", "string", "array", "object"].map(Value::from);
+}
+
 /// `type` (nargs 1): port of builtin.c `f_type`.
 pub fn f_type(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
-    Ok(Value::from(input.kind_name()))
+    let i = match input {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        Value::String(_) => 3,
+        Value::Array(_) => 4,
+        Value::Object(_) => 5,
+    };
+    Ok(KIND_NAMES.with(|names| names[i].clone()))
 }
 
 /// `jv_number_value` of a number, `None` for anything else (the number predicates
