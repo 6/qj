@@ -13,10 +13,16 @@ use crate::jq::value::{Array, Error, Value};
 use std::cmp::Ordering;
 
 /// `BINOP(name)`: `f_name(jq, input, a, b)` frees the input and returns `binop_name(a, b)`.
+///
+/// The input must be dropped *before* the binop runs: in `. + [$x]` the input and `a`
+/// are the same array, and only once the input's reference is gone is `a` uniquely
+/// owned, so that `reduce range(n) as $x ([]; . + [$x])` appends in place (linear)
+/// instead of copying the array on every step (quadratic).
 macro_rules! binop_cfunctions {
     ($($(#[$doc:meta])* $f:ident => $binop:ident;)*) => {$(
         $(#[$doc])*
-        pub fn $f(_host: &mut dyn Host, _input: Value, args: &mut [Value]) -> CResult {
+        pub fn $f(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
+            drop(input);
             let a = std::mem::take(&mut args[0]);
             let b = std::mem::take(&mut args[1]);
             $binop(a, b)
@@ -425,5 +431,49 @@ mod tests {
         );
         let mut args = [v("3"), v("2")];
         assert_eq!(show(f_mod(&mut host, v("null"), &mut args)), "1");
+    }
+
+    /// `. + [$x]` inside `reduce`: the VM passes the input and `a` as two references to
+    /// the same value. The input is dropped first (jq's `jv_free(input)`), so `a` is
+    /// unique and grows in place. Each container gets spare capacity so that growing
+    /// in place keeps its buffer, while a copy would allocate a new one.
+    #[test]
+    fn plus_updates_the_left_operand_in_place() {
+        let mut host = TestHost::default();
+
+        let mut arr = Array::with_capacity(16);
+        for i in 0..3 {
+            arr.push(Value::from(i));
+        }
+        let a = Value::Array(arr);
+        let before = a.as_array().unwrap().as_slice().as_ptr();
+        let mut args = [a.clone(), v("[3]")];
+        let r = f_plus(&mut host, a, &mut args).unwrap();
+        assert_eq!(r.to_json(), "[0,1,2,3]");
+        assert_eq!(r.as_array().unwrap().as_slice().as_ptr(), before);
+
+        let mut s = String::with_capacity(64);
+        s.push_str("ab");
+        let a = Value::from(s);
+        let before = a.as_str().unwrap().as_ptr();
+        let mut args = [a.clone(), v("\"cd\"")];
+        let r = f_plus(&mut host, a, &mut args).unwrap();
+        assert_eq!(r.to_json(), "\"abcd\"");
+        assert_eq!(r.as_str().unwrap().as_ptr(), before);
+
+        let a = v("{\"a\":1}");
+        let before: *const Value = a.as_object().unwrap().get_index(0).unwrap().1;
+        let mut args = [a.clone(), v("{\"a\":2}")];
+        let r = f_plus(&mut host, a, &mut args).unwrap();
+        assert_eq!(r.to_json(), "{\"a\":2}");
+        let after: *const Value = r.as_object().unwrap().get_index(0).unwrap().1;
+        assert_eq!(after, before);
+
+        // A shared operand is copied, not modified: `[1] as $x | $x + [2], $x`.
+        let x = v("[1]");
+        let mut args = [x.clone(), v("[2]")];
+        let r = f_plus(&mut host, Value::Null, &mut args).unwrap();
+        assert_eq!(r.to_json(), "[1,2]");
+        assert_eq!(x.to_json(), "[1]");
     }
 }
