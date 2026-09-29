@@ -414,6 +414,26 @@ fn c_double_to_int(d: f64) -> i32 {
     d as i32
 }
 
+/// Replaces a message's leading `jq:` with qj's name.
+pub(super) fn with_prog_name(message: &str) -> String {
+    match message.strip_prefix("jq:") {
+        Some(rest) => format!("{PROG}:{rest}"),
+        None => message.to_owned(),
+    }
+}
+
+/// execute.c `default_err_cb` (main.c sets no error callback): the message as
+/// `jq_format_error` formats it, and a newline, on stderr. It reports errors
+/// found while running, such as a module's syntax errors for `modulemeta`.
+pub(super) fn default_err_cb() -> crate::jq::lang::execute::MsgCallback {
+    Box::new(|msg: &Value| {
+        let text = crate::jq::lang::execute::format_error(Ok(msg.clone()));
+        if let Some(s) = text.as_str() {
+            write_stderr(format!("{}\n", c_str(&with_prog_name(s))).as_bytes());
+        }
+    })
+}
+
 /// The dump of `v` with flags 0 (`jv_dump_string(v, 0)`).
 fn dump_plain(v: &Value) -> String {
     dump_string(v, &DumpOptions::default())
@@ -648,10 +668,7 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         Err(e) => {
             let mut text = Vec::new();
             for m in &e.messages {
-                let m = m
-                    .strip_prefix("jq:")
-                    .map_or_else(|| m.clone(), |rest| format!("{PROG}:{rest}"));
-                text.extend_from_slice(m.as_bytes());
+                text.extend_from_slice(with_prog_name(m).as_bytes());
                 text.push(b'\n');
             }
             write_stderr(&text);
@@ -700,6 +717,7 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         Value::String(s) => write_stderr(s.as_bytes()),
         _ => write_stderr(c_str(&dump_plain(v)).as_bytes()),
     })));
+    jq.set_error_cb(Some(default_err_cb()));
 
     let p = Process {
         dump: dump_options(dumpopts, &colors),

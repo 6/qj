@@ -18,7 +18,7 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 
 use super::input::{StdinReader, Stream};
-use super::run::{PROG, TraceOut, with_stdout, write_stderr};
+use super::run::{TraceOut, default_err_cb, with_prog_name, with_stdout, write_stderr};
 use crate::jq::lang::execute::{JQ_DEBUG_TRACE, Jq};
 use crate::jq::lang::linker::JqAttrs;
 use crate::jq::lang::{CompileOptions, jq_compile_args};
@@ -212,6 +212,7 @@ fn run_jq_tests(
                             let mut state = Jq::new(bc);
                             state.set_attr("JQ_LIBRARY_PATH", opts.attrs.lib_dirs.clone());
                             state.set_trace_writer(Some(Box::new(TraceOut)));
+                            state.set_error_cb(Some(default_err_cb()));
                             jq = Some(state);
                         }
                     }
@@ -226,10 +227,7 @@ fn run_jq_tests(
                             }
                         } else {
                             // default_err_cb
-                            let m = m
-                                .strip_prefix("jq:")
-                                .map_or_else(|| m.clone(), |rest| format!("{PROG}:{rest}"));
-                            write_stderr(format!("{m}\n").as_bytes());
+                            write_stderr(format!("{}\n", with_prog_name(m)).as_bytes());
                         }
                     }
                     false

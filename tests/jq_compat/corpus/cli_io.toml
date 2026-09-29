@@ -8,108 +8,108 @@
 [[case]]
 name = "across-files"
 args = ["-c", ".", "a1", "a2"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "across-files-array"
 args = ["-c", ".", "a3", "a4"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "names-lines"
 args = ["-c", "[., input_filename, input_line_number]", "a1", "a2", "lines3"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "names-lines-2"
 args = ["-c", "[., input_filename, input_line_number]", "lines3", "a1", "a2"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-between"
 args = ["-c", ".", "a3", "nonexist", "a4"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-first"
 args = ["-c", ".", "nonexist", "a3", "a4"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-last"
 args = ["-c", ".", "a1", "nonexist"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-inputs"
 args = ["-n", "-c", "[inputs]", "a1", "nonexist", "a2"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-filename"
 args = ["-n", "-c", "input_filename", "nonexist"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-inputs-filename"
 args = ["-n", "-c", "[inputs, input_filename]", "nonexist"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-unread"
 args = ["-n", "-c", "1", "nonexist"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-exit-status"
 args = ["-e", ".", "nonexist"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "missing-after-output-exit-status"
 args = ["-e", ".", "lines3", "nonexist"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "directory-first"
 args = ["-c", ".", ".", "a1"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "directory-last"
 args = ["-c", ".", "a1", "."]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "raw-across-files"
 args = ["-R", "-c", ".", "a1", "a2", "a3", "a4"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "raw-slurp-across-files"
 args = ["-Rs", "-c", ".", "a1", "a2", "a3", "a4"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "slurp-across-files"
 args = ["-s", "-c", ".", "a1", "a2", "lines3"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "parse-error-then-file"
 args = ["-c", ".", "bad", "lines3"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "parse-error-input-then-file"
 args = ["-c", "[., (try input catch .)]", "bad", "lines3"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "stdin-then-file"
 args = ["-c", ".", "-", "a1"]
 stdin = "0\n"
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "stdin-twice"
@@ -120,97 +120,97 @@ stdin = "1 2"
 name = "file-stdin-file"
 args = ["-c", ".", "a1", "-", "a2"]
 stdin = "3"
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "bom-second-file"
 args = ["-c", ".", "a1", "bom"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "bom-first-file"
 args = ["-c", ".", "bom", "lines3"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "from-file-bad-utf8"
 args = ["-f", "prog-bad-utf8.jq", "obj"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "from-file-nul"
 args = ["-f", "prog-nul.jq", "obj"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "from-file-compile-error"
 args = ["-f", "prog-error.jq", "obj"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "from-file-missing"
 args = ["-f", "nonexist.jq", "obj"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "from-file-directory"
 args = ["-f", ".", "obj"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "from-file-origin"
 args = ["-f", "prog-bad-utf8.jq", "-n", "-c", "--arg", "a", "b"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "slurpfile-4096"
 args = ["--slurpfile", "x", "exact4096", "-n", "-c", "$x|length"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "slurpfile-4096-ws"
 args = ["--slurpfile", "x", "exact4096-ws", "-n", "-c", "$x|length"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "slurpfile-bom"
 args = ["--slurpfile", "x", "bom", "-n", "-c", "$x"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "slurpfile-bad"
 args = ["--slurpfile", "x", "bad", "-n", "-c", "$x"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "slurpfile-missing"
 args = ["--slurpfile", "x", "nonexist", "-n", "-c", "$x"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "slurpfile-directory"
 args = ["--slurpfile", "x", ".", "-n", "-c", "$x"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "rawfile-4095"
 args = ["--rawfile", "x", "raw4096", "-n", "-c", "$x|length"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "rawfile-bad-utf8"
 args = ["--rawfile", "x", "bad-utf8", "-n", "-c", "$x"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "rawfile-bom"
 args = ["--rawfile", "x", "bom", "-n", "-c", "$x"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "rawfile-missing-exit-status"
 args = ["-e", "--rawfile", "x", "nonexist", "-n", "$x"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "halt-mid"
@@ -271,7 +271,7 @@ stdin = "1 2 3\n"
 name = "exit-status-parse-error"
 args = ["-e", "."]
 stdin = "1 {"
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "exit-status-halt"
@@ -425,7 +425,7 @@ args = ["--debug-dump-disasm", "-n", ".a | reduce .[] as $x (0; . + $x)"]
 [[case]]
 name = "disasm-file"
 args = ["--debug-dump-disasm", "-c", ".a", "obj"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "trace"
@@ -471,7 +471,27 @@ args = ["-n", "-c", "$ARGS", "--args", "a", "--jsonargs", "1", "--args", "b"]
 [[case]]
 name = "rawfile-and-slurpfile-named"
 args = ["--rawfile", "r", "a1", "--slurpfile", "s", "lines3", "-n", "-c", "$ARGS"]
-files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n" }
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
+
+[[case]]
+name = "modulemeta-syntax-error"
+args = ["-L", "mods", "-n", "\"bad\" | modulemeta"]
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
+
+[[case]]
+name = "modulemeta-good"
+args = ["-L", "mods", "-n", "-c", "\"good\" | modulemeta"]
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
+
+[[case]]
+name = "import-syntax-error"
+args = ["-L", "mods", "-n", "import \"bad\" as b; 1"]
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
+
+[[case]]
+name = "include-good"
+args = ["-L", "mods", "-n", "include \"good\"; g"]
+files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
 name = "jq-colors-one"

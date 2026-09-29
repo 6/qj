@@ -105,6 +105,8 @@ MULTI_FILES = {
     "prog-nul.jq": raw(b".a\x00 garbage"),
     "prog-error.jq": ".a |\n|\n",
     "obj": '{"a":1,"b":[1,2,{"c":null}],"d":"x\\u00e9"}\n',
+    "mods/bad.jq": "def f: .a b;\n",
+    "mods/good.jq": "def g: 1;\n",
 }
 
 # (name, args, stdin or None, env or None); files are MULTI_FILES.
@@ -216,6 +218,11 @@ CASES = [
     ("argjson-literals", ["--argjson", "x", "[1.000, 1e2, 100000000000000000001, nan]", "-n", "-c", "$x"], None, None),
     ("args-then-jsonargs", ["-n", "-c", "$ARGS", "--args", "a", "--jsonargs", "1", "--args", "b"], None, None),
     ("rawfile-and-slurpfile-named", ["--rawfile", "r", "a1", "--slurpfile", "s", "lines3", "-n", "-c", "$ARGS"], None, None),
+    # modules: errors reported while running (default_err_cb) and compiling
+    ("modulemeta-syntax-error", ["-L", "mods", "-n", '"bad" | modulemeta'], None, None),
+    ("modulemeta-good", ["-L", "mods", "-n", "-c", '"good" | modulemeta'], None, None),
+    ("import-syntax-error", ["-L", "mods", "-n", 'import "bad" as b; 1'], None, None),
+    ("include-good", ["-L", "mods", "-n", 'include "good"; g'], None, None),
     # JQ_COLORS
     ("jq-colors-one", ["-n", "-C", "-c", '[null,false,true,1,"s",[1],{"a":1}]'], None, {"JQ_COLORS": "1;31"}),
     ("jq-colors-all", ["-n", "-C", "-c", '[null,false,true,1,"s",[1],{"a":1}]'], None, {"JQ_COLORS": "0;90:0;37:0;37:0;37:0;32:1;37:1;37:34;1"}),
@@ -344,7 +351,7 @@ def main():
         lines += ["[[case]]", 'name = "%s"' % name, "args = %s" % arr(args)]
         if stdin is not None:
             lines.append("stdin = %s" % content(stdin))
-        if any(f in MULTI_FILES or f.startswith("nonexist") or f == "." for f in args):
+        if any(f in MULTI_FILES or f.startswith("nonexist") or f in (".", "mods") for f in args):
             lines.append("files = { %s }" % multi)
         if env:
             lines.append(

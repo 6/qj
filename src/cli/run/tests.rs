@@ -169,3 +169,18 @@ fn program_files_are_repaired_then_cut_at_nul() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn messages_say_qj() {
+    assert_eq!(
+        with_prog_name("jq: error: x at <top-level>, line 1:\n    x"),
+        "qj: error: x at <top-level>, line 1:\n    x"
+    );
+    assert_eq!(
+        with_prog_name("jq: 2 compile errors"),
+        "qj: 2 compile errors"
+    );
+    // Only a leading program name.
+    assert_eq!(with_prog_name("x jq: y"), "x jq: y");
+    assert_eq!(with_prog_name("jqx"), "jqx");
+}
