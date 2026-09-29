@@ -1,11 +1,13 @@
-/// Cross-tool jq compatibility runner.
+/// Cross-tool jq compatibility runner (legacy).
 ///
 /// Parses the official jq test suite (`tests/jq_compat/jq.test` from jqlang/jq)
 /// and runs each test case against qj, jq, jaq, and gojq (whichever are on
-/// `$PATH`). Reports per-tool pass rates with a per-category breakdown.
-/// Results are written to `tests/jq_compat/results.md`.
+/// `$PATH`), all with the same arguments. Reports per-tool pass rates with a
+/// per-category breakdown. Results are written to `tests/jq_compat/results.md`.
 ///
-/// This test always passes — it's a measurement tool, not a gate.
+/// Outputs are compared leniently (as JSON, numbers as f64) with jq.test's
+/// expected lines. This test always passes — it's a measurement tool, not a
+/// gate; qj's strict gate is `tests/jq_diff.rs`.
 /// Run with `--nocapture` to see the summary:
 ///
 ///   cargo test jq_compat -- --nocapture
@@ -134,21 +136,19 @@ fn parse_jq_test_file(content: &str) -> Vec<TestCase> {
     cases
 }
 
-/// Extra args per tool: jq/jaq/gojq get `-L modules` for module system tests.
-fn extra_args_for(tool: &common::Tool) -> Vec<String> {
+/// Extra args, the same for every tool: `-L modules` for the module system
+/// tests, then `-c --`.
+fn extra_args_for(_tool: &common::Tool) -> Vec<String> {
     let modules_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/jq_compat/modules")
         .to_string_lossy()
         .to_string();
-    match tool.name.as_str() {
-        "jq" | "jaq" | "gojq" => vec![
-            "-L".to_string(),
-            modules_dir,
-            "-c".to_string(),
-            "--".to_string(),
-        ],
-        _ => vec!["-c".to_string(), "--".to_string()],
-    }
+    vec![
+        "-L".to_string(),
+        modules_dir,
+        "-c".to_string(),
+        "--".to_string(),
+    ]
 }
 
 fn run_all(verbose: bool) {

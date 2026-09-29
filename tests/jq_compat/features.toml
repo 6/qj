@@ -1408,9 +1408,9 @@ tests = [
 category = "Bignum"
 name = "Large integer precision"
 tests = [
-  # i64-range: jq loses precision (f64), qj gives different result.
+  # Arithmetic is f64 in jq 1.8.1, so it loses precision beyond 2^53.
   { filter = '.[0] - 10', input = '[9007199254740993]', expected = '9007199254740982' },
-  # Beyond i64 range in data: jq/jaq/gojq preserve, qj converts to f64.
+  # Literals keep their exact decimal value (decNumber), however large.
   { filter = '. | tostring', input = '100000000000000000000', expected = '"100000000000000000000"' },
 ]
 
@@ -1418,9 +1418,9 @@ tests = [
 category = "Bignum"
 name = "Large integer arithmetic"
 tests = [
-  # jq truncates to f64 for numbers > 2^53, losing precision.
-  # In default mode, qj uses i64 (more accurate, gives ...383 not ...382).
-  # In QJ_JQ_COMPAT=1 mode (used by this runner), qj matches jq exactly.
+  # jq truncates to f64 for arithmetic on numbers > 2^53: ...382, not the
+  # exact ...383. (The runner compares numbers as f64; tostring makes the
+  # digits count.)
   { filter = '. - 10 | tostring', input = '13911860366432393', expected = '"13911860366432382"' },
 ]
 

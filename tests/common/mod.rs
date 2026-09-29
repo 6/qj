@@ -15,13 +15,10 @@ pub struct Tool {
 }
 
 impl Tool {
-    /// Create a `Command` for this tool, with `QJ_JQ_COMPAT=1` set for qj.
+    /// Create a `Command` for this tool. qj runs as is: its default core is
+    /// jq-exact, so there's no compatibility switch to set.
     pub fn command(&self) -> Command {
-        let mut cmd = Command::new(&self.path);
-        if self.name == "qj" {
-            cmd.env("QJ_JQ_COMPAT", "1");
-        }
-        cmd
+        Command::new(&self.path)
     }
 }
 

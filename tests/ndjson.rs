@@ -69,6 +69,29 @@ fn qj_file(args: &[&str], content: &str) -> String {
     String::from_utf8(output.stdout).expect("qj output was not valid UTF-8")
 }
 
+/// Assert that qj and jq, given the same arguments and stdin, produce the
+/// same stdout and exit code. Skipped when jq isn't installed.
+fn assert_jq_compat(args: &[&str], input: &str) {
+    let run = |cmd: &str| {
+        Command::new(cmd)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|child| feed(child, input))
+    };
+    let Ok(jq) = run("jq") else {
+        return;
+    };
+    let qj = run(env!("CARGO_BIN_EXE_qj")).expect("failed to run qj");
+    assert_eq!(
+        (qj.status.code(), String::from_utf8_lossy(&qj.stdout)),
+        (jq.status.code(), String::from_utf8_lossy(&jq.stdout)),
+        "qj vs jq (exit code, stdout): args={args:?} input={input:?}"
+    );
+}
+
 /// Run the same filter with fast path enabled (default) and disabled (QJ_NO_FAST_PATH=1),
 /// and assert that they produce identical output.
 fn assert_fast_path_matches_normal(filter: &str, input: &str) {
@@ -105,6 +128,9 @@ fn assert_fast_path_matches_normal(filter: &str, input: &str) {
         fast, normal,
         "Fast path output differs from normal path for filter: {filter}"
     );
+    // And both must match jq. (QJ_NO_FAST_PATH switches the old core's
+    // fast paths; the port may take the same path in both runs.)
+    assert_jq_compat(&["-c", filter], input);
 }
 
 // --- Fast path vs normal path comparison tests ---
@@ -749,12 +775,14 @@ fn ndjson_select_float_vs_int() {
 
 #[test]
 fn ndjson_select_scientific_notation() {
-    // 1e2 == 100 should match
+    // 1e2 == 100 should match, and the literal prints in jq's canonical
+    // form (1E+2)
     let input = r#"{"n":1e2,"id":"a"}
 {"n":99,"id":"b"}
 "#;
     let out = qj_stdin(&["-c", "select(.n == 100)"], input);
-    assert_eq!(out, "{\"n\":1e2,\"id\":\"a\"}\n");
+    assert_eq!(out, "{\"n\":1E+2,\"id\":\"a\"}\n");
+    assert_jq_compat(&["-c", "select(.n == 100)"], input);
 }
 
 #[test]
