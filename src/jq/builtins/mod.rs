@@ -10,6 +10,7 @@
 //! else in this directory (builtin.jq, bytecoded builtins, binding). This file is the
 //! shared interface: change it only additively.
 
+pub mod bind;
 pub mod binops;
 pub mod format;
 pub mod general;
