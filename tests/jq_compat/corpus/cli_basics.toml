@@ -1,0 +1,272 @@
+# Basic CLI cases for jq_diff (format: tests/jq_diff/cli.rs), folded in from
+# tests/cli_conformance.rs, the pre-port runner that compared qj's stdout and
+# exit code with jq's for each of these invocations. Invocations already in
+# the corpus verbatim were left out. Here stderr is compared too.
+
+# ---------------------------------------------------------------------------
+# Output options
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "dot-object"
+args = ["."]
+stdin = "{\"a\":1}\n"
+
+[[case]]
+name = "compact-object"
+args = ["-c", "."]
+stdin = "{\"a\":1,\"b\":2}\n"
+
+[[case]]
+name = "raw-output-string"
+args = ["-r", "."]
+stdin = "\"hello\"\n"
+
+[[case]]
+name = "join-output-strings"
+args = ["-j", ".[]"]
+stdin = "[\"a\",\"b\"]\n"
+
+[[case]]
+name = "raw-output0-strings"
+args = ["--raw-output0", ".[]"]
+stdin = "[\"a\",\"b\"]\n"
+
+[[case]]
+name = "sort-keys"
+args = ["-S", "."]
+stdin = "{\"b\":2,\"a\":1}\n"
+
+[[case]]
+name = "tab-indent"
+args = ["--tab", "."]
+stdin = "{\"a\":1}\n"
+
+[[case]]
+name = "indent-4"
+args = ["--indent", "4", "."]
+stdin = "{\"a\":1}\n"
+
+[[case]]
+name = "indent-0-compacts"
+args = ["--indent", "0", "."]
+stdin = "{\"a\":1,\"b\":[2,3]}\n"
+
+[[case]]
+name = "ascii-output-keys"
+args = ["-a", "."]
+stdin = "{\"émöji\":\"café\"}\n"
+
+[[case]]
+name = "compact-slurp"
+args = ["-cs", "."]
+stdin = "1\n2\n3\n"
+
+[[case]]
+name = "raw-compact"
+args = ["-rc", ".name"]
+stdin = "{\"name\":\"alice\"}\n"
+
+[[case]]
+name = "null-input-raw"
+args = ["-nr", "\"hello\""]
+stdin = ""
+
+# ---------------------------------------------------------------------------
+# Input options and input shapes
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "null-input"
+args = ["-n", "null"]
+stdin = ""
+
+[[case]]
+name = "slurp-lines"
+args = ["-s", "."]
+stdin = "1\n2\n3\n"
+
+[[case]]
+name = "raw-input-lines"
+args = ["-R", "."]
+stdin = "hello\nworld\n"
+
+[[case]]
+name = "raw-input-slurp"
+args = ["-Rs", "."]
+stdin = "hello\nworld\n"
+
+[[case]]
+name = "raw-input-slurp-compact"
+args = ["-Rsc", "."]
+stdin = "hello\nworld\n"
+
+[[case]]
+name = "newline-scalars"
+args = ["-c", "."]
+stdin = "1\n2\n3\n"
+
+[[case]]
+name = "whitespace-only"
+args = ["."]
+stdin = "  \n  \n"
+
+[[case]]
+name = "inputs-all"
+args = ["-n", "[inputs]"]
+stdin = "1\n2\n3\n"
+
+[[case]]
+name = "first-input"
+args = ["-n", "first(inputs)"]
+stdin = "1\n2\n3\n"
+
+[[case]]
+name = "two-files"
+args = ["-c", ".", "one.json", "two.json"]
+files = { "one.json" = "{\"x\":1}\n", "two.json" = "{\"y\":2}\n" }
+
+[[case]]
+name = "missing-file"
+args = [".", "nonexistent.json"]
+
+[[case]]
+name = "missing-then-good-file"
+args = [".", "nonexistent.json", "good.json"]
+files = { "good.json" = "{\"ok\":true}\n" }
+
+# ---------------------------------------------------------------------------
+# Programs and variables
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "from-file"
+args = ["-f", "filter.jq"]
+stdin = "{\"a\":1,\"b\":2}\n"
+files = { "filter.jq" = ".a + .b" }
+
+[[case]]
+name = "program-after-double-dash"
+args = ["--", "-."]
+stdin = "1\n"
+
+[[case]]
+name = "arg"
+args = ["-n", "--arg", "x", "hello", "$x"]
+stdin = ""
+
+[[case]]
+name = "argjson"
+args = ["-n", "--argjson", "x", "{\"a\":1}", "$x"]
+stdin = ""
+
+[[case]]
+name = "args-positional"
+args = ["-n", "$ARGS", "--args", "a", "b", "c"]
+stdin = ""
+
+[[case]]
+name = "jsonargs-positional"
+args = ["-n", "$ARGS", "--jsonargs", "1", "\"two\"", "null"]
+stdin = ""
+
+[[case]]
+name = "jsonargs-invalid"
+args = ["-n", "$ARGS", "--jsonargs", "not_valid_json"]
+stdin = ""
+
+[[case]]
+name = "arg-and-args"
+args = ["-n", "$ARGS", "--arg", "name", "hello", "--args", "a", "b"]
+stdin = ""
+
+[[case]]
+name = "slurpfile"
+args = ["-n", "--slurpfile", "x", "data.json", "$x"]
+stdin = ""
+files = { "data.json" = "1\n2\n3\n" }
+
+[[case]]
+name = "rawfile"
+args = ["-n", "--rawfile", "x", "data.txt", "$x"]
+stdin = ""
+files = { "data.txt" = "hello world\n" }
+
+[[case]]
+name = "env-home"
+args = ["-n", "$ENV.HOME"]
+stdin = ""
+
+[[case]]
+name = "env-unset"
+args = ["-n", "$ENV.QJ_TEST_NONEXISTENT_VAR_12345"]
+stdin = ""
+
+[[case]]
+name = "env-has-home"
+args = ["-n", "env | has(\"HOME\")"]
+stdin = ""
+
+# ---------------------------------------------------------------------------
+# Exit codes
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "exit-status-false"
+args = ["-e", "."]
+stdin = "false\n"
+
+[[case]]
+name = "exit-status-null"
+args = ["-e", "."]
+stdin = "null\n"
+
+[[case]]
+name = "exit-status-true"
+args = ["-e", "."]
+stdin = "true\n"
+
+[[case]]
+name = "exit-status-zero"
+args = ["-e", "."]
+stdin = "0\n"
+
+[[case]]
+name = "exit-status-string"
+args = ["-e", "."]
+stdin = "\"hello\"\n"
+
+[[case]]
+name = "exit-status-empty-output"
+args = ["-e", "empty"]
+stdin = "null\n"
+
+[[case]]
+name = "exit-status-slurp"
+args = ["-es", ".[0]"]
+stdin = "false\n"
+
+[[case]]
+name = "exit-status-last-output-false"
+args = ["-e", ".[]"]
+stdin = "[true,false]\n"
+
+[[case]]
+name = "exit-status-last-output-true"
+args = ["-e", ".[]"]
+stdin = "[false,true]\n"
+
+[[case]]
+name = "invalid-json-word"
+args = ["."]
+stdin = "xyz\n"
+
+[[case]]
+name = "syntax-error"
+args = [".["]
+stdin = "{}\n"
+
+[[case]]
+name = "runtime-error"
+args = [".a"]
+stdin = "5\n"

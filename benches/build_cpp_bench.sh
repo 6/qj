@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Compile the standalone C++ benchmark.
+# Compile the standalone C++ benchmark (simdjson's DOM parse without FFI).
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC="$DIR/../src/simdjson"
+SIMDJSON="$DIR/../simdjson"
 
 echo "Compiling bench_cpp..."
 c++ -std=c++17 -O3 -DNDEBUG \
-    -I"$SRC" \
+    -I"$SIMDJSON" \
     "$DIR/bench_cpp.cpp" \
-    "$SRC/simdjson.cpp" \
+    "$SIMDJSON/simdjson.cpp" \
     -o "$DIR/bench_cpp"
 
 echo "Done: $DIR/bench_cpp"

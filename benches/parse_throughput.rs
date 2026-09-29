@@ -1,159 +1,102 @@
-use qj::simdjson;
+//! Parse throughput of qj's input layer, stage by stage, next to serde_json
+//! and the jq-compatible tools end to end:
+//!
+//! - simdjson's DOM parse through the FFI (`TapeParser`: the tape only; compare
+//!   with `benches/bench_cpp`, the same parse without FFI);
+//! - simdjson to jq values (`SimdParser`: the tape parse plus building values);
+//! - jq's parser port (`parse_sized`), the fallback for anything simdjson rejects;
+//! - for NDJSON, jq's input loop (`InputReader`) with and without the simdjson
+//!   fast path.
+//!
+//! ```text
+//! bash benches/download_data.sh --json --gharchive
+//! cargo build --release          # to include qj end to end
+//! cargo bench --bench parse_throughput
+//! ```
+
+use qj::io::simd::SimdParser;
+use qj::io::{InputReader, Opened, Opener, ReaderOptions};
+use qj::simdjson::{TapeParser, padding};
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn mb_per_sec(bytes: u64, dur: Duration) -> f64 {
     bytes as f64 / (1024.0 * 1024.0) / dur.as_secs_f64()
 }
 
-/// Auto-calibrate iteration count to fill ~2 seconds.
-fn calibrate(bytes: usize) -> u64 {
-    let iters = (2.0 * 2e9 / bytes as f64) as u64;
-    iters.max(10)
-}
-
-fn bench_serde_json_parse(label: &str, data: &[u8]) {
-    let iters = calibrate(data.len());
-
-    // Warmup
+/// Runs `work` (which processes `bytes` bytes) enough times to fill about two
+/// seconds, after three warmup runs that also calibrate the count.
+fn bench(label: &str, bytes: usize, mut work: impl FnMut()) {
+    let t = Instant::now();
     for _ in 0..3 {
-        let _: serde_json::Value = serde_json::from_slice(data).unwrap();
+        work();
     }
+    let per_iter = t.elapsed().as_secs_f64() / 3.0;
+    let iters = ((2.0 / per_iter.max(1e-9)) as u64).clamp(3, 1_000_000);
 
     let start = Instant::now();
     for _ in 0..iters {
-        let _: serde_json::Value = serde_json::from_slice(data).unwrap();
+        work();
     }
     let elapsed = start.elapsed();
-    let mbs = mb_per_sec(data.len() as u64 * iters, elapsed);
+    let mbs = mb_per_sec(bytes as u64 * iters, elapsed);
     println!(
-        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
+        "  {label:<40} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
         elapsed.as_secs_f64()
     );
 }
 
-fn bench_serde_json_ndjson_parse(label: &str, data: &[u8]) {
-    let iters = calibrate(data.len()).min(200);
+/// `data` followed by simdjson's padding, so it can be parsed in place.
+fn padded(data: &[u8]) -> Vec<u8> {
+    let mut buf = data.to_vec();
+    buf.resize(data.len() + padding(), 0);
+    buf
+}
 
-    // Warmup
-    for _ in 0..3 {
-        for line in data.split(|&b| b == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            let _: serde_json::Value = serde_json::from_slice(line).unwrap();
+/// The line ranges of an NDJSON buffer (without the newlines; blank lines
+/// skipped).
+fn lines(data: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for end in memchr::memchr_iter(b'\n', data).chain(std::iter::once(data.len())) {
+        if end > start {
+            out.push((start, end));
         }
+        start = end + 1;
     }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        for line in data.split(|&b| b == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            let _: serde_json::Value = serde_json::from_slice(line).unwrap();
-        }
-    }
-    let elapsed = start.elapsed();
-    let mbs = mb_per_sec(data.len() as u64 * iters, elapsed);
-    println!(
-        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
-        elapsed.as_secs_f64()
-    );
+    out
 }
 
-fn bench_simdjson_ondemand_parse(label: &str, padded: &[u8], json_len: usize) {
-    let iters = calibrate(json_len);
-    let mut parser = simdjson::Parser::new().unwrap();
+/// Serves one input from memory without copying it.
+struct Shared(Arc<Vec<u8>>);
 
-    // Warmup
-    for _ in 0..3 {
-        let _doc = parser.parse(padded, json_len).unwrap();
+impl Opener for Shared {
+    fn open(&mut self, _name: &OsStr) -> std::io::Result<Opened> {
+        Ok(Opened::Whole(self.0.clone()))
     }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _doc = parser.parse(padded, json_len).unwrap();
-    }
-    let elapsed = start.elapsed();
-    let mbs = mb_per_sec(json_len as u64 * iters, elapsed);
-    println!(
-        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
-        elapsed.as_secs_f64()
-    );
 }
 
-fn bench_simdjson_ondemand_field(label: &str, padded: &[u8], json_len: usize, field: &str) {
-    let iters = calibrate(json_len);
-    let mut parser = simdjson::Parser::new().unwrap();
-
-    // Verify field exists
-    {
-        let mut doc = parser.parse(padded, json_len).unwrap();
-        if doc.find_field_str(field).is_err() {
-            println!("  {label:<35} SKIPPED (field '{field}' not found)");
-            return;
-        }
-    }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let mut doc = parser.parse(padded, json_len).unwrap();
-        let _ = doc.find_field_str(field).unwrap();
-    }
-    let elapsed = start.elapsed();
-    let mbs = mb_per_sec(json_len as u64 * iters, elapsed);
-    println!(
-        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
-        elapsed.as_secs_f64()
+/// Reads every value of `data` with jq's input loop.
+fn read_all(data: &Arc<Vec<u8>>, fast_path: bool) -> usize {
+    let files = Shared(data.clone());
+    let mut reader = InputReader::with_opener(
+        vec!["input".into()],
+        ReaderOptions::default(),
+        Box::new(files),
     );
+    reader.set_fast_path(fast_path);
+    let mut n = 0;
+    while let Some(value) = reader.next() {
+        value.unwrap();
+        n += 1;
+    }
+    n
 }
 
-fn bench_iterate_many_count(label: &str, padded: &[u8], json_len: usize) {
-    let iters = calibrate(json_len).min(200);
-
-    // Warmup
-    for _ in 0..3 {
-        let _ = simdjson::iterate_many_count(padded, json_len, 1_000_000).unwrap();
-    }
-
-    let start = Instant::now();
-    let mut total_docs: u64 = 0;
-    for _ in 0..iters {
-        total_docs += simdjson::iterate_many_count(padded, json_len, 1_000_000).unwrap();
-    }
-    let elapsed = start.elapsed();
-    let mbs = mb_per_sec(json_len as u64 * iters, elapsed);
-    println!(
-        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters, {total_docs} docs total, {:.2}s)",
-        elapsed.as_secs_f64()
-    );
-}
-
-fn bench_iterate_many_extract(label: &str, padded: &[u8], json_len: usize, field: &str) {
-    let iters = calibrate(json_len).min(200);
-
-    // Warmup
-    for _ in 0..3 {
-        let _ = simdjson::iterate_many_extract_field(padded, json_len, 1_000_000, field).unwrap();
-    }
-
-    let start = Instant::now();
-    let mut total_bytes: u64 = 0;
-    for _ in 0..iters {
-        total_bytes +=
-            simdjson::iterate_many_extract_field(padded, json_len, 1_000_000, field).unwrap();
-    }
-    let elapsed = start.elapsed();
-    let mbs = mb_per_sec(json_len as u64 * iters, elapsed);
-    println!(
-        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters, {total_bytes} bytes extracted, {:.2}s)",
-        elapsed.as_secs_f64()
-    );
-}
-
-/// Find an external tool (jq, jaq) on PATH. Returns None if not installed.
+/// Find an external tool (jq, jaq, gojq) on PATH. Returns None if not installed.
 fn find_tool(name: &str) -> Option<String> {
     Command::new("which")
         .arg(name)
@@ -165,78 +108,73 @@ fn find_tool(name: &str) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// Benchmark an external JSON tool (jq/jaq) by spawning it repeatedly.
-/// Uses `tool '.' file > /dev/null` to measure parse + identity filter throughput.
+/// Benchmark a tool end to end by spawning it repeatedly:
+/// `tool FILTER FILE > /dev/null`.
 fn bench_external_tool(label: &str, tool: &str, filter: &str, file: &Path, file_bytes: u64) {
-    // Calibrate: run once to estimate per-invocation time, then pick iters for ~2s total.
-    // Warmup
-    for _ in 0..3 {
-        let _ = Command::new(tool)
+    let run = || {
+        Command::new(tool)
             .args([filter, file.to_str().unwrap()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .output();
+            .output()
+            .unwrap()
+    };
+    // Warmup
+    for _ in 0..3 {
+        let _ = run();
     }
 
     // Single timed run to calibrate
     let t0 = Instant::now();
-    let _ = Command::new(tool)
-        .args([filter, file.to_str().unwrap()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
+    let _ = run();
     let single = t0.elapsed();
 
     let iters = ((2.0 / single.as_secs_f64()) as u64).max(3);
 
     let start = Instant::now();
     for _ in 0..iters {
-        let out = Command::new(tool)
-            .args([filter, file.to_str().unwrap()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .unwrap();
+        let out = run();
         assert!(out.status.success(), "{tool} failed on {}", file.display());
     }
     let elapsed = start.elapsed();
     let mbs = mb_per_sec(file_bytes * iters, elapsed);
     println!(
-        "  {label:<35} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
+        "  {label:<40} {mbs:8.1} MB/s  ({iters} iters in {:.2}s)",
         elapsed.as_secs_f64()
     );
+}
+
+/// The tools to run end to end: qj (if built with `cargo build --release`),
+/// then jq, jaq and gojq from PATH.
+fn tools() -> Vec<(String, String)> {
+    let mut tools = Vec::new();
+    let qj = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/qj");
+    if qj.exists() {
+        tools.push(("qj".to_string(), qj.display().to_string()));
+    } else {
+        println!("qj end to end: SKIPPED (run cargo build --release)");
+    }
+    for name in ["jq", "jaq", "gojq"] {
+        if let Some(path) = find_tool(name) {
+            tools.push((name.to_string(), path));
+        }
+    }
+    tools
 }
 
 fn main() {
     println!("=== qj parse throughput benchmark ===\n");
 
-    let jq_path = find_tool("jq");
-    let jaq_path = find_tool("jaq");
-    let gojq_path = find_tool("gojq");
-    let has_external = jq_path.is_some() || jaq_path.is_some() || gojq_path.is_some();
-    if has_external {
-        print!("External tools:");
-        if let Some(p) = &jq_path {
-            print!(" jq={p}");
-        }
-        if let Some(p) = &jaq_path {
-            print!(" jaq={p}");
-        }
-        if let Some(p) = &gojq_path {
-            print!(" gojq={p}");
-        }
-        println!("\n");
+    let tools = tools();
+    if !tools.is_empty() {
+        let list: Vec<String> = tools.iter().map(|(n, p)| format!("{n}={p}")).collect();
+        println!("Tools: {}\n", list.join(" "));
     }
 
     let data_dir = Path::new("benches/data");
 
-    // --- Single-file benchmarks ---
-    // (field, None) = no top-level string field to test find_field_str against.
-    let files: &[(&str, Option<&str>)] = &[
-        ("twitter.json", None), // top-level fields are objects
-    ];
-
-    for &(fname, field) in files {
+    // --- Single-document benchmarks ---
+    for fname in ["twitter.json"] {
         let path = data_dir.join(fname);
         if !path.exists() {
             println!("{fname:<40} SKIPPED (run benches/download_data.sh --json)");
@@ -244,36 +182,33 @@ fn main() {
         }
 
         let raw = std::fs::read(&path).unwrap();
-        let padded = simdjson::read_padded(&path).unwrap();
-        let json_len = raw.len();
+        let buf = padded(&raw);
+        let len = raw.len();
 
-        println!("{fname} ({json_len} bytes):");
-        if let Some(ref jq) = jq_path {
-            bench_external_tool("jq '.' (end-to-end)", jq, ".", &path, json_len as u64);
+        println!("{fname} ({len} bytes):");
+        for (name, tool) in &tools {
+            let label = format!("{name} '.' (end-to-end)");
+            bench_external_tool(&label, tool, ".", &path, len as u64);
         }
-        if let Some(ref jaq) = jaq_path {
-            bench_external_tool("jaq '.' (end-to-end)", jaq, ".", &path, json_len as u64);
-        }
-        if let Some(ref gojq) = gojq_path {
-            bench_external_tool("gojq '.' (end-to-end)", gojq, ".", &path, json_len as u64);
-        }
-        bench_serde_json_parse("serde_json DOM parse", &raw);
-        bench_simdjson_ondemand_parse("simdjson On-Demand parse (FFI)", &padded, json_len);
-        if let Some(f) = field {
-            bench_simdjson_ondemand_field(
-                &format!("simdjson find_field(\"{f}\") (FFI)"),
-                &padded,
-                json_len,
-                f,
-            );
-        }
+        bench("serde_json DOM parse", len, || {
+            let _: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        });
+        let mut tape = TapeParser::new().unwrap();
+        bench("simdjson DOM parse (FFI, tape only)", len, || {
+            tape.parse(&buf, len).unwrap();
+        });
+        let mut simd = SimdParser::new();
+        bench("simdjson -> jq value", len, || {
+            simd.parse(&buf, 0, len).unwrap();
+        });
+        bench("jq parser port -> jq value", len, || {
+            qj::jq::value::parse_sized(&raw).unwrap();
+        });
         println!();
     }
 
     // --- NDJSON benchmarks ---
-    let ndjson_files = &["gharchive.ndjson"];
-
-    for &fname in ndjson_files {
+    for fname in ["gharchive.ndjson"] {
         let path = data_dir.join(fname);
         if !path.exists() {
             println!("{fname:<40} SKIPPED (run benches/download_data.sh --gharchive)");
@@ -281,45 +216,39 @@ fn main() {
         }
 
         let raw = std::fs::read(&path).unwrap();
-        let padded = simdjson::read_padded(&path).unwrap();
-        let json_len = raw.len();
+        let buf = padded(&raw);
+        let len = raw.len();
+        let lines = lines(&raw);
+        let shared = Arc::new(raw.clone());
 
-        println!("{fname} ({json_len} bytes):");
-        if let Some(ref jq) = jq_path {
-            bench_external_tool(
-                "jq '.type' (end-to-end)",
-                jq,
-                ".type",
-                &path,
-                json_len as u64,
-            );
+        println!("{fname} ({len} bytes, {} lines):", lines.len());
+        for (name, tool) in &tools {
+            let label = format!("{name} '.type' (end-to-end)");
+            bench_external_tool(&label, tool, ".type", &path, len as u64);
         }
-        if let Some(ref jaq) = jaq_path {
-            bench_external_tool(
-                "jaq '.type' (end-to-end)",
-                jaq,
-                ".type",
-                &path,
-                json_len as u64,
-            );
-        }
-        if let Some(ref gojq) = gojq_path {
-            bench_external_tool(
-                "gojq '.type' (end-to-end)",
-                gojq,
-                ".type",
-                &path,
-                json_len as u64,
-            );
-        }
-        bench_serde_json_ndjson_parse("serde_json NDJSON line-by-line", &raw);
-        bench_iterate_many_count("iterate_many count (FFI)", &padded, json_len);
-        bench_iterate_many_extract(
-            "iterate_many extract(\"type\") (FFI)",
-            &padded,
-            json_len,
-            "type",
-        );
+        bench("serde_json line by line", len, || {
+            for &(s, e) in &lines {
+                let _: serde_json::Value = serde_json::from_slice(&raw[s..e]).unwrap();
+            }
+        });
+        let mut tape = TapeParser::new().unwrap();
+        bench("simdjson DOM parse per line (FFI)", len, || {
+            for &(s, e) in &lines {
+                tape.parse(&buf[s..], e - s).unwrap();
+            }
+        });
+        let mut simd = SimdParser::new();
+        bench("simdjson -> jq value per line", len, || {
+            for &(s, e) in &lines {
+                simd.parse(&buf, s, e).unwrap();
+            }
+        });
+        bench("jq input loop (simdjson fast path)", len, || {
+            read_all(&shared, true);
+        });
+        bench("jq input loop (jq parser port)", len, || {
+            read_all(&shared, false);
+        });
         println!();
     }
 }

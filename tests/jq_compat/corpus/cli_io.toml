@@ -677,6 +677,42 @@ name = "run-tests-onig-test"
 args = ["--run-tests", "onig.test"]
 files = { "basic.test" = "1+1\nnull\n2\n\n.a\n{\"a\":3}\n4\n", "fail.test" = "%%FAIL\n.a b\njq: error: syntax error, unexpected IDENT, expecting end of file at <top-level>, line 1, column 4:\n    .a b\n       ^\n\n%%FAIL\n{\njq: error: wrong\n\n%%FAIL IGNORE MSG\n}\nwhatever\n\n%%FAIL\n1\njq: error: x\n\n%%FAIL\n.a b\njq: error: syntax error, unexpected IDENT, expecting end of file at <top-level>, line 1, column 4:\n    .a b\n       ^\nextra line\n\n%%FAIL\n.a b\njq: error: syntax error\n\n.\n1\n1\n", "results.test" = ".[]\n[1,2]\n1\n\n.[]\n[1,2]\n1\n2\n3\n\n.\n{\n1\n\n.\n1\n{\n\n$x\nnull\nnull\n\n[label $f | try break $f catch .]\nnull\n[{\"__jq\":0}]\n\n[label $f | try break $f catch .]\nnull\n[{\"__jq\":1}]\n", "three.test" = "1\nnull\n1\n\n2\nnull\n2\n\n3\nnull\n3\n", "no-output.test" = "1\nnull\n", "no-input.test" = ".[0]\n", "only-fail.test" = "%%FAIL\n", "builtins.test" = "error(\"x\")\nnull\n1\n\ninput\nnull\n1\n\n$__loc__\nnull\n{\"file\":\"<top-level>\",\"line\":1}\n\ndebug\n1\n1\n\n1, halt, 2\nnull\n1\n\nget_search_list\nnull\n[]\n\n$ENV|type\nnull\n\"object\"\n", "long-line.test" = { repeat = [["\"", 1], ["a", 5000], ["\"|length\nnull\n5000\n\n1\nnull\n1\n", 1]] }, "jq.test" = { path = "../jq.test" }, "man.test" = { path = "../man.test" }, "onig.test" = { path = "../onig.test" } }
 
+[[case]]
+name = "nul-file-then-bom"
+args = ["-c", ".", "nul-only", "bom"]
+files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lead-nl" = { b64 = "AGMK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "bad-bom" = { b64 = "7wFjAA==" } }
+
+[[case]]
+name = "nul-led-file-then-bom"
+args = ["-c", ".", "nul-lead", "bom"]
+files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lead-nl" = { b64 = "AGMK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "bad-bom" = { b64 = "7wFjAA==" } }
+
+[[case]]
+name = "nul-led-file-then-bad-bom"
+args = ["-c", ".", "nul-lead", "bad-bom"]
+files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lead-nl" = { b64 = "AGMK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "bad-bom" = { b64 = "7wFjAA==" } }
+
+[[case]]
+name = "nul-led-line-then-bom"
+args = ["-c", ".", "nul-lead-nl", "bom"]
+files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lead-nl" = { b64 = "AGMK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "bad-bom" = { b64 = "7wFjAA==" } }
+
+[[case]]
+name = "nul-led-file-then-bom-slurp"
+args = ["-s", "-c", ".", "nul-lead", "bom"]
+files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lead-nl" = { b64 = "AGMK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "bad-bom" = { b64 = "7wFjAA==" } }
+
+[[case]]
+name = "nul-led-file-then-bom-inputs"
+args = ["-n", "-c", "[inputs]", "nul-lead", "bom"]
+files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lead-nl" = { b64 = "AGMK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "bad-bom" = { b64 = "7wFjAA==" } }
+
+[[case]]
+name = "nul-led-stdin-then-bom"
+args = ["-c", ".", "-", "bom"]
+stdin = { b64 = "AGM=" }
+files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lead-nl" = { b64 = "AGMK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "bad-bom" = { b64 = "7wFjAA==" } }
+
 [[sweep]]
 name = "file.long4094.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]

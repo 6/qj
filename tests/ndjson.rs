@@ -92,182 +92,169 @@ fn assert_jq_compat(args: &[&str], input: &str) {
     );
 }
 
-/// Run the same filter with fast path enabled (default) and disabled (QJ_NO_FAST_PATH=1),
-/// and assert that they produce identical output.
-fn assert_fast_path_matches_normal(filter: &str, input: &str) {
-    // Fast path enabled (default)
-    let fast = {
-        let output = Command::new(env!("CARGO_BIN_EXE_qj"))
-            .args(["-c", filter])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|child| feed(child, input))
-            .expect("failed to run qj");
-        assert!(output.status.success());
-        String::from_utf8(output.stdout).unwrap()
+/// Like [`assert_jq_compat`], with `input` in a file given after `args`.
+fn assert_jq_compat_file(args: &[&str], input: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("input.ndjson");
+    std::fs::write(&path, input).unwrap();
+    let run = |cmd: &str| {
+        Command::new(cmd)
+            .args(args)
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .output()
     };
-
-    // Fast path disabled
-    let normal = {
-        let output = Command::new(env!("CARGO_BIN_EXE_qj"))
-            .args(["-c", filter])
-            .env("QJ_NO_FAST_PATH", "1")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|child| feed(child, input))
-            .expect("failed to run qj");
-        assert!(output.status.success());
-        String::from_utf8(output.stdout).unwrap()
+    let Ok(jq) = run("jq") else {
+        return;
     };
-
+    let qj = run(env!("CARGO_BIN_EXE_qj")).expect("failed to run qj");
     assert_eq!(
-        fast, normal,
-        "Fast path output differs from normal path for filter: {filter}"
+        (qj.status.code(), String::from_utf8_lossy(&qj.stdout)),
+        (jq.status.code(), String::from_utf8_lossy(&jq.stdout)),
+        "qj vs jq (exit code, stdout): args={args:?} + a file, input={input:?}"
     );
-    // And both must match jq. (QJ_NO_FAST_PATH switches the old core's
-    // fast paths; the port may take the same path in both runs.)
+}
+
+/// Assert that `qj -c FILTER` matches jq on NDJSON `input`, both on stdin and
+/// as a file argument (which qj memory-maps). Skipped when jq isn't installed.
+///
+/// The tests using this used to compare the old core's NDJSON fast paths with
+/// its normal path (`QJ_NO_FAST_PATH`); their filters are the shapes those
+/// fast paths recognized.
+fn assert_ndjson_jq_compat(filter: &str, input: &str) {
     assert_jq_compat(&["-c", filter], input);
+    assert_jq_compat_file(&["-c", filter], input);
 }
 
-// --- Fast path vs normal path comparison tests ---
+// --- NDJSON vs jq: the shapes the old core's fast paths recognized ---
 
 #[test]
-fn fast_vs_normal_field_chain() {
+fn ndjson_vs_jq_field_chain() {
     let input = "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n";
-    assert_fast_path_matches_normal(".name", input);
+    assert_ndjson_jq_compat(".name", input);
 }
 
 #[test]
-fn fast_vs_normal_nested_field() {
+fn ndjson_vs_jq_nested_field() {
     let input = "{\"a\":{\"b\":\"deep\"}}\n{\"a\":{\"b\":\"val\"}}\n";
-    assert_fast_path_matches_normal(".a.b", input);
+    assert_ndjson_jq_compat(".a.b", input);
 }
 
 #[test]
-fn fast_vs_normal_select_eq() {
+fn ndjson_vs_jq_select_eq() {
     let input = "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n";
-    assert_fast_path_matches_normal("select(.type == \"PushEvent\")", input);
+    assert_ndjson_jq_compat("select(.type == \"PushEvent\")", input);
 }
 
 #[test]
-fn fast_vs_normal_select_ne() {
+fn ndjson_vs_jq_select_ne() {
     let input = "{\"type\":\"PushEvent\",\"id\":1}\n{\"type\":\"WatchEvent\",\"id\":2}\n";
-    assert_fast_path_matches_normal("select(.type != \"PushEvent\")", input);
+    assert_ndjson_jq_compat("select(.type != \"PushEvent\")", input);
 }
 
 #[test]
-fn fast_vs_normal_select_gt() {
+fn ndjson_vs_jq_select_gt() {
     let input = "{\"n\":5}\n{\"n\":15}\n{\"n\":10}\n";
-    assert_fast_path_matches_normal("select(.n > 10)", input);
+    assert_ndjson_jq_compat("select(.n > 10)", input);
 }
 
 #[test]
-fn fast_vs_normal_select_le() {
+fn ndjson_vs_jq_select_le() {
     let input = "{\"n\":5}\n{\"n\":15}\n{\"n\":10}\n";
-    assert_fast_path_matches_normal("select(.n <= 10)", input);
+    assert_ndjson_jq_compat("select(.n <= 10)", input);
 }
 
 #[test]
-fn fast_vs_normal_select_eq_extract() {
+fn ndjson_vs_jq_select_eq_extract() {
     let input = "{\"type\":\"A\",\"x\":1}\n{\"type\":\"B\",\"x\":2}\n";
-    assert_fast_path_matches_normal("select(.type == \"A\") | .x", input);
+    assert_ndjson_jq_compat("select(.type == \"A\") | .x", input);
 }
 
 #[test]
-fn fast_vs_normal_select_eq_obj() {
+fn ndjson_vs_jq_select_eq_obj() {
     let input = "{\"type\":\"A\",\"x\":1,\"y\":2}\n{\"type\":\"B\",\"x\":3,\"y\":4}\n";
-    assert_fast_path_matches_normal("select(.type == \"A\") | {x: .x, y: .y}", input);
+    assert_ndjson_jq_compat("select(.type == \"A\") | {x: .x, y: .y}", input);
 }
 
 #[test]
-fn fast_vs_normal_select_eq_arr() {
+fn ndjson_vs_jq_select_eq_arr() {
     let input = "{\"type\":\"A\",\"x\":1,\"y\":2}\n{\"type\":\"B\",\"x\":3,\"y\":4}\n";
-    assert_fast_path_matches_normal("select(.type == \"A\") | [.x, .y]", input);
+    assert_ndjson_jq_compat("select(.type == \"A\") | [.x, .y]", input);
 }
 
 #[test]
-fn fast_vs_normal_multi_field_obj() {
+fn ndjson_vs_jq_multi_field_obj() {
     let input = "{\"a\":1,\"b\":2,\"c\":3}\n{\"a\":4,\"b\":5,\"c\":6}\n";
-    assert_fast_path_matches_normal("{a: .a, b: .b}", input);
+    assert_ndjson_jq_compat("{a: .a, b: .b}", input);
 }
 
 #[test]
-fn fast_vs_normal_multi_field_arr() {
+fn ndjson_vs_jq_multi_field_arr() {
     let input = "{\"a\":1,\"b\":2}\n{\"a\":3,\"b\":4}\n";
-    assert_fast_path_matches_normal("[.a, .b]", input);
+    assert_ndjson_jq_compat("[.a, .b]", input);
 }
 
 #[test]
-fn fast_vs_normal_length() {
+fn ndjson_vs_jq_length() {
     let input = "{\"a\":1,\"b\":2}\n{\"x\":1}\n";
-    assert_fast_path_matches_normal("length", input);
+    assert_ndjson_jq_compat("length", input);
 }
 
 #[test]
-fn fast_vs_normal_field_length() {
+fn ndjson_vs_jq_field_length() {
     let input = "{\"items\":[1,2,3]}\n{\"items\":[4]}\n";
-    assert_fast_path_matches_normal(".items | length", input);
+    assert_ndjson_jq_compat(".items | length", input);
 }
 
 #[test]
-fn fast_vs_normal_keys() {
+fn ndjson_vs_jq_keys() {
     let input = "{\"b\":2,\"a\":1}\n{\"x\":1}\n";
-    assert_fast_path_matches_normal("keys", input);
+    assert_ndjson_jq_compat("keys", input);
 }
 
 #[test]
-fn fast_vs_normal_select_test() {
+fn ndjson_vs_jq_select_test() {
     let input = "{\"msg\":\"error: disk full\"}\n{\"msg\":\"ok\"}\n{\"msg\":\"error: timeout\"}\n";
-    assert_fast_path_matches_normal(r#"select(.msg | test("error"))"#, input);
+    assert_ndjson_jq_compat(r#"select(.msg | test("error"))"#, input);
 }
 
 #[test]
-fn fast_vs_normal_select_startswith() {
+fn ndjson_vs_jq_select_startswith() {
     let input = "{\"url\":\"/api/users\"}\n{\"url\":\"/web/home\"}\n";
-    assert_fast_path_matches_normal(r#"select(.url | startswith("/api"))"#, input);
+    assert_ndjson_jq_compat(r#"select(.url | startswith("/api"))"#, input);
 }
 
 #[test]
-fn fast_vs_normal_select_endswith() {
+fn ndjson_vs_jq_select_endswith() {
     let input = "{\"file\":\"data.json\"}\n{\"file\":\"data.csv\"}\n";
-    assert_fast_path_matches_normal(r#"select(.file | endswith(".json"))"#, input);
+    assert_ndjson_jq_compat(r#"select(.file | endswith(".json"))"#, input);
 }
 
 #[test]
-fn fast_vs_normal_select_contains() {
+fn ndjson_vs_jq_select_contains() {
     let input = "{\"desc\":\"hello alice\"}\n{\"desc\":\"hello bob\"}\n";
-    assert_fast_path_matches_normal(r#"select(.desc | contains("alice"))"#, input);
+    assert_ndjson_jq_compat(r#"select(.desc | contains("alice"))"#, input);
 }
 
 #[test]
-fn fast_vs_normal_select_test_extract() {
+fn ndjson_vs_jq_select_test_extract() {
     let input = "{\"msg\":\"error: disk full\",\"code\":500}\n{\"msg\":\"ok\",\"code\":200}\n";
-    assert_fast_path_matches_normal(r#"select(.msg | test("error")) | .code"#, input);
+    assert_ndjson_jq_compat(r#"select(.msg | test("error")) | .code"#, input);
 }
 
 #[test]
-fn fast_vs_normal_select_float_vs_int() {
+fn ndjson_vs_jq_select_float_vs_int() {
     // Edge case: 1.0 == 1 should match in both paths
     let input = "{\"n\":1.0,\"id\":\"a\"}\n{\"n\":2,\"id\":\"b\"}\n";
-    assert_fast_path_matches_normal("select(.n == 1)", input);
+    assert_ndjson_jq_compat("select(.n == 1)", input);
 }
 
 #[test]
-fn fast_vs_normal_select_escaped_string() {
-    // Escaped strings (\n) are handled correctly by both paths
+fn ndjson_vs_jq_select_escaped_string() {
+    // Escaped strings (\n) in the predicate and the output
     let input = "{\"s\":\"line1\\nline2\",\"id\":1}\n{\"s\":\"other\",\"id\":2}\n";
-    assert_fast_path_matches_normal("select(.s == \"line1\\nline2\")", input);
+    assert_ndjson_jq_compat("select(.s == \"line1\\nline2\")", input);
 }
-
-// Note: \u0041 vs "A" intentionally differs between fast/normal paths.
-// Fast path outputs the raw line (preserving \u0041), normal path re-serializes
-// (normalizing to "A"). Both are semantically correct. The fast path falls back
-// to normal eval for the predicate comparison (correctly matching \u0041 == A),
-// but when outputting the matched line, it emits the original raw bytes.
 
 // --- Basic NDJSON processing ---
 
@@ -488,7 +475,7 @@ fn ndjson_pretty_output() {
     assert_eq!(out, "{\n  \"a\": 1\n}\n{\n  \"b\": 2\n}\n");
 }
 
-// --- FieldChain fast path edge cases ---
+// --- Field chain edge cases ---
 
 #[test]
 fn ndjson_field_chain_deeply_nested() {
@@ -605,7 +592,7 @@ fn ndjson_field_chain_raw_output_escape() {
     assert_eq!(out, "hello\tworld\nfoo\nbar\n");
 }
 
-// --- select fast path ---
+// --- select ---
 
 #[test]
 fn ndjson_select_eq_string() {
@@ -671,7 +658,7 @@ fn ndjson_select_eq_nested_field() {
     assert_eq!(out, "{\"actor\":{\"login\":\"alice\"},\"id\":1}\n");
 }
 
-// --- length/keys fast path ---
+// --- length/keys ---
 
 #[test]
 fn ndjson_bare_length() {
@@ -761,11 +748,11 @@ fn ndjson_select_negative_int() {
     assert_eq!(out, "{\"n\":-1}\n");
 }
 
-// --- select fallback correctness (byte mismatch but values equal) ---
+// --- select on equal values with different text ---
 
 #[test]
 fn ndjson_select_float_vs_int() {
-    // 1.0 == 1 should match (fallback to full eval)
+    // 1.0 == 1 should match, and the line keeps its literal
     let input = r#"{"n":1.0,"id":"a"}
 {"n":2,"id":"b"}
 "#;
@@ -787,9 +774,7 @@ fn ndjson_select_scientific_notation() {
 
 #[test]
 fn ndjson_select_unicode_escape() {
-    // \u0041 is "A" — should match. Fast path extracts raw "\u0041" bytes,
-    // which don't byte-match "A", so falls back to normal eval which
-    // normalizes the unicode escape. Output matches QJ_NO_FAST_PATH behavior.
+    // \u0041 is "A": it matches, and prints as "A" (jq re-serializes).
     let input = "{\"s\":\"\\u0041\",\"id\":1}\n{\"s\":\"B\",\"id\":2}\n";
     let out = qj_stdin(&["-c", "select(.s == \"A\")"], &input);
     assert_eq!(out, "{\"s\":\"A\",\"id\":1}\n");
@@ -823,7 +808,7 @@ fn ndjson_select_float_ne() {
 
 #[test]
 fn ndjson_select_mixed_fallback_and_fast() {
-    // Mix of lines that hit fast path and fallback
+    // Equal numbers written differently (42, 42.0), and near misses
     let input = r#"{"n":42,"id":"exact"}
 {"n":42.0,"id":"float"}
 {"n":1e2,"id":"sci"}
@@ -869,7 +854,7 @@ fn ndjson_keys_on_arrays_ndjson() {
 
 #[test]
 fn ndjson_string_length_fallback() {
-    // String length requires fallback from C++ fast path to normal eval
+    // String length (codepoints) of a field
     let input = r#"{"name":"alice"}
 {"name":"bob"}
 "#;
@@ -908,7 +893,7 @@ fn ndjson_length_large_line_count() {
     assert!(lines.iter().all(|l| *l == "1"));
 }
 
-// --- select + field extraction fast path ---
+// --- select + field extraction ---
 
 #[test]
 fn ndjson_select_eq_field_extraction() {
@@ -1358,11 +1343,11 @@ fn ndjson_iterate() {
 }
 
 // =============================================================================
-// Golden differential tests: fast path vs normal path with diverse inputs
+// Golden differential tests: qj vs jq on diverse NDJSON
 //
 // These tests generate NDJSON with edge cases (type mismatches, missing fields,
-// unicode, escapes, numeric edge cases) and assert fast == normal for every
-// supported fast-path variant.
+// unicode, escapes, numeric edge cases) and compare qj with jq for each shape
+// the old core had an NDJSON fast path for.
 // =============================================================================
 
 /// Simple deterministic PRNG (xorshift32) for generating diverse test data
@@ -1420,13 +1405,10 @@ fn generate_diverse_ndjson(rng: &mut Rng, count: usize) -> String {
                     "{{\"type\":null,\"name\":null,\"count\":null,\"active\":null}}\n"
                 ));
             }
-            // Numeric edge cases: floats, scientific notation, negative, trailing zeros.
-            // The On-Demand raw_json() path preserves these exactly as written.
+            // Numeric edge cases: floats, scientific notation, negative, trailing
+            // zeros, negative zero. jq keeps each literal (printed canonically).
             6 => {
-                // Note: -0 intentionally excluded — fast path emits the raw line
-                // (preserving "-0"), normal path normalizes to "0" through Value.
-                // Both are semantically correct (IEEE 754: -0.0 == 0.0).
-                let vals = &["1.0", "1e2", "0.0001", "42.00", "1.5e10", "-3.14"];
+                let vals = &["1.0", "1e2", "0.0001", "42.00", "1.5e10", "-3.14", "-0"];
                 let v = rng.pick(vals);
                 let name = rng.pick(names);
                 buf.push_str(&format!(
@@ -1455,196 +1437,250 @@ fn generate_diverse_ndjson(rng: &mut Rng, count: usize) -> String {
 }
 
 #[test]
-fn golden_fast_path_field_chain() {
+fn golden_ndjson_field_chain() {
     let mut rng = Rng::new(1001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal(".name", &input);
-    assert_fast_path_matches_normal(".actor.login", &input);
-    assert_fast_path_matches_normal(".missing", &input);
-    assert_fast_path_matches_normal(".meta.x", &input);
+    assert_ndjson_jq_compat(".name", &input);
+    assert_ndjson_jq_compat(".actor.login", &input);
+    assert_ndjson_jq_compat(".missing", &input);
+    assert_ndjson_jq_compat(".meta.x", &input);
 }
 
 #[test]
-fn golden_fast_path_select_eq_string() {
+fn golden_ndjson_select_eq_string() {
     let mut rng = Rng::new(2001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("select(.type == \"PushEvent\")", &input);
-    assert_fast_path_matches_normal("select(.type == \"nonexistent\")", &input);
-    assert_fast_path_matches_normal("select(.name == \"alice\")", &input);
+    assert_ndjson_jq_compat("select(.type == \"PushEvent\")", &input);
+    assert_ndjson_jq_compat("select(.type == \"nonexistent\")", &input);
+    assert_ndjson_jq_compat("select(.name == \"alice\")", &input);
 }
 
 #[test]
-fn golden_fast_path_select_eq_int() {
+fn golden_ndjson_select_eq_int() {
     let mut rng = Rng::new(3001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("select(.count == 42)", &input);
-    assert_fast_path_matches_normal("select(.count == 0)", &input);
-    assert_fast_path_matches_normal("select(.count == -1)", &input);
+    assert_ndjson_jq_compat("select(.count == 42)", &input);
+    assert_ndjson_jq_compat("select(.count == 0)", &input);
+    assert_ndjson_jq_compat("select(.count == -1)", &input);
 }
 
 #[test]
-fn golden_fast_path_select_eq_bool_null() {
+fn golden_ndjson_select_eq_bool_null() {
     let mut rng = Rng::new(4001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("select(.active == true)", &input);
-    assert_fast_path_matches_normal("select(.active == false)", &input);
-    assert_fast_path_matches_normal("select(.type == null)", &input);
-    assert_fast_path_matches_normal("select(.active == null)", &input);
+    assert_ndjson_jq_compat("select(.active == true)", &input);
+    assert_ndjson_jq_compat("select(.active == false)", &input);
+    assert_ndjson_jq_compat("select(.type == null)", &input);
+    assert_ndjson_jq_compat("select(.active == null)", &input);
 }
 
 #[test]
-fn golden_fast_path_select_ne() {
+fn golden_ndjson_select_ne() {
     let mut rng = Rng::new(5001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("select(.type != \"PushEvent\")", &input);
-    assert_fast_path_matches_normal("select(.count != 0)", &input);
+    assert_ndjson_jq_compat("select(.type != \"PushEvent\")", &input);
+    assert_ndjson_jq_compat("select(.count != 0)", &input);
 }
 
 #[test]
-fn golden_fast_path_select_ordering() {
+fn golden_ndjson_select_ordering() {
     let mut rng = Rng::new(6001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("select(.count > 10)", &input);
-    assert_fast_path_matches_normal("select(.count < 50)", &input);
-    assert_fast_path_matches_normal("select(.count >= 0)", &input);
-    assert_fast_path_matches_normal("select(.count <= -1)", &input);
-    assert_fast_path_matches_normal("select(.name > \"charlie\")", &input);
-    assert_fast_path_matches_normal("select(.name < \"bob\")", &input);
+    assert_ndjson_jq_compat("select(.count > 10)", &input);
+    assert_ndjson_jq_compat("select(.count < 50)", &input);
+    assert_ndjson_jq_compat("select(.count >= 0)", &input);
+    assert_ndjson_jq_compat("select(.count <= -1)", &input);
+    assert_ndjson_jq_compat("select(.name > \"charlie\")", &input);
+    assert_ndjson_jq_compat("select(.name < \"bob\")", &input);
 }
 
 #[test]
-fn golden_fast_path_select_eq_field() {
+fn golden_ndjson_select_eq_field() {
     let mut rng = Rng::new(7001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | .name", &input);
-    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | .actor.login", &input);
-    assert_fast_path_matches_normal("select(.count > 10) | .name", &input);
-    assert_fast_path_matches_normal("select(.active == true) | .count", &input);
+    assert_ndjson_jq_compat("select(.type == \"PushEvent\") | .name", &input);
+    assert_ndjson_jq_compat("select(.type == \"PushEvent\") | .actor.login", &input);
+    assert_ndjson_jq_compat("select(.count > 10) | .name", &input);
+    assert_ndjson_jq_compat("select(.active == true) | .count", &input);
 }
 
 #[test]
-fn golden_fast_path_select_eq_obj() {
+fn golden_ndjson_select_eq_obj() {
     let mut rng = Rng::new(8001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal(
+    assert_ndjson_jq_compat(
         "select(.type == \"PushEvent\") | {name: .name, count: .count}",
         &input,
     );
-    assert_fast_path_matches_normal(
+    assert_ndjson_jq_compat(
         "select(.count > 0) | {type: .type, login: .actor.login}",
         &input,
     );
 }
 
 #[test]
-fn golden_fast_path_select_eq_arr() {
+fn golden_ndjson_select_eq_arr() {
     let mut rng = Rng::new(9001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | [.name, .count]", &input);
-    assert_fast_path_matches_normal("select(.active == true) | [.type, .name]", &input);
+    assert_ndjson_jq_compat("select(.type == \"PushEvent\") | [.name, .count]", &input);
+    assert_ndjson_jq_compat("select(.active == true) | [.type, .name]", &input);
 }
 
 #[test]
-fn golden_fast_path_multi_field_obj() {
+fn golden_ndjson_multi_field_obj() {
     let mut rng = Rng::new(10001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("{name: .name, count: .count}", &input);
-    assert_fast_path_matches_normal("{type: .type, login: .actor.login}", &input);
+    assert_ndjson_jq_compat("{name: .name, count: .count}", &input);
+    assert_ndjson_jq_compat("{type: .type, login: .actor.login}", &input);
 }
 
 #[test]
-fn golden_fast_path_multi_field_arr() {
+fn golden_ndjson_multi_field_arr() {
     let mut rng = Rng::new(11001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("[.name, .count]", &input);
-    assert_fast_path_matches_normal("[.type, .actor.login, .active]", &input);
+    assert_ndjson_jq_compat("[.name, .count]", &input);
+    assert_ndjson_jq_compat("[.type, .actor.login, .active]", &input);
 }
 
 #[test]
-fn golden_fast_path_length_keys() {
+fn golden_ndjson_length_keys() {
     let mut rng = Rng::new(12001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal("length", &input);
-    assert_fast_path_matches_normal("keys", &input);
-    assert_fast_path_matches_normal(".meta | length", &input);
-    assert_fast_path_matches_normal(".meta | keys", &input);
-    assert_fast_path_matches_normal(".items | length", &input);
+    assert_ndjson_jq_compat("length", &input);
+    assert_ndjson_jq_compat("keys", &input);
+    assert_ndjson_jq_compat(".meta | length", &input);
+    assert_ndjson_jq_compat(".meta | keys", &input);
+    assert_ndjson_jq_compat(".items | length", &input);
 }
 
 #[test]
-fn golden_fast_path_select_string_pred() {
+fn golden_ndjson_select_string_pred() {
     let mut rng = Rng::new(13001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal(r#"select(.name | test("^a"))"#, &input);
-    assert_fast_path_matches_normal(r#"select(.name | startswith("al"))"#, &input);
-    assert_fast_path_matches_normal(r#"select(.name | endswith("ce"))"#, &input);
-    assert_fast_path_matches_normal(r#"select(.name | contains("ob"))"#, &input);
+    assert_ndjson_jq_compat(r#"select(.name | test("^a"))"#, &input);
+    assert_ndjson_jq_compat(r#"select(.name | startswith("al"))"#, &input);
+    assert_ndjson_jq_compat(r#"select(.name | endswith("ce"))"#, &input);
+    assert_ndjson_jq_compat(r#"select(.name | contains("ob"))"#, &input);
 }
 
 #[test]
-fn golden_fast_path_select_string_pred_field() {
+fn golden_ndjson_select_string_pred_field() {
     let mut rng = Rng::new(14001);
     let input = generate_diverse_ndjson(&mut rng, 100);
-    assert_fast_path_matches_normal(r#"select(.name | contains("alice")) | .count"#, &input);
-    assert_fast_path_matches_normal(r#"select(.name | test("^b")) | .type"#, &input);
+    assert_ndjson_jq_compat(r#"select(.name | contains("alice")) | .count"#, &input);
+    assert_ndjson_jq_compat(r#"select(.name | test("^b")) | .type"#, &input);
 }
 
-/// Test with >1MB of NDJSON to trigger parallel chunk splitting and rayon,
-/// exercising the SharedFilter unsafe Send+Sync wrapper.
+/// More than 1 MB of NDJSON, so the parallel engine splits it into several
+/// jobs across worker threads.
 #[test]
-fn golden_fast_path_parallel_large_input() {
+fn golden_ndjson_parallel_large_input() {
     let mut rng = Rng::new(99001);
     // ~1.5MB of NDJSON (enough to trigger >1 chunk).
     let input = generate_diverse_ndjson(&mut rng, 20000);
     assert!(
         input.len() > 1_000_000,
-        "Input should be >1MB to trigger parallel processing, got {} bytes",
+        "Input should be >1MB to spread over several jobs, got {} bytes",
         input.len()
     );
 
-    // Test several fast-path variants with large parallel input.
-    assert_fast_path_matches_normal(".name", &input);
-    assert_fast_path_matches_normal("select(.type == \"PushEvent\")", &input);
-    assert_fast_path_matches_normal("select(.count > 50)", &input);
-    assert_fast_path_matches_normal("{name: .name, count: .count}", &input);
-    assert_fast_path_matches_normal("[.type, .name]", &input);
-    assert_fast_path_matches_normal("length", &input);
-    assert_fast_path_matches_normal("keys", &input);
-    assert_fast_path_matches_normal(r#"select(.name | contains("alice"))"#, &input);
-    assert_fast_path_matches_normal("select(.type == \"PushEvent\") | .name", &input);
-    assert_fast_path_matches_normal(
+    // Several of the old fast-path shapes on large parallel input.
+    assert_ndjson_jq_compat(".name", &input);
+    assert_ndjson_jq_compat("select(.type == \"PushEvent\")", &input);
+    assert_ndjson_jq_compat("select(.count > 50)", &input);
+    assert_ndjson_jq_compat("{name: .name, count: .count}", &input);
+    assert_ndjson_jq_compat("[.type, .name]", &input);
+    assert_ndjson_jq_compat("length", &input);
+    assert_ndjson_jq_compat("keys", &input);
+    assert_ndjson_jq_compat(r#"select(.name | contains("alice"))"#, &input);
+    assert_ndjson_jq_compat("select(.type == \"PushEvent\") | .name", &input);
+    assert_ndjson_jq_compat(
         "select(.type == \"PushEvent\") | {name: .name, count: .count}",
         &input,
     );
 }
 
-/// Verify that the fast path preserves the original number representation
-/// (scientific notation, trailing zeros, etc.) identically to the normal path.
+/// Number literals (scientific notation, trailing zeros, etc.) print as jq
+/// prints them, through each shape.
 #[test]
-fn golden_fast_path_number_preservation() {
+fn golden_ndjson_number_preservation() {
     let input = r#"{"n":1.5e10,"s":"x"}
 {"n":1e2,"s":"y"}
 {"n":42.00,"s":"z"}
 {"n":-3.14,"s":"w"}
 {"n":0,"s":"v"}
 "#;
-    assert_fast_path_matches_normal(".n", input);
-    assert_fast_path_matches_normal("select(.s == \"x\") | .n", input);
-    assert_fast_path_matches_normal("{n: .n, s: .s}", input);
-    assert_fast_path_matches_normal("[.n, .s]", input);
-    assert_fast_path_matches_normal("select(.n == 0) | .s", input);
+    assert_ndjson_jq_compat(".n", input);
+    assert_ndjson_jq_compat("select(.s == \"x\") | .n", input);
+    assert_ndjson_jq_compat("{n: .n, s: .s}", input);
+    assert_ndjson_jq_compat("[.n, .s]", input);
+    assert_ndjson_jq_compat("select(.n == 0) | .s", input);
 }
 
-// --- Exhaustive fast-path differential test ---
+// --- Every shape the old core had an NDJSON fast path for ---
 
-/// Runs every `NdjsonFastPath` variant through `assert_fast_path_matches_normal`.
-///
-/// The filter list is derived from an exhaustive match on the `NdjsonFastPath`
-/// enum (via `all_fast_path_test_filters()`), so adding a new variant without
-/// a corresponding test filter is a compile error. This prevents the class of
-/// bug where a new fast-path mapping is added but not tested differentially.
+/// One filter per variant of the old core's `NdjsonFastPath` (and per
+/// comparison operator, type and string predicate it special-cased), run
+/// against jq.
+const OLD_FAST_PATH_SHAPES: &[&str] = &[
+    // FieldChain
+    ".name",
+    ".actor.login",
+    // SelectEq (various types + ops)
+    "select(.type == \"PushEvent\")",
+    "select(.count == 42)",
+    "select(.active == true)",
+    "select(.value == null)",
+    "select(.type != \"PushEvent\")",
+    "select(.count > 10)",
+    "select(.count < 100)",
+    "select(.count >= 50)",
+    "select(.count <= 50)",
+    "select(.name > \"m\")",
+    // Length
+    "length",
+    ".meta | length",
+    // Keys (sorted)
+    "keys",
+    ".meta | keys",
+    // Keys (unsorted)
+    "keys_unsorted",
+    ".meta | keys_unsorted",
+    // Type
+    "type",
+    ".meta | type",
+    // Has
+    "has(\"name\")",
+    ".meta | has(\"x\")",
+    // SelectEqField
+    "select(.type == \"PushEvent\") | .name",
+    "select(.count > 10) | .name",
+    // MultiFieldObj
+    "{name: .name, count: .count}",
+    "{type: .type, login: .actor.login}",
+    // MultiFieldArr
+    "[.name, .count]",
+    "[.type, .actor.login]",
+    // SelectEqObj
+    "select(.type == \"PushEvent\") | {name: .name, count: .count}",
+    // SelectEqArr
+    "select(.type == \"PushEvent\") | [.name, .count]",
+    // SelectCompound (AND / OR)
+    "select(.type == \"PushEvent\" and .active == true)",
+    "select(.type == \"PushEvent\" or .type == \"CreateEvent\")",
+    "select(.count > 10 and .active == true)",
+    "select(.type != \"PushEvent\" or .count < 100)",
+    // SelectStringPred
+    "select(.name | test(\"^A\"))",
+    "select(.name | startswith(\"test\"))",
+    "select(.name | endswith(\".com\"))",
+    "select(.name | contains(\"oo\"))",
+    // SelectStringPredField
+    "select(.name | contains(\"oo\")) | .count",
+];
+
 #[test]
-fn exhaustive_fast_path_vs_normal() {
+fn ndjson_old_fast_path_shapes_vs_jq() {
     // Diverse NDJSON that exercises object keys, arrays, nested fields,
     // string values, numbers, booleans, and nulls.
     let input = r#"{"name":"alice","type":"PushEvent","count":42,"active":true,"value":null,"actor":{"login":"alice"},"meta":{"x":1,"y":2},"items":[1,2,3]}
@@ -1653,15 +1689,15 @@ fn exhaustive_fast_path_vs_normal() {
 {"name":"Aardvark","type":"CreateEvent","count":0,"active":false,"value":"hello","actor":{"login":"dave"},"meta":{"z":9,"a":1},"items":[42]}
 "#;
 
-    for filter in qj::parallel::ndjson::all_fast_path_test_filters() {
-        assert_fast_path_matches_normal(filter, input);
+    for filter in OLD_FAST_PATH_SHAPES {
+        assert_ndjson_jq_compat(filter, input);
     }
 }
 
 // --- Leading whitespace handling ---
 
 /// NDJSON lines with leading whitespace should produce the same output as
-/// lines without (the fast path trims leading whitespace before processing).
+/// lines without.
 #[test]
 fn ndjson_leading_whitespace_trimmed() {
     // Input with leading spaces and tabs before the JSON objects.
@@ -1669,7 +1705,7 @@ fn ndjson_leading_whitespace_trimmed() {
     let input_clean =
         "{\"name\":\"alice\",\"type\":\"PushEvent\"}\n{\"name\":\"bob\",\"type\":\"WatchEvent\"}\n";
 
-    // Both should produce identical output for all fast-path-eligible filters.
+    // Both should produce identical output for each filter.
     for filter in &[
         ".name",
         "select(.type == \"PushEvent\")",
@@ -1688,8 +1724,7 @@ fn ndjson_leading_whitespace_trimmed() {
     }
 }
 
-/// The select fast path should not include leading whitespace in its raw
-/// passthrough output.
+/// A selected line is re-serialized: its leading whitespace is gone.
 #[test]
 fn ndjson_select_no_leading_whitespace_in_output() {
     let input = "  {\"type\":\"PushEvent\"}\n";
@@ -1699,48 +1734,6 @@ fn ndjson_select_no_leading_whitespace_in_output() {
         !out.starts_with(' '),
         "Output should not have leading whitespace"
     );
-}
-
-// --- process_ndjson_no_fast_path parity ---
-
-/// `process_ndjson_no_fast_path` must produce the same output as the normal
-/// evaluator path for valid compact NDJSON objects.
-#[test]
-fn process_ndjson_no_fast_path_matches_normal_eval() {
-    use qj::filter::{self, Env};
-    use qj::output::{OutputConfig, OutputMode};
-    use qj::parallel::ndjson::{process_ndjson, process_ndjson_no_fast_path};
-
-    let data = b"{\"name\":\"alice\",\"type\":\"PushEvent\",\"count\":42}\n{\"name\":\"bob\",\"type\":\"WatchEvent\",\"count\":7}\n";
-    let config = OutputConfig {
-        mode: OutputMode::Compact,
-        ..OutputConfig::default()
-    };
-    let env = Env::empty();
-
-    for filter_str in &[
-        ".name",
-        "select(.type == \"PushEvent\")",
-        "{name: .name, count: .count}",
-        "[.name, .count]",
-        "length",
-        "keys",
-        "keys_unsorted",
-        "type",
-        "has(\"name\")",
-        "select(.name | contains(\"ali\"))",
-    ] {
-        let filter = filter::parse(filter_str).unwrap();
-        let fast = process_ndjson(data, &filter, &config, &env).unwrap();
-        let normal = process_ndjson_no_fast_path(data, &filter, &config, &env).unwrap();
-        assert_eq!(
-            fast.0,
-            normal.0,
-            "process_ndjson vs process_ndjson_no_fast_path diverged for filter: {filter_str}\n  fast:   {:?}\n  normal: {:?}",
-            String::from_utf8_lossy(&fast.0),
-            String::from_utf8_lossy(&normal.0),
-        );
-    }
 }
 
 // --- Key-order preservation ---

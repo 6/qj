@@ -282,7 +282,7 @@ static NDJSON_FILTERS_LARGE: &[BenchFilter] = &[
     },
 ];
 
-/// Complex NDJSON filters that bypass on-demand fast paths (used by ndjson-extended).
+/// Complex NDJSON filters (`def`, `reduce`; used by ndjson-extended).
 static NDJSON_COMPLEX_FILTERS: &[BenchFilter] = &[
     BenchFilter {
         name: "def + select",
@@ -1220,23 +1220,15 @@ fn generate_ndjson_extended_markdown(
     // Section 1: Streaming file
     writeln!(md, "## Streaming (file)").unwrap();
     writeln!(md).unwrap();
-    writeln!(
-        md,
-        "Standard NDJSON filters with mmap + parallelism + on-demand fast paths."
-    )
-    .unwrap();
+    writeln!(md, "Standard NDJSON filters with mmap + parallelism.").unwrap();
     writeln!(md).unwrap();
     write_table(&mut md, ndjson_filters, "ndjson");
 
     // Section 2: Complex filters
     writeln!(md).unwrap();
-    writeln!(md, "## Complex filters (no on-demand fast path)").unwrap();
+    writeln!(md, "## Complex filters").unwrap();
     writeln!(md).unwrap();
-    writeln!(
-        md,
-        "Filters using `def`/`reduce` that bypass on-demand extraction. Still parallel."
-    )
-    .unwrap();
+    writeln!(md, "Filters using `def`/`reduce`. Still parallel.").unwrap();
     writeln!(md).unwrap();
     write_table(&mut md, NDJSON_COMPLEX_FILTERS, "ndjson_complex");
 
@@ -1260,11 +1252,7 @@ fn generate_ndjson_extended_markdown(
         writeln!(md).unwrap();
         writeln!(md, "## Slurp mode (`-s`)").unwrap();
         writeln!(md).unwrap();
-        writeln!(
-            md,
-            "All records loaded into array. No parallelism or on-demand fast paths."
-        )
-        .unwrap();
+        writeln!(md, "All records loaded into array. No parallelism.").unwrap();
         writeln!(md).unwrap();
         write_table(&mut md, NDJSON_SLURP_FILTERS, "ndjson_slurp");
     }
@@ -1467,10 +1455,10 @@ fn main() {
             );
         }
 
-        // Section 2 (extended only): Complex filters (no on-demand fast path)
+        // Section 2 (extended only): Complex filters
         if is_extended && args.should_run("complex") {
             eprintln!();
-            eprintln!("=== Complex filters (bypass on-demand fast paths) ===");
+            eprintln!("=== Complex filters ===");
             run_benchmarks(
                 &tools,
                 NDJSON_COMPLEX_FILTERS,

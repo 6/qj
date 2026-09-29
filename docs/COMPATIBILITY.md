@@ -54,12 +54,13 @@ outputs as JSON, with numbers as f64) or narrower, and jq_diff covers what they 
 
 | Runner | Result |
 |---|---|
-| `jq_conformance` | jq.test: 497/497, and 262/262 through the NDJSON path |
-| `conformance_gaps` | 9/9 of the number-model cases that used to need `QJ_JQ_COMPAT=1` |
-| `cli_conformance` | 56/56 command-line comparisons with jq |
 | `jq_differential` | no divergence over 4 × 2,000 random programs and inputs |
 | `jq_compat` (jq.test, all tools) | qj 497/497, jq 497/497, gojq 425/497, jaq 343/497 |
 | `feature_compat` | the matrix below, 181/181 features |
+
+Three more runners were removed with the old evaluator: `jq_conformance` (jq.test, which
+jq_diff runs in every mode), `conformance_gaps` (jq.test's number-model cases) and
+`cli_conformance` (its command lines are now jq_diff cases, `corpus/cli_basics.toml`).
 
 CI runs jq_diff on Linux too, but only reports there until a Linux baseline is committed.
 
@@ -91,9 +92,9 @@ jq 1.8.1 is built with decNumber, and qj follows its number model exactly:
 - `have_decnum` and `have_literal_numbers` are `true`.
 
 **`QJ_JQ_COMPAT` is obsolete.** qj used to compute with i64 and f64, and needed
-`QJ_JQ_COMPAT=1` to imitate jq's precision. jq's behavior is now the default, and qj
-ignores the variable. Only the old evaluator reads it, and that evaluator is still
-selectable with `QJ_CORE=old` for comparison until it's removed.
+`QJ_JQ_COMPAT=1` to imitate jq's precision. jq's behavior is now the only one: the old
+evaluator that read the variable (and `QJ_CORE=old`, which selected it) has been removed,
+and qj ignores both.
 
 ## qj's additions
 

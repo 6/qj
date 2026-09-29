@@ -107,8 +107,7 @@ pub fn lookup(name: &str, arity: usize) -> Option<&'static LibmEntry> {
 
 /// The C math functions. Calling them is always sound (they take plain doubles and
 /// integers, and the out-pointer ones get valid pointers); they're declared as ordinary
-/// unsafe externs because the old evaluator (`src/filter/value_ops.rs`) declares some
-/// of the same symbols that way, and `safe fn` would clash with it.
+/// unsafe externs.
 mod c {
     use std::ffi::{c_int, c_long};
 
