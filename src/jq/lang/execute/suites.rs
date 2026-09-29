@@ -106,12 +106,13 @@ fn run_jq(case: &Case, trace: bool) -> Option<(String, Outcome)> {
     let (disasm, rest) = stdout.split_once("\n\n")?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let exit = out.status.code().unwrap_or(-1);
-    let error = stderr
-        .lines()
-        .rev()
-        .find_map(|l| l.strip_prefix("jq: error (at "))
-        .and_then(|r| r.split_once(')'))
-        .map(|(_, r)| r.strip_prefix(": ").unwrap_or(r).trim_start().to_string());
+    let error = stderr.lines().rev().find_map(|l| {
+        if let Some(m) = l.strip_prefix("jq: parse error: ") {
+            return Some(format!("parse error: {m}"));
+        }
+        let (_, r) = l.strip_prefix("jq: error (at ")?.split_once(')')?;
+        Some(r.strip_prefix(": ").unwrap_or(r).trim_start().to_string())
+    });
     Some((
         disasm.to_string(),
         Outcome {
@@ -163,9 +164,9 @@ fn run_vm(disasm_text: &str, input: &str, overrides: bool, trace: bool) -> Outco
             None => break,
             Some(Ok(v)) => v,
             Some(Err(e)) => {
-                // jq prints parse errors and exits 2.
-                error = Some(format!("{e}"));
-                exit = 2;
+                // main.c: "jq: parse error: <msg>", exit 5.
+                error = Some(format!("parse error: {e}"));
+                exit = 5;
                 break;
             }
         };
@@ -187,9 +188,10 @@ fn run_vm(disasm_text: &str, input: &str, overrides: bool, trace: bool) -> Outco
             }
         }
         if jq.halted() {
+            // main.c: jq_exit(ret) exits with ret if positive, else 0.
             exit = match jq.exit_code() {
                 None => 0,
-                Some(Value::Number(n)) => n.value() as i32,
+                Some(Value::Number(n)) => (n.value() as i32).max(0),
                 Some(_) => 5,
             };
             break;
@@ -214,12 +216,14 @@ fn first_difference(want: &Outcome, got: &Outcome) -> String {
             .position(|(a, b)| a != b)
             .unwrap_or(w.len().min(g.len()));
         format!(
-            "stdout line {} (of {} / {}):\n    want: {:?}\n    got:  {:?}",
+            "stdout line {} (of {} / {}):\n    want: {:?}\n    got:  {:?}\n    errors: {:?} / {:?}",
             i + 1,
             w.len(),
             g.len(),
             w.get(i),
-            g.get(i)
+            g.get(i),
+            want.error,
+            got.error
         )
     } else {
         format!("want {want:?}\n    got  {got:?}")
@@ -231,7 +235,7 @@ fn run_suites(trace: bool) {
     let filter = std::env::var("SUITES_FILTER").ok();
     let verbose = std::env::var_os("SUITES_VERBOSE").is_some();
     let overrides = std::env::var_os("SUITES_NO_OVERRIDES").is_none();
-    let files: &[&'static str] = &[
+    let mut files: Vec<&'static str> = vec![
         "jq.test",
         "man.test",
         "manonig.test",
@@ -240,9 +244,23 @@ fn run_suites(trace: bool) {
         "uri.test",
         "optional.test",
     ];
+    // qj's corpus (same format, no expected outputs) with SUITES_CORPUS=1.
+    if std::env::var_os("SUITES_CORPUS").is_some() {
+        let mut corpus: Vec<String> = std::fs::read_dir(format!("{root}/tests/jq_compat/corpus"))
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".test"))
+            .map(|n| format!("corpus/{n}"))
+            .collect();
+        corpus.sort();
+        files.extend(corpus.into_iter().map(|s| &*Box::leak(s.into_boxed_str())));
+    }
     let mut cases = Vec::new();
     for f in files {
-        if filter.as_deref().is_some_and(|flt| !f.contains(flt)) {
+        if filter
+            .as_deref()
+            .is_some_and(|flt| !flt.split(',').any(|x| f.contains(x)))
+        {
             continue;
         }
         let content = std::fs::read_to_string(format!("{root}/tests/jq_compat/{f}")).unwrap();
@@ -250,7 +268,8 @@ fn run_suites(trace: bool) {
     }
     let nthreads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let chunks: Vec<&[Case]> = cases.chunks(cases.len().div_ceil(nthreads)).collect();
-    let results: Vec<(&'static str, bool, String)> = std::thread::scope(|s| {
+    // (file, Some(passed) or None when jq itself doesn't compile the program, detail)
+    let results: Vec<(&'static str, Option<bool>, String)> = std::thread::scope(|s| {
         let handles: Vec<_> = chunks
             .iter()
             .map(|chunk| {
@@ -262,7 +281,7 @@ fn run_suites(trace: bool) {
                             case.file, case.line, case.program, case.input
                         );
                         let Some((dis, want)) = run_jq(case, trace) else {
-                            out.push((case.file, false, format!("{head}\n  jq failed")));
+                            out.push((case.file, None, format!("{head}\n  jq failed")));
                             continue;
                         };
                         let got = std::panic::catch_unwind(|| {
@@ -275,7 +294,7 @@ fn run_suites(trace: bool) {
                             ),
                             Err(_) => (false, format!("{head}\n  PANICKED")),
                         };
-                        out.push((case.file, ok, detail));
+                        out.push((case.file, Some(ok), detail));
                     }
                     out
                 })
@@ -286,26 +305,44 @@ fn run_suites(trace: bool) {
             .flat_map(|h| h.join().unwrap())
             .collect()
     });
-    let mut summary: Vec<(&str, usize, usize)> = Vec::new();
+    // (file, passed, total, skipped)
+    let mut summary: Vec<(&str, usize, usize, usize)> = Vec::new();
     for (file, ok, detail) in &results {
-        match summary.iter_mut().find(|(f, _, _)| f == file) {
-            Some(e) => {
+        let i = match summary.iter().position(|e| e.0 == *file) {
+            Some(i) => i,
+            None => {
+                summary.push((file, 0, 0, 0));
+                summary.len() - 1
+            }
+        };
+        let e = &mut summary[i];
+        match ok {
+            Some(ok) => {
                 e.1 += *ok as usize;
                 e.2 += 1;
+                if verbose && !ok {
+                    eprintln!("{detail}");
+                }
             }
-            None => summary.push((file, *ok as usize, 1)),
-        }
-        if verbose && !ok {
-            eprintln!("{detail}");
+            None => e.3 += 1,
         }
     }
-    let (mut pass, mut total) = (0, 0);
-    for (file, p, t) in &summary {
-        eprintln!("{file:>14}: {p}/{t}");
+    let (mut pass, mut total, mut skipped) = (0, 0, 0);
+    for (file, p, t, s) in &summary {
+        let note = if *s > 0 {
+            format!(" ({s} not compiled by jq)")
+        } else {
+            String::new()
+        };
+        eprintln!("{file:>14}: {p}/{t}{note}");
         pass += p;
         total += t;
+        skipped += s;
     }
-    eprintln!("{:>14}: {pass}/{total}", "total");
+    eprintln!(
+        "{:>14}: {pass}/{total} ({skipped} not compiled by jq)",
+        "total"
+    );
 }
 
 #[test]
