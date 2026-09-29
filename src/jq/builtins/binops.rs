@@ -452,9 +452,9 @@ mod tests {
         assert_eq!(r.to_json(), "[0,1,2,3]");
         assert_eq!(r.as_array().unwrap().as_slice().as_ptr(), before);
 
-        let mut s = String::with_capacity(64);
+        let mut s = crate::jq::value::Str::with_capacity(64);
         s.push_str("ab");
-        let a = Value::from(s);
+        let a = Value::String(s);
         let before = a.as_str().unwrap().as_ptr();
         let mut args = [a.clone(), v("\"cd\"")];
         let r = f_plus(&mut host, a, &mut args).unwrap();

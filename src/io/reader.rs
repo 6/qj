@@ -983,7 +983,7 @@ impl InputReader {
                     let cur = self.cur.as_ref().expect("an open input");
                     let bytes = cur.slice(a, b);
                     if let Some(Value::String(s)) = &mut self.slurped {
-                        unicode::push_lossy(s.make_mut(), bytes);
+                        s.push_bytes(bytes);
                     } else if has_nl {
                         let line = &bytes[..bytes.len() - 1];
                         let s = match value {
