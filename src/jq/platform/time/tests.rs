@@ -492,6 +492,26 @@ fn tz_is_restored_after_strftime() {
     });
 }
 
+/// For a date mktime can't represent, `%Z` comes from libc's `tzname`, which the last
+/// local-time conversion set (jq 1.8.1 prints "JST", "LMT", "JST" for this sequence).
+#[cfg(target_os = "macos")]
+#[test]
+fn pre_1900_zone_name_follows_earlier_conversions() {
+    let _s = serial();
+    if !zone_available("Asia/Tokyo") {
+        return;
+    }
+    with_tz("Asia/Tokyo", || {
+        let zone = || strflocaltime_c(TimeInput::Array(&[]), "%Z").unwrap();
+        localtime(TimeInput::Number(0.0)).unwrap();
+        assert_eq!(zone(), "JST");
+        localtime(TimeInput::Number(-3000000000.0)).unwrap();
+        assert_eq!(zone(), "LMT");
+        localtime(TimeInput::Number(0.0)).unwrap();
+        assert_eq!(zone(), "JST");
+    });
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn unknown_tz_is_utc_on_macos() {

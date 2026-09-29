@@ -1,6 +1,6 @@
 //! jq values: port of jq 1.8.1's `jv.c`, `jv_aux.c`, `jv_print.c`,
-//! `jv_parse.c`, `jv_unicode.c` and the output format of `jv_dtoa.c`'s
-//! `jvp_dtoa_fmt`.
+//! `jv_parse.c`, `jv_unicode.c`, `jv_file.c` and the output format of
+//! `jv_dtoa.c`'s `jvp_dtoa_fmt`.
 //!
 //! # Overview
 //!
@@ -11,48 +11,97 @@
 //! worker compiles its own program). Mutating operations take `self`/`&mut
 //! self` and update the payload in place when it is uniquely owned, like jq's
 //! refcount-1 fast paths, which keeps `reduce`/`add`/`setpath` loops linear.
+//! Dropping deeply nested values is iterative (jq accepts 10000 levels).
 //!
 //! | jq | here |
 //! |---|---|
 //! | `jv` / `jv_kind` / `jv_kind_name` | [`Value`], [`Kind`], [`Value::kind_name`] |
-//! | numbers (`jv_number`, `jv_number_with_literal`, `jv_number_value`, `jv_number_negate`, `jv_number_abs`, `jv_is_integer`, `jvp_number_cmp`) | [`Number`] |
+//! | numbers (`jv_number`, `jv_number_with_literal`, `jv_number_value`, `jv_number_negate`, `jv_number_abs`, `jv_is_integer`, `jvp_number_is_nan`, `jvp_number_cmp`) | [`Number`] |
 //! | strings (`jv_string_*`) | [`Str`] |
 //! | arrays (`jv_array_*`, slices share storage) | [`Array`] |
 //! | objects (`jv_object_*`, insertion ordered) | [`Object`] |
-//! | `jv_invalid_with_msg` | [`Error`] |
+//! | `jv_invalid_with_msg`; builtin.c's `type_error`/`type_error2` | [`Error`], [`Error::type_error`], [`Error::type_error2`] |
 //! | `jv_equal`, `jv_identical`, `jv_contains`, `jv_cmp` | [`Value::equal`], [`Value::identical`], [`Value::contains`], [`Value::compare`] |
 //! | `jv_get`, `jv_set`, `jv_has` | [`Value::get`], [`Value::set`], [`Value::has`] |
 //! | `jv_getpath`, `jv_setpath`, `jv_delpaths` | [`Value::getpath`], [`Value::setpath`], [`Value::delpaths`] |
 //! | `jv_keys`, `jv_keys_unsorted` | [`Value::keys`], [`Value::keys_unsorted`] |
 //! | `jv_sort`, `jv_group`, `jv_unique` | [`sort`], [`group`], [`unique`] |
-//! | `jv_dump*`, `jv_dump_string`, `jv_dump_string_trunc`, `jq_set_colors` | [`print`]: [`DumpOptions`], [`dump`], [`dump_string`], [`dump_string_trunc`], [`Colors`] |
-//! | `jv_parser_*`, `jv_parse_sized` | [`parse`]: [`Parser`], [`ParseFlags`], [`parse_sized`] |
+//! | `jv_dump*`, `jv_dump_string`, `jv_dump_string_trunc`, `jq_set_colors` | [`print`](mod@print): [`DumpOptions`], [`dump`], [`dump_string`], [`dump_string_trunc`], [`Colors`] |
+//! | `jv_parser_new`/`_set_buf`/`_remaining`/`_next`, `jv_parse_sized`, `jv_parse` | [`parse`]: [`Parser`], [`ParseFlags`], [`parse_sized`], [`parse::parse`], [`parse::parse_all`] |
+//! | `jv_load_file` | [`load_file`] |
 //! | `jvp_utf8_*`, `jvp_codepoint_is_whitespace` | [`unicode`] |
 //! | `jvp_dtoa_fmt` | [`dtoa::dtoa_fmt`] |
+//!
+//! # Using it from the evaluator, builtins and CLI
+//!
+//! * Construct: `Value::Null`, `Value::Bool(b)`, [`Value::number`] (a native
+//!   double, what arithmetic produces), [`Number::from_literal`] (what the
+//!   JSON parser, program constants and `tonumber` produce; use
+//!   [`Number::from_c_literal`] where jq passes a C string), `Value::from(&str)`,
+//!   [`Value::string_from_bytes`] (repairs invalid UTF-8),
+//!   [`Array::from_vec`] / `collect()`, `Object::new` + [`Object::insert`].
+//! * Program number constants: the lexer passes the token to
+//!   `jv_parse_sized`; [`parse_sized`] (or [`Number::from_literal`], which
+//!   gives the same literal for lexer tokens) keeps `1.000`/`1E+2` exact.
+//! * Errors that print a value use [`dump_string_trunc`] with jq's buffer
+//!   size (15 or 30), e.g. `Cannot iterate over number (123)`.
+//! * `tojson`/`tostring`/`@json` are [`Value::to_json`]; output uses
+//!   [`dump`] with the CLI's [`DumpOptions`].
+//! * Path tracking (`path(...)`, `jq->value_at_path`) must use
+//!   [`Value::identical`]: literals and containers compare by allocation,
+//!   so `1 | path(1)` is an error while `1 as $x | $x | path($x)` is `[]`.
+//! * The CLI must feed stdin to the [`Parser`] the way jq does: `fgets`
+//!   into a 4096-byte buffer, and a chunk without a newline is cut at its
+//!   first NUL (`strlen`). jq's parser drops the rest of the current chunk
+//!   after an error, so chunking is observable with `--seq`/`--stream-errors`.
+//!   With `-R`, each chunk is turned into a string on its own
+//!   ([`Str::push_bytes`]), so a character split by the 4095-byte boundary
+//!   of a long line becomes two U+FFFD in jq too.
 //!
 //! # Quirks that are reproduced on purpose
 //!
 //! * Number literals keep their decimal text: `1.000` prints as `1.000`,
 //!   `1e2` as `1E+2`, and two literals compare exactly
 //!   (`100000000000000000001 > 100000000000000000000`). Arithmetic results are
-//!   plain doubles printed with the shortest round-trip digits.
+//!   plain doubles printed with the shortest round-trip digits. A literal's
+//!   double is jq's: rounded to 17 significant digits first, then to double.
+//!   Negating a literal zero gives `0` (decNumber computes `0 - x`).
 //! * Array slices are views: `[1,2,3,4] | .[0:2] == .[2:4]` is `true` because
-//!   `jv_equal` short-circuits on shared storage with equal length.
+//!   `jv_equal` short-circuits on shared storage with equal length, and
+//!   `[range(4)+1] | .[0:2] | .[3] = 9` is `[1,2,3,9]` (the uniquely owned
+//!   view is written in place and a stale element reappears).
 //! * NaN sorts below every number; `nan < nan` is true but `nan == nan` is
-//!   false.
-//! * Strings with invalid UTF-8 are repaired with jq's own U+FFFD rules.
+//!   false. When `jv_cmp` is inconsistent (NaN keys, or literals beyond
+//!   double precision mixed with doubles) sorting uses the platform `qsort`,
+//!   as jq does.
+//! * Strings with invalid UTF-8 are repaired with jq's own U+FFFD rules
+//!   (e.g. a truncated sequence swallows the rest of the buffer).
+//! * Object keys keep their first position when set again; a deleted and
+//!   re-added key moves to the end.
+//!
+//! # Deviations
+//!
+//! * `delpaths` with a NaN path element terminates (jq 1.8.1 loops forever),
+//!   and a malformed slice key in `delpaths` on an array just errors (jq
+//!   double-frees the key and corrupts its heap).
+//! * No `Object too big` error (jq's limit is 2^29 slots).
 
 pub mod array;
 mod aux;
+mod deep;
 pub mod dtoa;
 mod error;
+pub mod file;
 pub mod number;
 pub mod object;
 pub mod parse;
 pub mod print;
+mod qsort;
 pub mod string;
 pub mod unicode;
 
+#[cfg(test)]
+mod live_tests;
 #[cfg(test)]
 mod tests;
 
@@ -62,10 +111,13 @@ use std::fmt;
 pub use array::Array;
 pub use aux::{group, sort, unique};
 pub use error::Error;
+pub use file::load_file;
 pub use number::Number;
 pub use object::Object;
 pub use parse::{ParseFlags, Parser, parse_sized};
-pub use print::{Colors, DumpOptions, Indent, dump, dump_string, dump_string_trunc};
+pub use print::{
+    Colors, DumpOptions, Indent, dump, dump_refcounted, dump_string, dump_string_trunc,
+};
 pub use string::Str;
 
 /// `jv_kind` without `JV_KIND_INVALID`, in jq's order (which is also the
@@ -213,34 +265,9 @@ impl Value {
     /// with [`Number::equal`] (NaN is unequal to everything), objects ignore
     /// key order, and arrays sharing storage with the same length are equal
     /// without looking at the elements (see [`Array::same_storage`]).
+    /// Safe on arbitrarily deep values.
     pub fn equal(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Null, Value::Null) => true,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            // (jq's pointer fast path only applies to literals, which are
-            // never NaN and so compare equal to themselves anyway.)
-            (Value::Number(a), Value::Number(b)) => a.equal(b),
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Array(a), Value::Array(b)) => {
-                if a.same_storage(b) {
-                    return true;
-                }
-                // jvp_array_equal
-                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equal(y))
-            }
-            (Value::Object(a), Value::Object(b)) => {
-                if a.ptr_eq(b) {
-                    return true;
-                }
-                // jvp_object_equal
-                a.len() == b.len()
-                    && a.iter().all(|(k, v)| match b.get(k) {
-                        Some(w) => v.equal(w),
-                        None => false,
-                    })
-            }
-            _ => false,
-        }
+        deep::equal(self, other)
     }
 
     /// `jv_identical`: same payload allocation (and, for arrays, the same
@@ -261,23 +288,21 @@ impl Value {
     /// arrays contain arrays whose every element is contained by some
     /// element, strings contain substrings; anything else must be equal.
     /// Values of different kinds (including `true` vs `false`) never
-    /// contain each other.
+    /// contain each other. Safe on arbitrarily deep values.
     pub fn contains(&self, other: &Value) -> bool {
-        if self.kind() != other.kind() {
-            return false;
-        }
-        match (self, other) {
-            (Value::Object(a), Value::Object(b)) => b.iter().all(|(k, bv)| match a.get(k) {
-                Some(av) => av.contains(bv),
-                None => false,
-            }),
-            (Value::Array(a), Value::Array(b)) => {
-                b.iter().all(|bv| a.iter().any(|av| av.contains(bv)))
-            }
-            (Value::String(a), Value::String(b)) => {
-                b.is_empty() || memchr::memmem::find(a.as_bytes(), b.as_bytes()).is_some()
-            }
-            _ => self.equal(other),
+        deep::contains(self, other)
+    }
+
+    /// `jv_get_refcnt`: the number of references to the payload of an
+    /// allocated value (strings, arrays, objects, number literals); 1 for
+    /// null, booleans and native numbers.
+    pub fn refcount(&self) -> usize {
+        match self {
+            Value::Null | Value::Bool(_) => 1,
+            Value::Number(n) => n.refcount(),
+            Value::String(s) => s.refcount(),
+            Value::Array(a) => a.refcount(),
+            Value::Object(o) => o.refcount(),
         }
     }
 

@@ -65,6 +65,8 @@ pub(crate) struct Literal {
     /// Cached `jvp_literal_number_to_double` (NaN = not computed yet; a
     /// literal is never NaN).
     double: Cell<f64>,
+    /// [`lossy_of`], computed once.
+    lossy: bool,
 }
 
 /// Parsed decimal (the result of `decNumberFromString`).
@@ -210,20 +212,39 @@ fn parse_decimal(s: &[u8]) -> Option<ParsedNumber> {
         }
         exponent = if nege { -e } else { e };
     }
-    // Collect significant digits (skip leading zeros, keep a final 0).
+    // Collect significant digits (skip leading zeros, keep a final 0),
+    // accumulating up to 19 of them without allocating.
     let last = last_digit.expect("ndig > 0");
-    let mut digits: Vec<u8> = Vec::with_capacity(ndig);
-    let mut leading = true;
-    for (idx, &c) in s[coeff_start..=last].iter().enumerate() {
+    let body = &s[coeff_start..=last];
+    let mut small: u64 = 0;
+    let mut nsig = 0usize;
+    let mut first_sig = None;
+    for (idx, &c) in body.iter().enumerate() {
         if c == b'.' {
             continue;
         }
-        if leading && c == b'0' && coeff_start + idx != last {
-            continue;
+        if first_sig.is_none() {
+            if c == b'0' && coeff_start + idx != last {
+                continue;
+            }
+            first_sig = Some(idx);
         }
-        leading = false;
-        digits.push(c);
+        nsig += 1;
+        if nsig <= 19 {
+            small = small * 10 + (c - b'0') as u64;
+        }
     }
+    let coeff = if nsig <= 19 {
+        Coeff::Small(small)
+    } else {
+        let start = first_sig.expect("digits");
+        let digits: Vec<u8> = body[start..]
+            .iter()
+            .copied()
+            .filter(|&c| c != b'.')
+            .collect();
+        Coeff::Big(digits.into())
+    };
     if let Some(d) = dot
         && d < last
     {
@@ -232,17 +253,17 @@ fn parse_decimal(s: &[u8]) -> Option<ParsedNumber> {
     let mut dec = Decimal {
         neg,
         inf: false,
-        coeff: Coeff::from_digits(&digits),
+        coeff,
         exp: exponent,
     };
-    finalize(&mut dec, digits);
+    finalize(&mut dec, nsig as i64);
     Some(ParsedNumber::Decimal(dec))
 }
 
 /// decNumber's `decFinalize` for a freshly parsed number in jq's context:
-/// overflow to infinity, subnormal rounding and clamping of zeros.
-fn finalize(dec: &mut Decimal, mut digits: Vec<u8>) {
-    let nd = digits.len() as i64;
+/// overflow to infinity, subnormal rounding and clamping of zeros. `nd` is
+/// the number of coefficient digits.
+fn finalize(dec: &mut Decimal, nd: i64) {
     if dec.coeff.is_zero() {
         // decSetSubnormal clamps a zero's exponent to Etiny; decSetOverflow
         // clamps it to Emax (zero does not overflow).
@@ -263,6 +284,8 @@ fn finalize(dec: &mut Decimal, mut digits: Vec<u8>) {
             dec.exp = CTX_ETINY;
             return;
         }
+        let mut buf = itoa::Buffer::new();
+        let mut digits: Vec<u8> = dec.coeff.digits(&mut buf).to_vec();
         let keep = (nd - adjust) as usize;
         let round_up = digits[keep] >= b'5';
         digits.truncate(keep);
@@ -306,12 +329,14 @@ fn increment_digits(d: &mut Vec<u8>) {
 
 impl Decimal {
     fn into_literal(self) -> Literal {
+        let lossy = lossy_of(self.inf, &self.coeff, self.exp);
         Literal {
             neg: self.neg,
             inf: self.inf,
             coeff: self.coeff,
             exp: self.exp,
             double: Cell::new(f64::NAN),
+            lossy,
         }
     }
 }
@@ -445,6 +470,45 @@ impl Literal {
     fn is_zero(&self) -> bool {
         !self.inf && self.coeff.is_zero()
     }
+
+    /// Whether distinct literals may share this literal's double (see
+    /// [`lossy_of`]).
+    #[inline]
+    fn is_lossy(&self) -> bool {
+        self.lossy
+    }
+}
+
+/// Whether a decimal's value may not be recoverable from its double: more
+/// than 15 significant digits, or outside the normal double range (or an
+/// infinity). Literals that are not lossy compare exactly as their doubles.
+fn lossy_of(inf: bool, coeff: &Coeff, exp: i64) -> bool {
+    if inf {
+        return true;
+    }
+    let (sig, trailing) = match coeff {
+        Coeff::Small(0) => return false,
+        Coeff::Small(c) => {
+            let mut c = *c;
+            let mut trailing = 0i64;
+            while c % 10 == 0 {
+                c /= 10;
+                trailing += 1;
+            }
+            let mut sig = 1i64;
+            while c >= 10 {
+                c /= 10;
+                sig += 1;
+            }
+            (sig, trailing)
+        }
+        Coeff::Big(d) => {
+            let trailing = d.iter().rev().take_while(|&&c| c == b'0').count();
+            ((d.len() - trailing) as i64, trailing as i64)
+        }
+    };
+    let adjusted = exp + trailing + sig - 1;
+    sig > 15 || !(-307..=307).contains(&adjusted)
 }
 
 static POW10: [f64; 23] = [
@@ -454,6 +518,19 @@ static POW10: [f64; 23] = [
 
 /// Exact decimal comparison (`decNumberCompare`) of two literals.
 fn literal_cmp(a: &Literal, b: &Literal) -> Ordering {
+    // Fast path: for literals whose value survives the conversion to double
+    // (at most 15 significant digits in the normal range), the correctly
+    // rounded conversion is injective and monotonic, so the doubles compare
+    // exactly like the decimals (-0 == 0 included).
+    if !a.lossy && !b.lossy {
+        let (x, y) = (a.to_double(), b.to_double());
+        return x.partial_cmp(&y).expect("literals are never NaN");
+    }
+    literal_cmp_decimal(a, b)
+}
+
+/// `decNumberCompare` on the decimal representations.
+fn literal_cmp_decimal(a: &Literal, b: &Literal) -> Ordering {
     // Infinities.
     if a.inf || b.inf {
         let rank = |l: &Literal| -> i8 { if l.inf { if l.neg { -2 } else { 2 } } else { 0 } };
@@ -578,6 +655,24 @@ impl Number {
         }
     }
 
+    /// Whether this is a literal whose decimal value may not survive the
+    /// conversion to double (see `qsort` for why sorting cares).
+    pub(crate) fn is_lossy_literal(&self) -> bool {
+        match &self.0 {
+            Repr::Native(_) => false,
+            Repr::Literal(l) => l.is_lossy(),
+        }
+    }
+
+    /// `jv_get_refcnt`: references to a literal's allocation; 1 for a
+    /// native double (not allocated in jq).
+    pub fn refcount(&self) -> usize {
+        match &self.0 {
+            Repr::Native(_) => 1,
+            Repr::Literal(l) => Rc::strong_count(l),
+        }
+    }
+
     /// `jvp_number_is_nan`. Literals are never NaN.
     #[inline]
     pub fn is_nan(&self) -> bool {
@@ -609,6 +704,7 @@ impl Number {
                     coeff: l.coeff.clone(),
                     exp: l.exp,
                     double: Cell::new(f64::NAN),
+                    lossy: l.lossy,
                 })))
             }
         }
@@ -624,6 +720,7 @@ impl Number {
                 coeff: l.coeff.clone(),
                 exp: l.exp,
                 double: Cell::new(f64::NAN),
+                lossy: l.lossy,
             }))),
         }
     }
@@ -853,6 +950,48 @@ mod tests {
             lit("100000000000000000001").compare(&Number::from_f64(1e20)),
             Equal
         );
+    }
+
+    #[test]
+    fn double_fast_path_agrees_with_decimal_compare() {
+        let mut x: u64 = 0x9e3779b97f4a7c15;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let lit_of = |r: u64, near: Option<&str>| -> String {
+            if let Some(n) = near {
+                // perturb the last digit(s) of another literal
+                let (mant, exp) = n.split_once('e').unwrap();
+                let d: i64 = mant.parse::<i64>().unwrap() + (r % 5) as i64 - 2;
+                return format!("{d}e{exp}");
+            }
+            let digits = 1 + r % 17; // up to 17 digits: some lossy
+            let m = (r >> 8) % 10u64.pow(digits as u32);
+            let e = ((r >> 40) % 640) as i64 - 320;
+            let neg = if (r >> 60) & 1 == 1 { "-" } else { "" };
+            format!("{neg}{m}e{e}")
+        };
+        for _ in 0..200_000 {
+            let a = lit_of(next(), None);
+            let b = if next() % 3 == 0 {
+                let base = a.trim_start_matches('-').to_string();
+                lit_of(next(), Some(&base))
+            } else {
+                lit_of(next(), None)
+            };
+            let (na, nb) = (lit(&a), lit(&b));
+            let (Repr::Literal(la), Repr::Literal(lb)) = (&na.0, &nb.0) else {
+                unreachable!()
+            };
+            assert_eq!(
+                literal_cmp(la, lb),
+                literal_cmp_decimal(la, lb),
+                "{a} vs {b}"
+            );
+        }
     }
 
     #[test]

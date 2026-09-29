@@ -460,6 +460,14 @@ fn strflocaltime_in(
 /// [`localtime`]; an array is normalized with `mktime`, so `%Z`/`%z` reflect DST at
 /// that date.
 ///
+/// When `mktime` can't represent the date (before 1900 on macOS), `tm_zone` stays NULL
+/// and `%Z` falls back to libc's global `tzname`, which every local-time conversion
+/// updates. So the result depends on the process's earlier time calls, in jq too:
+/// `TZ=Asia/Tokyo jq -nc '([] | strflocaltime("%Z")), (-3000000000 | localtime |
+/// empty), ([] | strflocaltime("%Z"))'` prints "JST" then "LMT". This makes the same
+/// libc calls as jq, so a sequential run matches; a different call order (parallel
+/// evaluation) can differ.
+///
 /// Errors: as [`strftime`] with `strflocaltime/1` in the messages, except that a number
 /// whose `localtime` conversion fails gives `strflocaltime/1 requires a string format`
 /// if the format isn't a string and otherwise an [`Error::Abort`]: jq 1.8.1 crashes on
