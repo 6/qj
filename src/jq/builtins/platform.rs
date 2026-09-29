@@ -178,17 +178,11 @@ pub fn f_match(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResul
     )
 }
 
-thread_local! {
-    /// The keys of match and capture objects. jq allocates each one anew for every
-    /// object; sharing them isn't observable.
-    static MATCH_KEYS: [Str; 5] = ["offset", "length", "string", "captures", "name"].map(Str::from);
-}
-
-/// `jv_string(key)` for a key of a match or capture object.
+/// `jv_string(key)` for a key of a match or capture object: a new string for every
+/// object, as in jq. Keys become values through `keys`, `to_entries` or `paths`, and
+/// sharing them would show in `--debug-trace`, which prints every value's refcount.
 fn match_key(key: &'static str) -> Str {
-    MATCH_KEYS
-        .with(|keys| keys.iter().find(|k| k.as_str() == key).cloned())
-        .unwrap_or_else(|| Str::from(key))
+    Str::from(key)
 }
 
 /// A match object, keys in [`Match::KEYS`] order: `offset` and `length` in codepoints,

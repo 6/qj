@@ -54,6 +54,10 @@ pub struct InputOptions {
     pub slurp: bool,
     /// The parser's flags (`--seq`, `--stream`, `--stream-errors`).
     pub flags: ParseFlags,
+    /// Build every value with jq's parser port, without the simdjson fast
+    /// path. Its values are equal, but it shares object keys between records,
+    /// and `--debug-trace` prints refcounts.
+    pub parser_only: bool,
 }
 
 /// Messages util.c prints on stderr while reading.
@@ -347,7 +351,12 @@ pub fn open_reader(files: Vec<Vec<u8>>, opts: InputOptions) -> crate::io::InputR
         stream: opts.flags.streaming,
         stream_errors: opts.flags.stream_errors,
     };
-    crate::io::InputReader::with_opener(names, ropts, Box::new(CliOpener::default()))
+    let mut reader =
+        crate::io::InputReader::with_opener(names, ropts, Box::new(CliOpener::default()));
+    if opts.parser_only {
+        reader.set_fast_path(false);
+    }
+    reader
 }
 
 /// Opens inputs for `src/io`'s reader the way [`UtilInput`] does: a terminal

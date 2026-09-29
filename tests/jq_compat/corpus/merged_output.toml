@@ -1,0 +1,121 @@
+# stdout and stderr to the same place (`>out 2>&1` as `merge = "file"`,
+# `2>&1 |` as `merge = "pipe"`; format in tests/jq_diff/cli.rs). The combined
+# stream shows where each tool writes stdout's buffer out relative to its
+# stderr messages: jq's stdout is a stdio FILE whose buffer is
+# fstat(1).st_blksize (on macOS 4096 bytes for a regular file, 16384 for a
+# pipe) and is written out whenever a write doesn't fit, while stderr isn't
+# buffered. So outputs past 4 KB and 16 KB interleave with errors, debug and
+# stderr messages at buffer boundaries. qj used to buffer 64 KB (found by
+# tests/jq_fuzz's merged mode).
+
+[[sweep]]
+name = "file"
+merge = "file"
+programs = [
+  'range(2000), error("x")',
+  'range(5000) | if . % 1000 == 999 then error("e\(.)") else . end',
+  'range(3000) | (., (select(. % 700 == 0) | debug | empty))',
+  'range(4000) | tostring | stderr',
+  '[range(20000)] | .[] | if . == 19999 then error else . end',
+  'range(5000) | {a: ., b: [., "xxxxxxxx"]}, (select(. == 4999) | error("end"))',
+  'range(3000), ("bye\n" | halt_error(1))',
+  'range(6000) | if . == 3000 then error({a: .}) else . end',
+]
+variants = { c = ["-c", "-n", "{program}"], pretty = ["-n", "{program}"], unbuffered = ["-c", "--unbuffered", "-n", "{program}"] }
+
+[[sweep]]
+name = "pipe"
+merge = "pipe"
+programs = [
+  'range(2000), error("x")',
+  'range(5000) | if . % 1000 == 999 then error("e\(.)") else . end',
+  'range(3000) | (., (select(. % 700 == 0) | debug | empty))',
+  'range(4000) | tostring | stderr',
+  '[range(20000)] | .[] | if . == 19999 then error else . end',
+  'range(5000) | {a: ., b: [., "xxxxxxxx"]}, (select(. == 4999) | error("end"))',
+  'range(3000), ("bye\n" | halt_error(1))',
+  'range(6000) | if . == 3000 then error({a: .}) else . end',
+]
+variants = { c = ["-c", "-n", "{program}"], pretty = ["-n", "{program}"], unbuffered = ["-c", "--unbuffered", "-n", "{program}"] }
+
+# A -r string is one fwrite in jq, and stdio writes a string at least a
+# buffer long straight out (macOS: whole buffers from an empty buffer), so a
+# string exactly a buffer long is out before the next error.
+
+[[sweep]]
+name = "raw-file"
+merge = "file"
+programs = [
+  '("x" * 4096), error("after")',
+  '("x" * 8192), error("after")',
+  '("x" * 4095), error("after")',
+  '("x" * 4097), error("after")',
+  '("x" * 12288), error("after")',
+  'range(3) | ("y" * 5000), (select(. == 1) | error("one"))',
+]
+variants = { j = ["-j", "-n", "{program}"], r = ["-r", "-n", "{program}"], raw0 = ["--raw-output0", "-n", "{program}"] }
+
+[[sweep]]
+name = "raw-pipe"
+merge = "pipe"
+programs = [
+  '("x" * 16384), error("after")',
+  '("x" * 32768), error("after")',
+  '("x" * 16383), error("after")',
+  '("x" * 16385), error("after")',
+  'range(3) | ("y" * 20000), (select(. == 1) | error("one"))',
+]
+variants = { j = ["-j", "-n", "{program}"], r = ["-r", "-n", "{program}"] }
+
+# Inputs: parse errors and runtime errors after many outputs. The large ones
+# go through qj's parallel record engine, whose results are written out in
+# order with the same buffering.
+
+[[case]]
+name = "parse-error-after-output-file"
+merge = "file"
+args = ["-c", "."]
+stdin = { repeat = [["1\n", 3000], ["{", 1]] }
+
+[[case]]
+name = "parse-error-after-output-pipe"
+merge = "pipe"
+args = ["-c", "."]
+stdin = { repeat = [["1\n", 12000], ["{", 1]] }
+
+[[case]]
+name = "engine-error-in-the-middle-file"
+merge = "file"
+args = ["-c", ".a + 1"]
+stdin = { repeat = [["{\"a\":1}\n", 30000], ["{\"a\":\"x\"}\n", 1], ["{\"a\":2}\n", 30000]] }
+
+[[case]]
+name = "engine-error-in-the-middle-pipe"
+merge = "pipe"
+args = ["-c", ".a + 1"]
+stdin = { repeat = [["{\"a\":1}\n", 30000], ["{\"a\":\"x\"}\n", 1], ["{\"a\":2}\n", 30000]] }
+
+[[case]]
+name = "engine-parse-error-at-end-file"
+merge = "file"
+args = ["-c", "."]
+stdin = { repeat = [["{\"a\":1}\n", 20000], ["{\"a\":", 1]] }
+
+[[case]]
+name = "engine-raw-strings-then-error-file"
+merge = "file"
+args = ["-rj", "if type == \"object\" then error(\"obj\") else . end", "in.ndjson"]
+files = { "in.ndjson" = { path = "data/raw4096x24.ndjson" } }
+note = "24 raw strings of 4096 bytes (one buffer each), then an error: each string is out before it"
+
+[[case]]
+name = "engine-raw-strings-then-error-pipe"
+merge = "pipe"
+args = ["-rj", "if type == \"object\" then error(\"obj\") else . end", "in.ndjson"]
+files = { "in.ndjson" = { path = "data/raw16384x6.ndjson" } }
+
+[[case]]
+name = "file-argument-errors-file"
+merge = "file"
+args = ["-c", "if . == 500 then error(\"half\") else . end", "a.json", "missing.json", "b.json"]
+files = { "a.json" = { repeat = [["500\n", 2000]] }, "b.json" = { repeat = [["1\n", 3000]] } }

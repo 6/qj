@@ -291,14 +291,21 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
         timeout: ctx.timeout,
         max_output: MAX_OUTPUT,
         max_rss: ctx.max_rss,
+        merge: job.inv.merge,
     })
     .unwrap_or_else(|e| panic!("{}: {e}", job.id));
     let elapsed = started.elapsed();
     let normalized = compare::normalize_stderr(&out.stderr);
+    // Merged, stdout carries stderr's messages too.
+    let stdout = if job.inv.merge == exec::Merge::No {
+        out.stdout
+    } else {
+        compare::normalize_merged(&out.stdout)
+    };
     (
         Observed {
             status: out.status,
-            stdout: Blob::new(out.stdout, keep_verbatim),
+            stdout: Blob::new(stdout, keep_verbatim),
             stderr: Blob::new(normalized, keep_verbatim),
         },
         out.stderr,

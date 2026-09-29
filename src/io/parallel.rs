@@ -77,6 +77,12 @@ pub trait RecordWorker {
         out: &mut Vec<u8>,
         err: &mut Vec<u8>,
     ) -> i32;
+
+    /// Called after each [`RecordWorker::process`]: appends to `marks` the
+    /// spans of `out` (offset in `out`, length) that the sink must write as
+    /// single writes rather than piecemeal (a stdio `fwrite` of a large `-r`
+    /// string flushes differently). Most workers have none.
+    fn take_marks(&mut self, _marks: &mut Vec<(usize, usize)>) {}
 }
 
 /// Makes workers: called once on each worker thread, and once on the
@@ -91,6 +97,18 @@ pub trait WorkerFactory: Sync {
 /// processed ahead is discarded).
 pub trait RecordSink {
     fn record(&mut self, out: &[u8], err: &[u8], status: i32) -> ControlFlow<()>;
+    /// [`RecordSink::record`] with the record's marks from
+    /// [`RecordWorker::take_marks`]: spans of `out` as (offset in `out`,
+    /// length). By default the marks are ignored.
+    fn record_marked(
+        &mut self,
+        out: &[u8],
+        err: &[u8],
+        _marks: &[(usize, usize)],
+        status: i32,
+    ) -> ControlFlow<()> {
+        self.record(out, err, status)
+    }
     /// A parse error in the input (jq's main loop prints
     /// `jq: parse error: ...` and stops; with `--seq` it continues).
     fn parse_error(&mut self, error: Error) -> ControlFlow<()>;
@@ -209,12 +227,15 @@ struct Job {
 struct Rec {
     out_end: usize,
     err_end: usize,
+    marks_end: usize,
     status: i32,
 }
 
 struct JobResult {
     out: Vec<u8>,
     err: Vec<u8>,
+    /// Every record's marks, offsets in `out` (see RecordWorker::take_marks).
+    marks: Vec<(usize, usize)>,
     recs: Vec<Rec>,
     /// The line the worker didn't take (the rest of the job is unread).
     failed_at: Option<usize>,
@@ -419,15 +440,18 @@ fn worker_thread<F: WorkerFactory>(
             let mut r = JobResult {
                 out: Vec::new(),
                 err: Vec::new(),
+                marks: Vec::new(),
                 recs: Vec::with_capacity(values.len()),
                 failed_at,
             };
             for (value, line) in values {
                 let meta = RecordMeta { filename, line };
                 let status = w.process(value, &meta, &mut r.out, &mut r.err);
+                w.take_marks(&mut r.marks);
                 r.recs.push(Rec {
                     out_end: r.out.len(),
                     err_end: r.err.len(),
+                    marks_end: r.marks.len(),
                     status,
                 });
             }
@@ -489,7 +513,13 @@ fn step<W: RecordWorker, S: RecordSink>(
             out.clear();
             err.clear();
             let status = worker.process(value, &meta, out, err);
-            sink.record(out, err, status)
+            let mut marks = Vec::new();
+            worker.take_marks(&mut marks);
+            if marks.is_empty() {
+                sink.record(out, err, status)
+            } else {
+                sink.record_marked(out, err, &marks, status)
+            }
         }
         Some(Err(e)) => sink.parse_error(e),
         None => ControlFlow::Break(()),
@@ -609,13 +639,21 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         let slot = self.queue.pop_front().expect("non-empty");
         self.in_flight -= slot.end - slot.start;
         self.stats.worker_records += r.recs.len() as u64;
-        let (mut o, mut e) = (0, 0);
+        let (mut o, mut e, mut m) = (0, 0, 0);
         for rec in &r.recs {
-            let flow = self
-                .sink
-                .record(&r.out[o..rec.out_end], &r.err[e..rec.err_end], rec.status);
+            let (out, err) = (&r.out[o..rec.out_end], &r.err[e..rec.err_end]);
+            let marks = &r.marks[m..rec.marks_end];
+            let flow = if marks.is_empty() {
+                self.sink.record(out, err, rec.status)
+            } else {
+                // Offsets in the record's own output.
+                let marks: Vec<(usize, usize)> =
+                    marks.iter().map(|&(off, len)| (off - o, len)).collect();
+                self.sink.record_marked(out, err, &marks, rec.status)
+            };
             o = rec.out_end;
             e = rec.err_end;
+            m = rec.marks_end;
             flow?;
         }
         // Everything before the line the worker didn't take was consumed

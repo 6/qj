@@ -428,6 +428,22 @@ fn halting() {
 }
 
 #[test]
+fn input_line_number_without_an_input_callback() {
+    // jq_util_input_get_current_line fails when the input callback isn't util.c's
+    // (jq_test.c, behind --run-tests, sets none); input_filename is then null.
+    // Found by tests/jq_fuzz: qj answered 0.
+    if !jq_ok() {
+        return;
+    }
+    for (_, bc) in bytecodes("[try input_line_number catch ., input_filename]") {
+        let mut jq = Jq::new(bc);
+        jq.start(Value::Null, 0);
+        let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
+        assert_eq!(outs, vec!["[\"Unknown input line number\",null]"]);
+    }
+}
+
+#[test]
 fn input_and_debug_callbacks() {
     if !jq_ok() {
         return;
@@ -552,19 +568,13 @@ fn check_trace(program: &str, input: &str, flags: u32) {
             }
         }
         let got = String::from_utf8(out.0.borrow().clone()).unwrap();
-        // Refcounts included: the VM holds the same references as jq. (Set
-        // TRACE_IGNORE_REFCOUNTS to compare without them.) `type` returns shared
-        // kind-name strings (jq allocates a fresh one each time), so programs using it
-        // are compared without refcounts.
-        let uses_type = ["type", "numbers", "strings", "arrays", "objects"]
-            .iter()
-            .any(|w| program.contains(w));
-        let (want_stdout, got) =
-            if uses_type || std::env::var_os("TRACE_IGNORE_REFCOUNTS").is_some() {
-                (strip_refcounts(&want.stdout), strip_refcounts(&got))
-            } else {
-                (want.stdout.clone(), got)
-            };
+        // Refcounts included: the VM and the builtins hold the same references as jq.
+        // (Set TRACE_IGNORE_REFCOUNTS to compare without them.)
+        let (want_stdout, got) = if std::env::var_os("TRACE_IGNORE_REFCOUNTS").is_some() {
+            (strip_refcounts(&want.stdout), strip_refcounts(&got))
+        } else {
+            (want.stdout.clone(), got)
+        };
         if got != want_stdout {
             let g: Vec<&str> = got.lines().collect();
             let w: Vec<&str> = want_stdout.lines().collect();
@@ -606,6 +616,15 @@ fn traces_match_jq() {
         ("[range(0; 10; 3)]", "null"),
         ("$__loc__", "null"),
         ("[.[] | .a?]", "[1,{\"a\":2}]"),
+        // Builtins return new strings, not shared ones (found by tests/jq_fuzz).
+        ("[.[] | type]", "[1,\"a\",null]"),
+        ("[.. | numbers]", "[1,[2]]"),
+        ("type as $t | [$t, type]", "{}"),
+        (
+            "match(\"(?<x>a)\") | keys_unsorted, (.captures[0] | keys)",
+            "\"a\"",
+        ),
+        ("[match(\"a\"; \"g\")] | [paths]", "\"aa\""),
     ] {
         check_trace(program, input, JQ_DEBUG_TRACE);
     }

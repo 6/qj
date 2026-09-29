@@ -59,7 +59,9 @@ only expectation. Levels: `pass` (all three match),
 - **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
   `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no
   expected output); `tests/jq_compat/corpus/*.toml` (CLI cases with any argv, files, env or
-  binary stdin; format in `tests/jq_diff/cli.rs`). Ids look like `upstream/man.test:280:compact`.
+  binary stdin; format in `tests/jq_diff/cli.rs`). A CLI case with `merge = "file"` or
+  `"pipe"` sends stderr where stdout goes (`>out 2>&1`, `2>&1 |`), which shows stdio's
+  buffering order (`corpus/merged_output.toml`). Ids look like `upstream/man.test:280:compact`.
 - **Modes** for `.test` cases: `compact` (`-c`, stdin), `pretty` (stdin), `file` (`-c`, input
   as a file argument, which qj memory-maps), `ndjson` (`-c`, input line twice in a
   file; only single objects/arrays, no `input`/`$__loc__`/`halt`). `%%FAIL` blocks run once as

@@ -35,7 +35,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
 
-use super::args::{self, Action, ArgError, ArgValue, Options, ProgramArgument, print_flags};
+use super::args::{self, Action, ArgError, ArgValue, Options, print_flags};
 use super::input::{InputOptions, Reader};
 use crate::jq::lang::execute::{InputSource, Jq};
 use crate::jq::lang::linker::JqAttrs;
@@ -70,36 +70,74 @@ pub fn main() -> ! {
 // stdout
 // ---------------------------------------------------------------------------
 
-/// jq's `stdout` FILE: a buffer, flushed when full, after each output with
-/// `--unbuffered`, up to the last newline when stdout is a terminal (line
-/// buffering), and when closed at the end.
+/// jq's `stdout` FILE, buffered as stdio buffers it. That is observable
+/// whenever stdout and stderr go to the same place (`>out 2>&1`), because
+/// stderr isn't buffered: each error, `debug` or `stderr` message lands after
+/// the stdout bytes written out so far.
+///
+/// The buffer has the size stdio gives it at the first write
+/// ([`stdio_buffer_size`]: 4096 for a regular file on macOS, 16384 for a
+/// pipe). stdio writes it out when a write doesn't fit, so output reaches the
+/// file in whole buffers, the last one (even when exactly full) staying until
+/// the next write; also after each output with `--unbuffered`, at each newline
+/// when stdout is a terminal (line buffering), when a builtin aborts on macOS,
+/// before a terminal is read, and when stdout is closed at the end. jq writes
+/// JSON a character or token at a time, which [`Stdout::write`] models, and
+/// a `-r` string with one `fwrite` ([`Stdout::fwrite`]).
 pub(super) struct Stdout {
     buf: Vec<u8>,
+    /// The buffer size; 0 until the first write, when stdio allocates it.
+    size: usize,
     line_buffered: bool,
     /// `ferror(stdout)`: the last write error.
     error: Option<io::Error>,
 }
 
-/// Flush at this size.
-const STDOUT_BUFFER: usize = 64 * 1024;
-
 thread_local! {
     static STDOUT: RefCell<Stdout> = const {
         RefCell::new(Stdout {
             buf: Vec::new(),
+            size: 0,
             line_buffered: false,
             error: None,
         })
     };
 }
 
+/// The buffer size stdio picks for stdout (fd 1) when it's first written to.
+/// FreeBSD's and macOS's `__swhatbuf`: `st_blksize`, or `BUFSIZ` when fstat
+/// fails or reports none. glibc's `_IO_file_doallocate`: `BUFSIZ`, or
+/// `st_blksize` when that is smaller.
+fn stdio_buffer_size() -> usize {
+    let bufsiz = libc::BUFSIZ as usize;
+    // SAFETY: fstat writes a `stat` into `st`, which is valid for writes.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let blksize = if unsafe { libc::fstat(1, &mut st) } == 0 && st.st_blksize > 0 {
+        Some(st.st_blksize as usize)
+    } else {
+        None
+    };
+    if cfg!(target_os = "linux") {
+        blksize.filter(|&b| b < bufsiz).unwrap_or(bufsiz)
+    } else {
+        blksize.unwrap_or(bufsiz)
+    }
+}
+
 impl Stdout {
-    /// Writes `self.buf[..n]` to fd 1 and drops it from the buffer. A failed
-    /// write loses the data and sets the error, as stdio does.
-    fn write_out(&mut self, n: usize) {
+    fn size(&mut self) -> usize {
+        if self.size == 0 {
+            self.size = stdio_buffer_size().max(1);
+        }
+        self.size
+    }
+
+    /// Writes `bytes` to fd 1. A failed write loses the data and sets the
+    /// error, as stdio does.
+    fn write_fd(&mut self, bytes: &[u8]) {
         let mut done = 0;
-        while done < n {
-            let chunk = &self.buf[done..n];
+        while done < bytes.len() {
+            let chunk = &bytes[done..];
             // SAFETY: `chunk` is valid for reads of its length.
             let r = unsafe { libc::write(1, chunk.as_ptr().cast(), chunk.len()) };
             if r < 0 {
@@ -112,6 +150,13 @@ impl Stdout {
             }
             done += r as usize;
         }
+    }
+
+    /// Writes `self.buf[..n]` to fd 1 and drops it from the buffer.
+    fn write_out(&mut self, n: usize) {
+        let buf = std::mem::take(&mut self.buf);
+        self.write_fd(&buf[..n]);
+        self.buf = buf;
         self.buf.drain(..n);
     }
 
@@ -122,20 +167,87 @@ impl Stdout {
         }
     }
 
-    /// `fwrite` to stdout.
-    pub(super) fn write(&mut self, bytes: &[u8]) {
-        self.buf.extend_from_slice(bytes);
-        self.after_output(false);
-    }
-
-    /// After an output: flush what buffering requires.
-    fn after_output(&mut self, unbuffered: bool) {
-        if unbuffered || self.buf.len() >= STDOUT_BUFFER {
-            self.flush();
-        } else if self.line_buffered
+    /// After bytes were appended to the buffer as jq writes them, a character
+    /// or token at a time: every write that didn't fit wrote out the full
+    /// buffer, so all whole buffers but the last one are out; a terminal also
+    /// gets every complete line.
+    fn settle(&mut self) {
+        if self.line_buffered
             && let Some(nl) = memchr::memrchr(b'\n', &self.buf)
         {
             self.write_out(nl + 1);
+        }
+        let size = self.size();
+        if self.buf.len() > size {
+            self.write_out((self.buf.len() - 1) / size * size);
+        }
+    }
+
+    /// Output written a character or token at a time (`jv_dumpf`, `printf`).
+    pub(super) fn write(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+        self.settle();
+    }
+
+    /// Output appended by `f`, as by [`Stdout::write`] (without a copy).
+    fn write_with(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
+        f(&mut self.buf);
+        self.settle();
+    }
+
+    /// One `fwrite` of `data`, as stdio does it on a fully buffered stream
+    /// (on a terminal, as [`Stdout::write`]). Large writes differ from the
+    /// same bytes written piecemeal in when the last buffer goes out.
+    fn fwrite(&mut self, data: &[u8]) {
+        let size = self.size();
+        // (Anything shorter than the buffer goes out as if piecemeal.)
+        if self.line_buffered || data.len() < size {
+            return self.write(data);
+        }
+        if cfg!(target_os = "linux") {
+            // glibc _IO_new_file_xsputn: fill the buffer; if more is left,
+            // write the full buffer, then whole blocks directly, and buffer
+            // the rest.
+            let fill = (size - self.buf.len()).min(data.len());
+            self.buf.extend_from_slice(&data[..fill]);
+            let rest = &data[fill..];
+            if !rest.is_empty() {
+                self.flush();
+                let direct = if size >= 128 {
+                    rest.len() - rest.len() % size
+                } else {
+                    rest.len()
+                };
+                self.write_fd(&rest[..direct]);
+                self.buf.extend_from_slice(&rest[direct..]);
+            }
+        } else {
+            // FreeBSD/macOS __sfvwrite: fill a partly full buffer and write it
+            // out when the data doesn't fit; from an empty buffer, write whole
+            // buffers directly; buffer what fits.
+            let mut p = data;
+            while !p.is_empty() {
+                let space = size - self.buf.len();
+                if !self.buf.is_empty() && p.len() > space {
+                    self.buf.extend_from_slice(&p[..space]);
+                    p = &p[space..];
+                    self.flush();
+                } else if p.len() >= size {
+                    let direct = p.len() / size * size;
+                    self.write_fd(&p[..direct]);
+                    p = &p[direct..];
+                } else {
+                    self.buf.extend_from_slice(p);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// After an output: `fflush(stdout)` with `--unbuffered`.
+    fn after_output(&mut self, unbuffered: bool) {
+        if unbuffered {
+            self.flush();
         }
     }
 }
@@ -171,12 +283,7 @@ pub(super) struct TraceOut;
 
 impl Write for TraceOut {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        with_stdout(|s| {
-            s.buf.extend_from_slice(buf);
-            if s.buf.len() >= STDOUT_BUFFER {
-                s.flush();
-            }
-        });
+        with_stdout(|s| s.write(buf));
         Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -293,43 +400,41 @@ pub fn load_file_data(data: &[u8], raw: bool) -> Result<Value, Error> {
     })
 }
 
-/// A named or positional argument as a value: `jv_string` for text.
-fn arg_value(v: &ArgValue<Value>) -> Value {
-    match v {
-        ArgValue::Text(bytes) => Value::string_from_bytes(bytes),
-        ArgValue::Json(v) => v.clone(),
-    }
-}
-
 /// `ARGS` and `program_arguments` as main.c builds them for
-/// `jq_compile_args`.
-fn program_arguments(opts: &Options<Value>) -> Object {
-    let mut vars = Object::new();
-    for var in opts.program_arguments() {
-        match var {
-            ProgramArgument::Named(name, value) => {
-                vars.insert(Str::from_bytes(name), arg_value(value));
-            }
-            ProgramArgument::Args => {
-                let positional: Vec<Value> = opts.positional.iter().map(arg_value).collect();
-                let mut named = Object::new();
-                for (name, value) in &opts.named {
-                    named.insert(Str::from_bytes(name), arg_value(value));
-                }
-                let mut a = Object::new();
-                a.insert(Str::from("positional"), Value::from(positional));
-                a.insert(Str::from("named"), Value::Object(named));
-                vars.insert(Str::from("ARGS"), Value::Object(a));
-            }
-            ProgramArgument::BuildConfiguration => {
-                vars.insert(
-                    Str::from("JQ_BUILD_CONFIGURATION"),
-                    Value::from(super::usage::BUILD_CONFIGURATION),
-                );
-            }
+/// `jq_compile_args`, with main.c's sharing, which `--debug-trace` shows in
+/// refcounts. Each named value is a single value, held by `ARGS.named` (the
+/// object `--arg` and friends built) and by the compile's arguments (main.c's
+/// `jv_object_set(program_arguments, "ARGS", ...)` unshares that object into a
+/// copy, then adds `ARGS` and `JQ_BUILD_CONFIGURATION`). The values move out of
+/// `opts`, which would otherwise hold another reference. Returns the arguments
+/// and `ARGS` itself, which main.c keeps in a variable until it exits.
+fn program_arguments(opts: &mut Options<Value>) -> (Object, Value) {
+    fn take(v: &mut ArgValue<Value>) -> Value {
+        match v {
+            ArgValue::Text(bytes) => Value::string_from_bytes(bytes),
+            ArgValue::Json(v) => std::mem::replace(v, Value::Null),
         }
     }
-    vars
+    let mut named = Object::new();
+    for (name, value) in &mut opts.named {
+        named.insert(Str::from_bytes(name), take(value));
+    }
+    let positional: Vec<Value> = opts.positional.iter_mut().map(take).collect();
+    let mut a = Object::new();
+    a.insert(Str::from("positional"), Value::from(positional));
+    a.insert(Str::from("named"), Value::Object(named.clone()));
+    let args = Value::Object(a);
+    // `named` is shared with ARGS.named: inserting copies it (a named `ARGS`
+    // keeps its position and gets the real one).
+    let mut vars = named;
+    vars.insert(Str::from("ARGS"), args.clone());
+    if !vars.contains_key("JQ_BUILD_CONFIGURATION") {
+        vars.insert(
+            Str::from("JQ_BUILD_CONFIGURATION"),
+            Value::from(super::usage::BUILD_CONFIGURATION),
+        );
+    }
+    (vars, args)
 }
 
 /// `-f`: `jv_load_file(program, 1)`, which `jq_compile_args` reads as a C
@@ -448,10 +553,62 @@ fn c_str(s: &str) -> &str {
     }
 }
 
-/// One result as main.c's `process()` prints it, appended to `buf`, with the
-/// status it sets. `None` for a string containing NUL with `--raw-output0`
-/// (nothing is written; `process()` raises an error instead).
-fn write_result(result: &Value, p: &Process, buf: &mut Vec<u8>) -> Option<i32> {
+/// Where `process()` writes results: stdout, or a record's buffer in the
+/// parallel engine (which [`MainLoop`] writes to stdout in order).
+trait ResultOut {
+    /// Bytes jq writes a character or token at a time (`jv_dumpf`, `"\n"`).
+    fn put(&mut self, f: impl FnOnce(&mut Vec<u8>));
+    /// A `-r` string, which jq writes with a single `fwrite`.
+    fn put_raw(&mut self, bytes: &[u8]);
+}
+
+impl ResultOut for Stdout {
+    fn put(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
+        self.write_with(f);
+    }
+    fn put_raw(&mut self, bytes: &[u8]) {
+        self.fwrite(bytes);
+    }
+}
+
+impl ResultOut for RecordOut<'_> {
+    fn put(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
+        f(self.out);
+    }
+    fn put_raw(&mut self, bytes: &[u8]) {
+        // Only writes at least a buffer long go out differently from
+        // piecemeal ones (see Stdout::fwrite).
+        if bytes.len() >= RAW_MARK_MIN {
+            self.marks.push((self.out.len(), bytes.len()));
+        }
+        self.out.extend_from_slice(bytes);
+    }
+}
+
+/// A record's stdout bytes in the parallel engine, with where its large `-r`
+/// strings are (offset, length), for [`MainLoop`] to write them out as
+/// [`Stdout::fwrite`] does.
+struct RecordOut<'a> {
+    out: &'a mut Vec<u8>,
+    marks: &'a mut Vec<(usize, usize)>,
+}
+
+/// Raw strings shorter than any stdio buffer (BUFSIZ is 1024 on macOS, and
+/// `st_blksize` is at least 512 in practice) need no mark.
+const RAW_MARK_MIN: usize = 512;
+
+/// One result as main.c's `process()` prints it, with the status it sets.
+/// `None` for a string containing NUL with `--raw-output0` (nothing is
+/// written; `process()` raises an error instead).
+fn write_result(result: &Value, p: &Process, out: &mut impl ResultOut) -> Option<i32> {
+    let end = |b: &mut Vec<u8>| {
+        if !p.raw_no_lf {
+            b.push(b'\n');
+        }
+        if p.raw_output0 {
+            b.push(0);
+        }
+    };
     let ret = match result {
         Value::String(s) if p.raw_output => {
             if p.ascii_output {
@@ -459,31 +616,34 @@ fn write_result(result: &Value, p: &Process, buf: &mut Vec<u8>) -> Option<i32> {
                     ascii: true,
                     ..DumpOptions::default()
                 };
-                dump_to_vec(result, &ascii, buf);
+                out.put(|b| {
+                    dump_to_vec(result, &ascii, b);
+                    end(b);
+                });
             } else if p.raw_output0 && memchr::memchr(0, s.as_bytes()).is_some() {
                 return None;
             } else {
-                buf.extend_from_slice(s.as_bytes());
+                out.put_raw(s.as_bytes());
+                if !p.raw_no_lf || p.raw_output0 {
+                    out.put(end);
+                }
             }
             JQ_OK
         }
         _ => {
-            if p.seq {
-                buf.push(0x1e);
-            }
-            dump_to_vec(result, &p.dump, buf);
+            out.put(|b| {
+                if p.seq {
+                    b.push(0x1e);
+                }
+                dump_to_vec(result, &p.dump, b);
+                end(b);
+            });
             match result {
                 Value::Null | Value::Bool(false) => JQ_OK_NULL_KIND,
                 _ => JQ_OK,
             }
         }
     };
-    if !p.raw_no_lf {
-        buf.push(b'\n');
-    }
-    if p.raw_output0 {
-        buf.push(0);
-    }
     Some(ret)
 }
 
@@ -516,7 +676,7 @@ fn process(jq: &mut Jq, value: Value, p: &Process, input: &SharedInput) -> i32 {
             }
         };
         let written = with_stdout(|out| {
-            let r = write_result(&result, p, &mut out.buf);
+            let r = write_result(&result, p, out);
             if r.is_some() {
                 out.after_output(p.unbuffered);
             }
@@ -569,7 +729,7 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
     let stdout_is_tty = isatty(1);
     with_stdout(|s| s.line_buffered = stdout_is_tty);
 
-    let opts = match args::with_environment_locale(|| args::parse(argv, &mut PortArgs)) {
+    let mut opts = match args::with_environment_locale(|| args::parse(argv, &mut PortArgs)) {
         Ok(Action::Run(opts)) => opts,
         Ok(Action::Help) => {
             // usage(0, 0): qj's own text.
@@ -611,7 +771,7 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
             return e.exit_code();
         }
     };
-    let ret = run_program(&opts, stdout_is_tty);
+    let ret = run_program(&mut opts, stdout_is_tty);
     exit_status(&opts, ret)
 }
 
@@ -637,7 +797,7 @@ fn exit_status(opts: &Options<Value>, (ret, last_result): (i32, i32)) -> i32 {
 
 /// Everything from the output flags to closing stdout. Returns `ret` and
 /// `last_result` for [`exit_status`].
-fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
+fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     let no_color = std::env::var_os("NO_COLOR");
     let dumpopts = opts.dumpopts(stdout_is_tty, no_color.as_deref().map(OsStrExt::as_bytes));
     let colors = match std::env::var_os("JQ_COLORS") {
@@ -677,8 +837,10 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         program.to_vec()
     };
 
-    let copts = CompileOptions {
-        args: program_arguments(opts),
+    // main.c's `ARGS` variable lives until the end of the run.
+    let (args, _main_args) = program_arguments(opts);
+    let mut copts = CompileOptions {
+        args,
         env: None,
         attrs,
     };
@@ -697,15 +859,17 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     let parallel = parallel_plan(opts, &program, &bc, &copts);
     let mut jq = Jq::new(bc);
     jq.set_jq_attrs(&copts.attrs);
+    // main.c hands these values to jq_set_attr and keeps no other reference
+    // (get_prog_origin's refcount shows in --debug-trace).
+    copts.attrs.lib_dirs = Value::Null;
+    copts.attrs.jq_origin = Value::Null;
+    copts.attrs.prog_origin = Value::Null;
     jq.set_attr("VERSION_DIR", Value::from("1.8.1"));
     jq.set_trace_writer(Some(Box::new(TraceOut)));
 
     if opts.dump_disasm {
         let text = format!("{}\n", jq.dump_disassembly(0));
-        with_stdout(|s| {
-            s.buf.extend_from_slice(text.as_bytes());
-            s.after_output(false);
-        });
+        with_stdout(|s| s.write(text.as_bytes()));
     }
 
     let files = if opts.files.is_empty() {
@@ -717,6 +881,8 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         raw: opts.raw_input,
         slurp: opts.slurp,
         flags: ParseFlags::from_bits(opts.parser_flags()),
+        // --debug-trace shows refcounts, and the simdjson path shares keys.
+        parser_only: opts.jq_flags & args::debug_flags::TRACE != 0,
     };
     let p = Process {
         dump: dump_options(dumpopts, &colors),
@@ -915,6 +1081,8 @@ struct PortWorker {
     jq: Jq,
     position: Rc<RefCell<(Option<Value>, u64)>>,
     p: Process,
+    /// The current record's large `-r` strings (see [`RecordOut`]).
+    marks: Vec<(usize, usize)>,
 }
 
 impl crate::io::parallel::WorkerFactory for PortFactory {
@@ -953,6 +1121,7 @@ impl crate::io::parallel::WorkerFactory for PortFactory {
             jq,
             position,
             p: self.p.clone(),
+            marks: Vec::new(),
         }
     }
 }
@@ -973,7 +1142,14 @@ impl crate::io::parallel::RecordWorker for PortWorker {
         let mut error: Option<Value> = None;
         for result in self.jq.by_ref() {
             match result {
-                Ok(v) => match write_result(&v, &self.p, out) {
+                Ok(v) => match write_result(
+                    &v,
+                    &self.p,
+                    &mut RecordOut {
+                        out,
+                        marks: &mut self.marks,
+                    },
+                ) {
                     Some(r) => ret = r,
                     None => {
                         error = Some(Value::from(RAW_OUTPUT0_NUL));
@@ -996,6 +1172,10 @@ impl crate::io::parallel::RecordWorker for PortWorker {
         }
         ret
     }
+
+    fn take_marks(&mut self, marks: &mut Vec<(usize, usize)>) {
+        marks.append(&mut self.marks);
+    }
 }
 
 /// main.c's loop state over the engine's in-order results.
@@ -1007,9 +1187,29 @@ struct MainLoop {
 
 impl crate::io::parallel::RecordSink for MainLoop {
     fn record(&mut self, out: &[u8], err: &[u8], status: i32) -> std::ops::ControlFlow<()> {
+        self.record_marked(out, err, &[], status)
+    }
+
+    /// A record's output as jq wrote it: piecemeal, except the marked `-r`
+    /// strings (one `fwrite` each); then its uncaught error, if any, which
+    /// came after the outputs. (With `--unbuffered`, jq flushes after each
+    /// output; stderr gets nothing in between, so once per record is the same.)
+    fn record_marked(
+        &mut self,
+        out: &[u8],
+        err: &[u8],
+        marks: &[(usize, usize)],
+        status: i32,
+    ) -> std::ops::ControlFlow<()> {
         if !out.is_empty() {
             with_stdout(|s| {
-                s.buf.extend_from_slice(out);
+                let mut pos = 0;
+                for &(off, len) in marks {
+                    s.write(&out[pos..off]);
+                    s.fwrite(&out[off..off + len]);
+                    pos = off + len;
+                }
+                s.write(&out[pos..]);
                 s.after_output(self.unbuffered);
             });
         }
@@ -1048,6 +1248,7 @@ fn run_parallel(
         jq,
         position,
         p: p.clone(),
+        marks: Vec::new(),
     };
     let mut sink = MainLoop {
         unbuffered: p.unbuffered,

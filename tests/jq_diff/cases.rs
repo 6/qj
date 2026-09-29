@@ -16,6 +16,7 @@
 //! `-`.
 
 use crate::cli::{self, CliCase};
+use crate::exec::Merge;
 use crate::hash::Fnv128;
 use crate::testfile::{self, Kind};
 use std::path::Path;
@@ -68,6 +69,8 @@ pub struct Invocation {
     pub cwd: String,
     /// Files to create first: (path relative to the work directory, content).
     pub files: Vec<(String, Vec<u8>)>,
+    /// Whether stderr goes where stdout goes (CLI cases with `merge`).
+    pub merge: Merge,
 }
 
 impl Invocation {
@@ -90,6 +93,10 @@ impl Invocation {
         h.str("cwd").str(&self.cwd);
         for (p, c) in &self.files {
             h.str("file").str(p).field(c);
+        }
+        // (Only when set, so that existing keys stay the same.)
+        if let Some(name) = self.merge.name() {
+            h.str("merge").str(name);
         }
         h.hex()
     }
@@ -194,6 +201,7 @@ pub fn test_file_jobs(
                         env: Vec::new(),
                         cwd: String::new(),
                         files: Vec::new(),
+                        merge: Merge::No,
                     },
                 });
             }
@@ -216,6 +224,7 @@ pub fn test_file_jobs(
                             env: Vec::new(),
                             cwd: String::new(),
                             files: Vec::new(),
+                            merge: Merge::No,
                         },
                         _ => {
                             let (content, ext) = if mode == Mode::File {
@@ -230,6 +239,7 @@ pub fn test_file_jobs(
                                 env: Vec::new(),
                                 cwd: String::new(),
                                 files: vec![(name, content)],
+                                merge: Merge::No,
                             }
                         }
                     };
@@ -270,6 +280,9 @@ pub fn cli_jobs(group: &str, origin_path: &str, cases: &[CliCase]) -> Vec<Job> {
             for (k, v) in &c.env {
                 h.str("env").str(k).str(v);
             }
+            if let Some(name) = c.merge.name() {
+                h.str("merge").str(name);
+            }
             let dir = format!("cli/{}", &h.hex()[..16]);
             Job {
                 id: format!("{group}:{}:cli", c.name),
@@ -289,6 +302,7 @@ pub fn cli_jobs(group: &str, origin_path: &str, cases: &[CliCase]) -> Vec<Job> {
                         .map(|(p, content)| (format!("{dir}/{p}"), content.clone()))
                         .collect(),
                     cwd: dir,
+                    merge: c.merge,
                 },
             }
         })
@@ -448,6 +462,7 @@ mod tests {
             env: vec![],
             cwd: String::new(),
             files: vec![],
+            merge: Merge::No,
         };
         let k = inv.key(&[]);
         let mut other = inv.clone();
@@ -460,6 +475,11 @@ mod tests {
         let mut other = inv.clone();
         other.files = vec![("in/x".into(), b"1".to_vec())];
         assert_ne!(k, other.key(&[]));
+        for merge in [Merge::File, Merge::Pipe] {
+            let mut other = inv.clone();
+            other.merge = merge;
+            assert_ne!(k, other.key(&[]));
+        }
         assert_eq!(k, inv.clone().key(&[]));
     }
 }

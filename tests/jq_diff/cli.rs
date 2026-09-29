@@ -10,6 +10,10 @@
 //! stdin = "1 2 3"                      # optional; see `Content` below
 //! files = { "a.json" = '{"a":1}' }     # optional; written into the case's cwd
 //! env = { NO_COLOR = "1" }             # optional; added to the base environment
+//! merge = "file"                       # optional: stderr into stdout's regular
+//!                                      # file (`>out 2>&1`), or "pipe" (`2>&1 |`);
+//!                                      # the stream is compared as stdout, with
+//!                                      # stderr's name normalization
 //!
 //! # A sweep runs every program under every variant. `{program}` in a
 //! # variant's args is replaced by the program.
@@ -31,6 +35,7 @@
 //! (so `files` of different cases can't collide), which is two levels below
 //! the harness work directory: jq's test modules are at `../../modules`.
 
+use crate::exec::Merge;
 use base64::Engine;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -79,6 +84,9 @@ pub struct CaseDef {
     pub files: BTreeMap<String, Content>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// `"file"` or `"pipe"`: stderr goes where stdout goes (see `Merge`).
+    #[serde(default)]
+    pub merge: Option<String>,
     /// Free-form note for humans; not used by the harness.
     #[serde(default)]
     #[allow(dead_code)]
@@ -97,6 +105,9 @@ pub struct SweepDef {
     pub files: BTreeMap<String, Content>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// `"file"` or `"pipe"`: stderr goes where stdout goes (see `Merge`).
+    #[serde(default)]
+    pub merge: Option<String>,
     /// Free-form note for humans; not used by the harness.
     #[serde(default)]
     #[allow(dead_code)]
@@ -124,6 +135,14 @@ pub struct CliCase {
     pub env: Vec<(String, String)>,
     /// The program, when known (sweeps), for display.
     pub program: Option<String>,
+    pub merge: Merge,
+}
+
+fn merge_mode(merge: &Option<String>) -> Result<Merge, String> {
+    match merge {
+        None => Ok(Merge::No),
+        Some(m) => Merge::parse(m).ok_or_else(|| format!("unknown merge {m:?} (file or pipe)")),
+    }
 }
 
 fn valid_name(name: &str) -> bool {
@@ -182,6 +201,7 @@ pub fn parse(toml_src: &str, base: &Path) -> Result<Vec<CliCase>, String> {
             files,
             env,
             program: None,
+            merge: merge_mode(&c.merge).map_err(|e| format!("{}: {e}", c.name))?,
         });
     }
     for s in &file.sweep {
@@ -215,6 +235,7 @@ pub fn parse(toml_src: &str, base: &Path) -> Result<Vec<CliCase>, String> {
                     files: files.clone(),
                     env: env.clone(),
                     program: Some(program.clone()),
+                    merge: merge_mode(&s.merge).map_err(|e| format!("{}: {e}", s.name))?,
                 });
             }
         }

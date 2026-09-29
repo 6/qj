@@ -152,25 +152,19 @@ pub fn f_utf8bytelength(_host: &mut dyn Host, input: Value, _args: &mut [Value])
     }
 }
 
-thread_local! {
-    /// The `jv_kind_name` strings `type` returns, allocated once per thread: `type` runs
-    /// for every node in idioms like `.. | numbers`. (Sharing is invisible: a string is
-    /// copied before it is modified.)
-    static KIND_NAMES: [Value; 6] =
-        ["null", "boolean", "number", "string", "array", "object"].map(Value::from);
-}
-
-/// `type` (nargs 1): port of builtin.c `f_type`.
+/// `type` (nargs 1): port of builtin.c `f_type`. Like jq, each call returns a new string
+/// (`jv_string(jv_kind_name(...))`): sharing one per kind would show in
+/// `--debug-trace`, which prints every value's refcount.
 pub fn f_type(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
-    let i = match input {
-        Value::Null => 0,
-        Value::Bool(_) => 1,
-        Value::Number(_) => 2,
-        Value::String(_) => 3,
-        Value::Array(_) => 4,
-        Value::Object(_) => 5,
+    let name = match input {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     };
-    Ok(KIND_NAMES.with(|names| names[i].clone()))
+    Ok(Value::from(name))
 }
 
 /// `jv_number_value` of a number, `None` for anything else (the number predicates
@@ -435,7 +429,7 @@ pub fn f_current_filename(host: &mut dyn Host, _input: Value, _args: &mut [Value
 
 /// `input_line_number` (nargs 1): port of builtin.c `f_current_line`.
 pub fn f_current_line(host: &mut dyn Host, _input: Value, _args: &mut [Value]) -> CResult {
-    Ok(host.current_line())
+    host.current_line()
 }
 
 /// `have_decnum` and `have_literal_numbers` (nargs 1): port of builtin.c

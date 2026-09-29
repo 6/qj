@@ -67,8 +67,9 @@ pub trait Host {
     /// `jq_util_input_get_current_filename`; `None` is jq's invalid, which `input_filename`
     /// turns into `null`.
     fn current_filename(&self) -> Option<Value>;
-    /// `jq_util_input_get_current_line`.
-    fn current_line(&self) -> Value;
+    /// `jq_util_input_get_current_line`: an error ("Unknown input line number") when the
+    /// program has no input callback (as under `--run-tests`).
+    fn current_line(&self) -> CResult;
     /// execute.c `_jq_path_append(jq, v, p, value_at_path)`, for `f_getpath`: inside a
     /// path expression (`path(...)`, `paths`, `|=`, ...), when `v` is the value at the
     /// path being tracked, extend that path by `p` (an array of keys) and make

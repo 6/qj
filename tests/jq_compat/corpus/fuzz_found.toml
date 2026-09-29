@@ -1,0 +1,127 @@
+# Divergences found by the differential fuzzer (tests/jq_fuzz), minimized, in
+# the CLI case format (tests/jq_diff/cli.rs). jq_diff runs each with exactly
+# these args, stdin, files and env and compares stdout, exit code and stderr
+# byte for byte. Filter/input-shaped finds are in fuzz_found.test.
+
+# ---------------------------------------------------------------------------
+# --debug-trace prints every value's refcount (jv_dump with JV_PRINT_REFCOUNT),
+# so builtins must return new strings where jq allocates them, not shared ones.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "trace-type-result-is-a-new-string"
+args = ["-c", "--debug-trace", "[.[] | type]"]
+stdin = '[1,"a",null]'
+note = "type used to return one shared string per kind: \"number\" (2) instead of (1)"
+
+[[case]]
+name = "trace-type-in-select"
+args = ["-c", "--debug-trace", "arrays"]
+stdin = '[]'
+
+[[case]]
+name = "trace-type-all"
+args = ["-c", "--debug-trace=all", "type == \"a\""]
+stdin = '{}'
+
+[[case]]
+name = "trace-match-keys-are-new-strings"
+args = ["-nc", "--debug-trace", '"a" | match("(?<x>a)") | keys_unsorted, (.captures[0] | keys)']
+note = "match and capture object keys used to be shared strings: \"offset\" (2) instead of (1)"
+
+[[case]]
+name = "trace-match-keys-in-paths"
+args = ["-nc", "--debug-trace", '"ab" | [match("(?<x>.)"; "g")] | [paths] | .[0]']
+
+# main.c's references to the program's arguments: its ARGS and
+# program_arguments variables live until exit, ARGS.named is the object the
+# named options built (so each named value is one value, also in the compile's
+# copy), and the attributes (get_prog_origin) are handed to jq_set_attr.
+
+[[case]]
+name = "trace-args-refcount"
+args = ["-nc", "--debug-trace", "$ARGS"]
+note = "qj showed $ARGS with refcount 3, jq 4"
+
+[[case]]
+name = "trace-named-arg-refcount"
+args = ["-nc", "--debug-trace", "--arg", "x", "v", "[$x, $ARGS]"]
+
+[[case]]
+name = "trace-json-and-file-args-refcount"
+args = ["-nc", "--debug-trace", "--argjson", "x", "[1]", "--slurpfile", "s", "f.json", "--rawfile", "r", "f.json", "[$x, $s, $r, $ARGS]", "--args", "a", "b"]
+files = { "f.json" = "[2]" }
+note = "qj's options held another reference to each JSON value: [1] (5) instead of (4)"
+
+[[case]]
+name = "trace-jsonargs-refcount"
+args = ["-nc", "--debug-trace", "--jsonargs", "$ARGS.positional[0], $ARGS", "[1]", "{}"]
+
+[[case]]
+name = "trace-named-ARGS-refcount"
+args = ["-nc", "--debug-trace", "--arg", "ARGS", "z", "--arg", "y", "w", "$ARGS, $ARGS.named"]
+
+[[case]]
+name = "trace-prog-origin-refcount"
+args = ["--debug-trace", "get_prog_origin"]
+stdin = "null"
+
+# The simdjson input path shares object keys between records; under
+# --debug-trace qj reads with jq's parser port, which allocates them as jq does.
+
+[[case]]
+name = "trace-input-keys-stdin"
+args = ["-c", "--debug-trace", "keys"]
+stdin = '{"a":1,"b":2} {"a":3}'
+note = "qj showed [\"a\" (2),\"b\" (2)] where jq has (1)"
+
+[[case]]
+name = "trace-input-keys-file"
+args = ["-c", "--debug-trace=all", "to_entries", "f.json"]
+files = { "f.json" = "{\"a\":\"a\"}\n{\"a\":\"b\",\"c\":1}\n" }
+
+# ---------------------------------------------------------------------------
+# --run-tests: jq_test.c dumps each expected value, parses it back and asserts
+# the two are equal (#ifdef USE_DECNUM). An expected NaN prints as null, so
+# the assertion fails and jq dies of SIGABRT, after the test's report lines.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "run-tests-expected-nan-aborts"
+args = ["--run-tests"]
+stdin = "null\n0\nnan\n"
+
+[[case]]
+name = "run-tests-expected-nan-in-array-aborts"
+args = ["--run-tests"]
+stdin = ".\n[]\n[nan]\n\n1\nnull\n1\n"
+
+[[case]]
+name = "run-tests-expected-nan-in-object-aborts"
+args = ["--run-tests", "t.test"]
+files = { "t.test" = "1,2\nnull\n1\n{\"a\":nan}\n" }
+
+[[case]]
+name = "run-tests-expected-nan-without-result"
+args = ["--run-tests"]
+stdin = "empty\nnull\nnan\n"
+note = "no result to compare with: no assertion, jq reports insufficient results"
+
+# jq_test.c sets no input callback, so input_line_number fails ("Unknown input
+# line number") and input_filename is null. qj answered 0.
+
+[[case]]
+name = "run-tests-input-line-number-fails"
+args = ["--run-tests"]
+stdin = "input_line_number\n[\"\",0]"
+note = "no result, so the test passes and jq goes on to its jq_state tests"
+
+[[case]]
+name = "run-tests-input-line-number-insufficient"
+args = ["--run-tests", "t.test"]
+files = { "t.test" = "input_line_number|$__loc__\n0\n0" }
+
+[[case]]
+name = "run-tests-input-builtins-without-input"
+args = ["--run-tests"]
+stdin = "try input_line_number catch .\nnull\n\"Unknown input line number\"\n\n[input_filename]\nnull\n[null]\n\ntry input catch .\nnull\n\"No more inputs\"\n"

@@ -56,7 +56,7 @@ impl Host for TestHost {
     fn current_filename(&self) -> Option<Value> {
         self.filename.clone()
     }
-    fn current_line(&self) -> Value {
-        self.line.clone()
+    fn current_line(&self) -> CResult {
+        Ok(self.line.clone())
     }
 }
