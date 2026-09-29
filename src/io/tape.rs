@@ -25,7 +25,9 @@
 //! saturates those counts at 2^24 - 1; such huge containers are counted by
 //! walking them.)
 
-use crate::jq::value::print::{DumpSink, MAX_PRINT_DEPTH, write_json_string};
+use crate::jq::value::print::{
+    DumpSink, MAX_PRINT_DEPTH, write_json_string, write_json_string_raw,
+};
 use crate::jq::value::{DumpOptions, Indent, Number, hash_key};
 use crate::simdjson::Tape;
 
@@ -43,6 +45,8 @@ pub struct Doc<'a> {
     words: &'a [u64],
     structurals: &'a [u32],
     src: &'a [u8],
+    /// `src` and the bytes after it in the parser's buffer (its padding).
+    padded: &'a [u8],
 }
 
 /// A value in a [`Doc`]: its tape index and structural index.
@@ -51,6 +55,10 @@ pub struct Node {
     i: usize,
     si: usize,
 }
+
+/// The structural index of a node that has none (an object key of
+/// [`Doc::for_each_key`]; stepping past it keeps it).
+const NO_CURSOR: usize = usize::MAX;
 
 /// What a value is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +174,35 @@ pub struct Scratch {
 
 const SEEN_SLOTS: usize = 4096;
 
+/// Objects with at most this many keys are checked for duplicates pairwise.
+const FEW_KEYS: usize = 16;
+
+/// A cheap summary of a key: equal keys have equal fingerprints. (Length
+/// and the first and last 8 bytes, read with overlapping loads.)
+#[inline]
+fn fingerprint(b: &[u8]) -> u64 {
+    let n = b.len();
+    let (a, z) = if n >= 8 {
+        (
+            u64::from_le_bytes(b[..8].try_into().expect("8 bytes")),
+            u64::from_le_bytes(b[n - 8..].try_into().expect("8 bytes")),
+        )
+    } else if n >= 4 {
+        (
+            u64::from(u32::from_le_bytes(b[..4].try_into().expect("4 bytes"))),
+            u64::from(u32::from_le_bytes(b[n - 4..].try_into().expect("4 bytes"))),
+        )
+    } else if n > 0 {
+        (
+            u64::from(b[0]) | u64::from(b[n / 2]) << 8 | u64::from(b[n - 1]) << 16,
+            0,
+        )
+    } else {
+        (0, 0)
+    };
+    a ^ z.rotate_left(29) ^ (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
 impl Scratch {
     /// A list for one object's entries (returned with [`Scratch::put`]).
     fn take(&mut self) -> Vec<(Node, Node)> {
@@ -180,14 +217,15 @@ impl Scratch {
 }
 
 impl<'a> Doc<'a> {
-    /// The document `src` (the parsed text, without the padding) whose tape
-    /// is `tape`.
-    pub fn new(tape: &'a Tape<'a>, src: &'a [u8]) -> Doc<'a> {
+    /// The document whose tape is `tape`: the text `padded[..len]`, which
+    /// the rest of `padded` follows (the parser's padding).
+    pub fn new(tape: &'a Tape<'a>, padded: &'a [u8], len: usize) -> Doc<'a> {
         Doc {
             tape,
             words: tape.words,
             structurals: tape.structurals,
-            src,
+            src: &padded[..len],
+            padded,
         }
     }
 
@@ -326,10 +364,11 @@ impl<'a> Doc<'a> {
                 i: n.i + 2,
                 si: n.si + 1,
             },
-            // (Wrapping: the keys of `for_each_key` have no cursor.)
+            // (Saturating: the keys of `for_each_key` have no cursor, and
+            // what comes after them has none either.)
             _ => Node {
                 i: n.i + 1,
-                si: n.si.wrapping_add(1),
+                si: n.si.saturating_add(1),
             },
         }
     }
@@ -432,7 +471,7 @@ impl<'a> Doc<'a> {
         let n = self.count(object);
         let mut i = object.i + 1;
         for _ in 0..n {
-            f(Node { i, si: usize::MAX })?;
+            f(Node { i, si: NO_CURSOR })?;
             i = self.jump_at(i + 1);
         }
         Ok(())
@@ -460,7 +499,7 @@ impl<'a> Doc<'a> {
                 // the remaining keys without tracking the cursor.
                 let mut i = self.jump_at(v.i);
                 for _ in idx + 1..n {
-                    if self.str(Node { i, si: usize::MAX }) == key {
+                    if self.str(Node { i, si: NO_CURSOR }) == key {
                         return self.get_last(object, key);
                     }
                     i = self.jump_at(i + 1);
@@ -510,18 +549,23 @@ impl<'a> Doc<'a> {
         if n <= 1 {
             return false;
         }
-        if n <= 8 {
-            // Few keys: compare them pairwise.
-            let mut keys = [""; 8];
+        if n <= FEW_KEYS {
+            // Few keys: compare them pairwise, by fingerprint first.
+            let mut prints = [0u64; FEW_KEYS];
+            let mut keys = [0usize; FEW_KEYS];
             let mut dup = false;
             let mut idx = 0;
             let _ = self.for_each_key(object, |k| {
                 let s = self.str(k);
-                if keys[..idx].contains(&s) {
-                    dup = true;
-                    return Err(()); // stop
+                let f = fingerprint(s.as_bytes());
+                for j in 0..idx {
+                    if prints[j] == f && self.str(Node { i: keys[j], si: 0 }) == s {
+                        dup = true;
+                        return Err(()); // stop
+                    }
                 }
-                keys[idx] = s;
+                prints[idx] = f;
+                keys[idx] = k.i;
                 idx += 1;
                 Ok(())
             });
@@ -579,13 +623,14 @@ impl<'a> Doc<'a> {
             sink.buf().extend_from_slice(b"<skipped: too deep>");
             return self.skip(n);
         }
+        if let Some(next) = self.print_scalar(n, layout, sink.buf()) {
+            return next;
+        }
+        // Elements that are scalars are printed here, not by a call (unless
+        // they're too deep).
+        let inline = depth < PRINT_DEPTH;
         let w = self.word(n);
         match tag(w) {
-            b'n' => sink.buf().extend_from_slice(b"null"),
-            b'f' => sink.buf().extend_from_slice(b"false"),
-            b't' => sink.buf().extend_from_slice(b"true"),
-            b'l' | b'u' | b'd' => self.write_number(n, sink.buf()),
-            b'"' => write_json_string(self.str(n), layout.ascii, sink.buf()),
             b'[' => {
                 let count = self.count(n);
                 if count == 0 {
@@ -601,18 +646,22 @@ impl<'a> Doc<'a> {
                     if idx != 0 {
                         e.si += 1; // ','
                     }
-                    layout.before_element(idx, depth, sink.buf());
-                    e = self.print(e, depth + 1, layout, scratch, sink);
+                    let out = sink.buf();
+                    layout.before_element(idx, depth, out);
+                    e = match inline.then(|| self.print_scalar(e, layout, out)).flatten() {
+                        Some(next) => next,
+                        None => self.print(e, depth + 1, layout, scratch, sink),
+                    };
                     sink.checkpoint();
                 }
                 let out = sink.buf();
                 layout.before_close(depth, out);
                 out.push(b']');
                 // `e` is at the closing bracket.
-                return Node {
+                Node {
                     i: e.i + 1,
                     si: e.si + 1,
-                };
+                }
             }
             b'{' => {
                 let count = self.count(n);
@@ -633,12 +682,15 @@ impl<'a> Doc<'a> {
                         }
                         let out = sink.buf();
                         layout.before_element(idx, depth, out);
-                        layout.key(self.str(k), out);
+                        self.write_key(k, layout, out);
                         let v = Node {
                             i: k.i + 1,
                             si: k.si + 2, // the key and ':'
                         };
-                        k = self.print(v, depth + 1, layout, scratch, sink);
+                        k = match inline.then(|| self.print_scalar(v, layout, out)).flatten() {
+                            Some(next) => next,
+                            None => self.print(v, depth + 1, layout, scratch, sink),
+                        };
                         sink.checkpoint();
                     }
                     close = k;
@@ -652,7 +704,7 @@ impl<'a> Doc<'a> {
                     for (idx, &(k, v)) in entries.iter().enumerate() {
                         let out = sink.buf();
                         layout.before_element(idx, depth, out);
-                        layout.key(self.str(k), out);
+                        self.write_key(k, layout, out);
                         self.print(v, depth + 1, layout, scratch, sink);
                         sink.checkpoint();
                     }
@@ -661,14 +713,72 @@ impl<'a> Doc<'a> {
                 let out = sink.buf();
                 layout.before_close(depth, out);
                 out.push(b'}');
-                return Node {
+                Node {
                     i: close.i + 1,
                     si: close.si + 1,
-                };
+                }
             }
             t => unreachable!("not a value on the tape: {t}"),
         }
-        self.skip(n)
+    }
+
+    /// Writes a string node (a value or a key) as jq prints it: from its
+    /// text in the source when that is the same (see
+    /// [`write_json_string_raw`]) and the node has a structural cursor (the
+    /// keys of [`Doc::for_each_key`] have none).
+    #[inline]
+    fn write_string(&self, n: Node, ascii: bool, out: &mut Vec<u8>) {
+        let s = self.str(n);
+        if n.si == NO_CURSOR {
+            return write_json_string(s, ascii, out);
+        }
+        let q = self.structurals[n.si] as usize;
+        debug_assert_eq!(self.src[q], b'"', "the cursor of a string is at its quote");
+        let raw = self.padded.get(q + 1..).unwrap_or_default();
+        write_json_string_raw(raw, s, ascii, out);
+    }
+
+    /// An object key (with its structural cursor) and what follows it,
+    /// before its value.
+    #[inline]
+    fn write_key(&self, k: Node, layout: &Layout, out: &mut Vec<u8>) {
+        self.write_string(k, layout.ascii, out);
+        out.push(b':');
+        if layout.pretty {
+            out.push(b' ');
+        }
+    }
+
+    /// Prints `n` if it is a scalar, returning the node after it.
+    #[inline(always)]
+    fn print_scalar(&self, n: Node, layout: &Layout, out: &mut Vec<u8>) -> Option<Node> {
+        let next = |words| Node {
+            i: n.i + words,
+            si: n.si.saturating_add(1),
+        };
+        match tag(self.word(n)) {
+            b'"' => {
+                self.write_string(n, layout.ascii, out);
+                Some(next(1))
+            }
+            b'l' | b'u' | b'd' => {
+                self.write_number(n, out);
+                Some(next(2))
+            }
+            b'n' => {
+                out.extend_from_slice(b"null");
+                Some(next(1))
+            }
+            b'f' => {
+                out.extend_from_slice(b"false");
+                Some(next(1))
+            }
+            b't' => {
+                out.extend_from_slice(b"true");
+                Some(next(1))
+            }
+            _ => None,
+        }
     }
 
     /// The node after an empty container (its two brackets).

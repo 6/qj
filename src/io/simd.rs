@@ -266,6 +266,7 @@ impl SimdParser {
         let result = f(Parsed {
             tape,
             src: &text[..len],
+            padded: text,
             build: &mut self.build,
         });
         if len > KEEP_CAPACITY {
@@ -284,13 +285,15 @@ impl SimdParser {
 pub struct Parsed<'p> {
     tape: Tape<'p>,
     src: &'p [u8],
+    /// `src` and the padding after it.
+    padded: &'p [u8],
     build: &'p mut Builder,
 }
 
 impl Parsed<'_> {
     /// The document on the tape.
     pub fn doc(&self) -> super::tape::Doc<'_> {
-        super::tape::Doc::new(&self.tape, self.src)
+        super::tape::Doc::new(&self.tape, self.padded, self.src.len())
     }
 
     /// The document's value, as [`SimdParser::parse`] builds it.
