@@ -278,3 +278,89 @@ fn engine_large_clean_ndjson() {
     assert!(stats.sequential <= 2, "{stats:?}");
     assert!(stats.jobs >= 16, "{stats:?}");
 }
+
+/// Records every value its workers run the program on.
+struct Recording(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+struct RecordingWorker(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl RecordWorker for RecordingWorker {
+    fn process(
+        &mut self,
+        value: crate::jq::value::Value,
+        _meta: &parallel::RecordMeta<'_>,
+        out: &mut Vec<u8>,
+        _err: &mut Vec<u8>,
+    ) -> i32 {
+        let s = value.to_json();
+        out.extend_from_slice(s.as_bytes());
+        out.push(b'\n');
+        self.0.lock().unwrap().push(s);
+        0
+    }
+}
+
+impl WorkerFactory for Recording {
+    type Worker = RecordingWorker;
+    fn new_worker(&self) -> RecordingWorker {
+        RecordingWorker(self.0.clone())
+    }
+}
+
+/// Jobs that start inside pretty-printed texts see lines that are valid
+/// texts on their own (`  3`, `  {"x":1}`); the program must never run on
+/// them, only on the real records.
+#[test]
+fn engine_runs_programs_only_on_real_records() {
+    let mut data = Vec::new();
+    for i in 0..400 {
+        match i % 4 {
+            0 => data.extend_from_slice(format!("{{\"a\":{i}}}\n").as_bytes()),
+            1 => data.extend_from_slice(format!("[\n  {i},\n  3\n]\n").as_bytes()),
+            2 => data.extend_from_slice(b"{\n  \"k\":\n  {\"x\":1}\n}\n"),
+            _ => data.extend_from_slice(b"\"s\"\n"),
+        }
+    }
+    let files = vec![(OsString::from("p"), MemFile::Data(data))];
+    for threads in [1, 2, 4] {
+        for max_job_bytes in [1, 7, 40, 300] {
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let factory = Recording(seen.clone());
+            let opts = ReaderOptions::default();
+            let (mut r, _m) = mem_reader(&["p"], files.clone(), opts, Delivery::Whole, true);
+            let mut sink = Collect {
+                out: Vec::new(),
+                err: Rc::new(RefCell::new(Vec::new())),
+                statuses: Vec::new(),
+            };
+            let engine = EngineOptions {
+                threads,
+                window_bytes: 4096,
+                min_window: 0,
+                max_job_bytes,
+                stack_size: 8 << 20,
+            };
+            parallel::run(&mut r, &factory, &mut sink, &engine);
+            // What the sequential reader reads.
+            let (mut seq, _m) = mem_reader(&["p"], files.clone(), opts, Delivery::Whole, true);
+            let mut want = Vec::new();
+            while let Some(v) = seq.next() {
+                want.push(v.unwrap().to_json());
+            }
+            // Every worker run is on a record (as a multiset).
+            let mut remaining = want.clone();
+            for g in seen.lock().unwrap().iter() {
+                let pos = remaining.iter().position(|w| w == g).unwrap_or_else(|| {
+                    panic!("threads {threads} jobs {max_job_bytes}: ran the program on {g}, not a record")
+                });
+                remaining.remove(pos);
+            }
+            let out: Vec<String> = String::from_utf8(sink.out)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(out, want, "threads {threads} jobs {max_job_bytes}");
+        }
+    }
+}
