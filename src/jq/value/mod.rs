@@ -46,6 +46,7 @@ pub mod array;
 mod aux;
 pub mod dtoa;
 mod error;
+pub mod file;
 pub mod number;
 pub mod object;
 pub mod parse;
@@ -53,6 +54,8 @@ pub mod print;
 pub mod string;
 pub mod unicode;
 
+#[cfg(test)]
+mod live_tests;
 #[cfg(test)]
 mod tests;
 
@@ -62,6 +65,7 @@ use std::fmt;
 pub use array::Array;
 pub use aux::{group, sort, unique};
 pub use error::Error;
+pub use file::load_file;
 pub use number::Number;
 pub use object::Object;
 pub use parse::{ParseFlags, Parser, parse_sized};

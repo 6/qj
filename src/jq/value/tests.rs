@@ -49,7 +49,7 @@ fn arr(items: Vec<Value>) -> Value {
 
 /// `[0, value]` or `[1, error message]`, as the generator's
 /// `try (... | [0, .]) catch [1, .]` prints them.
-fn tagged(r: Result<Value, Error>) -> String {
+pub(super) fn tagged(r: Result<Value, Error>) -> String {
     match r {
         Ok(v) => arr(vec![Value::from(0), v]).to_json(),
         Err(e) => arr(vec![Value::from(1), e.into_value()]).to_json(),
@@ -408,7 +408,7 @@ fn by_impl(a: &Value, b: &Value, f: fn(&Array, &Array) -> Array) -> Result<Value
     }
 }
 
-fn run_op(op: &str, a: Value, b: Value, c: Value) -> Result<Value, Error> {
+pub(super) fn run_op(op: &str, a: Value, b: Value, c: Value) -> Result<Value, Error> {
     use std::cmp::Ordering::*;
     match op {
         "get" => a.get(&b),
