@@ -368,6 +368,7 @@ fn dump_options(flags: u32, colors: &Colors) -> DumpOptions {
 }
 
 /// What `process()` needs from main.c's options.
+#[derive(Clone)]
 struct Process {
     dump: DumpOptions,
     raw_output: bool,
@@ -447,6 +448,59 @@ fn c_str(s: &str) -> &str {
     }
 }
 
+/// One result as main.c's `process()` prints it, appended to `buf`, with the
+/// status it sets. `None` for a string containing NUL with `--raw-output0`
+/// (nothing is written; `process()` raises an error instead).
+fn write_result(result: &Value, p: &Process, buf: &mut Vec<u8>) -> Option<i32> {
+    let ret = match result {
+        Value::String(s) if p.raw_output => {
+            if p.ascii_output {
+                let ascii = DumpOptions {
+                    ascii: true,
+                    ..DumpOptions::default()
+                };
+                dump_to_vec(result, &ascii, buf);
+            } else if p.raw_output0 && memchr::memchr(0, s.as_bytes()).is_some() {
+                return None;
+            } else {
+                buf.extend_from_slice(s.as_bytes());
+            }
+            JQ_OK
+        }
+        _ => {
+            if p.seq {
+                buf.push(0x1e);
+            }
+            dump_to_vec(result, &p.dump, buf);
+            match result {
+                Value::Null | Value::Bool(false) => JQ_OK_NULL_KIND,
+                _ => JQ_OK,
+            }
+        }
+    };
+    if !p.raw_no_lf {
+        buf.push(b'\n');
+    }
+    if p.raw_output0 {
+        buf.push(0);
+    }
+    Some(ret)
+}
+
+/// The error `process()` raises for a string with a NUL under `--raw-output0`.
+const RAW_OUTPUT0_NUL: &str = "Cannot dump a string containing NUL with --raw-output0 option";
+
+/// main.c's message for an uncaught error, at input position `pos`.
+fn uncaught_error_line(msg: &Value, pos: &str) -> String {
+    match msg {
+        Value::String(s) => format!("{PROG}: error (at {pos}): {}\n", c_str(s.as_str())),
+        _ => format!(
+            "{PROG}: error (at {pos}) (not a string): {}\n",
+            dump_plain(msg)
+        ),
+    }
+}
+
 /// Port of main.c `process()`: runs the program on one input, printing its
 /// results, and returns jq's status for it.
 fn process(jq: &mut Jq, value: Value, p: &Process, input: &SharedInput) -> i32 {
@@ -461,47 +515,19 @@ fn process(jq: &mut Jq, value: Value, p: &Process, input: &SharedInput) -> i32 {
                 break;
             }
         };
-        let stop = with_stdout(|out| {
-            match &result {
-                Value::String(s) if p.raw_output => {
-                    if p.ascii_output {
-                        let ascii = DumpOptions {
-                            ascii: true,
-                            ..DumpOptions::default()
-                        };
-                        dump_to_vec(&result, &ascii, &mut out.buf);
-                    } else if p.raw_output0 && memchr::memchr(0, s.as_bytes()).is_some() {
-                        return true;
-                    } else {
-                        out.buf.extend_from_slice(s.as_bytes());
-                    }
-                    ret = JQ_OK;
-                }
-                _ => {
-                    ret = match result {
-                        Value::Null | Value::Bool(false) => JQ_OK_NULL_KIND,
-                        _ => JQ_OK,
-                    };
-                    if p.seq {
-                        out.buf.push(0x1e);
-                    }
-                    dump_to_vec(&result, &p.dump, &mut out.buf);
-                }
+        let written = with_stdout(|out| {
+            let r = write_result(&result, p, &mut out.buf);
+            if r.is_some() {
+                out.after_output(p.unbuffered);
             }
-            if !p.raw_no_lf {
-                out.buf.push(b'\n');
-            }
-            if p.raw_output0 {
-                out.buf.push(0);
-            }
-            out.after_output(p.unbuffered);
-            false
+            r
         });
-        if stop {
-            error = Some(Value::from(
-                "Cannot dump a string containing NUL with --raw-output0 option",
-            ));
-            break;
+        match written {
+            Some(r) => ret = r,
+            None => {
+                error = Some(Value::from(RAW_OUTPUT0_NUL));
+                break;
+            }
         }
     }
     if jq.halted() {
@@ -521,14 +547,7 @@ fn process(jq: &mut Jq, value: Value, p: &Process, input: &SharedInput) -> i32 {
     } else if let Some(msg) = error {
         // Uncaught jq exception
         let pos = input.borrow().position();
-        let line = match &msg {
-            Value::String(s) => format!("{PROG}: error (at {pos}): {}\n", c_str(s.as_str())),
-            _ => format!(
-                "{PROG}: error (at {pos}) (not a string): {}\n",
-                dump_plain(&msg)
-            ),
-        };
-        write_stderr(line.as_bytes());
+        write_stderr(uncaught_error_line(&msg, &pos).as_bytes());
         ret = JQ_ERROR_UNKNOWN;
     }
     ret
@@ -675,6 +694,7 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
             return (close_stdout(JQ_ERROR_COMPILE), -1);
         }
     };
+    let parallel = parallel_plan(opts, &program, &bc, &copts);
     let mut jq = Jq::new(bc);
     jq.set_jq_attrs(&copts.attrs);
     jq.set_attr("VERSION_DIR", Value::from("1.8.1"));
@@ -693,14 +713,25 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     } else {
         args::expand_file_globs(&opts.files)
     };
-    let input: SharedInput = super::input::open_inputs(
-        files,
-        InputOptions {
-            raw: opts.raw_input,
-            slurp: opts.slurp,
-            flags: ParseFlags::from_bits(opts.parser_flags()),
-        },
-    );
+    let input_opts = InputOptions {
+        raw: opts.raw_input,
+        slurp: opts.slurp,
+        flags: ParseFlags::from_bits(opts.parser_flags()),
+    };
+    let p = Process {
+        dump: dump_options(dumpopts, &colors),
+        raw_output: opts.raw_output,
+        raw_output0: opts.raw_output0,
+        raw_no_lf: opts.raw_no_lf,
+        ascii_output: opts.ascii_output,
+        seq: opts.seq,
+        unbuffered: opts.unbuffered_output,
+        jq_flags: opts.jq_flags,
+    };
+    if let Some(plan) = parallel {
+        return run_parallel(plan, files, input_opts, p);
+    }
+    let input: SharedInput = super::input::open_inputs(files, input_opts);
     jq.set_input(Some(Box::new(InputCb(input.clone()))));
 
     // debug_cb: ["DEBUG:",v] with the output flags minus pretty-printing.
@@ -718,17 +749,6 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         _ => write_stderr(c_str(&dump_plain(v)).as_bytes()),
     })));
     jq.set_error_cb(Some(default_err_cb()));
-
-    let p = Process {
-        dump: dump_options(dumpopts, &colors),
-        raw_output: opts.raw_output,
-        raw_output0: opts.raw_output0,
-        raw_no_lf: opts.raw_no_lf,
-        ascii_output: opts.ascii_output,
-        seq: opts.seq,
-        unbuffered: opts.unbuffered_output,
-        jq_flags: opts.jq_flags,
-    };
 
     let mut ret = JQ_OK_NO_OUTPUT;
     let mut last_result = -1; // -1 = no result, 0=null or false, 1=true
@@ -770,6 +790,280 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         ret = JQ_ERROR_SYSTEM;
     }
     (close_stdout(ret), last_result)
+}
+
+// ---------------------------------------------------------------------------
+// Parallel processing (src/io's record engine)
+// ---------------------------------------------------------------------------
+
+/// C builtins that make records depend on each other, on the order work is
+/// done in, or on a single process-wide state: programs using them run
+/// sequentially. `input` (and `inputs`, defined with it) reads records
+/// itself; `halt`/`halt_error` stop the run; `debug`/`stderr` interleave
+/// with other stderr output as they run; `%Z` in local times depends on the
+/// order of earlier libc time calls (`localtime`, `strflocaltime`,
+/// `mktime`); `strptime` and `_strindices` can abort the process like jq's
+/// `assert()`, which on macOS flushes the output produced so far;
+/// `modulemeta` reports module errors through the error callback.
+/// (`input_filename` and `input_line_number` are fine: workers answer them
+/// from each record's position.)
+const SEQUENTIAL_BUILTINS: &[&str] = &[
+    "input",
+    "halt",
+    "halt_error",
+    "debug",
+    "stderr",
+    "localtime",
+    "strflocaltime",
+    "mktime",
+    "strptime",
+    "_strindices",
+    "modulemeta",
+];
+
+/// What each worker thread needs to compile its own copy of the program
+/// (values are `Rc`, so they're rebuilt per thread: the named arguments as
+/// JSON text that round-trips exactly).
+struct ParallelPlan {
+    threads: usize,
+    program: Vec<u8>,
+    args_json: String,
+    lib_dirs: Vec<Vec<u8>>,
+    jq_origin: Vec<u8>,
+    prog_origin: Vec<u8>,
+}
+
+/// Whether the inputs can go through the parallel record engine: records
+/// must be independent (see [`SEQUENTIAL_BUILTINS`]), which also rules out
+/// `-n`, `-s`, `-R`, `--seq`, `--stream`, `--debug-trace`, user labels
+/// (their `{"__jq": n}` values count up across inputs), `$__loc__`, and
+/// modules. `--threads` 1 (or 0) also runs sequentially.
+fn parallel_plan(
+    opts: &Options<Value>,
+    program: &[u8],
+    bc: &crate::jq::lang::bytecode::Bytecode,
+    copts: &CompileOptions,
+) -> Option<ParallelPlan> {
+    if opts.null_input
+        || opts.slurp
+        || opts.raw_input
+        || opts.seq
+        || opts.parser_flags() != 0
+        || opts.jq_flags & args::debug_flags::TRACE != 0
+    {
+        return None;
+    }
+    let threads = opts
+        .threads
+        .unwrap_or_else(crate::io::parallel::default_threads);
+    if threads <= 1 {
+        return None;
+    }
+    if bc
+        .globals
+        .cfunctions
+        .iter()
+        .any(|c| SEQUENTIAL_BUILTINS.contains(&c.name))
+    {
+        return None;
+    }
+    let text = |needle: &[u8]| memchr::memmem::find(program, needle).is_some();
+    if text(b"$__loc__") || text(b"label") || text(b"break") || text(b"import") || text(b"include")
+    {
+        return None;
+    }
+    let args = Value::Object(copts.args.clone());
+    let args_json = dump_plain(&args);
+    match parse_sized(args_json.as_bytes()) {
+        Ok(back) if crate::io::fuzzing::same(&back, &args) => {}
+        _ => return None,
+    }
+    Some(ParallelPlan {
+        threads,
+        program: program.to_vec(),
+        args_json,
+        lib_dirs: opts.library_paths().iter().map(|p| p.to_vec()).collect(),
+        jq_origin: opts.jq_origin().to_vec(),
+        prog_origin: opts.program_origin().to_vec(),
+    })
+}
+
+/// The worker's `InputSource`: `input_filename`/`input_line_number` for the
+/// record being processed (`input` itself never runs in parallel).
+struct RecordPosition(Rc<RefCell<(Option<Value>, u64)>>);
+
+impl InputSource for RecordPosition {
+    fn next_input(&mut self) -> Option<Result<Value, Error>> {
+        None
+    }
+    fn current_filename(&self) -> Option<Value> {
+        self.0.borrow().0.clone()
+    }
+    fn current_line(&self) -> Value {
+        Value::number(self.0.borrow().1 as f64)
+    }
+}
+
+struct PortFactory {
+    plan: ParallelPlan,
+    p: Process,
+}
+
+struct PortWorker {
+    jq: Jq,
+    position: Rc<RefCell<(Option<Value>, u64)>>,
+    p: Process,
+}
+
+impl crate::io::parallel::WorkerFactory for PortFactory {
+    type Worker = PortWorker;
+
+    /// The program compiled as `run_program` compiles it (it compiled there,
+    /// so it compiles here).
+    fn new_worker(&self) -> PortWorker {
+        let plan = &self.plan;
+        let args = match parse_sized(plan.args_json.as_bytes()) {
+            Ok(Value::Object(o)) => o,
+            _ => Object::new(),
+        };
+        let mut attrs = JqAttrs::new(".");
+        attrs.lib_dirs = Value::from(
+            plan.lib_dirs
+                .iter()
+                .map(|p| Value::string_from_bytes(p))
+                .collect::<Vec<_>>(),
+        );
+        attrs.jq_origin = Value::string_from_bytes(&plan.jq_origin);
+        attrs.prog_origin = Value::string_from_bytes(&plan.prog_origin);
+        let copts = CompileOptions {
+            args,
+            env: None,
+            attrs,
+        };
+        let bc = jq_compile_args(&plan.program, &copts)
+            .unwrap_or_else(|_| unreachable!("the program compiled on the main thread"));
+        let mut jq = Jq::new(bc);
+        jq.set_jq_attrs(&copts.attrs);
+        jq.set_attr("VERSION_DIR", Value::from("1.8.1"));
+        let position = Rc::new(RefCell::new((None, 0)));
+        jq.set_input(Some(Box::new(RecordPosition(position.clone()))));
+        PortWorker {
+            jq,
+            position,
+            p: self.p.clone(),
+        }
+    }
+}
+
+impl crate::io::parallel::RecordWorker for PortWorker {
+    /// main.c's `process()` into buffers (no halt: programs that can halt run
+    /// sequentially).
+    fn process(
+        &mut self,
+        value: Value,
+        meta: &crate::io::parallel::RecordMeta<'_>,
+        out: &mut Vec<u8>,
+        err: &mut Vec<u8>,
+    ) -> i32 {
+        *self.position.borrow_mut() = (meta.filename.map(Value::from), meta.line);
+        let mut ret = JQ_OK_NO_OUTPUT;
+        self.jq.start(value, self.p.jq_flags);
+        let mut error: Option<Value> = None;
+        for result in self.jq.by_ref() {
+            match result {
+                Ok(v) => match write_result(&v, &self.p, out) {
+                    Some(r) => ret = r,
+                    None => {
+                        error = Some(Value::from(RAW_OUTPUT0_NUL));
+                        break;
+                    }
+                },
+                Err(e) => {
+                    error = Some(e.into_value());
+                    break;
+                }
+            }
+        }
+        if let Some(msg) = error {
+            let pos = match meta.filename {
+                Some(f) => format!("{}:{}", c_str(f), meta.line),
+                None => "<unknown>".to_owned(),
+            };
+            err.extend_from_slice(uncaught_error_line(&msg, &pos).as_bytes());
+            ret = JQ_ERROR_UNKNOWN;
+        }
+        ret
+    }
+}
+
+/// main.c's loop state over the engine's in-order results.
+struct MainLoop {
+    unbuffered: bool,
+    ret: i32,
+    last_result: i32,
+}
+
+impl crate::io::parallel::RecordSink for MainLoop {
+    fn record(&mut self, out: &[u8], err: &[u8], status: i32) -> std::ops::ControlFlow<()> {
+        if !out.is_empty() {
+            with_stdout(|s| {
+                s.buf.extend_from_slice(out);
+                s.after_output(self.unbuffered);
+            });
+        }
+        if !err.is_empty() {
+            write_stderr(err);
+        }
+        self.ret = status;
+        if status <= 0 && status != JQ_OK_NO_OUTPUT {
+            self.last_result = i32::from(status != JQ_OK_NULL_KIND);
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn parse_error(&mut self, e: Error) -> std::ops::ControlFlow<()> {
+        // Parse error (no --seq here: it runs sequentially)
+        let msg = e.to_string();
+        self.ret = JQ_ERROR_UNKNOWN;
+        write_stderr(format!("{PROG}: parse error: {}\n", c_str(&msg)).as_bytes());
+        std::ops::ControlFlow::Break(())
+    }
+}
+
+/// The input loop of `run_program` on src/io's parallel record engine.
+fn run_parallel(
+    plan: ParallelPlan,
+    files: Vec<Vec<u8>>,
+    input_opts: InputOptions,
+    p: Process,
+) -> (i32, i32) {
+    let mut reader = super::input::open_reader(files, input_opts);
+    let mut sink = MainLoop {
+        unbuffered: p.unbuffered,
+        ret: JQ_OK_NO_OUTPUT,
+        last_result: -1,
+    };
+    let engine = crate::io::parallel::EngineOptions {
+        threads: plan.threads,
+        ..crate::io::parallel::EngineOptions::default()
+    };
+    let factory = PortFactory { plan, p };
+    let stats = crate::io::parallel::run(&mut reader, &factory, &mut sink, &engine);
+    if std::env::var_os("QJ_ENGINE_STATS").is_some() {
+        write_stderr(
+            format!(
+                "{PROG}: {} threads, {stats:?}, {:?}\n",
+                engine.threads,
+                reader.stats()
+            )
+            .as_bytes(),
+        );
+    }
+    let mut ret = sink.ret;
+    if reader.failures() != 0 {
+        ret = JQ_ERROR_SYSTEM;
+    }
+    (close_stdout(ret), sink.last_result)
 }
 
 #[cfg(test)]
