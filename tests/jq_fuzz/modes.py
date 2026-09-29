@@ -342,6 +342,16 @@ def gen_parse_input(r):
         o, c = r.choice([(b"[", b"]"), (b'{"a":', b"}"), (b"[[", b"]]")])
         tail = c * depth if r.random() < 0.7 else c * r.randint(0, depth)
         return o * depth + (b"1" if r.random() < 0.5 else b"") + tail
+    if k < 0.8:
+        # A multibyte character (or a broken one) across a read-chunk boundary:
+        # jq reads lines in fgets chunks of 4095 bytes, qj in larger reads.
+        boundary = r.choice([4095, 4096, 8190, 8191, 65535, 65536, 1 << 20])
+        ch = r.choice([b"\xc3\xa9", b"\xe2\x82\xac", b"\xf0\x9f\x98\x80", b"\xc3", b"\xe2\x82",
+                       b"\xf0\x9f\x98", b"\xff", b"\\u00e9", b"\\ud83d\\ude00", b"\\ud83d"])
+        pre = r.choice([b'"', b'["', b'{"k":"', b'1 "', b"\n\""])
+        n = max(0, boundary - len(pre) - r.randint(0, len(ch)))
+        body = pre + b"a" * n + ch + r.choice([b'"', b'"]', b'"}', b"", b'" 1', b'"\n'])
+        return body + r.choice([b"\n", b"", b"\n{", b'\n"\xc3\xa9"\n'])
     if k < 0.9:
         # Around jq's 4096-byte read buffer (and larger).
         n = r.choice([4094, 4095, 4096, 4097, 8191, 8192, 8193, 65536, 65537])
@@ -463,8 +473,8 @@ def gen_modules(r):
             dep = names[i + 1]
             body.append(r.choice(['import "{d}" as {d};', 'include "{d}";',
                                   'import "{d}" as ${d};']).format(d=dep))
-        if r.random() < 0.1:
-            body.append('import "%s" as self;' % name)  # cycle
+        # (No import cycles: jq recurses in its linker until it overflows the
+        # stack and dies of SIGSEGV, e.g. a module that imports itself.)
         body += r.sample(MODULE_DEFS, r.randint(1, 4))
         if r.random() < 0.1:
             body.append(r.choice(["def broken: ;", "def x: 1", ".", "1 +", "def: 1;"]))
@@ -641,8 +651,28 @@ ENV_INPUTS = ["0", "1425599621", "-1", "1e10", "1709251200", "1710054000", "1699
               "1719792000", "1735689599", "null"]
 
 
+LOCALES = ["C", "POSIX", "en_US.UTF-8", "fr_FR.UTF-8", "de_DE.UTF-8", "ja_JP.UTF-8",
+           "ru_RU.UTF-8", "tr_TR.UTF-8", "fr_FR.ISO8859-1", "ja_JP.SJIS", "xx_YY.UTF-8", "",
+           "en_US", "de_DE.ISO8859-15", "zh_CN.UTF-8", "C.UTF-8"]
+LOCALE_VARS = ["LC_ALL", "LC_ALL", "LANG", "LC_TIME", "LC_CTYPE", "LC_MESSAGES", "LC_NUMERIC"]
+LOCALE_PROGRAMS = [
+    "strftime(\"%c\")", "strftime(\"%a %A %b %B %p\")", "strftime(\"%x %X\")",
+    "strftime(\"%Ec %Ex %EX %Oy\")", "strflocaltime(\"%c %Z\")", "todate", "gmtime | todate",
+    "strftime(\"%A\") | ascii_downcase", "strptime(\"%a %b %d %Y\")?",
+    "\"jeudi 5 mars 2015\" | strptime(\"%A %d %B %Y\")?", "\"Donnerstag\" | strptime(\"%A\")?",
+    "input_filename", "tostring", "tojson", "@text", "ascii_downcase", "test(\"\\\\w\")?",
+    "\"éÉ\" | ascii_upcase", "[.] | @sh", "1.5 | tostring", "\"1,5\" | tonumber?", "$ENV.LANG",
+]
+
+
 def gen_env(r):
     env = {}
+    if r.random() < 0.35:
+        env[r.choice(LOCALE_VARS)] = r.choice(LOCALES)
+        if r.random() < 0.3:
+            env[r.choice(LOCALE_VARS)] = r.choice(LOCALES)
+        if "LC_ALL" not in env:
+            env["LC_ALL"] = None  # unset the harness's LC_ALL=C so the others count
     if r.random() < 0.8:
         env["TZ"] = r.choice(TZS)
     for _ in range(r.choice([0, 1, 2])):

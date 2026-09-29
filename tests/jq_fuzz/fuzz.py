@@ -360,6 +360,7 @@ class Runner:
     def run_tool(self, tool, inv):
         env = base_env(self.casedir)
         env.update(inv["env"])
+        env = {k: v for k, v in env.items() if v is not None}  # None: unset
         self.runs += 1
         size = sum(len(v) for v in inv["files"].values()) + len(inv["stdin"] or b"")
         return run_proc([tool] + inv["args"], self.casedir, env, inv["stdin"], inv["stdin_mode"],
@@ -544,10 +545,22 @@ def gen_modules_case(r):
 
 def gen_env_case(r):
     env = modes.gen_env(r)
-    prog = r.choice(modes.ENV_PROGRAMS)
+    prog = r.choice(modes.ENV_PROGRAMS + modes.LOCALE_PROGRAMS)
     if r.random() < 0.5:
         prog = r.choice(modes.ENV_INPUTS) + " | " + prog
-    return Case(simple_flags(r) + [["-n"]], prog, None, env=env)
+    flags = simple_flags(r) + [["-n"]]
+    if r.random() < 0.15:
+        # isoptish() uses isalpha, which depends on the locale for bytes >= 0x80.
+        flags.insert(0, [r.choice(["-é", "-ü", "-ß", "-1", "-_", "-én",
+                                   "-né", "-İ", "--é"])])
+    files = {}
+    file_args = []
+    if r.random() < 0.15:
+        # strerror text is localized.
+        file_args = [r.choice(["missing.json", "dir"])]
+        files = {"dir/x": b"1"}
+        flags = [f for f in flags if f != ["-n"]]
+    return Case(flags, prog, None, env=env, files=files, file_args=file_args)
 
 
 def simple_flags(r):

@@ -63,8 +63,43 @@ def render(node, need=Q):
     return s
 
 
+def text_level(text):
+    """The loosest operator at the top level of a program fragment: leaves
+    written as text (`"now | type"`) must be parenthesized like the nodes
+    they stand for."""
+    depth = 0
+    lvl = A
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0:
+            rest = text[i:]
+            if c == "|" and not rest.startswith("|="):
+                lvl = max(lvl, P)
+            elif c == ",":
+                lvl = max(lvl, C)
+            elif c == ";":
+                lvl = Q  # def f: ...; rest
+            elif rest.startswith((" as ", "def ", "label ")):
+                lvl = Q
+            elif rest[:1] in "+-*/%<>=!" or rest.startswith((" and ", " or ", "//")):
+                if not (c == "-" and i == 0):
+                    lvl = max(lvl, E)
+        i += 1
+    return lvl
+
+
 def lf(text, lvl=A):
-    return N(lvl, [text])
+    return N(max(lvl, text_level(text)), [text])
 
 
 DOT = None  # set below
