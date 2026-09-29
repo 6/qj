@@ -198,3 +198,19 @@ fn messages_say_qj() {
     assert_eq!(with_prog_name("x jq: y"), "x jq: y");
     assert_eq!(with_prog_name("jqx"), "jqx");
 }
+
+#[test]
+fn stdio_buffer_sizes() {
+    // macOS stdio: st_blksize capped at 64 KB, and a terminal's at 4096
+    // (TTYBUFSIZE; a pty reports 64 KB or more). With stderr on the same
+    // terminal, `jq -nj '("x" * 70000), error("e")'` shows the error after
+    // 69632 = 17 * 4096 bytes (found by tests/jq_fuzz's tty mode).
+    if cfg!(target_os = "macos") {
+        assert!(stdio_buffer_size(true) <= 4096);
+        assert!(stdio_buffer_size(false) <= 1 << 16);
+    }
+    if cfg!(target_os = "linux") {
+        assert!(stdio_buffer_size(false) <= libc::BUFSIZ as usize);
+    }
+    assert!(stdio_buffer_size(false) > 0);
+}

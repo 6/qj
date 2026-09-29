@@ -125,3 +125,47 @@ files = { "t.test" = "input_line_number|$__loc__\n0\n0" }
 name = "run-tests-input-builtins-without-input"
 args = ["--run-tests"]
 stdin = "try input_line_number catch .\nnull\n\"Unknown input line number\"\n\n[input_filename]\nnull\n[null]\n\ntry input catch .\nnull\n\"No more inputs\"\n"
+
+# ---------------------------------------------------------------------------
+# -s --stream: when the input ends inside a text right after a nested value,
+# util.c's slurp loop returns the events so far (the parser has used up the
+# last chunk) and the parse error comes on the next read, in the main loop or
+# in the program's input/inputs. qj's reader reported the error first.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "slurp-stream-ends-inside-text"
+args = ["-c", "-s", "--stream", "."]
+stdin = "[{\"\":0}"
+
+[[case]]
+name = "slurp-stream-ends-inside-text-inputs"
+args = ["-c", "-s", "--stream", "reduce inputs as $x (1; 1)"]
+stdin = "[{\"\":0}"
+note = "the error is raised by inputs: `jq: error (at <stdin>:0): ...`"
+
+[[case]]
+name = "slurp-stream-ends-inside-text-input"
+args = ["-c", "-s", "--stream", "[., input]"]
+stdin = "[[1]"
+
+[[case]]
+name = "slurp-stream-errors-ends-inside-text"
+args = ["-c", "-s", "--stream-errors", "."]
+stdin = "[[1]"
+
+[[case]]
+name = "slurp-stream-ends-inside-text-files"
+args = ["-c", "-s", "--stream", ".", "a", "b"]
+files = { "a" = "[[1]", "b" = "" }
+
+[[case]]
+name = "slurp-stream-ends-inside-text-newline"
+args = ["-c", "-s", "--stream", "."]
+stdin = "[[1]\n"
+
+[[case]]
+name = "slurp-stream-ends-after-text"
+args = ["-c", "-s", "--stream", "."]
+stdin = "[1] [2"
+note = "more input after a value: the loop goes on and the error comes first"
