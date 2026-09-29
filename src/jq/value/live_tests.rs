@@ -8,6 +8,7 @@
 //! Random inputs come from a seeded generator (`QJ_SEED` overrides the seed,
 //! `QJ_CASES` the number of cases) so failures are reproducible.
 
+use std::cmp::Ordering;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -887,4 +888,144 @@ fn live_lossy_literal_sorts() {
     }
     assert_eq!(failures, 0, "{failures} of {} differ", docs.len());
     eprintln!("{} mixed-precision sorts match jq", docs.len());
+}
+
+fn gen_alphabet_string(rng: &mut Rng, max: u64) -> String {
+    let alphabet = [
+        "a",
+        "b",
+        "ab",
+        "\u{e9}",
+        "\u{20ac}",
+        "\u{1F600}",
+        "\u{0}",
+        ",",
+        " ",
+    ];
+    let n = rng.below(max + 1);
+    (0..n).map(|_| *rng.pick(&alphabet)).collect()
+}
+
+/// String operations from jv.c on random strings, compared with jq.
+#[test]
+#[ignore]
+fn live_string_ops() {
+    if !jq_available() {
+        return;
+    }
+    let seed = env_u64("QJ_SEED", 0x5712);
+    let cases = env_u64("QJ_CASES", 20000);
+    let mut rng = Rng(seed | 1);
+    let ops: &[(&str, &str)] = &[
+        ("split", "$a | split($b)"),
+        ("indices", "$a | _strindices($b)"),
+        ("contains", "$a | contains($b)"),
+        ("explode", "$a | explode"),
+        ("roundtrip", "$a | explode | implode"),
+        ("repeat", "$a * $n"),
+        ("slice", "$a | .[$n:$m]"),
+        ("index", "$a | .[$n:]"),
+        ("length", "[$a | length, utf8bytelength]"),
+        ("concat", "$a + $b"),
+        ("tojson", "$a | tojson"),
+        ("cmp", "[$a < $b, $a == $b]"),
+    ];
+    let mut rows = Vec::new();
+    for _ in 0..cases {
+        let op = rng.below(ops.len() as u64) as usize;
+        let a = gen_alphabet_string(&mut rng, 12);
+        let b = gen_alphabet_string(&mut rng, 3);
+        let n = rng.below(12) as i64 - 4;
+        let m = rng.below(14) as i64 - 4;
+        rows.push((op, a, b, n, m));
+    }
+    let mut prog = String::from(". as [$op, $a, $b, $n, $m] | try (");
+    for (i, (name, expr)) in ops.iter().enumerate() {
+        prog.push_str(if i == 0 { "if " } else { " elif " });
+        prog.push_str(&format!("$op == \"{name}\" then {expr}"));
+    }
+    prog.push_str(" else error(\"bad op\") end | [0, .]) catch [1, .]");
+    let input: String = rows
+        .iter()
+        .map(|(op, a, b, n, m)| {
+            Value::from(vec![
+                Value::from(ops[*op].0),
+                Value::from(a.as_str()),
+                Value::from(b.as_str()),
+                Value::from(*n),
+                Value::from(*m),
+            ])
+            .to_json()
+                + "\n"
+        })
+        .collect();
+    let (want, err) = run_jq(&["-c", &prog], input.as_bytes());
+    assert!(
+        err.is_empty(),
+        "jq failed: {}",
+        String::from_utf8_lossy(&err)
+    );
+    let want = String::from_utf8(want).unwrap();
+    let mut failures = 0;
+    for ((op, a, b, n, m), line) in rows.iter().zip(want.lines()) {
+        let (sa, sb) = (Str::from(a.as_str()), Str::from(b.as_str()));
+        let r: Result<Value, Error> = match ops[*op].0 {
+            "split" => Ok(Value::Array(sa.split(&sb))),
+            "indices" => Ok(Value::Array(sa.indexes(&sb))),
+            "contains" => Ok(Value::from(
+                Value::String(sa.clone()).contains(&Value::String(sb.clone())),
+            )),
+            "explode" => Ok(Value::Array(sa.explode())),
+            "roundtrip" => Str::implode(&Value::Array(sa.explode())).map(Value::String),
+            "repeat" => sa.repeat(if *n < 0 { -1 } else { *n as i32 }),
+            "slice" | "index" => {
+                let end = if ops[*op].0 == "slice" {
+                    Value::from(*m)
+                } else {
+                    Value::Null
+                };
+                let key: Object = [
+                    (Str::from("start"), Value::from(*n)),
+                    (Str::from("end"), end),
+                ]
+                .into_iter()
+                .collect();
+                Value::String(sa.clone()).get(&Value::Object(key))
+            }
+            "length" => Ok(Value::from(vec![
+                Value::from(sa.codepoint_len()),
+                Value::from(sa.len()),
+            ])),
+            "concat" => {
+                let mut x = sa.clone();
+                x.concat(&sb);
+                Ok(Value::String(x))
+            }
+            "tojson" => Ok(Value::from(Value::String(sa.clone()).to_json())),
+            _ => {
+                let (va, vb) = (Value::String(sa.clone()), Value::String(sb.clone()));
+                Ok(Value::from(vec![
+                    Value::from(va.compare(&vb) == Ordering::Less),
+                    Value::from(va.equal(&vb)),
+                ]))
+            }
+        };
+        let got = super::tests::tagged(r);
+        if got != line {
+            failures += 1;
+            if failures <= 10 {
+                eprintln!(
+                    "{} a={a:?} b={b:?} n={n} m={m}\n  got {got}\n  jq  {line}",
+                    ops[*op].0
+                );
+            }
+        }
+    }
+    assert_eq!(
+        failures,
+        0,
+        "{failures} of {} string ops differ",
+        rows.len()
+    );
+    eprintln!("{} random string ops match jq", rows.len());
 }
