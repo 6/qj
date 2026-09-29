@@ -9,7 +9,7 @@ Benchmarked on M4 MacBook Pro:
 
 ## qj vs jq
 
-**Drop-in replacement.** 100% feature coverage (181/181) and 100% pass rate on jq's official test suite. All filters, builtins, and flags. ([details](docs/COMPATIBILITY.md))
+**Drop-in replacement.** qj runs a port of jq 1.8.1's own implementation, so it matches jq byte for byte: the same stdout, exit codes, and error messages. A differential harness runs 19,584 cases against jq 1.8.1, including all of jq's own test suites (2,903 cases, all byte-exact). qj matches 19,577 of them; the other 7 are qj's own help and version text. ([details](docs/COMPATIBILITY.md))
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
@@ -68,18 +68,22 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 - **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks. Output order always matches input order despite parallel processing. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~300 MB for a 3.4 GB file). Falls back to streaming read() for stdin/pipes.
 - **Apple Silicon tuning.** Uses every non-efficiency core (P-cores, or Super + Performance cores on M5 Pro/Max), avoiding E-cores whose slower throughput creates stragglers that bottleneck the parallel pipeline.
 - **Zero-copy I/O.** mmap for single-document JSON. No heap allocation or memcpy for the input file.
-- **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
+- **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely.
 - **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed automatically based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).
 
 ## Compatibility and limitations
 
-See [compatibility details](docs/COMPATIBILITY.md) for the full feature matrix, test suite results, and `QJ_JQ_COMPAT=1` mode.
+See [compatibility details](docs/COMPATIBILITY.md) for how conformance is measured, the test results, what's exempt, and the feature matrix.
+
+Numbers behave exactly as in jq 1.8.1, which uses decNumber. Number literals keep their exact decimal value: `100000000000000000001` prints as written, and `1e2` prints in canonical form as `1E+2`. Arithmetic is f64: `13911860366432393 - 10` is `13911860366432382`. qj no longer does i64 arithmetic, and `QJ_JQ_COMPAT` is obsolete.
 
 Limitations vs jq:
 
-- No arbitrary precision arithmetic: qj uses i64/f64 internally. Integers up to 2^63 are exact; beyond that, precision is lost. By default, qj is *more precise* than jq for integers in the 2^53–2^63 range. Set `QJ_JQ_COMPAT=1` to match jq's exact precision behavior if needed.
+- Help, version, and build-configuration text are qj's own, and messages name `qj` where jq's name `jq` (`qj: error: ...`).
 - Single-document JSON >4 GB falls back to serde_json (simdjson's limit). Still faster than jq but ~3-6x slower than simdjson's fast path. **NDJSON (JSONL) is unaffected** since each line is parsed independently.
 
 ## Credits / Inspiration
+
+qj's core is a port of [jq](https://github.com/jqlang/jq) 1.8.1 (MIT licensed). [LICENSE-jq](LICENSE-jq) has jq's license and the notices it carries.
 
 thanks to [lemire](https://github.com/lemire)+team for the ultra-speedy simdjson library, [01mf02](https://github.com/01mf02) for pioneering Rust jq rewrite, and [aikoschurmann](https://github.com/aikoschurmann) for inspiring the raw byte-scan approach to NDJSON filtering.
