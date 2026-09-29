@@ -1058,7 +1058,7 @@ fn run_parallel(
         threads: plan.threads,
         ..crate::io::parallel::EngineOptions::default()
     };
-    // QJ_WINDOW_SIZE=N: at most N MB of input in flight.
+    // QJ_WINDOW_SIZE=N: at most N MB of input in flight (as for the old core).
     if let Some(mb) = std::env::var("QJ_WINDOW_SIZE")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
