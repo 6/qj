@@ -1,6 +1,8 @@
 # Builtins that qj implements natively (src/jq/builtins/native/): walk, paths,
 # paths(f), tostream, to_entries, from_entries, with_entries, ascii_downcase,
-# ascii_upcase, join, and _modify/_assign (|=, =, +=, //=, map_values, ...). Each must match its builtin.jq definition exactly: outputs, laziness,
+# ascii_upcase, join, _modify/_assign (|=, =, +=, //=, map_values, ...), recurse (..),
+# the type filters (numbers, ...), add, _flatten (flatten), first, limit, isempty,
+# any/all and IN. Each must match its builtin.jq definition exactly: outputs, laziness,
 # errors, labels (break values), path expressions, value identity (path($x)) and array
 # storage (writing past the end of a view), and ?// (which disables natives that
 # abandon closures). Generated from the edge cases in src/jq/builtins/native/tests.rs.
@@ -3575,6 +3577,966 @@ reduce .[]? as $x (.; .[0]? |= $x)
 reduce .[]? as $x (.; .[0]? |= $x)
 null
 
+[.. | numbers]
+[1,[2,[3]],{"a":[]}]
+
+[.. | numbers]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[.. | numbers]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[.. | numbers]
+{"x":{"a":{"b":1},"c":2}}
+
+[.. | numbers]
+[]
+
+[.. | numbers]
+{}
+
+[.. | numbers]
+1
+
+[.. | numbers]
+null
+
+[.. | scalars]
+[1,[2,[3]],{"a":[]}]
+
+[.. | scalars]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[.. | scalars]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[.. | scalars]
+{"x":{"a":{"b":1},"c":2}}
+
+[.. | scalars]
+[]
+
+[.. | scalars]
+{}
+
+[.. | scalars]
+1
+
+[.. | scalars]
+null
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+[1,[2,[3]],{"a":[]}]
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+{"x":{"a":{"b":1},"c":2}}
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+[]
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+{}
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+1
+
+[.. | values, nulls, booleans, strings, arrays, objects, iterables]
+null
+
+try add catch .
+[1,[2,[3]],{"a":[]}]
+
+try add catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try add catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try add catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try add catch .
+[]
+
+try add catch .
+{}
+
+try add catch .
+1
+
+try add catch .
+null
+
+try add(.[]?) catch .
+[1,[2,[3]],{"a":[]}]
+
+try add(.[]?) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try add(.[]?) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try add(.[]?) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try add(.[]?) catch .
+[]
+
+try add(.[]?) catch .
+{}
+
+try add(.[]?) catch .
+1
+
+try add(.[]?) catch .
+null
+
+try add(.[]? | .[]?) catch .
+[1,[2,[3]],{"a":[]}]
+
+try add(.[]? | .[]?) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try add(.[]? | .[]?) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try add(.[]? | .[]?) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try add(.[]? | .[]?) catch .
+[]
+
+try add(.[]? | .[]?) catch .
+{}
+
+try add(.[]? | .[]?) catch .
+1
+
+try add(.[]? | .[]?) catch .
+null
+
+try flatten catch .
+[1,[2,[3]],{"a":[]}]
+
+try flatten catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try flatten catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try flatten catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try flatten catch .
+[]
+
+try flatten catch .
+{}
+
+try flatten catch .
+1
+
+try flatten catch .
+null
+
+try flatten(1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try flatten(1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try flatten(1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try flatten(1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try flatten(1) catch .
+[]
+
+try flatten(1) catch .
+{}
+
+try flatten(1) catch .
+1
+
+try flatten(1) catch .
+null
+
+try flatten(0) catch .
+[1,[2,[3]],{"a":[]}]
+
+try flatten(0) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try flatten(0) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try flatten(0) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try flatten(0) catch .
+[]
+
+try flatten(0) catch .
+{}
+
+try flatten(0) catch .
+1
+
+try flatten(0) catch .
+null
+
+try flatten(1E-400) catch .
+[1,[2,[3]],{"a":[]}]
+
+try flatten(1E-400) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try flatten(1E-400) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try flatten(1E-400) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try flatten(1E-400) catch .
+[]
+
+try flatten(1E-400) catch .
+{}
+
+try flatten(1E-400) catch .
+1
+
+try flatten(1E-400) catch .
+null
+
+try flatten("a") catch .
+[1,[2,[3]],{"a":[]}]
+
+try flatten("a") catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try flatten("a") catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try flatten("a") catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try flatten("a") catch .
+[]
+
+try flatten("a") catch .
+{}
+
+try flatten("a") catch .
+1
+
+try flatten("a") catch .
+null
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+[1,[2,[3]],{"a":[]}]
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+{"x":{"a":{"b":1},"c":2}}
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+[]
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+{}
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+1
+
+[[]] | flatten as $a | [[[]]] | flatten | path($a)
+null
+
+first(.[]?)
+[1,[2,[3]],{"a":[]}]
+
+first(.[]?)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+first(.[]?)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+first(.[]?)
+{"x":{"a":{"b":1},"c":2}}
+
+first(.[]?)
+[]
+
+first(.[]?)
+{}
+
+first(.[]?)
+1
+
+first(.[]?)
+null
+
+first(empty)
+[1,[2,[3]],{"a":[]}]
+
+first(empty)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+first(empty)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+first(empty)
+{"x":{"a":{"b":1},"c":2}}
+
+first(empty)
+[]
+
+first(empty)
+{}
+
+first(empty)
+1
+
+first(empty)
+null
+
+try first(error) catch .
+[1,[2,[3]],{"a":[]}]
+
+try first(error) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try first(error) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try first(error) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try first(error) catch .
+[]
+
+try first(error) catch .
+{}
+
+try first(error) catch .
+1
+
+try first(error) catch .
+null
+
+[limit(2; .[]?)]
+[1,[2,[3]],{"a":[]}]
+
+[limit(2; .[]?)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[limit(2; .[]?)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[limit(2; .[]?)]
+{"x":{"a":{"b":1},"c":2}}
+
+[limit(2; .[]?)]
+[]
+
+[limit(2; .[]?)]
+{}
+
+[limit(2; .[]?)]
+1
+
+[limit(2; .[]?)]
+null
+
+[limit(0; .[]?)]
+[1,[2,[3]],{"a":[]}]
+
+[limit(0; .[]?)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[limit(0; .[]?)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[limit(0; .[]?)]
+{"x":{"a":{"b":1},"c":2}}
+
+[limit(0; .[]?)]
+[]
+
+[limit(0; .[]?)]
+{}
+
+[limit(0; .[]?)]
+1
+
+[limit(0; .[]?)]
+null
+
+try [limit(-1; .[]?)] catch .
+[1,[2,[3]],{"a":[]}]
+
+try [limit(-1; .[]?)] catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try [limit(-1; .[]?)] catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try [limit(-1; .[]?)] catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try [limit(-1; .[]?)] catch .
+[]
+
+try [limit(-1; .[]?)] catch .
+{}
+
+try [limit(-1; .[]?)] catch .
+1
+
+try [limit(-1; .[]?)] catch .
+null
+
+[limit(1E-400; 1, 2)]
+[1,[2,[3]],{"a":[]}]
+
+[limit(1E-400; 1, 2)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[limit(1E-400; 1, 2)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[limit(1E-400; 1, 2)]
+{"x":{"a":{"b":1},"c":2}}
+
+[limit(1E-400; 1, 2)]
+[]
+
+[limit(1E-400; 1, 2)]
+{}
+
+[limit(1E-400; 1, 2)]
+1
+
+[limit(1E-400; 1, 2)]
+null
+
+[limit(1.5; .[]?, .[]?)]
+[1,[2,[3]],{"a":[]}]
+
+[limit(1.5; .[]?, .[]?)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[limit(1.5; .[]?, .[]?)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[limit(1.5; .[]?, .[]?)]
+{"x":{"a":{"b":1},"c":2}}
+
+[limit(1.5; .[]?, .[]?)]
+[]
+
+[limit(1.5; .[]?, .[]?)]
+{}
+
+[limit(1.5; .[]?, .[]?)]
+1
+
+[limit(1.5; .[]?, .[]?)]
+null
+
+try [limit("a"; .[]?)] catch .
+[1,[2,[3]],{"a":[]}]
+
+try [limit("a"; .[]?)] catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try [limit("a"; .[]?)] catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try [limit("a"; .[]?)] catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try [limit("a"; .[]?)] catch .
+[]
+
+try [limit("a"; .[]?)] catch .
+{}
+
+try [limit("a"; .[]?)] catch .
+1
+
+try [limit("a"; .[]?)] catch .
+null
+
+isempty(.[]?)
+[1,[2,[3]],{"a":[]}]
+
+isempty(.[]?)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+isempty(.[]?)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+isempty(.[]?)
+{"x":{"a":{"b":1},"c":2}}
+
+isempty(.[]?)
+[]
+
+isempty(.[]?)
+{}
+
+isempty(.[]?)
+1
+
+isempty(.[]?)
+null
+
+isempty(empty)
+[1,[2,[3]],{"a":[]}]
+
+isempty(empty)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+isempty(empty)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+isempty(empty)
+{"x":{"a":{"b":1},"c":2}}
+
+isempty(empty)
+[]
+
+isempty(empty)
+{}
+
+isempty(empty)
+1
+
+isempty(empty)
+null
+
+try any catch .
+[1,[2,[3]],{"a":[]}]
+
+try any catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try any catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try any catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try any catch .
+[]
+
+try any catch .
+{}
+
+try any catch .
+1
+
+try any catch .
+null
+
+try all catch .
+[1,[2,[3]],{"a":[]}]
+
+try all catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try all catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try all catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try all catch .
+[]
+
+try all catch .
+{}
+
+try all catch .
+1
+
+try all catch .
+null
+
+try any(. == 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try any(. == 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try any(. == 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try any(. == 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try any(. == 1) catch .
+[]
+
+try any(. == 1) catch .
+{}
+
+try any(. == 1) catch .
+1
+
+try any(. == 1) catch .
+null
+
+try all(. != null) catch .
+[1,[2,[3]],{"a":[]}]
+
+try all(. != null) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try all(. != null) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try all(. != null) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try all(. != null) catch .
+[]
+
+try all(. != null) catch .
+{}
+
+try all(. != null) catch .
+1
+
+try all(. != null) catch .
+null
+
+any(.[]?; . == false)
+[1,[2,[3]],{"a":[]}]
+
+any(.[]?; . == false)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+any(.[]?; . == false)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+any(.[]?; . == false)
+{"x":{"a":{"b":1},"c":2}}
+
+any(.[]?; . == false)
+[]
+
+any(.[]?; . == false)
+{}
+
+any(.[]?; . == false)
+1
+
+any(.[]?; . == false)
+null
+
+all(.[]?; type == "number")
+[1,[2,[3]],{"a":[]}]
+
+all(.[]?; type == "number")
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+all(.[]?; type == "number")
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+all(.[]?; type == "number")
+{"x":{"a":{"b":1},"c":2}}
+
+all(.[]?; type == "number")
+[]
+
+all(.[]?; type == "number")
+{}
+
+all(.[]?; type == "number")
+1
+
+all(.[]?; type == "number")
+null
+
+IN(1, 2)
+[1,[2,[3]],{"a":[]}]
+
+IN(1, 2)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+IN(1, 2)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+IN(1, 2)
+{"x":{"a":{"b":1},"c":2}}
+
+IN(1, 2)
+[]
+
+IN(1, 2)
+{}
+
+IN(1, 2)
+1
+
+IN(1, 2)
+null
+
+IN(.[]?; 1, 2)
+[1,[2,[3]],{"a":[]}]
+
+IN(.[]?; 1, 2)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+IN(.[]?; 1, 2)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+IN(.[]?; 1, 2)
+{"x":{"a":{"b":1},"c":2}}
+
+IN(.[]?; 1, 2)
+[]
+
+IN(.[]?; 1, 2)
+{}
+
+IN(.[]?; 1, 2)
+1
+
+IN(.[]?; 1, 2)
+null
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+[1,[2,[3]],{"a":[]}]
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+{"x":{"a":{"b":1},"c":2}}
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+[]
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+{}
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+1
+
+[isempty(1, error("x")), (try isempty(error("y")) catch .)]
+null
+
+[any(1, error("x"); . == 1)]
+[1,[2,[3]],{"a":[]}]
+
+[any(1, error("x"); . == 1)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[any(1, error("x"); . == 1)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[any(1, error("x"); . == 1)]
+{"x":{"a":{"b":1},"c":2}}
+
+[any(1, error("x"); . == 1)]
+[]
+
+[any(1, error("x"); . == 1)]
+{}
+
+[any(1, error("x"); . == 1)]
+1
+
+[any(1, error("x"); . == 1)]
+null
+
+[all(0, error("x"); . == 1)]
+[1,[2,[3]],{"a":[]}]
+
+[all(0, error("x"); . == 1)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[all(0, error("x"); . == 1)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[all(0, error("x"); . == 1)]
+{"x":{"a":{"b":1},"c":2}}
+
+[all(0, error("x"); . == 1)]
+[]
+
+[all(0, error("x"); . == 1)]
+{}
+
+[all(0, error("x"); . == 1)]
+1
+
+[all(0, error("x"); . == 1)]
+null
+
+first(.[]?) | [label $f | try break $f catch .]
+[1,[2,[3]],{"a":[]}]
+
+first(.[]?) | [label $f | try break $f catch .]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+first(.[]?) | [label $f | try break $f catch .]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+first(.[]?) | [label $f | try break $f catch .]
+{"x":{"a":{"b":1},"c":2}}
+
+first(.[]?) | [label $f | try break $f catch .]
+[]
+
+first(.[]?) | [label $f | try break $f catch .]
+{}
+
+first(.[]?) | [label $f | try break $f catch .]
+1
+
+first(.[]?) | [label $f | try break $f catch .]
+null
+
+[.[]? | first(.[]?)]
+[1,[2,[3]],{"a":[]}]
+
+[.[]? | first(.[]?)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[.[]? | first(.[]?)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[.[]? | first(.[]?)]
+{"x":{"a":{"b":1},"c":2}}
+
+[.[]? | first(.[]?)]
+[]
+
+[.[]? | first(.[]?)]
+{}
+
+[.[]? | first(.[]?)]
+1
+
+[.[]? | first(.[]?)]
+null
+
+[limit(3; repeat(.))]
+[1,[2,[3]],{"a":[]}]
+
+[limit(3; repeat(.))]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[limit(3; repeat(.))]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[limit(3; repeat(.))]
+{"x":{"a":{"b":1},"c":2}}
+
+[limit(3; repeat(.))]
+[]
+
+[limit(3; repeat(.))]
+{}
+
+[limit(3; repeat(.))]
+1
+
+[limit(3; repeat(.))]
+null
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+[1,[2,[3]],{"a":[]}]
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+{"x":{"a":{"b":1},"c":2}}
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+[]
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+{}
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+1
+
+[first(.[]?), first(.[]?)] | .[0] as $x | .[1] | try path($x) catch "E"
+null
+
+label $f | first(.[]?) | ., break $f
+[1,[2,[3]],{"a":[]}]
+
+label $f | first(.[]?) | ., break $f
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+label $f | first(.[]?) | ., break $f
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+label $f | first(.[]?) | ., break $f
+{"x":{"a":{"b":1},"c":2}}
+
+label $f | first(.[]?) | ., break $f
+[]
+
+label $f | first(.[]?) | ., break $f
+{}
+
+label $f | first(.[]?) | ., break $f
+1
+
+label $f | first(.[]?) | ., break $f
+null
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+[1,[2,[3]],{"a":[]}]
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+{"x":{"a":{"b":1},"c":2}}
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+[]
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+{}
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+1
+
+[.. | numbers] as $a | [.. | numbers] | . == $a
+null
+
 walk(if type == "object" then with_entries(.key |= ascii_upcase) else . end)
 [{"key":"a","value":1},{"k":"b","value":2},{"name":"c","Value":3}]
 
@@ -3905,6 +4867,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (to_entries) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | to_entries | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | to_entries | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | from_entries | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -3963,6 +4931,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (from_entries) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | from_entries | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | from_entries | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | with_entries(.) | $$$$v | .[3] = 9
@@ -4025,6 +4999,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (with_entries(.)) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | with_entries(.) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | with_entries(.) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | walk(.) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4083,6 +5063,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (walk(.)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | walk(.) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | walk(.) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | paths | $$$$v | .[3] = 9
@@ -4145,6 +5131,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (paths) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | paths | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | paths | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | paths(true) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4203,6 +5195,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (paths(true)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | paths(true) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | paths(true) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | tostream | $$$$v | .[3] = 9
@@ -4265,6 +5263,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (tostream) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | tostream | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | tostream | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | ascii_downcase | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4323,6 +5327,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (ascii_downcase) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | ascii_downcase | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | ascii_downcase | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | ([.[] | tostring] | join(",")) | $$$$v | .[3] = 9
@@ -4385,6 +5395,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (([.[] | tostring] | join(","))) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | ([.[] | tostring] | join(",")) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | ([.[] | tostring] | join(",")) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | join(",") | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4443,6 +5459,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (join(",")) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | join(",") | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | join(",") | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | join(null) | $$$$v | .[3] = 9
@@ -4505,6 +5527,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (join(null)) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | join(null) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | join(null) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | (.[0] |= .) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4563,6 +5591,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce ((.[0] |= .)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | (.[0] |= .) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[0] |= .) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | (.[0] = 1) | $$$$v | .[3] = 9
@@ -4625,6 +5659,12 @@ null
 {a: [., ., ., .][0:2]} | reduce ((.[0] = 1)) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | (.[0] = 1) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[0] = 1) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | (.[1:] = []) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4683,6 +5723,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce ((.[1:] = [])) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | (.[1:] = []) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[1:] = []) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | map_values(.) | $$$$v | .[3] = 9
@@ -4745,6 +5791,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (map_values(.)) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | map_values(.) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | map_values(.) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | .. |= . | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4803,6 +5855,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (.. |= .) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | .. |= . | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | .. |= . | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | (.[] |= empty) | $$$$v | .[3] = 9
@@ -4865,6 +5923,12 @@ null
 {a: [., ., ., .][0:2]} | reduce ((.[] |= empty)) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | (.[] |= empty) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[] |= empty) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | ((.. | strings) |= empty) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -4923,6 +5987,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (((.. | strings) |= empty)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | ((.. | strings) |= empty) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | ((.. | strings) |= empty) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | ((.. | numbers) |= first(.[]?)) | $$$$v | .[3] = 9
@@ -4985,6 +6055,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (((.. | numbers) |= first(.[]?))) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | ((.. | numbers) |= first(.[]?)) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | ((.. | numbers) |= first(.[]?)) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | (.[0] = tostring) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -5043,6 +6119,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce ((.[0] = tostring)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | (.[0] = tostring) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[0] = tostring) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | (.[0] = (1, 2)) | $$$$v | .[3] = 9
@@ -5105,6 +6187,12 @@ null
 {a: [., ., ., .][0:2]} | reduce ((.[0] = (1, 2))) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | (.[0] = (1, 2)) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[0] = (1, 2)) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | (.[0] = .[0]) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -5163,6 +6251,12 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce ((.[0] = .[0])) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | (.[0] = .[0]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[0] = .[0]) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | ((.[0:1]) | paths) | $$$$v | .[3] = 9
@@ -5225,6 +6319,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (((.[0:1]) | paths)) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | ((.[0:1]) | paths) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | ((.[0:1]) | paths) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | ((.[0:1]) | paths(true)) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -5285,6 +6385,12 @@ null
 {a: [., ., ., .][0:2]} | reduce (((.[0:1]) | paths(true))) as $j (.; .a[3] = 9)
 {"key":"k","value":[2]}
 
+{a: [., ., ., .][0:2], b: .} | ((.[0:1]) | paths(true)) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | ((.[0:1]) | paths(true)) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | ((.[0:1]) | tostream) | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -5343,4 +6449,730 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2]} | reduce (((.[0:1]) | tostream)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | ((.[0:1]) | tostream) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | ((.[0:1]) | tostream) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | .. | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | .. | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (..) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (..) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | .. | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | .. | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [..] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [..] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(..) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(..) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(..) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(..) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | .. | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | .. | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (..) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (..) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (..) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (..) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (..) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (..) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | .. | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | .. | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | (.. | arrays) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | (.. | arrays) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce ((.. | arrays)) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce ((.. | arrays)) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | (.. | arrays) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | (.. | arrays) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [(.. | arrays)] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [(.. | arrays)] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last((.. | arrays)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last((.. | arrays)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first((.. | arrays)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first((.. | arrays)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | (.. | arrays) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | (.. | arrays) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce ((.. | arrays)) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce ((.. | arrays)) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce ((.. | arrays)) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce ((.. | arrays)) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce ((.. | arrays)) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce ((.. | arrays)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | (.. | arrays) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.. | arrays) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | arrays | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | arrays | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (arrays) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (arrays) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | arrays | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | arrays | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [arrays] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [arrays] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(arrays) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(arrays) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(arrays) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(arrays) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | arrays | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | arrays | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (arrays) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (arrays) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (arrays) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (arrays) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (arrays) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (arrays) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | arrays | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | arrays | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | add | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | add | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (add) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (add) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | add | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | add | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [add] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [add] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(add) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(add) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(add) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(add) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | add | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | add | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (add) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (add) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (add) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (add) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (add) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (add) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | add | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | add | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | add(.[]) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | add(.[]) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (add(.[])) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (add(.[])) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | add(.[]) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | add(.[]) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [add(.[])] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [add(.[])] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(add(.[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(add(.[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(add(.[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(add(.[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | add(.[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | add(.[]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (add(.[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (add(.[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (add(.[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (add(.[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (add(.[])) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (add(.[])) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | add(.[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | add(.[]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | flatten | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | flatten | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (flatten) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (flatten) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | flatten | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | flatten | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [flatten] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [flatten] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(flatten) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(flatten) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(flatten) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(flatten) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | flatten | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | flatten | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (flatten) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (flatten) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (flatten) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (flatten) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (flatten) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (flatten) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | flatten | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | flatten | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(.[]) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(.[]) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (first(.[])) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (first(.[])) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | first(.[]) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | first(.[]) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [first(.[])] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [first(.[])] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(first(.[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(first(.[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(first(.[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(first(.[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | first(.[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | first(.[]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (first(.[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (first(.[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (first(.[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (first(.[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (first(.[])) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (first(.[])) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | first(.[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | first(.[]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(.) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(.) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (first(.)) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (first(.)) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | first(.) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | first(.) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [first(.)] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [first(.)] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(first(.)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(first(.)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(first(.)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(first(.)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | first(.) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | first(.) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (first(.)) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (first(.)) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (first(.)) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (first(.)) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (first(.)) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (first(.)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | first(.) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | first(.) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | limit(1; .[]) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | limit(1; .[]) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (limit(1; .[])) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (limit(1; .[])) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | limit(1; .[]) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | limit(1; .[]) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [limit(1; .[])] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [limit(1; .[])] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(limit(1; .[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(limit(1; .[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(limit(1; .[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(limit(1; .[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | limit(1; .[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | limit(1; .[]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (limit(1; .[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (limit(1; .[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (limit(1; .[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (limit(1; .[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (limit(1; .[])) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (limit(1; .[])) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | limit(1; .[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | limit(1; .[]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce ([limit(1; .[])]) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce ([limit(1; .[])]) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | [limit(1; .[])] | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | [limit(1; .[])] | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [[limit(1; .[])]] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [[limit(1; .[])]] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last([limit(1; .[])]) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last([limit(1; .[])]) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first([limit(1; .[])]) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first([limit(1; .[])]) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | [limit(1; .[])] | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | [limit(1; .[])] | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce ([limit(1; .[])]) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce ([limit(1; .[])]) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce ([limit(1; .[])]) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce ([limit(1; .[])]) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce ([limit(1; .[])]) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce ([limit(1; .[])]) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | [limit(1; .[])] | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | [limit(1; .[])] | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | isempty(.[]) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | isempty(.[]) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (isempty(.[])) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (isempty(.[])) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | isempty(.[]) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | isempty(.[]) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [isempty(.[])] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [isempty(.[])] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(isempty(.[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(isempty(.[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(isempty(.[])) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(isempty(.[])) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | isempty(.[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | isempty(.[]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (isempty(.[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (isempty(.[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (isempty(.[])) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (isempty(.[])) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (isempty(.[])) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (isempty(.[])) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | isempty(.[]) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | isempty(.[]) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}

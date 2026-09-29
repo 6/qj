@@ -20,37 +20,10 @@
 //! `r`'s `,` (one per node, restored when its second branch runs) and `.[]?` (one per
 //! container with more than one child, restored for each next child).
 
+use super::{Level, child, children};
 use crate::jq::lang::execute::Jq;
 use crate::jq::lang::execute::native::{Closure, ConstView, Outcome, PathState, Resume, Sub};
 use crate::jq::value::{Array, Value};
-
-/// A container being iterated by `.[]?`: child `i` of `n` is being visited.
-struct Level {
-    node: Value,
-    i: usize,
-    n: usize,
-}
-
-/// How many children `.[]?` gives `v`.
-fn children(v: &Value) -> usize {
-    match v {
-        Value::Array(a) => a.len(),
-        Value::Object(o) => o.len(),
-        _ => 0,
-    }
-}
-
-/// `.[]?`'s `i`th output on `v`: the path component (`EACH`'s key) and the child.
-fn child(v: &Value, i: usize) -> (Value, Value) {
-    match v {
-        Value::Array(a) => (Value::number(i as f64), a.as_slice()[i].clone()),
-        Value::Object(o) => {
-            let (k, c) = o.get_index(i).expect("child");
-            (Value::String(k.clone()), c.clone())
-        }
-        _ => unreachable!("child of a scalar"),
-    }
-}
 
 /// `jq->path = jv_array_slice(jq->path, 0, len)`, as `stack_restore` does.
 fn restore(p: &mut Array, len: usize) {
@@ -60,9 +33,10 @@ fn restore(p: &mut Array, len: usize) {
 /// The traversal state shared by the three: `jq->path` and the containers on it.
 ///
 /// Containers are held as long as jq's fork points hold them, since that decides
-/// whether a caller can update them in place: `.[]?`'s fork point holds its container
-/// until it enters the last child, and in `tostream`'s `r` the fork point of `,` holds
-/// each node until its second branch (after its children), so `hold_last` is set there.
+/// whether a caller can update them in place: `.[]?`'s fork point holds an array until
+/// it enters its last child (an object until the end), and in `tostream`'s `r` the
+/// fork point of `,` holds each node until its second branch (after its children), so
+/// `hold_last` is set there.
 struct Walker {
     p: Array,
     stack: Vec<Level>,
@@ -84,7 +58,7 @@ impl Walker {
     fn enter(&mut self, node: Value) -> Value {
         let n = children(&node);
         let (k, c) = child(&node, 0);
-        let node = if n == 1 && !self.hold_last {
+        let node = if n == 1 && !self.hold_last && matches!(node, Value::Array(_)) {
             Value::Null
         } else {
             node
@@ -104,7 +78,7 @@ impl Walker {
             if top.i + 1 < top.n {
                 top.i += 1;
                 let (k, c) = child(&top.node, top.i);
-                if top.i + 1 == top.n && !hold_last {
+                if top.i + 1 == top.n && !hold_last && matches!(top.node, Value::Array(_)) {
                     top.node = Value::Null;
                 }
                 let d = self.stack.len() - 1;

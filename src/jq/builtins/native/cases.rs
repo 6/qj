@@ -186,6 +186,48 @@ impl Gen {
         let f = self.closure(if self.bounded { 1 } else { 2 }, false);
         let chain = depth > 0;
         match self.r.below(if chain { 12 } else { 9 }) {
+            // `..`, the type filters, add, flatten, first, limit, isempty, any/all, IN.
+            _ if self.r.below(3) == 0 => match self.r.below(20) {
+                0 => "[..]".to_string(),
+                1 => format!(
+                    "[.. | {}]",
+                    self.r.pick(&[
+                        "numbers",
+                        "strings",
+                        "scalars",
+                        "values",
+                        "nulls",
+                        "booleans",
+                        "arrays",
+                        "objects",
+                        "iterables"
+                    ])
+                ),
+                2 => "add".to_string(),
+                3 => format!("add({f})"),
+                4 => "flatten".to_string(),
+                5 => format!(
+                    "flatten({})",
+                    self.r.pick(&["0", "1", "2", "-1", "1.5", "null", "\"a\""])
+                ),
+                6 => format!("first({f})"),
+                7 => format!(
+                    "[limit({}; {f})]",
+                    self.r.pick(&["0", "1", "2", "-1", "1.5"])
+                ),
+                8 => format!("limit(1; {f})"),
+                9 => format!("isempty({f})"),
+                10 => "any".to_string(),
+                11 => "all".to_string(),
+                12 => format!("any({f})"),
+                13 => format!("all({f})"),
+                14 => format!("any(.[]?; {f})"),
+                15 => format!("all({f}; {f})"),
+                16 => format!("IN({f})"),
+                17 => format!("IN(.[]?; {f})"),
+                18 => ".. | numbers".to_string(),
+                _ => format!("(.. | {f})"),
+            },
             // The update-assignments (natives `_modify` and `_assign`) and `join`.
             _ if self.r.below(3) == 0 => {
                 let p = self.path_expr();
@@ -233,7 +275,7 @@ impl Gen {
         // unless something (like a suspended fork point of the native's definition)
         // still holds it; a write past its end then brings back stale elements.
         const VIEW: &str = "[., ., ., .][0:2]";
-        match self.r.below(30) {
+        match self.r.below(31) {
             22 => return format!("{VIEW} as $v | $v | {n} | $$$$v | .[3] = 9"),
             23 => return format!("{VIEW} | reduce ({n}) as $j (.; .[3] = 9)"),
             24 => {
@@ -248,6 +290,11 @@ impl Gen {
                 );
             }
             29 => return format!("[{VIEW}, .] | reduce ({n}) as $j (.; .[0][3] = 9)"),
+            30 => {
+                return format!(
+                    "{{a: {VIEW}, b: .}} | {n} | if type == \"array\" then .[length + 1] = 0 else . end"
+                );
+            }
             _ => {}
         }
         match self.r.below(22) {

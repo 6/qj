@@ -590,6 +590,20 @@ impl Jq {
             [op, k, RET] if *op == Opcode::LOADK as u16 => {
                 func.bc.constants.get(*k as usize).cloned()
             }
+            // `-k` (jq doesn't fold unary minus): `LOADK k; CALL_BUILTIN _negate`.
+            [op, k, call, 1, cf, RET]
+                if *op == Opcode::LOADK as u16
+                    && *call == Opcode::CALL_BUILTIN as u16
+                    && prog
+                        .cfunctions
+                        .get(*cf as usize)
+                        .is_some_and(|c| c.name == "_negate") =>
+            {
+                match func.bc.constants.get(*k as usize)? {
+                    Value::Number(n) => Some(Value::Number(n.negate())),
+                    _ => None,
+                }
+            }
             [op, level, var, RET] if *op == Opcode::LOADV as u16 && *level > 0 => {
                 // The variable's frame: `level` env links up from the closure's frame,
                 // whose env is `f.env`.

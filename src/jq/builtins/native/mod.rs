@@ -35,10 +35,12 @@
 //! generated programs and inputs), by the `fast_builtins.test` jq_diff corpus, and by
 //! the differential fuzzer.
 
+mod control;
 mod entries;
 mod modify;
 mod paths;
 mod strings;
+mod values;
 mod walk;
 
 #[cfg(test)]
@@ -71,6 +73,30 @@ pub enum NativeId {
     Tostream,
     AsciiDowncase,
     AsciiUpcase,
+    Recurse0,
+    Values,
+    Nulls,
+    Booleans,
+    Numbers,
+    Strings,
+    Arrays,
+    Objects,
+    Iterables,
+    Scalars,
+    Add0,
+    Add1,
+    Flatten,
+    First1,
+    Limit,
+    IsEmpty,
+    Any2,
+    All2,
+    Any1,
+    All1,
+    Any0,
+    All0,
+    In1,
+    In2,
 }
 
 /// Every id, by `NativeId as usize`.
@@ -89,10 +115,34 @@ const ALL: [NativeId; NativeId::COUNT] = [
     NativeId::Tostream,
     NativeId::AsciiDowncase,
     NativeId::AsciiUpcase,
+    NativeId::Recurse0,
+    NativeId::Values,
+    NativeId::Nulls,
+    NativeId::Booleans,
+    NativeId::Numbers,
+    NativeId::Strings,
+    NativeId::Arrays,
+    NativeId::Objects,
+    NativeId::Iterables,
+    NativeId::Scalars,
+    NativeId::Add0,
+    NativeId::Add1,
+    NativeId::Flatten,
+    NativeId::First1,
+    NativeId::Limit,
+    NativeId::IsEmpty,
+    NativeId::Any2,
+    NativeId::All2,
+    NativeId::Any1,
+    NativeId::All1,
+    NativeId::Any0,
+    NativeId::All0,
+    NativeId::In1,
+    NativeId::In2,
 ];
 
 impl NativeId {
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 38;
 
     /// The native for `builtin.jq`'s definition `name/arity`, if any.
     pub fn lookup(name: &str, arity: i32) -> Option<NativeId> {
@@ -111,6 +161,30 @@ impl NativeId {
             ("tostream", 0) => Tostream,
             ("ascii_downcase", 0) => AsciiDowncase,
             ("ascii_upcase", 0) => AsciiUpcase,
+            ("recurse", 0) => Recurse0,
+            ("values", 0) => Values,
+            ("nulls", 0) => Nulls,
+            ("booleans", 0) => Booleans,
+            ("numbers", 0) => Numbers,
+            ("strings", 0) => Strings,
+            ("arrays", 0) => Arrays,
+            ("objects", 0) => Objects,
+            ("iterables", 0) => Iterables,
+            ("scalars", 0) => Scalars,
+            ("add", 0) => Add0,
+            ("add", 1) => Add1,
+            ("_flatten", 1) => Flatten,
+            ("first", 1) => First1,
+            ("limit", 2) => Limit,
+            ("isempty", 1) => IsEmpty,
+            ("any", 2) => Any2,
+            ("all", 2) => All2,
+            ("any", 1) => Any1,
+            ("all", 1) => All1,
+            ("any", 0) => Any0,
+            ("all", 0) => All0,
+            ("IN", 1) => In1,
+            ("IN", 2) => In2,
             _ => return None,
         })
     }
@@ -137,9 +211,13 @@ impl NativeId {
     pub fn abandons_closures(self) -> bool {
         use NativeId::*;
         match self {
-            Walk | Paths1 | Modify | Assign => true,
+            Walk | Paths1 | Modify | Assign | Add1 | First1 | Limit | IsEmpty | Any2 | All2
+            | Any1 | All1 | In1 | In2 => true,
             Map | Path | Join | ToEntries | FromEntries | WithEntries | Paths0 | Tostream
-            | AsciiDowncase | AsciiUpcase => false,
+            | AsciiDowncase | AsciiUpcase | Recurse0 | Values | Nulls | Booleans | Numbers
+            | Strings | Arrays | Objects | Iterables | Scalars | Add0 | Flatten | Any0 | All0 => {
+                false
+            }
         }
     }
 }
@@ -170,13 +248,30 @@ pub(crate) fn consts(id: NativeId, pools: &Pools<'_>) -> Option<Vec<ConstRef>> {
             empty_array(&pools.own(), 0)?,
             empty_array(&pools.own(), 1)?,
         ]),
-        Paths0 | Paths1 | AsciiDowncase | AsciiUpcase => Some(Vec::new()),
+        Flatten => Some(vec![
+            empty_array(&pools.own(), 0)?,
+            number(&pools.own(), 0.0)?,
+            ConstRef::Own(Value::number(1.0)),
+        ]),
+        Limit => Some(vec![
+            number(&pools.own(), 0.0)?,
+            number(&pools.own(), 1.0)?,
+            string(&pools.own(), 0, "limit doesn't support negative count")?,
+        ]),
+        Paths0 | Paths1 | AsciiDowncase | AsciiUpcase | Recurse0 | Values | Nulls | Booleans
+        | Numbers | Strings | Arrays | Objects | Iterables | Scalars | Add0 | Add1 | First1
+        | IsEmpty | Any2 | All2 | Any1 | All1 | Any0 | All0 | In1 | In2 => Some(Vec::new()),
     }
 }
 
 /// The `n`th `[]` of a pool (the definition's collects, in order).
 fn empty_array(pool: &Pool<'_>, n: usize) -> Option<ConstRef> {
     pool.find(|v| matches!(v, Value::Array(a) if a.is_empty()), n)
+}
+
+/// The first number constant of a pool equal to `x` (a literal, as jq's lexer makes).
+fn number(pool: &Pool<'_>, x: f64) -> Option<ConstRef> {
+    pool.find(|v| matches!(v, Value::Number(n) if n.value() == x), 0)
 }
 
 /// The `n`th `{}` of a pool.
@@ -197,6 +292,34 @@ fn cannot_iterate(v: &Value) -> Stop {
         dump_string_trunc(v, 15)
     ))
     .into()
+}
+
+/// A container being iterated by `.[]?`: child `i` of `n` is being visited.
+struct Level {
+    node: Value,
+    i: usize,
+    n: usize,
+}
+
+/// How many children `.[]?` gives `v`.
+fn children(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => a.len(),
+        Value::Object(o) => o.len(),
+        _ => 0,
+    }
+}
+
+/// `.[]?`'s `i`th output on `v`: the path component (`EACH`'s key) and the child.
+fn child(v: &Value, i: usize) -> (Value, Value) {
+    match v {
+        Value::Array(a) => (Value::number(i as f64), a.as_slice()[i].clone()),
+        Value::Object(o) => {
+            let (k, c) = o.get_index(i).expect("child");
+            (Value::String(k.clone()), c.clone())
+        }
+        _ => unreachable!("child of a scalar"),
+    }
 }
 
 /// A generator that has nothing more to produce, but holds values until backtracking
@@ -234,5 +357,29 @@ pub(crate) fn call(id: NativeId, vm: &mut Jq, c: Call<'_>) -> Outcome {
         Tostream => paths::tostream(c.input, c.consts),
         AsciiDowncase => strings::ascii_case(c.input, b'A', b'Z').into(),
         AsciiUpcase => strings::ascii_case(c.input, b'a', b'z').into(),
+        Recurse0 => values::recurse(c.input),
+        Values => values::select_if(c.input, values::is_value),
+        Nulls => values::select_if(c.input, values::is_null),
+        Booleans => values::select_if(c.input, values::is_boolean),
+        Numbers => values::select_if(c.input, values::is_number),
+        Strings => values::select_if(c.input, values::is_string),
+        Arrays => values::select_if(c.input, values::is_array),
+        Objects => values::select_if(c.input, values::is_object),
+        Iterables => values::select_if(c.input, values::is_iterable),
+        Scalars => values::select_if(c.input, values::is_scalar),
+        Add0 => values::add0(c.input).into(),
+        Add1 => values::add1(vm, c.input, c.args[0]).into(),
+        Flatten => values::flatten(vm, c.input, c.args[0], c.consts),
+        First1 => control::first(vm, c.input, c.args[0]),
+        Limit => control::limit(vm, c.input, c.args[0], c.args[1], c.consts),
+        IsEmpty => control::isempty(vm, c.input, c.args[0]),
+        Any2 => control::any_all(vm, c.input, Some(c.args[0]), Some(c.args[1]), true),
+        All2 => control::any_all(vm, c.input, Some(c.args[0]), Some(c.args[1]), false),
+        Any1 => control::any_all(vm, c.input, None, Some(c.args[0]), true),
+        All1 => control::any_all(vm, c.input, None, Some(c.args[0]), false),
+        Any0 => control::any_all(vm, c.input, None, None, true),
+        All0 => control::any_all(vm, c.input, None, None, false),
+        In1 => control::is_in(vm, c.input, None, c.args[0]),
+        In2 => control::is_in(vm, c.input, Some(c.args[0]), c.args[1]),
     }
 }
