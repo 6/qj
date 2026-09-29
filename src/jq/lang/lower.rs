@@ -165,7 +165,7 @@ impl Lowerer<'_> {
                     c.gen_location(n.loc, self.lf, b)
                 }
                 NodeKind::Literal(lit) => c.gen_const(literal_value(lit)),
-                NodeKind::Format(name) => self.gen_format(Block::NOOP, name),
+                NodeKind::Format(name) => self.gen_format(Block::NOOP, Value::from(name.as_str())),
                 NodeKind::Array(None) => c.gen_const(Value::empty_array()),
                 NodeKind::VarTake(name) => {
                     let b = c.gen_op_unbound(LOADVN, name);
@@ -198,8 +198,11 @@ impl Lowerer<'_> {
                     c.gen_dictpair(k, v)
                 }
                 DictPairKind::NameShorthand(name) => {
-                    let k = c.gen_const(Value::from(name.as_str()));
-                    let kk = c.gen_const(Value::from(name.as_str()));
+                    // `gen_const(jv_copy($1))` and `gen_const($1)`: both constants are
+                    // the same string (observable in `--debug-trace=all` refcounts).
+                    let name = Value::from(name.as_str());
+                    let k = c.gen_const(name.clone());
+                    let kk = c.gen_const(name);
                     let v = self.gen_index(Block::NOOP, kk, false);
                     self.c.gen_dictpair(k, v)
                 }
@@ -238,14 +241,16 @@ impl Lowerer<'_> {
                     .filter(|p| matches!(p, StrPart::Interp(_)))
                     .count();
                 let mut interps = pop_n(results, ninterp).into_iter();
-                let fmt = s.format_name();
+                // Every interpolation's format constant is the same string
+                // (`jv_copy($<literal>0)`).
+                let fmt = Value::from(s.format_name());
                 let mut acc = self.c.gen_const(Value::from(""));
                 for part in &s.parts {
                     let b = match part {
                         StrPart::Text(t) => self.c.gen_const(Value::from(t.as_str())),
                         StrPart::Interp(_) => {
                             let q = interps.next().unwrap();
-                            self.gen_format(q, fmt)
+                            self.gen_format(q, fmt.clone())
                         }
                     };
                     acc = self.gen_binop(acc, b, BinOp::Add);
@@ -580,8 +585,8 @@ impl Lowerer<'_> {
     }
 
     /// parser.y `gen_format`.
-    fn gen_format(&mut self, a: Block, fmt: &str) -> Block {
-        let k = self.c.gen_const(Value::from(fmt));
+    fn gen_format(&mut self, a: Block, fmt: Value) -> Block {
+        let k = self.c.gen_const(fmt);
         let l = self.c.gen_lambda(k);
         let call = self.c.gen_call("format", l);
         self.c.block_join(a, call)
@@ -641,9 +646,9 @@ impl Lowerer<'_> {
 
     /// parser.y `gen_loc_object`: `{"file": <locfile name>, "line": N}`.
     fn gen_loc_object(&mut self, loc: Loc) -> Block {
-        let lf = self.c.locfile(self.lf);
-        let file = Value::from(lf.fname());
-        let line = lf.get_line(loc.start) + 1;
+        // `jv_copy(locations->fname)`: one string per source file.
+        let file = self.c.locfile_name(self.lf);
+        let line = self.c.locfile(self.lf).get_line(loc.start) + 1;
         let mut o = Object::new();
         o.insert(Str::from("file"), file);
         o.insert(Str::from("line"), Value::number(line as f64));

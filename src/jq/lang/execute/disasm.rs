@@ -11,12 +11,12 @@
 //! constant folding); the others are taken as literals.
 
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use crate::jq::builtins::{CFunction, function_list};
 use crate::jq::lang::bytecode::{
     ARG_NEWCLOSURE, Bytecode, DebugInfo, OP_HAS_BRANCH, OP_HAS_CONSTANT, OP_HAS_VARIABLE, Opcode,
-    SymbolTable,
+    SymbolTable, link_parents,
 };
 use crate::jq::value::{Value, parse_sized};
 
@@ -180,7 +180,6 @@ fn opcode_by_name(name: &str) -> Opcode {
 fn build(
     f: &DisFunc,
     chain: &mut Vec<*const DisFunc>,
-    parent: Weak<Bytecode>,
     next_id: &mut usize,
     globals: &Rc<SymbolTable>,
     b: &Builder,
@@ -242,27 +241,24 @@ fn build(
         }
     }
     let locals = b.locals[id].clone();
-    let bc = Rc::new_cyclic(|me: &Weak<Bytecode>| {
-        let subfunctions = f
-            .subs
-            .iter()
-            .map(|s| build(s, chain, me.clone(), next_id, globals, b))
-            .collect();
-        Bytecode {
-            code,
-            nlocals: locals.len(),
-            nclosures: f.params.len(),
-            constants,
-            globals: globals.clone(),
-            subfunctions,
-            parent,
-            debuginfo: DebugInfo {
-                name: f.name.clone(),
-                params: f.params.clone(),
-                locals,
-            },
-        }
-    });
+    let subfunctions = f
+        .subs
+        .iter()
+        .map(|s| build(s, chain, next_id, globals, b))
+        .collect();
+    let bc = Rc::new(Bytecode::new(
+        code,
+        locals.len(),
+        f.params.len(),
+        constants,
+        globals.clone(),
+        subfunctions,
+        DebugInfo {
+            name: f.name.clone(),
+            params: f.params.clone(),
+            locals,
+        },
+    ));
     chain.pop();
     bc
 }
@@ -313,12 +309,7 @@ pub(super) fn load(
         cfunctions: b.cfuncs.clone(),
     });
     let mut next_id = 0;
-    build(
-        &top,
-        &mut Vec::new(),
-        Weak::new(),
-        &mut next_id,
-        &globals,
-        &b,
-    )
+    let root = build(&top, &mut Vec::new(), &mut next_id, &globals, &b);
+    link_parents(&root);
+    root
 }

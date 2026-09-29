@@ -644,13 +644,13 @@ fn disasm_matches_recorded_jq() {
 }
 
 /// jq compiles every program at its parser's nesting limits; so must we, on a thread
-/// with the default 2 MiB stack. That holds for release builds: unoptimized frames
-/// are several times bigger (building the bytecode tree recurses once per level of
-/// function nesting), so debug builds get more.
+/// with the default 2 MiB stack (nothing in the compiler recurses over the nesting).
+/// Unoptimized builds get 16 MiB: the AST's derived `Drop` for nested destructuring
+/// patterns (`. as [[[...]]]`) recurses, with big debug frames.
 #[test]
 fn deepest_programs_compile_on_a_small_stack() {
     let stack = if cfg!(debug_assertions) {
-        64 << 20
+        16 << 20
     } else {
         2 << 20
     };

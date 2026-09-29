@@ -25,6 +25,7 @@
 //! trailing blank line), and [`dump_operation`] is the per-instruction line used by
 //! `--debug-trace`.
 
+use std::cell::OnceCell;
 use std::fmt::Write as _;
 use std::rc::{Rc, Weak};
 
@@ -345,8 +346,9 @@ pub struct Bytecode {
     pub globals: Rc<SymbolTable>,
     /// Functions defined in this one (`CALL_JQ ... idx|ARG_NEWCLOSURE`).
     pub subfunctions: Vec<Rc<Bytecode>>,
-    /// The lexically enclosing function; empty for the top level.
-    pub parent: Weak<Bytecode>,
+    /// The lexically enclosing function ([`Bytecode::parent`]), set by
+    /// [`link_parents`]; unset for the top level.
+    parent: OnceCell<Weak<Bytecode>>,
     pub debuginfo: DebugInfo,
 }
 
@@ -376,17 +378,57 @@ impl Bytecode {
         self.code.len()
     }
 
+    /// A function whose parent is set later by [`link_parents`].
+    pub fn new(
+        code: Vec<u16>,
+        nlocals: usize,
+        nclosures: usize,
+        constants: Vec<Value>,
+        globals: Rc<SymbolTable>,
+        subfunctions: Vec<Rc<Bytecode>>,
+        debuginfo: DebugInfo,
+    ) -> Bytecode {
+        Bytecode {
+            code,
+            nlocals,
+            nclosures,
+            constants,
+            globals,
+            subfunctions,
+            parent: OnceCell::new(),
+            debuginfo,
+        }
+    }
+
+    /// `bc->parent`: the lexically enclosing function, `None` for the top level (or
+    /// once the tree is gone).
+    pub fn parent(&self) -> Option<Rc<Bytecode>> {
+        self.parent.get()?.upgrade()
+    }
+
     /// The function's name for the disassembly (`null` at the top level).
     fn name_str(&self) -> &str {
         self.debuginfo.name.as_deref().unwrap_or("null")
     }
 }
 
+/// Points each function's [`Bytecode::parent`] at the function it is defined in, for
+/// the whole tree under `root` (iteratively: functions nest thousands deep).
+pub fn link_parents(root: &Rc<Bytecode>) {
+    let mut stack = vec![root.clone()];
+    while let Some(bc) = stack.pop() {
+        for sub in &bc.subfunctions {
+            let _ = sub.parent.set(Rc::downgrade(&bc));
+            stack.push(sub.clone());
+        }
+    }
+}
+
 /// bytecode.c `getlevel`: the bytecode `level` steps up the lexical chain.
 fn getlevel(bc: &Bytecode, level: u16) -> Option<Rc<Bytecode>> {
-    let mut cur = bc.parent.upgrade()?;
+    let mut cur = bc.parent()?;
     for _ in 1..level {
-        let next = cur.parent.upgrade()?;
+        let next = cur.parent()?;
         cur = next;
     }
     Some(cur)

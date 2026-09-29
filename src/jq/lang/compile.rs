@@ -21,7 +21,7 @@
 //! `subfn`/`arglist` (binding, reference marking, argument expansion, compiling
 //! subfunctions) use explicit stacks instead of recursion.
 
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use super::ast::Loc;
 use super::bytecode::{
@@ -103,6 +103,8 @@ pub(crate) struct Inst {
 pub struct Compiler {
     insts: Vec<Inst>,
     locfiles: Vec<Rc<LocFile>>,
+    /// `fname` of each locfile.
+    locfile_names: Vec<Value>,
     /// Messages exactly as jq hands them to `jq_report_error` (the CLI prints each
     /// followed by a newline).
     pub(crate) messages: Vec<String>,
@@ -125,14 +127,21 @@ impl Compiler {
         Compiler {
             insts: Vec::with_capacity(256),
             locfiles: Vec::new(),
+            locfile_names: Vec::new(),
             messages: Vec::new(),
         }
     }
 
     /// Registers a source file (`locfile_init`) that instructions can point into.
     pub fn add_locfile(&mut self, lf: Rc<LocFile>) -> LocFileId {
+        self.locfile_names.push(Value::from(lf.fname()));
         self.locfiles.push(lf);
         (self.locfiles.len() - 1) as LocFileId
+    }
+
+    /// The file's name as a jq string (`l->fname`, shared by `$__loc__` constants).
+    pub fn locfile_name(&self, id: LocFileId) -> Value {
+        self.locfile_names[id as usize].clone()
     }
 
     pub fn locfile(&self, id: LocFileId) -> &Rc<LocFile> {
@@ -1821,54 +1830,33 @@ impl Compiler {
         if nerrors > 0 {
             return Err(nerrors);
         }
-        let globals = Rc::new(SymbolTable { cfunctions });
-        let mut fns: Vec<Option<Box<FnState>>> =
-            fns.into_iter().map(|f| Some(Box::new(f))).collect();
-        Ok(build_bytecode(&mut fns, 0, &globals, Weak::new()))
+        Ok(build_bytecode(fns, &Rc::new(SymbolTable { cfunctions })))
     }
 }
 
-/// Builds the `Rc<Bytecode>` tree (with parent links) and applies execute.c's
-/// tail-call optimization to each function.
-///
-/// `Rc::new_cyclic` needs a function's children built inside its constructor (they
-/// point back at it), so this recurses once per level of function nesting. That is
-/// bounded by the parser (a few thousand levels), and the frames are kept small.
-#[inline(never)]
-fn build_bytecode(
-    fns: &mut [Option<Box<FnState>>],
-    fid: usize,
-    globals: &Rc<SymbolTable>,
-    parent: Weak<Bytecode>,
-) -> Rc<Bytecode> {
-    let f = fns[fid].take().expect("function built twice");
-    Rc::new_cyclic(move |me: &Weak<Bytecode>| make_bytecode(fns, f, globals, parent, me))
-}
-
-// `f` stays boxed so each level of the recursion keeps a small frame.
-#[inline(never)]
-#[allow(clippy::boxed_local)]
-fn make_bytecode(
-    fns: &mut [Option<Box<FnState>>],
-    mut f: Box<FnState>,
-    globals: &Rc<SymbolTable>,
-    parent: Weak<Bytecode>,
-    me: &Weak<Bytecode>,
-) -> Bytecode {
-    bytecode::optimize_code(&mut f.code);
-    let mut subfunctions = Vec::with_capacity(f.subfunctions.len());
-    for &sid in &f.subfunctions {
-        subfunctions.push(build_bytecode(fns, sid, globals, me.clone()));
+/// Builds the `Rc<Bytecode>` tree, bottom up, applying execute.c's tail-call
+/// optimization to each function, then links the parents.
+fn build_bytecode(fns: Vec<FnState>, globals: &Rc<SymbolTable>) -> Rc<Bytecode> {
+    // Subfunction ids are always larger than their parent's.
+    let mut built: Vec<Option<Rc<Bytecode>>> = vec![None; fns.len()];
+    for (fid, mut f) in fns.into_iter().enumerate().rev() {
+        bytecode::optimize_code(&mut f.code);
+        let subfunctions = f
+            .subfunctions
+            .iter()
+            .map(|&sid| built[sid].take().expect("subfunction built"))
+            .collect();
+        built[fid] = Some(Rc::new(Bytecode::new(
+            f.code,
+            f.nlocals,
+            f.nclosures,
+            f.constants,
+            globals.clone(),
+            subfunctions,
+            f.debuginfo,
+        )));
     }
-    let f = *f;
-    Bytecode {
-        code: f.code,
-        nlocals: f.nlocals,
-        nclosures: f.nclosures,
-        constants: f.constants,
-        globals: globals.clone(),
-        subfunctions,
-        parent,
-        debuginfo: f.debuginfo,
-    }
+    let root = built[0].take().expect("top-level function");
+    bytecode::link_parents(&root);
+    root
 }
