@@ -162,14 +162,27 @@ struct ArgJson;
 impl args::ArgHost for ArgJson {
     type Value = qj::value::Value;
 
+    /// Exactly one JSON text. Validated with a full simdjson parse first:
+    /// `dom_parse_to_value` alone takes some non-JSON words (`invalid`) as
+    /// null. Integers beyond 64 bits fail validation but convert fine. jq's
+    /// parser also accepts `nan` and `infinity`.
     fn parse_json(&mut self, text: &[u8]) -> std::result::Result<Self::Value, String> {
-        let mut values = Vec::new();
-        qj::input::collect_values_from_buf(text, false, &mut values)
-            .map_err(|e| format!("{e:#}"))?;
-        match values.len() {
-            1 => Ok(values.pop().unwrap()),
-            0 => Err("Expected JSON value".to_string()),
-            _ => Err("Unexpected extra JSON values".to_string()),
+        // simdjson `error_code::BIGINT_ERROR` (simdjson/simdjson.h).
+        const BIGINT_ERROR: &str = "simdjson error code 10";
+        let parse = |text: &[u8]| {
+            let padded = qj::simdjson::pad_buffer(text);
+            match qj::simdjson::dom_validate(&padded, text.len()) {
+                Err(e) if e.to_string() != BIGINT_ERROR => Err(e),
+                _ => qj::simdjson::dom_parse_to_value(&padded, text.len()),
+            }
+            .map_err(|e| format!("{e:#}"))
+        };
+        match parse(text) {
+            Err(_) if qj::input::has_special_float_tokens_pub(text) => {
+                let preprocessed = qj::input::preprocess_special_floats_pub(text);
+                parse(&preprocessed).map(qj::input::fixup_special_float_sentinels_pub)
+            }
+            result => result,
         }
     }
 
