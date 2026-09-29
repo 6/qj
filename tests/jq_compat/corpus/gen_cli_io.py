@@ -225,6 +225,68 @@ CASES = [
     ("no-color-with-color-flag", ["-n", "-C", "1"], None, {"NO_COLOR": "1"}),
 ]
 
+# --run-tests (jq_test.c): test files, as files of each case.
+RUN_TESTS_FILES = {
+    "basic.test": '1+1\nnull\n2\n\n.a\n{"a":3}\n4\n',
+    "fail.test": (
+        "%%FAIL\n.a b\njq: error: syntax error, unexpected IDENT, expecting end of file "
+        "at <top-level>, line 1, column 4:\n    .a b\n       ^\n\n"
+        "%%FAIL\n{\njq: error: wrong\n\n"
+        "%%FAIL IGNORE MSG\n}\nwhatever\n\n"
+        "%%FAIL\n1\njq: error: x\n\n"
+        "%%FAIL\n.a b\njq: error: syntax error, unexpected IDENT, expecting end of file "
+        "at <top-level>, line 1, column 4:\n    .a b\n       ^\nextra line\n\n"
+        "%%FAIL\n.a b\njq: error: syntax error\n\n"
+        ".\n1\n1\n"
+    ),
+    "results.test": (
+        ".[]\n[1,2]\n1\n\n.[]\n[1,2]\n1\n2\n3\n\n.\n{\n1\n\n.\n1\n{\n\n$x\nnull\nnull\n\n"
+        '[label $f | try break $f catch .]\nnull\n[{"__jq":0}]\n\n'
+        '[label $f | try break $f catch .]\nnull\n[{"__jq":1}]\n'
+    ),
+    "three.test": "1\nnull\n1\n\n2\nnull\n2\n\n3\nnull\n3\n",
+    "no-output.test": "1\nnull\n",
+    "no-input.test": ".[0]\n",
+    "only-fail.test": "%%FAIL\n",
+    "builtins.test": (
+        'error("x")\nnull\n1\n\ninput\nnull\n1\n\n$__loc__\nnull\n'
+        '{"file":"<top-level>","line":1}\n\ndebug\n1\n1\n\n1, halt, 2\nnull\n1\n\n'
+        'get_search_list\nnull\n[]\n\n$ENV|type\nnull\n"object"\n'
+    ),
+    "long-line.test": rep(('"', 1), ("a", 5000), ('"|length\nnull\n5000\n\n1\nnull\n1\n', 1)),
+    "jq.test": ("path", "../jq.test"),
+    "man.test": ("path", "../man.test"),
+    "onig.test": ("path", "../onig.test"),
+}
+
+RUN_TESTS_CASES = [
+    ("run-tests-basic", ["--run-tests", "basic.test"], None),
+    ("run-tests-stdin", ["--run-tests"], RUN_TESTS_FILES["basic.test"]),
+    ("run-tests-fail", ["--run-tests", "fail.test"], None),
+    ("run-tests-results", ["--run-tests", "results.test"], None),
+    ("run-tests-no-output", ["--run-tests", "no-output.test"], None),
+    ("run-tests-no-input", ["--run-tests", "no-input.test"], None),
+    ("run-tests-only-fail", ["--run-tests", "only-fail.test"], None),
+    ("run-tests-builtins", ["--run-tests", "builtins.test"], None),
+    ("run-tests-long-line", ["--run-tests", "long-line.test"], None),
+    ("run-tests-skip-1", ["--run-tests", "three.test", "--skip", "1"], None),
+    ("run-tests-skip-all", ["--run-tests", "three.test", "--skip", "3"], None),
+    ("run-tests-skip-past-end", ["--run-tests", "three.test", "--skip", "4"], None),
+    ("run-tests-take-1", ["--run-tests", "three.test", "--take", "1"], None),
+    ("run-tests-take-0", ["--run-tests", "three.test", "--take", "0"], None),
+    ("run-tests-take-before-file", ["--run-tests", "--take", "2", "three.test"], None),
+    ("run-tests-skip-take", ["--run-tests", "three.test", "--skip", "1", "--take", "1"], None),
+    ("run-tests-missing-file", ["--run-tests", "nonexist.test"], None),
+    ("run-tests-last-file-missing", ["--run-tests", "three.test", "nonexist.test"], None),
+    ("run-tests-disasm", ["--debug-dump-disasm", "--run-tests", "basic.test"], None),
+    ("run-tests-trace", ["--debug-trace", "--run-tests", "basic.test"], None),
+    ("run-tests-exit-status-pass", ["-e", "--run-tests", "three.test"], None),
+    ("run-tests-exit-status-fail", ["-e", "--run-tests", "basic.test"], None),
+    ("run-tests-jq-test", ["-L", "../../modules", "--run-tests", "jq.test"], None),
+    ("run-tests-man-test", ["--run-tests", "man.test"], None),
+    ("run-tests-onig-test", ["--run-tests", "onig.test"], None),
+]
+
 
 def toml_str(s):
     out = ['"']
@@ -254,6 +316,8 @@ def content(c):
     kind, v = c
     if kind == "b64":
         return "{ b64 = %s }" % toml_str(v)
+    if kind == "path":
+        return "{ path = %s }" % toml_str(v)
     parts = ", ".join("[%s, %d]" % (toml_str(s), n) for s, n in v)
     return "{ repeat = [%s] }" % parts
 
@@ -284,6 +348,12 @@ def main():
                 "env = { %s }" % ", ".join("%s = %s" % (k, toml_str(v)) for k, v in env.items())
             )
         lines.append("")
+    tests = ", ".join('"%s" = %s' % (n, content(c)) for n, c in RUN_TESTS_FILES.items())
+    for name, args, stdin in RUN_TESTS_CASES:
+        lines += ["[[case]]", 'name = "%s"' % name, "args = %s" % arr(args)]
+        if stdin is not None:
+            lines.append("stdin = %s" % content(stdin))
+        lines += ["files = { %s }" % tests, ""]
     for name, c in INPUTS.items():
         for mode, (flags, programs) in MODES.items():
             lines += [

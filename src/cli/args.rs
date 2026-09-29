@@ -615,17 +615,21 @@ pub fn dirname(path: &[u8]) -> Vec<u8> {
 }
 
 /// `strerror(errnum)`: the C library's text, which jq prints (Rust's
-/// `io::Error` adds " (os error N)").
+/// `io::Error` adds " (os error N)"), in the environment's locale as after
+/// jq's `setlocale(LC_ALL, "")`: glibc translates it for `LC_MESSAGES`
+/// (Apple's libc doesn't translate these).
 pub fn strerror(errnum: i32) -> Vec<u8> {
-    let mut buf = [0 as c_char; 512];
-    // SAFETY: `buf` is writable for its length; strerror_r (the XSI version,
-    // which the libc crate binds on glibc too) NUL-terminates it.
-    let rc = unsafe { libc::strerror_r(errnum, buf.as_mut_ptr(), buf.len()) };
-    if rc != 0 {
-        return format!("Unknown error: {errnum}").into_bytes();
-    }
-    // SAFETY: NUL-terminated by strerror_r.
-    unsafe { CStr::from_ptr(buf.as_ptr()) }.to_bytes().to_vec()
+    in_environment_locale(libc::LC_ALL_MASK, || {
+        let mut buf = [0 as c_char; 512];
+        // SAFETY: `buf` is writable for its length; strerror_r (the XSI
+        // version, which the libc crate binds on glibc too) NUL-terminates it.
+        let rc = unsafe { libc::strerror_r(errnum, buf.as_mut_ptr(), buf.len()) };
+        if rc != 0 {
+            return format!("Unknown error: {errnum}").into_bytes();
+        }
+        // SAFETY: NUL-terminated by strerror_r.
+        unsafe { CStr::from_ptr(buf.as_ptr()) }.to_bytes().to_vec()
+    })
 }
 
 /// The I/O half of jv_file.c `jv_load_file`: the file's bytes, or jq's
@@ -725,6 +729,12 @@ pub fn jq_colors(spec: &[u8]) -> Option<[Vec<u8>; 8]> {
 /// duration of `f`; like `setlocale`, an environment locale that can't be
 /// loaded leaves the C locale in place.
 pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
+    in_environment_locale(libc::LC_CTYPE_MASK, f)
+}
+
+/// Run `f` with the categories in `mask` of the calling thread's locale set
+/// from the environment, as `setlocale(LC_ALL, "")` would set them.
+fn in_environment_locale<R>(mask: c_int, f: impl FnOnce() -> R) -> R {
     struct Restore {
         previous: libc::locale_t,
         ours: libc::locale_t,
@@ -749,7 +759,7 @@ pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
     // SAFETY: `all` came from newlocale and isn't in use.
     unsafe { libc::freelocale(all) };
     // SAFETY: as above.
-    let ours = unsafe { libc::newlocale(libc::LC_CTYPE_MASK, c"".as_ptr(), std::ptr::null_mut()) };
+    let ours = unsafe { libc::newlocale(mask, c"".as_ptr(), std::ptr::null_mut()) };
     if ours.is_null() {
         return f();
     }

@@ -47,7 +47,7 @@ use crate::jq::value::{
 };
 
 /// The program name in messages.
-const PROG: &str = "qj";
+pub(super) const PROG: &str = "qj";
 
 // main.c's return codes.
 const JQ_OK: i32 = 0;
@@ -73,7 +73,7 @@ pub fn main() -> ! {
 /// jq's `stdout` FILE: a buffer, flushed when full, after each output with
 /// `--unbuffered`, up to the last newline when stdout is a terminal (line
 /// buffering), and when closed at the end.
-struct Stdout {
+pub(super) struct Stdout {
     buf: Vec<u8>,
     line_buffered: bool,
     /// `ferror(stdout)`: the last write error.
@@ -122,6 +122,12 @@ impl Stdout {
         }
     }
 
+    /// `fwrite` to stdout.
+    pub(super) fn write(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+        self.after_output(false);
+    }
+
     /// After an output: flush what buffering requires.
     fn after_output(&mut self, unbuffered: bool) {
         if unbuffered || self.buf.len() >= STDOUT_BUFFER {
@@ -134,7 +140,7 @@ impl Stdout {
     }
 }
 
-fn with_stdout<R>(f: impl FnOnce(&mut Stdout) -> R) -> R {
+pub(super) fn with_stdout<R>(f: impl FnOnce(&mut Stdout) -> R) -> R {
     STDOUT.with(|s| f(&mut s.borrow_mut()))
 }
 
@@ -148,7 +154,7 @@ fn flush_before_abort() {
 }
 
 /// The `--debug-trace` writer: into the stdout buffer.
-struct TraceOut;
+pub(super) struct TraceOut;
 
 impl Write for TraceOut {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -192,7 +198,7 @@ fn close_stdout(ret: i32) -> i32 {
     }
 }
 
-fn write_stderr(bytes: &[u8]) {
+pub(super) fn write_stderr(bytes: &[u8]) {
     let _ = io::stderr().write_all(bytes);
 }
 
@@ -528,9 +534,19 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
             with_stdout(|s| s.buf.extend_from_slice(text.as_bytes()));
             return close_stdout(JQ_OK);
         }
-        Ok(Action::RunTests { .. }) => {
-            write_stderr(format!("{PROG}: error: --run-tests is not supported\n").as_bytes());
-            return JQ_ERROR_SYSTEM;
+        Ok(Action::RunTests { options, args }) => {
+            let verbose = options.dump_disasm || options.jq_flags & args::debug_flags::TRACE != 0;
+            let lib_dirs = options.lib_search_paths.as_deref();
+            return match super::run_tests::jq_testsuite(lib_dirs, verbose, &args) {
+                // exit() flushes stdout.
+                super::run_tests::Outcome::Exit(code) => {
+                    with_stdout(Stdout::flush);
+                    code
+                }
+                super::run_tests::Outcome::Return(ret) => {
+                    exit_status(&options, (close_stdout(ret), -1))
+                }
+            };
         }
         Err(e @ (ArgError::BadFile { .. } | ArgError::ProgramFile(_))) => {
             // ret = JQ_ERROR_SYSTEM; goto out;

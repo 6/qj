@@ -196,6 +196,14 @@ impl Jq {
         }
     }
 
+    /// What `jq_compile` does to an existing state: `jq_reset`, then the new program
+    /// replaces the old one. The attributes, callbacks and the label counter stay, as
+    /// when jq's test runner (`--run-tests`) compiles every test in one `jq_state`.
+    pub fn set_bytecode(&mut self, bc: Rc<Bytecode>) {
+        self.reset();
+        self.prog = Rc::new(Program::new(bc));
+    }
+
     /// `jq_start(jq, input, flags)`: resets the machine and prepares to run the program
     /// on `input`. `flags` may enable [`JQ_DEBUG_TRACE`] output.
     pub fn start(&mut self, input: Value, flags: u32) {

@@ -94,7 +94,7 @@ fn error_text(e: &io::Error) -> Vec<u8> {
 
 /// A C stdio input stream as util.c uses it: `fgets` and the `feof` and
 /// `ferror` flags.
-struct Stream {
+pub(super) struct Stream {
     reader: Box<dyn Read>,
     buf: Box<[u8]>,
     pos: usize,
@@ -107,7 +107,7 @@ struct Stream {
 }
 
 impl Stream {
-    fn new(reader: Box<dyn Read>) -> Stream {
+    pub(super) fn new(reader: Box<dyn Read>) -> Stream {
         Stream {
             reader,
             buf: vec![0; READ_SIZE].into_boxed_slice(),
@@ -154,7 +154,7 @@ impl Stream {
     /// next 4095 bytes of a longer line, or the rest of the input. `false`
     /// is `NULL`: nothing left, or a read error (whatever was read is lost,
     /// as in C).
-    fn fgets(&mut self, out: &mut Vec<u8>) -> bool {
+    pub(super) fn fgets(&mut self, out: &mut Vec<u8>) -> bool {
         out.clear();
         loop {
             if self.pos == self.len && !self.fill() {
@@ -182,7 +182,7 @@ impl Stream {
 }
 
 /// Standard input, read straight from fd 0 (the stream buffers).
-struct StdinReader;
+pub(super) struct StdinReader;
 
 impl Read for StdinReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {

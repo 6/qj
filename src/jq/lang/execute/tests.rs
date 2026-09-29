@@ -466,6 +466,23 @@ fn labels_count_across_inputs() {
     }
 }
 
+#[test]
+fn labels_count_across_recompiles() {
+    // jq --run-tests compiles each test into the same jq_state, and jq_compile doesn't
+    // reset next_label: two tests of `[label $f | try break $f catch .]` pass with
+    // [{"__jq":0}] and then [{"__jq":1}].
+    let opts = CompileOptions::new(".");
+    let bc = || jq_compile_args(b"[label $f | try break $f catch .]", &opts).unwrap();
+    let mut jq = Jq::new(bc());
+    let mut outs = Vec::new();
+    for _ in 0..2 {
+        jq.start(Value::Null, 0);
+        outs.extend((&mut jq).map(|r| r.unwrap().to_json()));
+        jq.set_bytecode(bc());
+    }
+    assert_eq!(outs, ["[{\"__jq\":0}]", "[{\"__jq\":1}]"]);
+}
+
 // ---- traces ----------------------------------------------------------------------
 
 /// Removes `JV_PRINT_REFCOUNT` annotations (` (<n>)` after a string, array or object).
