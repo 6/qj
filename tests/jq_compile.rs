@@ -255,11 +255,9 @@ fn generated_programs() -> Vec<(String, Vec<u8>)> {
         "deepcall[1000]".into(),
         "def f(g): g; ".to_string() + &"f(".repeat(1000) + "." + &")".repeat(1000),
     ));
-    for n in [1000usize, 3000] {
-        let defs: String = (0..n).map(|i| format!("def f{i}: ")).collect();
-        let uses: String = (0..n).rev().map(|i| format!("; f{i}")).collect();
-        out.push((format!("deepdef[{n}]"), defs + "." + &uses));
-    }
+    let defs: String = (0..1000).map(|i| format!("def f{i}: ")).collect();
+    let uses: String = (0..1000).rev().map(|i| format!("; f{i}")).collect();
+    out.push(("deepdef[1000]".into(), defs + "." + &uses));
     let chain: String = (1..4000)
         .map(|i| format!("def f{i}: f{}; ", i - 1))
         .collect();
@@ -273,9 +271,64 @@ fn generated_programs() -> Vec<(String, Vec<u8>)> {
     ));
     let flat: Vec<String> = (0..6554).map(|i| format!("(1 as $x{i} | $x{i})")).collect();
     out.push(("manyvarsflat[6554]".into(), format!("[{}]", flat.join(","))));
+    // The deepest nesting jq's parser accepts, for each construct.
+    out.push((
+        "max:array[9995]".into(),
+        "[".repeat(9995) + &"]".repeat(9995),
+    ));
+    out.push(("max:neg[9995]".into(), "-".repeat(9995) + "1"));
+    out.push(("max:try[9995]".into(), "try ".repeat(9995) + "1"));
+    out.push((
+        "max:arraypattern[9992]".into(),
+        ". as ".to_string() + &"[".repeat(9992) + "$x" + &"]".repeat(9992) + " | $x",
+    ));
+    let defs: String = (0..3331).map(|i| format!("def f{i}: ")).collect();
+    let uses: String = (0..3331).rev().map(|i| format!("; f{i}")).collect();
+    out.push(("max:def[3331]".into(), defs + "." + &uses));
+    out.push((
+        "max:collect[3331]".into(),
+        "[.[] | ".repeat(3331) + "." + &"]".repeat(3331),
+    ));
+    out.push((
+        "max:object[3331]".into(),
+        "{a:".repeat(3331) + "1" + &"}".repeat(3331),
+    ));
+    out.push((
+        "max:if[3330]".into(),
+        "if . then ".repeat(3330) + "1" + &" else 2 end".repeat(3330),
+    ));
+    out.push((
+        "max:reduce[1998]".into(),
+        "reduce .[] as $x (".repeat(1998) + "0" + &"; .)".repeat(1998),
+    ));
+    // (Binding nested labels is quadratic in jq too: 3331 of them take jq a second.)
+    let labels: String = (0..600).map(|i| format!("label $l{i} | ")).collect();
+    out.push(("labels[600]".into(), labels + "break $l0"));
+    let vars: String = (0..2498).map(|i| format!("1 as $x{i} | ")).collect();
+    out.push(("max:vars[2498]".into(), vars + "$x0"));
+    out.push((
+        "max:paren-plus[3331]".into(),
+        "(1+".repeat(3331) + "1" + &")".repeat(3331),
+    ));
+    out.push((
+        "max:paren-dotplus[3331]".into(),
+        "(.+".repeat(3331) + "." + &")".repeat(3331),
+    ));
     out.into_iter()
         .map(|(n, s)| (format!("gen:{n}"), s.into_bytes()))
         .collect()
+}
+
+/// The programs at jq's nesting limits, plus the deepest nested call (whose
+/// disassembly is too big to record: 75 MB).
+fn deepest_programs() -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = generated_programs()
+        .into_iter()
+        .filter(|(n, _)| n.starts_with("gen:max:"))
+        .collect();
+    let call = "def f(g): g; ".to_string() + &"f(".repeat(4996) + "." + &")".repeat(4996);
+    out.push(("gen:max:call[4996]".into(), call.into_bytes()));
+    out
 }
 
 fn collect_programs() -> Vec<Program> {
@@ -590,6 +643,31 @@ fn disasm_matches_recorded_jq() {
     });
 }
 
+/// jq compiles every program at its parser's nesting limits; so must we, on a thread
+/// with the default 2 MiB stack (nothing in the compiler recurses over the nesting).
+/// Unoptimized builds get 16 MiB: the AST's derived `Drop` for nested destructuring
+/// patterns (`. as [[[...]]]`) recurses, with big debug frames.
+#[test]
+fn deepest_programs_compile_on_a_small_stack() {
+    let stack = if cfg!(debug_assertions) {
+        16 << 20
+    } else {
+        2 << 20
+    };
+    for (origin, src) in deepest_programs() {
+        let ok = std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn(move || {
+                let opts = options(&Program::new(String::new(), Vec::new()));
+                jq_compile_args(&src, &opts).is_ok()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(ok, "{origin} doesn't compile");
+    }
+}
+
 #[test]
 #[ignore]
 fn disasm_vs_live_jq() {
@@ -738,4 +816,64 @@ fn adhoc() {
             println!("--- {}", if j == got { "SAME" } else { "DIFFERENT" });
         }
     });
+}
+
+/// Rough compile-time check (not a benchmark): `cargo test --release --test
+/// jq_compile compile_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn compile_speed() {
+    use std::time::Instant;
+    let opts = CompileOptions::new(".");
+    let t = Instant::now();
+    jq_compile_args(b".", &opts).unwrap();
+    eprintln!("first compile in the process: {:?}", t.elapsed());
+    for src in [
+        ".",
+        ".a",
+        ".a + 1",
+        "map(.+1)",
+        "select(.a == 1) | {b}",
+        "[paths]",
+        "sub(\"a\"; \"b\")",
+        "to_entries | map(select(.value > 1)) | from_entries",
+        "limit(3; .[]) | tostring | ascii_downcase",
+    ] {
+        let n = 2000;
+        let t = Instant::now();
+        for _ in 0..n {
+            jq_compile_args(src.as_bytes(), &opts).unwrap();
+        }
+        eprintln!("{:>10.1?} per compile: {src}", t.elapsed() / n);
+    }
+}
+
+/// Compiles (and disassembles, and drops) the generated programs whose origin
+/// contains `QJ_FILTER` on a thread with a `QJ_STACK_KB` stack (default 2048, the
+/// default for spawned threads). A stack overflow aborts the process.
+#[test]
+#[ignore]
+fn stack_usage() {
+    let kb: usize = std::env::var("QJ_STACK_KB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2048);
+    let filter = std::env::var("QJ_FILTER").unwrap_or_default();
+    for (origin, src) in deepest_programs().into_iter().chain(generated_programs()) {
+        if !origin.contains(&filter) {
+            continue;
+        }
+        let p = Program::new(origin.clone(), src);
+        let t = std::time::Instant::now();
+        let exit = std::thread::Builder::new()
+            .stack_size(kb << 10)
+            .spawn(move || ours(&p).exit)
+            .unwrap()
+            .join()
+            .unwrap();
+        eprintln!(
+            "{origin}: exit {exit} in {:?} with a {kb} KiB stack",
+            t.elapsed()
+        );
+    }
 }

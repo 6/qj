@@ -3474,9 +3474,21 @@
 {"exit":3,"origin":"gen:field[100000]","stderr":"jq: error: function compiled to 300002 bytes which is too long\njq: 1 compile error\n","stdout":""}
 {"exit":0,"origin":"gen:deepcall[1000]","stderr":"","stdout":{"fnv64":"5db6dfa28bf1efec","len":3049956}}
 {"exit":0,"origin":"gen:deepdef[1000]","stderr":"","stdout":{"fnv64":"b882c24e416763c1","len":3035799}}
-{"exit":0,"origin":"gen:deepdef[3000]","stderr":"","stdout":{"fnv64":"e6c8117a4cce7bf9","len":27111799}}
 {"exit":0,"origin":"gen:manydefs[4000]","stderr":"","stdout":{"fnv64":"e05c3156c5431043","len":219585}}
 {"exit":0,"origin":"gen:manyvars[1000]","stderr":"","stdout":{"fnv64":"1596f78c37625422","len":58998}}
 {"exit":0,"origin":"gen:deeptry[4990]","stderr":"","stdout":{"fnv64":"de5ce757f68616a4","len":339332}}
 {"exit":0,"origin":"gen:deepcollect[3000]","stderr":"","stdout":{"fnv64":"d3eaa7b3146451b1","len":441135}}
 {"exit":3,"origin":"gen:manyvarsflat[6554]","stderr":"jq: error: function compiled to 91769 bytes which is too long\njq: 1 compile error\n","stdout":""}
+{"exit":0,"origin":"gen:max:array[9995]","stderr":"","stdout":{"fnv64":"4040f0df78096bf8","len":564}}
+{"exit":0,"origin":"gen:max:neg[9995]","stderr":"","stdout":{"fnv64":"dcf60c235c93f3d9","len":266565}}
+{"exit":0,"origin":"gen:max:try[9995]","stderr":"","stdout":{"fnv64":"963f9c68f1c44f82","len":684689}}
+{"exit":0,"origin":"gen:max:arraypattern[9992]","stderr":"","stdout":{"fnv64":"e2be0b81cb69a9f7","len":512169}}
+{"exit":0,"origin":"gen:max:def[3331]","stderr":"","stdout":{"fnv64":"c1aca8d6ce6cd358","len":33411060}}
+{"exit":0,"origin":"gen:max:collect[3331]","stderr":"","stdout":{"fnv64":"ea8e58842d9b7f25","len":490785}}
+{"exit":0,"origin":"gen:max:object[3331]","stderr":"","stdout":{"fnv64":"2f1b2841072e1317","len":1592}}
+{"exit":0,"origin":"gen:max:if[3330]","stderr":"","stdout":{"fnv64":"6bcb38d29e2a6663","len":324701}}
+{"exit":0,"origin":"gen:max:reduce[1998]","stderr":"","stdout":{"fnv64":"7161f700921fea31","len":370880}}
+{"exit":0,"origin":"gen:labels[600]","stderr":"","stdout":{"fnv64":"426941d83258632c","len":215635}}
+{"exit":0,"origin":"gen:max:vars[2498]","stderr":"","stdout":{"fnv64":"3dcc524314384e54","len":154474}}
+{"exit":0,"origin":"gen:max:paren-plus[3331]","stderr":"","stdout":"0000 TOP\n0001 LOADK 3332\n0003 RET\n\n"}
+{"exit":0,"origin":"gen:max:paren-dotplus[3331]","stderr":"","stdout":{"fnv64":"6bd8eab21a656739","len":229163}}
