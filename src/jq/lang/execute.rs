@@ -3,22 +3,35 @@
 //! # Usage
 //!
 //! [`Jq`] is jq's `jq_state` minus compilation: it runs a program compiled to
-//! [`Bytecode`] (see [`super::bytecode`]). Values are `Rc`, so a `Jq` never crosses
-//! threads; each worker thread compiles and runs its own instance.
+//! [`Bytecode`] by [`jq_compile_args`](super::jq_compile_args). Values are `Rc`, so a
+//! `Jq` never crosses threads: each worker thread compiles and runs its own instance
+//! (compile once per thread, then `start`/`next` per input; `start` is cheap and reuses
+//! the stack's memory).
 //!
-//! ```ignore
-//! let mut jq = Jq::new(bytecode);           // jq_init + the compiled jq->bc
-//! jq.set_input(Some(Box::new(my_inputs)));  // jq_set_input_cb (for `input`/`inputs`)
-//! jq.set_debug_cb(Some(Box::new(|v| eprintln!("[\"DEBUG:\",{v}]"))));
-//! jq.start(value, 0);                       // jq_start(jq, value, flags)
-//! while let Some(r) = jq.next() {           // jq_next (Jq is an Iterator)
+//! ```
+//! use qj::jq::lang::execute::Jq;
+//! use qj::jq::lang::{CompileOptions, jq_compile_args};
+//! use qj::jq::value::{Value, parse_sized};
+//!
+//! let opts = CompileOptions::new(".");
+//! let bc = jq_compile_args(b".[] | try (10 / .) catch \"oops\"", &opts).unwrap();
+//! let mut jq = Jq::new(bc); // jq_init + the compiled jq->bc
+//! jq.set_jq_attrs(&opts.attrs); // what main.c sets (search list, origins)
+//! jq.set_debug_cb(Some(Box::new(|v: &Value| eprintln!("[\"DEBUG:\",{v}]"))));
+//! jq.start(parse_sized(b"[1, 0, 4]").unwrap(), 0); // jq_start(jq, value, flags)
+//! let mut out = Vec::new();
+//! for r in &mut jq {
+//!     // jq_next: Jq is an Iterator
 //!     match r {
-//!         Ok(v) => println!("{v}"),
-//!         Err(e) => { eprintln!("jq: error (at ...): {e}"); break; }
+//!         Ok(v) => out.push(v.to_json()),
+//!         Err(e) => panic!("jq: error (at <stdin>:1): {e}"), // uncaught: the run ends
 //!     }
 //! }
-//! if jq.halted() { /* jq_get_exit_code / jq_get_error_message */ }
+//! assert_eq!(out, ["10", "\"oops\"", "2.5"]);
+//! assert!(!jq.halted()); // else see exit_code() and error_message()
 //! ```
+//!
+//! [`driver::run`] wraps compile + run with main.c's loop over inputs, for tests.
 //!
 //! | jq.h | here |
 //! |---|---|
@@ -29,7 +42,7 @@
 //! | `jq_set_input_cb` (+ `jq_util_input_get_current_filename`/`_line`) | [`Jq::set_input`] with an [`InputSource`] |
 //! | `jq_set_debug_cb`, `jq_set_stderr_cb` | [`Jq::set_debug_cb`], [`Jq::set_stderr_cb`] |
 //! | `jq_set_error_cb`, `jq_report_error`, `jq_format_error` | [`Jq::set_error_cb`], [`Jq::report_error`], [`format_error`] |
-//! | `jq_set_attrs`, `jq_set_attr`, `jq_get_attr` | [`Jq::set_attrs`], [`Jq::set_attr`], [`Jq::get_attr`] |
+//! | `jq_set_attrs`, `jq_set_attr`, `jq_get_attr` | [`Jq::set_attrs`], [`Jq::set_attr`], [`Jq::get_attr`]; [`Jq::set_jq_attrs`] sets main.c's three from the compiler's [`JqAttrs`] |
 //! | `jq_get_lib_dirs`, `jq_get_prog_origin`, `jq_get_jq_origin` | [`Jq::lib_dirs`], [`Jq::prog_origin`], [`Jq::jq_origin`] |
 //! | `--debug-trace` output (stdout) | [`Jq::set_trace_writer`] |
 //! | `jq_dump_disassembly` (`--debug-dump-disasm`) | [`Jq::dump_disassembly`] |

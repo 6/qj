@@ -13,7 +13,7 @@
 //! assert_eq!(out.exit, 0);
 //!
 //! let out = run(".a", b"1", &Options::default());
-//! assert_eq!(out.error.unwrap().as_str(), Some("Cannot index number with \"a\""));
+//! assert_eq!(out.error.unwrap().as_str(), Some("Cannot index number with string \"a\""));
 //! assert_eq!(out.exit, 5);
 //! ```
 
