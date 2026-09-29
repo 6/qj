@@ -69,35 +69,26 @@ pub(crate) fn platform_qsort(idx: &mut [usize], cmp: &dyn Fn(usize, usize) -> Or
 /// Whether sorting these keys with `jv_cmp` needs the platform `qsort` to
 /// reproduce jq (see the module docs).
 pub(crate) fn needs_platform_qsort(keys: &[Value]) -> bool {
-    #[derive(Default)]
-    struct Scan {
-        nan: bool,
-        native: bool,
-        lossy_literal: bool,
-    }
-    fn scan(v: &Value, s: &mut Scan) {
+    let (mut native, mut lossy_literal) = (false, false);
+    // Iterative walk: keys can be deeply nested.
+    let mut work: Vec<&Value> = keys.iter().rev().collect();
+    while let Some(v) = work.pop() {
         match v {
             Value::Number(n) => {
                 if n.is_nan() {
-                    s.nan = true;
+                    return true;
                 } else if n.is_literal() {
-                    if n.is_lossy_literal() {
-                        s.lossy_literal = true;
-                    }
+                    lossy_literal |= n.is_lossy_literal();
                 } else {
-                    s.native = true;
+                    native = true;
+                }
+                if native && lossy_literal {
+                    return true;
                 }
             }
-            Value::Array(a) => a.iter().for_each(|x| scan(x, s)),
-            Value::Object(o) => o.values().for_each(|x| scan(x, s)),
+            Value::Array(a) => work.extend(a.iter().rev()),
+            Value::Object(o) => work.extend(o.values().rev()),
             _ => {}
-        }
-    }
-    let mut s = Scan::default();
-    for k in keys {
-        scan(k, &mut s);
-        if s.nan || (s.native && s.lossy_literal) {
-            return true;
         }
     }
     false

@@ -192,6 +192,11 @@ impl Object {
     pub fn is_unique(&self) -> bool {
         Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) == 0
     }
+
+    /// The number of references to the map (`jv_get_refcnt`).
+    pub fn refcount(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
 }
 
 impl<'a> IntoIterator for &'a Object {

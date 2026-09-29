@@ -625,6 +625,15 @@ impl Number {
         }
     }
 
+    /// `jv_get_refcnt`: references to a literal's allocation; 1 for a
+    /// native double (not allocated in jq).
+    pub fn refcount(&self) -> usize {
+        match &self.0 {
+            Repr::Native(_) => 1,
+            Repr::Literal(l) => Rc::strong_count(l),
+        }
+    }
+
     /// `jvp_number_is_nan`. Literals are never NaN.
     #[inline]
     pub fn is_nan(&self) -> bool {

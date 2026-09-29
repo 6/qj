@@ -739,3 +739,69 @@ fn array_conversions() {
     b.extend_from_array(&Array::from_vec(vec![Value::Null]));
     assert_eq!(Value::Array(b).to_json(), "[0,1,2,\"x\",null]");
 }
+
+#[test]
+fn refcounted_dump_like_debug_trace() {
+    // `jq -n --debug-trace '["ab",[1],{"x":"y"},[],{}] | .[0]'` prints
+    // `["ab" (1),[1] (1),{"x":"y" (1)} (1),[],{}] (2)` for the constant held
+    // by both the bytecode and the stack.
+    let v = jv("[\"ab\",[1],{\"x\":\"y\"},[],{}]");
+    let held = v.clone();
+    let mut out = Vec::new();
+    dump_refcounted(&v, &DumpOptions::compact(), &mut out).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "[\"ab\" (1),[1] (1),{\"x\":\"y\" (1)} (1),[],{}] (2)"
+    );
+    assert_eq!(held.refcount(), 2);
+    assert_eq!(Value::Null.refcount(), 1);
+    assert_eq!(Value::number(1.0).refcount(), 1);
+    let lit = jv("1.0");
+    let lit2 = lit.clone();
+    assert_eq!(lit2.refcount(), 2);
+}
+
+#[test]
+fn deep_values_compare_without_overflow() {
+    // Distinct maximally deep inputs (jq's parser allows 10000 stack
+    // entries: 10000 nested arrays, or 5000 objects with their pending
+    // keys), compared on a 2 MB thread like a worker thread.
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            for (open, close, levels) in [("[", "]", 10000), ("{\"a\":", "}", 5000)] {
+                let deep = |leaf: &str| {
+                    let doc = open.repeat(levels) + leaf + &close.repeat(levels);
+                    parse_sized(doc.as_bytes()).unwrap()
+                };
+                let (a, b, c) = (deep("1"), deep("1"), deep("2"));
+                assert!(a.equal(&b));
+                assert!(!a.equal(&c));
+                assert_eq!(a.compare(&c), std::cmp::Ordering::Less);
+                assert!(a.contains(&b));
+                assert!(!a.identical(&b));
+                // Paths as deep as the values.
+                let step = if open == "[" {
+                    Value::from(0)
+                } else {
+                    Value::from("a")
+                };
+                let path = Value::from(vec![step; levels]);
+                assert_eq!(a.getpath(&path).unwrap().to_json(), "1");
+                let d = a.clone().setpath(&path, Value::from(2)).unwrap();
+                assert!(d.equal(&c));
+                let e = a
+                    .clone()
+                    .delpaths(&Value::from(vec![path.clone()]))
+                    .unwrap();
+                assert!(!e.equal(&a));
+                // Sorting deep keys, and printing (elided past depth 256).
+                let arr = Array::from_vec(vec![c.clone(), a.clone()]);
+                let sorted = sort(&arr, &arr);
+                assert!(sorted.get(0).unwrap().equal(&a));
+                assert!(a.to_json().contains("<skipped: too deep>"));
+            }
+        })
+        .unwrap();
+    handle.join().unwrap();
+}

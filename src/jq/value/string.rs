@@ -83,6 +83,11 @@ impl Str {
         Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) == 0
     }
 
+    /// The number of references to the buffer (`jv_get_refcnt`).
+    pub fn refcount(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+
     /// Pointer identity (as used by `jv_equal`'s fast path and `jv_identical`).
     #[inline]
     pub fn ptr_eq(&self, other: &Str) -> bool {

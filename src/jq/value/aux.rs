@@ -343,52 +343,7 @@ impl Value {
 
 /// jv_cmp; with `total`, NaN == NaN (a consistent order for sorting).
 fn cmp_impl(a: &Value, b: &Value, total: bool) -> Ordering {
-    let (ka, kb) = (a.kind(), b.kind());
-    if ka != kb {
-        return ka.cmp(&kb);
-    }
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => {
-            match (x.is_nan(), y.is_nan()) {
-                (true, true) if total => Ordering::Equal,
-                // jv_cmp(jv_null(), b): null < number
-                (true, _) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                (false, false) => x.compare(y),
-            }
-        }
-        (Value::String(x), Value::String(y)) => x.cmp(y),
-        (Value::Array(x), Value::Array(y)) => {
-            // Lexical ordering of arrays
-            for (xa, xb) in x.iter().zip(y.iter()) {
-                let r = cmp_impl(xa, xb, total);
-                if r != Ordering::Equal {
-                    return r;
-                }
-            }
-            x.len().cmp(&y.len())
-        }
-        (Value::Object(x), Value::Object(y)) => {
-            let mut kx: Vec<&Str> = x.keys().collect();
-            let mut ky: Vec<&Str> = y.keys().collect();
-            kx.sort();
-            ky.sort();
-            // jv_cmp of the two key arrays (strings: bytewise, then length).
-            let r = kx.cmp(&ky);
-            if r != Ordering::Equal {
-                return r;
-            }
-            for k in kx {
-                let r = cmp_impl(&x[k], &y[k], total);
-                if r != Ordering::Equal {
-                    return r;
-                }
-            }
-            Ordering::Equal
-        }
-        // null, false, true: there's only one of each of these values
-        _ => Ordering::Equal,
-    }
+    super::deep::compare(a, b, total)
 }
 
 impl std::ops::Index<&Str> for Object {
@@ -398,22 +353,34 @@ impl std::ops::Index<&Str> for Object {
     }
 }
 
+/// `jv_setpath`'s recursion, unrolled (paths can be as deep as values).
+/// Going down, each level's container drops its reference to the child
+/// (set to null) so the child can be updated in place; going back up the
+/// updated children are stored again, exactly as jq does.
 fn setpath_rec(root: Value, path: &[Value], value: Value) -> Result<Value, Error> {
-    let Some((pathcurr, pathrest)) = path.split_first() else {
-        return Ok(value);
-    };
-    if matches!(pathcurr, Value::Object(_)) {
-        // Assignment to slice -- dunno yet how to avoid the extra copy
-        let sub = root.get(pathcurr)?;
-        let newsub = setpath_rec(sub, pathrest, value)?;
-        return root.set(pathcurr, newsub);
+    let mut parents: Vec<(Value, &Value)> = Vec::with_capacity(path.len());
+    let mut cur = root;
+    for pathcurr in path {
+        if matches!(pathcurr, Value::Object(_)) {
+            // Assignment to slice -- dunno yet how to avoid the extra copy
+            let sub = cur.get(pathcurr)?;
+            parents.push((cur, pathcurr));
+            cur = sub;
+        } else {
+            let subroot = cur.get(pathcurr)?;
+            // To avoid the extra copy we drop the reference from `root` by
+            // setting that to null first.
+            let parent = cur.set(pathcurr, Value::Null)?;
+            parents.push((parent, pathcurr));
+            cur = subroot;
+        }
     }
-    let subroot = root.get(pathcurr)?;
-    // To avoid the extra copy we drop the reference from `root` by setting
-    // that to null first.
-    let root = root.set(pathcurr, Value::Null)?;
-    let newsub = setpath_rec(subroot, pathrest, value)?;
-    root.set(pathcurr, newsub)
+    let mut v = value;
+    drop(cur);
+    while let Some((parent, key)) = parents.pop() {
+        v = parent.set(key, v)?;
+    }
+    Ok(v)
 }
 
 /// Port of `jv_dels`: deletes the (sorted) keys from `t`.
@@ -513,41 +480,96 @@ fn dels(t: Value, keys: Vec<Value>) -> Result<Value, Error> {
 }
 
 /// Port of `delpaths_sorted`: `paths` is sorted and every path is longer
-/// than `start`.
+/// than `start`. jq recurses once per path level; this keeps the recursion
+/// in an explicit stack of frames (paths can be as deep as values).
 fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value, Error> {
-    let mut object = object;
-    let mut delkeys: Vec<Value> = Vec::new();
-    let path_at = |i: usize| -> &Array { paths[i].as_array().expect("paths are arrays") };
-    let mut i = 0;
-    while i < paths.len() {
-        let mut j = i;
-        debug_assert!(path_at(i).len() > start);
-        let delkey = path_at(i).len() == start + 1;
-        let key = path_at(i).get(start).cloned().unwrap_or_default();
-        while j < paths.len() && path_at(j).get(start).is_some_and(|k| key.equal(k)) {
-            j += 1;
-        }
-        // Deviation: a NaN key is unequal to itself, so jq 1.8.1 never
-        // advances here and loops forever (`[1] | delpaths([[nan]])` hangs).
-        // Treat such a key as a group of one instead.
-        if j == i {
-            j = i + 1;
-        }
-        // if i <= entry < j, then entry starts with key
-        if delkey {
-            // deleting this entire key, we don't care about any more specific deletions
-            delkeys.push(key);
-        } else {
-            // deleting certain sub-parts of this key
-            let subobject = object.get(&key)?;
-            if !subobject.is_null() {
-                let newsubobject = delpaths_sorted(subobject, &paths[i..j], start + 1)?;
-                object = object.set(&key, newsubobject)?;
-            }
-        }
-        i = j;
+    struct Frame<'p> {
+        object: Value,
+        paths: &'p [Value],
+        start: usize,
+        i: usize,
+        delkeys: Vec<Value>,
+        /// The key being descended into and where its group ends.
+        resume: Option<(Value, usize)>,
     }
-    dels(object, delkeys)
+    let path_at = |paths: &[Value], i: usize, start: usize| -> Option<Value> {
+        paths[i]
+            .as_array()
+            .expect("paths are arrays")
+            .get(start)
+            .cloned()
+    };
+    let mut stack = vec![Frame {
+        object,
+        paths,
+        start,
+        i: 0,
+        delkeys: Vec::new(),
+        resume: None,
+    }];
+    let mut returned: Option<Value> = None;
+    loop {
+        let f = stack.last_mut().expect("a frame is active");
+        if let Some((key, j)) = f.resume.take() {
+            let newsubobject = returned.take().expect("child result");
+            f.object = std::mem::take(&mut f.object).set(&key, newsubobject)?;
+            f.i = j;
+        }
+        let mut descend: Option<Frame<'_>> = None;
+        while f.i < f.paths.len() {
+            let i = f.i;
+            let mut j = i;
+            let path_len = f.paths[i].as_array().expect("paths are arrays").len();
+            debug_assert!(path_len > f.start);
+            let delkey = path_len == f.start + 1;
+            let key = path_at(f.paths, i, f.start).unwrap_or_default();
+            while j < f.paths.len() && path_at(f.paths, j, f.start).is_some_and(|k| key.equal(&k)) {
+                j += 1;
+            }
+            // Deviation: a NaN key is unequal to itself, so jq 1.8.1 never
+            // advances here and loops forever (`[1] | delpaths([[nan]])`
+            // hangs). Treat such a key as a group of one instead.
+            if j == i {
+                j = i + 1;
+            }
+            // if i <= entry < j, then entry starts with key
+            if delkey {
+                // deleting this entire key, we don't care about any more
+                // specific deletions
+                f.delkeys.push(key);
+                f.i = j;
+                continue;
+            }
+            // deleting certain sub-parts of this key
+            let subobject = f.object.get(&key)?;
+            if subobject.is_null() {
+                f.i = j;
+                continue;
+            }
+            let child_paths = &f.paths[i..j];
+            let child_start = f.start + 1;
+            f.resume = Some((key, j));
+            descend = Some(Frame {
+                object: subobject,
+                paths: child_paths,
+                start: child_start,
+                i: 0,
+                delkeys: Vec::new(),
+                resume: None,
+            });
+            break;
+        }
+        if let Some(child) = descend {
+            stack.push(child);
+            continue;
+        }
+        let f = stack.pop().expect("a frame is active");
+        let result = dels(f.object, f.delkeys)?;
+        if stack.is_empty() {
+            return Ok(result);
+        }
+        returned = Some(result);
+    }
 }
 
 /// jq's `sort_items`: indices of `keys` in sorted order, stable.

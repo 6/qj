@@ -85,6 +85,7 @@
 
 pub mod array;
 mod aux;
+mod deep;
 pub mod dtoa;
 mod error;
 pub mod file;
@@ -111,7 +112,9 @@ pub use file::load_file;
 pub use number::Number;
 pub use object::Object;
 pub use parse::{ParseFlags, Parser, parse_sized};
-pub use print::{Colors, DumpOptions, Indent, dump, dump_string, dump_string_trunc};
+pub use print::{
+    Colors, DumpOptions, Indent, dump, dump_refcounted, dump_string, dump_string_trunc,
+};
 pub use string::Str;
 
 /// `jv_kind` without `JV_KIND_INVALID`, in jq's order (which is also the
@@ -259,34 +262,9 @@ impl Value {
     /// with [`Number::equal`] (NaN is unequal to everything), objects ignore
     /// key order, and arrays sharing storage with the same length are equal
     /// without looking at the elements (see [`Array::same_storage`]).
+    /// Safe on arbitrarily deep values.
     pub fn equal(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Null, Value::Null) => true,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            // (jq's pointer fast path only applies to literals, which are
-            // never NaN and so compare equal to themselves anyway.)
-            (Value::Number(a), Value::Number(b)) => a.equal(b),
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Array(a), Value::Array(b)) => {
-                if a.same_storage(b) {
-                    return true;
-                }
-                // jvp_array_equal
-                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equal(y))
-            }
-            (Value::Object(a), Value::Object(b)) => {
-                if a.ptr_eq(b) {
-                    return true;
-                }
-                // jvp_object_equal
-                a.len() == b.len()
-                    && a.iter().all(|(k, v)| match b.get(k) {
-                        Some(w) => v.equal(w),
-                        None => false,
-                    })
-            }
-            _ => false,
-        }
+        deep::equal(self, other)
     }
 
     /// `jv_identical`: same payload allocation (and, for arrays, the same
@@ -307,23 +285,21 @@ impl Value {
     /// arrays contain arrays whose every element is contained by some
     /// element, strings contain substrings; anything else must be equal.
     /// Values of different kinds (including `true` vs `false`) never
-    /// contain each other.
+    /// contain each other. Safe on arbitrarily deep values.
     pub fn contains(&self, other: &Value) -> bool {
-        if self.kind() != other.kind() {
-            return false;
-        }
-        match (self, other) {
-            (Value::Object(a), Value::Object(b)) => b.iter().all(|(k, bv)| match a.get(k) {
-                Some(av) => av.contains(bv),
-                None => false,
-            }),
-            (Value::Array(a), Value::Array(b)) => {
-                b.iter().all(|bv| a.iter().any(|av| av.contains(bv)))
-            }
-            (Value::String(a), Value::String(b)) => {
-                b.is_empty() || memchr::memmem::find(a.as_bytes(), b.as_bytes()).is_some()
-            }
-            _ => self.equal(other),
+        deep::contains(self, other)
+    }
+
+    /// `jv_get_refcnt`: the number of references to the payload of an
+    /// allocated value (strings, arrays, objects, number literals); 1 for
+    /// null, booleans and native numbers.
+    pub fn refcount(&self) -> usize {
+        match self {
+            Value::Null | Value::Bool(_) => 1,
+            Value::Number(n) => n.refcount(),
+            Value::String(s) => s.refcount(),
+            Value::Array(a) => a.refcount(),
+            Value::Object(o) => o.refcount(),
         }
     }
 
