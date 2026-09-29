@@ -29,13 +29,22 @@
 use std::os::raw::c_int;
 use std::sync::OnceLock;
 
-/// Whether `QJ_JQ_COMPAT` asks for exactly jq's behavior.
+/// The environment variable that turns compat mode on.
+pub const ENV_VAR: &str = "QJ_JQ_COMPAT";
+
+/// Whether [`ENV_VAR`] asks for exactly jq's behavior.
 ///
-/// Set to anything but the empty string or `0`. Read once: the value is a
-/// property of the process.
+/// Set to anything but the empty string or `0`. Read once: the answer is a
+/// property of the process, and has to be the same on every thread and in
+/// every worker.
 pub fn exactly_jq() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("QJ_JQ_COMPAT").is_some_and(|v| !v.is_empty() && v != "0"))
+    *ON.get_or_init(|| is_on(std::env::var_os(ENV_VAR).as_deref()))
+}
+
+/// [`exactly_jq`]'s rule, for one value of the variable.
+fn is_on(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 /// Dies of `sig` exactly as an unhandled fatal signal would, without running
@@ -59,17 +68,29 @@ pub fn die_of_stack_overflow() -> ! {
     die_by_signal(libc::SIGSEGV)
 }
 
+/// How much [`spin_forever`] allocates before it stops growing. Well above
+/// any memory limit a caller is likely to impose (the differential harness
+/// caps each process at 2 GB), and low enough not to drive the machine into
+/// swap when nothing stops the process.
+const SPIN_GROWTH_CAP: usize = 4 << 30;
+
 /// Loops forever, holding on to `keep`, as jq does when it cannot make
 /// progress.
 ///
 /// jq's loops of this kind are not idle spins: `delpaths_sorted` appends the
 /// key it failed to skip to an array on every turn, so jq's memory grows
-/// without bound (about 1.2 GB/s on an M4) until the process is killed.
-/// Reproduce that, so that a memory limit ends both tools the same way.
+/// without bound (about 1.2 GB/s on an M4) until something kills it.
+/// Reproduce that, so that a memory limit ends both tools the same way —
+/// but stop growing at [`SPIN_GROWTH_CAP`] and spin from there, which is the
+/// one place this is deliberately gentler than jq.
 pub fn spin_forever<T: Clone>(keep: &T) -> ! {
+    let cap = SPIN_GROWTH_CAP / size_of::<T>().max(1);
     let mut grow: Vec<T> = Vec::new();
-    loop {
+    while grow.len() < cap {
         grow.push(keep.clone());
+    }
+    loop {
+        std::hint::spin_loop();
     }
 }
 
@@ -99,56 +120,64 @@ fn stack_limit_bytes() -> Option<u64> {
 }
 
 /// Bytes of stack one `jv_free` frame uses on the way down a nested value
-/// (measured on macOS/arm64, see [`free_depth_limit`]).
+/// (measured on macOS/arm64, see [`free_frame_budget`]).
 const FREE_FRAME_BYTES: u64 = 64;
 
 /// Bytes of the stack already in use when jq starts freeing a value, plus
-/// the guard page it cannot touch (measured, see [`free_depth_limit`]).
-const FREE_RESERVED_BYTES: u64 = 9728;
+/// the guard page it cannot touch (measured, see [`free_frame_budget`]).
+const FREE_RESERVED_BYTES: u64 = 9664;
 
-/// The deepest value jq 1.8.1 can free without overflowing its stack.
+/// How many nested `jv_free` calls jq 1.8.1 can make before its stack
+/// overflows: one per level of nesting of the value being freed, so this is
+/// the value's nesting depth plus one for the scalar at the bottom.
 ///
-/// jq's `jv_free` recurses once per level of nesting, so the limit is set by
-/// `ulimit -s`. Bisected against jq 1.8.1 on macOS/arm64, freeing
-/// `reduce range($n) as $i (null; [.]) | length`:
+/// Bisected against jq 1.8.1 on macOS/arm64 with
+/// `reduce range($n) as $i (null; [.]) | length`, whose value needs `n + 1`
+/// frames:
 ///
-/// | `ulimit -s` | deepest value jq frees | this model |
+/// | `ulimit -s` | deepest `n` jq survives | this model |
 /// |---|---:|---:|
 /// | 1024 KB | 16,233 | 16,232 |
 /// | 4096 KB | 65,385 | 65,384 |
 /// | 8176 KB (this machine's default) | 130,664 | **130,664** |
 /// | 16384 KB | 261,993 | 261,992 |
 ///
-/// so the threshold is linear in the stack size at 64 bytes a level, and
-/// `(stack_bytes - 9728) / 64` is exact at the default limit and one level
-/// early at the others — no single constant fits all four, because 8176 KB
-/// is the one limit that isn't a whole number of 64 KB blocks and jq loses
-/// one more frame there. Matching the default exactly is what matters: it is
-/// the limit the differential harness runs under.
+/// The threshold is linear in the stack size at 64 bytes a frame, and
+/// `(stack_bytes - 9664) / 64` is exact at the default limit and one frame
+/// short at the others: no single constant fits all four, because 8176 KB is
+/// the one limit that isn't a whole number of 64 KB blocks and jq loses one
+/// more frame there. Being exact at the default is what matters — it is the
+/// limit the differential harness runs under — and erring short means qj
+/// never survives where jq dies.
 ///
-/// Which operation frees the value also shifts the threshold by a frame or
-/// two (130,664 from a builtin such as `length`, 130,667 from `main.c`'s
-/// output path, 130,661 through `tojson`); the model follows the first.
+/// Two further reasons the two can't agree to the last frame, both jq's:
 ///
-/// `None` when the stack is unlimited, where jq doesn't crash either.
-pub fn free_depth_limit() -> Option<u64> {
+/// * which operation frees the value shifts the threshold by a frame or two
+///   (130,664 through a builtin such as `length`, 130,667 from `main.c`'s
+///   output path, 130,661 through `tojson`); the model follows the first;
+/// * argv and the environment sit on top of the stack, so jq's threshold
+///   moves with them, about one frame per 64 bytes (130,664 with this
+///   shell's environment, 130,762 under `env -i`). qj's doesn't.
+///
+/// `None` when the stack is unlimited, where jq doesn't overflow either.
+pub fn free_frame_budget() -> Option<u64> {
     let bytes = stack_limit_bytes()?;
     Some(bytes.saturating_sub(FREE_RESERVED_BYTES) / FREE_FRAME_BYTES)
 }
 
-/// Bytes per level and reserved bytes for `jv_equal`/`jv_cmp`, which recurse
+/// Bytes per frame and reserved bytes for `jv_equal`/`jv_cmp`, which recurse
 /// with a larger frame than `jv_free`. Bisected the same way with
 /// `[reduce range($n) as $i (null;[.])] == [reduce range($n) as $i (null;[.])]`:
-/// 8,115 at 1024 KB, 32,691 at 4096 KB and 65,330 at 8176 KB, i.e.
-/// `(stack_bytes - 9984) / 128` (exact at the default limit, one level early
-/// at the other two, as above).
+/// jq survives 8,115 at 1024 KB, 32,691 at 4096 KB and 65,330 at 8176 KB, so
+/// `(stack_bytes - 9856) / 128`, again exact at the default limit and one
+/// frame short at the others.
 ///
 /// qj does not emulate this one: its comparison walks iteratively and stops
 /// at the first difference, so there is no faithful place to put the check
 /// without restructuring the comparison itself. Programs that make jq
 /// overflow while comparing still crash qj when the values are freed, but
-/// only past [`free_depth_limit`]. See `docs/COMPATIBILITY.md`.
-pub const COMPARE_MODEL: (u64, u64) = (128, 9984);
+/// only past [`free_frame_budget`]. See `docs/COMPATIBILITY.md`.
+pub const COMPARE_MODEL: (u64, u64) = (128, 9856);
 
 /// The nesting depth of the deepest value in `items`, counted as jq counts
 /// `jv_free` frames: one for the value itself, plus the deepest child.
@@ -184,10 +213,10 @@ pub fn freeing_iteratively(items: &[crate::jq::value::Value], native_frames: u64
     if !exactly_jq() {
         return;
     }
-    let Some(limit) = free_depth_limit() else {
+    let Some(budget) = free_frame_budget() else {
         return;
     };
-    if native_frames + free_frames(items) > limit {
+    if native_frames + free_frames(items) > budget {
         die_of_stack_overflow();
     }
 }
@@ -196,17 +225,31 @@ pub fn freeing_iteratively(items: &[crate::jq::value::Value], native_frames: u64
 mod tests {
     use super::*;
 
-    /// The models above, against the depths bisected from jq 1.8.1: exact at
-    /// the default stack limit, one level early at the others.
+    #[test]
+    fn the_variable_is_on_unless_it_is_empty_or_zero() {
+        let on = |v: &str| is_on(Some(std::ffi::OsStr::new(v)));
+        assert!(on("1"));
+        assert!(on("yes"));
+        assert!(on("00"));
+        assert!(!on(""));
+        assert!(!on("0"));
+        assert!(!is_on(None));
+    }
+
+    /// The models above, against the depths bisected from jq 1.8.1. The
+    /// budget is in frames, and `reduce range(n) as $i (null;[.])` needs
+    /// `n + 1` of them, so the deepest `n` the model survives is
+    /// `budget - 1`: exact at the default stack limit, one short at the
+    /// others.
     #[test]
     fn stack_models_match_the_measurements() {
-        let free = |kb: u64| (kb * 1024 - FREE_RESERVED_BYTES) / FREE_FRAME_BYTES;
+        let free = |kb: u64| (kb * 1024 - FREE_RESERVED_BYTES) / FREE_FRAME_BYTES - 1;
         assert_eq!(free(8176), 130_664); // jq: 130,664
         assert_eq!(free(1024), 16_232); // jq: 16,233
         assert_eq!(free(4096), 65_384); // jq: 65,385
         assert_eq!(free(16384), 261_992); // jq: 261,993
         let (frame, reserved) = COMPARE_MODEL;
-        let cmp = |kb: u64| (kb * 1024 - reserved) / frame;
+        let cmp = |kb: u64| (kb * 1024 - reserved) / frame - 1;
         assert_eq!(cmp(8176), 65_330); // jq: 65,330
         assert_eq!(cmp(1024), 8_114); // jq: 8,115
         assert_eq!(cmp(4096), 32_690); // jq: 32,691
@@ -234,10 +277,10 @@ mod tests {
     }
 
     #[test]
-    fn a_limited_stack_gives_a_depth_limit() {
+    fn a_limited_stack_gives_a_frame_budget() {
         // The test binary's stack is the shell's, which is never unlimited
         // on macOS; on Linux CI it could be, so accept either answer.
-        match free_depth_limit() {
+        match free_frame_budget() {
             Some(d) => assert!(d > 1000, "implausible depth limit {d}"),
             None => assert!(stack_limit_bytes().is_none()),
         }

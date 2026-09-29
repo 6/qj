@@ -97,8 +97,10 @@ pub(crate) fn drop_values_iteratively(items: &mut Vec<Value>) {
     }
     // QJ_JQ_COMPAT=1: jq's jv_free recurses, so a value this deep overflows
     // its C stack and the process dies of SIGSEGV. Nothing has been freed
-    // yet, which is where jq dies too.
-    crate::compat::freeing_iteratively(items, u64::from(MAX_DROP_RECURSION));
+    // yet, which is where jq dies too. `drop_nested` refuses at the storage
+    // of the container MAX_DROP_RECURSION + 1 levels down, so that many
+    // jv_free frames are already committed above `items`.
+    crate::compat::freeing_iteratively(items, u64::from(MAX_DROP_RECURSION) + 1);
     let mut stack = std::mem::take(items);
     while let Some(mut v) = stack.pop() {
         match &mut v {

@@ -1,0 +1,280 @@
+# QJ_JQ_COMPAT=1: be exactly jq 1.8.1 (format: tests/jq_diff/cli.rs).
+#
+# qj deliberately differs from jq where jq 1.8.1 crashes or hangs, and it adds
+# a few things jq doesn't have. `QJ_JQ_COMPAT=1` turns all of that off, so
+# every case here must match jq byte for byte. See `src/compat.rs` and
+# `docs/COMPATIBILITY.md`.
+#
+# The same env reaches jq, which ignores it — except that it sits on the
+# stack with the rest of the environment, which moves jq's stack-overflow
+# threshold by about one level per 64 bytes. The nesting depths below are far
+# enough from that threshold for it not to matter.
+#
+# The cases where qj deliberately differs *without* the variable are unit and
+# e2e tests, not cases here: jq is the expectation in this file, and the
+# default behaviour is by definition not jq's.
+
+# ---------------------------------------------------------------------------
+# Crashes. jq dies of SIGSEGV; so does qj, at the same point in the run, with
+# whatever it had buffered on stdout lost.
+# ---------------------------------------------------------------------------
+
+# A module that imports itself: jq's load_library adds a module to its table
+# only after loading the module's own imports, so it recurses forever.
+[[case]]
+name = "module-imports-itself"
+args = ["-nc", "-L", ".", "include \"a\"; 1"]
+files = { "a.jq" = "import \"a\" as a;\ndef f: 1;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-import-cycle-of-two"
+args = ["-nc", "-L", ".", "include \"a\"; 1"]
+files = { "a.jq" = "import \"b\" as b;\ndef f: 1;\n", "b.jq" = "import \"a\" as a;\ndef g: 1;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-import-cycle-via-import"
+args = ["-nc", "-L", ".", "import \"a\" as a; 1"]
+files = { "a.jq" = "import \"a\" as a;\ndef f: 1;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# A module imported twice from different places is not a cycle.
+[[case]]
+name = "module-imported-twice-is-fine"
+args = ["-nc", "-L", ".", "include \"a\"; include \"b\"; f + g"]
+files = { "a.jq" = "def f: 1;\n", "b.jq" = "include \"a\";\ndef g: f + 1;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# jq's jv_free recurses once per level of nesting; past `ulimit -s` the
+# process dies. 200,000 is well past the ~130,000 the default 8 MB stack
+# allows, and 100,000 well short of it (src/compat.rs has the measurements).
+[[case]]
+name = "deep-value-freed-by-a-builtin"
+args = ["-nc", "reduce range(200000) as $i (null;[.]) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "deep-value-printed"
+args = ["-nc", "reduce range(200000) as $i (null;[.])"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "deep-value-discarded"
+args = ["-nc", "reduce range(200000) as $i (null;[.]) | empty"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# Input can't get there: jq's parser stops at MAX_PARSING_DEPTH (10,000).
+[[case]]
+name = "deep-input-hits-the-parser-limit"
+args = ["-c", "length"]
+stdin = { repeat = [["[", 20000], ["]", 20000]] }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "not-deep-enough-to-crash"
+args = ["-nc", "reduce range(100000) as $i (null;[.]) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "not-deep-enough-to-crash-printed"
+args = ["-nc", "reduce range(100000) as $i (null;[.]) | tostring | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# jq_test.c reads the argument after --skip with atoi(argv[i+1]), which is
+# atoi(NULL) at the end of argv. (qj does this in every mode.)
+[[case]]
+name = "run-tests-skip-without-a-count"
+args = ["--run-tests", "--skip"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "run-tests-take-without-a-count"
+args = ["--run-tests", "--take"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# ---------------------------------------------------------------------------
+# Hangs. jv_equal(nan, nan) is false, so delpaths_sorted never advances past a
+# NaN path element: it loops forever, appending the key to an array as it
+# goes. Neither tool finishes; the harness requires that of both.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "delpaths-nan-on-an-array"
+args = ["-nc", "[1] | delpaths([[nan]])"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "delpaths-nan-on-an-object"
+args = ["-nc", "{\"a\":1} | delpaths([[nan]])"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "delpaths-nan-under-try"
+args = ["-nc", "[1] | try delpaths([[nan]]) catch \"caught\""]
+env = { QJ_JQ_COMPAT = "1" }
+
+# A NaN deeper in a path reaches the same loop, one level down.
+[[case]]
+name = "delpaths-nan-deeper-in-a-path"
+args = ["-nc", "[[1]] | try delpaths([[0,nan]]) catch ."]
+env = { QJ_JQ_COMPAT = "1" }
+
+# ---------------------------------------------------------------------------
+# qj's extensions, off.
+# ---------------------------------------------------------------------------
+
+# Glob expansion: jq opens the pattern as a file name and fails.
+[[case]]
+name = "glob-is-a-file-name"
+args = ["-c", ".", "g*.json"]
+files = { "g1.json" = "{\"a\":1}\n", "g2.json" = "{\"b\":2}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "glob-question-mark-is-a-file-name"
+args = ["-c", ".", "g?.json"]
+files = { "g1.json" = "{\"a\":1}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "glob-bracket-is-a-file-name"
+args = ["-c", ".", "g[12].json"]
+files = { "g1.json" = "{\"a\":1}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# A literal file called `*.json` is opened in both modes and in jq.
+[[case]]
+name = "a-file-really-called-star-json"
+args = ["-c", ".", "*.json"]
+files = { "*.json" = "{\"literal\":true}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# Decompression: jq reads the gzip bytes as JSON. (`{"x":1}` gzipped with a
+# zero mtime, so the bytes are fixed.)
+[[case]]
+name = "gzip-file-is-read-as-bytes"
+args = ["-c", ".", "c.json.gz"]
+files = { "c.json.gz" = { b64 = "H4sIAAAAAAAC/6tWqlCyMqzlAgAV8DFQCAAAAA==" } }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "gzip-file-is-read-as-bytes-raw"
+args = ["-Rc", "length", "c.json.gz"]
+files = { "c.json.gz" = { b64 = "H4sIAAAAAAAC/6tWqlCyMqzlAgAV8DFQCAAAAA==" } }
+env = { QJ_JQ_COMPAT = "1" }
+
+# A `.gz` name whose content is plain JSON is read as JSON either way.
+[[case]]
+name = "gz-name-with-plain-content"
+args = ["-c", ".", "plain.json.gz"]
+files = { "plain.json.gz" = "{\"x\":1}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# qj-only options: jq's "Unknown option", exit 2.
+[[case]]
+name = "threads-is-unknown"
+args = ["--threads", "2", "-c", ".", "in.json"]
+files = { "in.json" = "{\"a\":1}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "threads-equals-is-unknown"
+args = ["--threads=2", "-c", ".", "in.json"]
+files = { "in.json" = "{\"a\":1}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "threads-without-a-count-is-unknown"
+args = ["--threads"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "jsonl-is-unknown"
+args = ["--jsonl", "-c", ".", "in.json"]
+files = { "in.json" = "{\"a\":1}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "debug-timing-is-unknown"
+args = ["--debug-timing", "-c", ".", "in.json"]
+files = { "in.json" = "{\"a\":1}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# The option loop stops at the first unknown option, wherever it is, and
+# options after a good one are still read the same way.
+[[case]]
+name = "unknown-option-after-a-good-one"
+args = ["-c", "--jsonl", "."]
+stdin = "1"
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "unknown-option-after-the-program"
+args = ["-c", ".", "--threads", "2"]
+stdin = "1"
+env = { QJ_JQ_COMPAT = "1" }
+
+# (`-h --jsonl` prints help and exits 0 in both tools, but qj's help text is
+# its own, so it belongs in cli_meta.toml, not here.)
+
+# After `--`, nothing is an option in either tool.
+[[case]]
+name = "threads-after-double-dash-is-a-file"
+args = ["-c", ".", "--", "--threads"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# ---------------------------------------------------------------------------
+# Compat mode changes nothing else: ordinary programs, input modes and errors
+# behave as they do without it.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "ordinary-program"
+args = ["-c", "[.[] | . * 2]"]
+stdin = "[1,2,3]\n[4,5]\n"
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "ordinary-files"
+args = ["-c", ".", "a.json", "b.json"]
+files = { "a.json" = "{\"a\":1}\n", "b.json" = "[2,3]\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "ordinary-ndjson-file"
+args = ["-c", "select(.n > 1) | .n", "in.ndjson"]
+files = { "in.ndjson" = "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "ordinary-error"
+args = ["-c", ".a"]
+stdin = "1"
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "ordinary-missing-file"
+args = ["-c", ".", "nope.json"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "ordinary-syntax-error"
+args = ["-c", "1 +"]
+stdin = "1"
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "delpaths-still-works"
+args = ["-nc", "[[1,2],[3,4]] | delpaths([[0,1],[1,0]])"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "delpaths-slice-error-still-errors"
+args = ["-nc", "[1,2,3,4] | try delpaths([[{}]]) catch ."]
+env = { QJ_JQ_COMPAT = "1" }
+note = "jq's double free here only kills it for some heap layouts; see docs/COMPATIBILITY.md"
+
+# `QJ_JQ_COMPAT=0` is off, so qj expands this glob and jq doesn't: a
+# deliberate difference, and not a case here. `src/cli/args/tests.rs` checks
+# it instead.
