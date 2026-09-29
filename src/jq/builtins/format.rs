@@ -20,8 +20,7 @@ pub fn f_format(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResu
     let Value::String(fmt_str) = &fmt else {
         return Err(Error::type_error(&fmt, "is not a valid format"));
     };
-    let fmt_s = c_str(fmt_str.as_str());
-    match fmt_s {
+    match fmt_str.as_c_str() {
         "json" => Ok(Value::from(input.to_json())),
         "text" => Ok(tostring(input)),
         "csv" => csv_tsv(
@@ -57,17 +56,12 @@ pub fn f_format(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResu
     }
 }
 
-/// The C string view of a jq string: `strcmp` stops at the first NUL.
-fn c_str(s: &str) -> &str {
-    match memchr::memchr(0, s.as_bytes()) {
-        Some(i) => &s[..i],
-        None => s,
+/// The string of a value that `tostring` made a string.
+fn as_text(v: &Value) -> &Str {
+    match v {
+        Value::String(s) => s,
+        _ => unreachable!("tostring returns a string"),
     }
-}
-
-/// The text of a value that `tostring` made a string.
-fn as_text(v: &Value) -> &str {
-    v.as_str().expect("tostring returns a string")
 }
 
 /// `@csv` escapings (`"\"\"\"\0"`): `"` doubles.
@@ -226,8 +220,7 @@ fn uri(s: &str) -> Value {
 ///   literal non-ASCII character becomes one U+FFFD per byte: `"é" | @urid` is `"��"`.
 fn urid(input: Value) -> CResult {
     const ERRMSG: &str = "is not a valid uri encoding";
-    let s = as_text(&input).as_bytes();
-    let s = &s[..memchr::memchr(0, s).unwrap_or(s.len())];
+    let s = as_text(&input).as_c_str().as_bytes();
     // Reads past the end see C's terminating NUL.
     let at = |i: usize| s.get(i).copied().unwrap_or(0);
     let hex = |c: u8| -> Option<u8> {

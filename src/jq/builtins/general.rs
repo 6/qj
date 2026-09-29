@@ -11,14 +11,6 @@ use std::cmp::Ordering;
 use super::{CResult, Host};
 use crate::jq::value::{self, Error, Number, Object, Str, Value, parse_sized};
 
-/// The C string view of a jq string: `strcmp` and friends stop at the first NUL.
-fn c_str(s: &str) -> &str {
-    match memchr::memchr(0, s.as_bytes()) {
-        Some(i) => &s[..i],
-        None => s,
-    }
-}
-
 /// `tojson` (nargs 1): port of builtin.c `f_dump` (`jv_dump_string(input, 0)`).
 pub fn f_dump(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
     Ok(Value::from(input.to_json()))
@@ -48,11 +40,12 @@ pub fn f_tonumber(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CR
     Err(Error::type_error(&input, "cannot be parsed as a number"))
 }
 
-/// `toboolean` (nargs 1): port of builtin.c `f_toboolean`.
+/// `toboolean` (nargs 1): port of builtin.c `f_toboolean` (`strcmp`, so the string is
+/// read up to its first NUL).
 pub fn f_toboolean(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
     match &input {
         Value::Bool(_) => return Ok(input),
-        Value::String(s) => match c_str(s) {
+        Value::String(s) => match s.as_c_str() {
             "true" => return Ok(Value::Bool(true)),
             "false" => return Ok(Value::Bool(false)),
             _ => {}

@@ -169,11 +169,6 @@ static FUNCTION_LIST_TAIL: &[CFunction] = &[
     CFunction { name: "have_literal_numbers", nargs: 1, f: general::f_have_decnum },
 ];
 
-/// Error for a builtin whose port hasn't landed yet (scaffolding only).
-pub(crate) fn not_ported(name: &str) -> Error {
-    Error::msg(format!("{name} is not ported yet"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
