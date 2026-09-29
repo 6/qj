@@ -3745,6 +3745,270 @@ null
 [.[]? |= input?]
 null
 
+.key |= . + 1
+[1,[2,[3]],{"a":[]}]
+
+.key |= . + 1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.key |= . + 1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.key |= . + 1
+{"x":{"a":{"b":1},"c":2}}
+
+.key |= . + 1
+[]
+
+.key |= . + 1
+{}
+
+.key |= . + 1
+1
+
+.key |= . + 1
+null
+
+.x |= 1
+[1,[2,[3]],{"a":[]}]
+
+.x |= 1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.x |= 1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.x |= 1
+{"x":{"a":{"b":1},"c":2}}
+
+.x |= 1
+[]
+
+.x |= 1
+{}
+
+.x |= 1
+1
+
+.x |= 1
+null
+
+try (.[0] |= 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.[0] |= 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.[0] |= 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.[0] |= 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.[0] |= 1) catch .
+[]
+
+try (.[0] |= 1) catch .
+{}
+
+try (.[0] |= 1) catch .
+1
+
+try (.[0] |= 1) catch .
+null
+
+try (.[-9] |= 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.[-9] |= 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.[-9] |= 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.[-9] |= 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.[-9] |= 1) catch .
+[]
+
+try (.[-9] |= 1) catch .
+{}
+
+try (.[-9] |= 1) catch .
+1
+
+try (.[-9] |= 1) catch .
+null
+
+.[5]? |= 1
+[1,[2,[3]],{"a":[]}]
+
+.[5]? |= 1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[5]? |= 1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[5]? |= 1
+{"x":{"a":{"b":1},"c":2}}
+
+.[5]? |= 1
+[]
+
+.[5]? |= 1
+{}
+
+.[5]? |= 1
+1
+
+.[5]? |= 1
+null
+
+.key |= empty
+[1,[2,[3]],{"a":[]}]
+
+.key |= empty
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.key |= empty
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.key |= empty
+{"x":{"a":{"b":1},"c":2}}
+
+.key |= empty
+[]
+
+.key |= empty
+{}
+
+.key |= empty
+1
+
+.key |= empty
+null
+
+.key = (1, 2)
+[1,[2,[3]],{"a":[]}]
+
+.key = (1, 2)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.key = (1, 2)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.key = (1, 2)
+{"x":{"a":{"b":1},"c":2}}
+
+.key = (1, 2)
+[]
+
+.key = (1, 2)
+{}
+
+.key = (1, 2)
+1
+
+.key = (1, 2)
+null
+
+try (.a = 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.a = 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.a = 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.a = 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.a = 1) catch .
+[]
+
+try (.a = 1) catch .
+{}
+
+try (.a = 1) catch .
+1
+
+try (.a = 1) catch .
+null
+
+try (.[-9] = 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.[-9] = 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.[-9] = 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.[-9] = 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.[-9] = 1) catch .
+[]
+
+try (.[-9] = 1) catch .
+{}
+
+try (.[-9] = 1) catch .
+1
+
+try (.[-9] = 1) catch .
+null
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+[1,[2,[3]],{"a":[]}]
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+{"x":{"a":{"b":1},"c":2}}
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+[]
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+{}
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+1
+
+.key |= (label $f | ., break $f) | [label $g | try break $g catch .]
+null
+
+.["key"] |= tostring
+[1,[2,[3]],{"a":[]}]
+
+.["key"] |= tostring
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.["key"] |= tostring
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.["key"] |= tostring
+{"x":{"a":{"b":1},"c":2}}
+
+.["key"] |= tostring
+[]
+
+.["key"] |= tostring
+{}
+
+.["key"] |= tostring
+1
+
+.["key"] |= tostring
+null
+
 [.. | numbers]
 [1,[2,[3]],{"a":[]}]
 

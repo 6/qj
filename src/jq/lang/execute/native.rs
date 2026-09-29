@@ -642,6 +642,22 @@ impl Jq {
         }
     }
 
+    /// The key `k` if closure `f` is `.[k]` for a constant `k` (`.a`, `."a"`, `.[0]`:
+    /// `PUSHK_UNDER k; INDEX`).
+    pub(crate) fn key_closure(&self, f: Closure) -> Option<Value> {
+        let func = &self.prog.funcs[f.func as usize];
+        match func.bc.code.as_slice() {
+            [push, k, index, ret]
+                if *push == Opcode::PUSHK_UNDER as u16
+                    && *index == Opcode::INDEX as u16
+                    && *ret == Opcode::RET as u16 =>
+            {
+                func.bc.constants.get(*k as usize).cloned()
+            }
+            _ => None,
+        }
+    }
+
     /// Whether closure `f` is `.[]` (`Some(false)`) or `.[]?` (`Some(true)`).
     pub(crate) fn each_closure(&self, f: Closure) -> Option<bool> {
         let code = &self.prog.funcs[f.func as usize].bc.code;

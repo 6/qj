@@ -47,6 +47,15 @@ pub(super) fn modify(
     if let Some(opt) = vm.each_closure(paths) {
         return modify_each(vm, input, opt, update);
     }
+    if let Some(k) = vm.key_closure(paths) {
+        // `path(.[k])` is `[k]`, or INDEX's error; after the INDEX the path expression
+        // holds nothing of the input.
+        input.get(&k)?;
+        let mut root = input;
+        let mut dels = Vec::new();
+        modify_one(vm, &mut root, &mut dels, Value::from(vec![k]), update)?;
+        return finish(root, dels);
+    }
     // `[., []]`: the value being updated and the paths to delete.
     let mut root = input.clone();
     let mut dels: Vec<Value> = Vec::new();
@@ -161,6 +170,11 @@ fn assign_one(
     path_fn: Closure,
     v: Value,
 ) -> Result<Value, Stop> {
+    if let Some(k) = vm.key_closure(paths) {
+        // `path(.[k])` (see `modify`), then `setpath([k]; $value)`.
+        input.get(&k)?;
+        return Ok(input.setpath(&Value::from(vec![k]), v)?);
+    }
     // The reduce's state starts as `.` itself.
     let mut state = input.clone();
     let mut r = vm.sub_start_args(path_fn, &[paths], input)?;

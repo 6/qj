@@ -211,6 +211,17 @@ const PROGRAMS: &[&str] = &[
     "try (.[]? |= error) catch .",
     ".[]? |= (.[]? |= 9)",
     "[.[]? |= input?]",
+    ".key |= . + 1",
+    ".x |= 1",
+    "try (.[0] |= 1) catch .",
+    "try (.[-9] |= 1) catch .",
+    ".[5]? |= 1",
+    ".key |= empty",
+    ".key = (1, 2)",
+    "try (.a = 1) catch .",
+    "try (.[-9] = 1) catch .",
+    ".key |= (label $f | ., break $f) | [label $g | try break $g catch .]",
+    ".[\"key\"] |= tostring",
     // .., type filters, add, _flatten, first, limit, isempty, any/all, IN
     "[..]",
     "[.. | numbers]",
@@ -347,6 +358,9 @@ const LIFETIME_NATIVES: &[&str] = &[
     "(.[]? |= 9)",
     "(.[] |= (., 1))",
     "map_values(empty)",
+    "(.[0] |= 9)",
+    "(.[1] = 9)",
+    "(.[0] |= empty)",
 ];
 
 /// Where jq's definition still holds a value (in a suspended fork point) when an output
