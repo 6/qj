@@ -135,6 +135,7 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT, stdout
     master = slave = None
     tty_reader = None
     tty_chunks = []
+    tty_over = []
     try:
         if stdin is None:
             stdin_arg = subprocess.DEVNULL
@@ -173,6 +174,8 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT, stdout
                     total += len(b)
                     if total <= MAX_OUTPUT + 1:
                         tty_chunks.append(b)
+                    else:
+                        tty_over.append(True)
             tty_reader = threading.Thread(target=drain, daemon=True)
             tty_reader.start()
         if stdin_arg is subprocess.PIPE:
@@ -199,7 +202,7 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT, stdout
         ferr.seek(0)
         out = b"".join(tty_chunks)[:MAX_OUTPUT + 1] if stdout_tty else fout.read(MAX_OUTPUT + 1)
         err = ferr.read(MAX_OUTPUT + 1)
-        if stdout_tty and len(out) > MAX_OUTPUT and status not in ("timeout", "memory"):
+        if stdout_tty and tty_over and status not in ("timeout", "memory"):
             status = "output"  # (the pty isn't size-checked while running)
         return Result(status, out, err)
     finally:
