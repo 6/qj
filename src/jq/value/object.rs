@@ -39,11 +39,15 @@ impl std::ops::DerefMut for Map {
 
 impl Drop for Map {
     fn drop(&mut self) {
-        if !self.0.values().any(super::array::owns_container) {
-            return; // plain drop is shallow
+        if self.0.is_empty() {
+            return;
         }
-        let mut values: Vec<Value> = self.0.drain(..).map(|(_, v)| v).collect();
-        super::array::drop_values_iteratively(&mut values);
+        // Drop the entries here so that the nesting is counted; past the
+        // recursion budget, move the values out and drop them iteratively.
+        if !super::array::drop_nested(|| self.0.clear()) {
+            let mut values: Vec<Value> = self.0.drain(..).map(|(_, v)| v).collect();
+            super::array::drop_values_iteratively(&mut values);
+        }
     }
 }
 
