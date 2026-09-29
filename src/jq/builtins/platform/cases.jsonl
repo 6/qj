@@ -1,0 +1,372 @@
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g",false],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"}]}]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g",true],"ok":"true"}
+{"f":"_match_impl","input":"foo bar","args":["z","g",true],"ok":"false"}
+{"f":"_match_impl","input":"foo bar","args":["z",null,false],"ok":"[]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g",1],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"}]}]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g","true"],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"}]}]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g",null],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"}]}]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g",[true]],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"}]}]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g",{}],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"}]}]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)","g",0],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"}]}]"}
+{"f":"_match_impl","input":"foo bar","args":["(?<x>o+)|(z)","g",false],"ok":"[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":\"x\"},{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"f":"_match_impl","input":"abc","args":["(a)(x?)(b)",null,false],"ok":"[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null},{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":null}]}]"}
+{"f":"_match_impl","input":"foo","args":["(?=(o+))","g",false],"ok":"[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"f":"_match_impl","input":"xyzzy-14","args":["(?<x>[a-z]+)-(?<n>[0-9]+)",null,false],"ok":"[{\"offset\":0,\"length\":8,\"string\":\"xyzzy-14\",\"captures\":[{\"offset\":0,\"length\":5,\"string\":\"xyzzy\",\"name\":\"x\"},{\"offset\":6,\"length\":2,\"string\":\"14\",\"name\":\"n\"}]}]"}
+{"f":"_match_impl","input":"aéb日c","args":["(é)(b)(日)",null,false],"ok":"[{\"offset\":1,\"length\":3,\"string\":\"éb日\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"é\",\"name\":null},{\"offset\":2,\"length\":1,\"string\":\"b\",\"name\":null},{\"offset\":3,\"length\":1,\"string\":\"日\",\"name\":null}]}]"}
+{"f":"_match_impl","input":"éé","args":["","g",false],"ok":"[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"","args":["","g",false],"ok":"[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"a\u0000b","args":["a.b",null,false],"ok":"[{\"offset\":0,\"length\":3,\"string\":\"a\\u0000b\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"abc","args":["B","gi",false],"ok":"[{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"test","args":["t","",false],"ok":"[{\"offset\":0,\"length\":1,\"string\":\"t\",\"captures\":[]}]"}
+{"f":"_match_impl","input":1,"args":["a",null,false],"err":"number (1) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":null,"args":["a",null,false],"err":"null (null) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":true,"args":["a",null,false],"err":"boolean (true) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":false,"args":["a",null,false],"err":"boolean (false) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":[1,2],"args":["a",null,false],"err":"array ([1,2]) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":{"a":"verylongstringhere"},"args":["a",null,false],"err":"object ({\"a\":\"veryl...) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":1E+2,"args":["a",null,false],"err":"number (1E+2) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":nan,"args":["a",null,false],"err":"number (null) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":1.000,"args":["a",null,false],"err":"number (1.000) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":["ééééééééé"],"args":["a",null,false],"err":"array ([\"éééé...) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":[1,2,3,4,5,6,7,8,9],"args":["a",null,false],"err":"array ([1,2,3,4,5,...) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":{"é":"😀😀😀😀"},"args":["a",null,false],"err":"object ({\"é\":\"😀...) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":"a","args":[1,null,false],"err":"number (1) is not a string"}
+{"f":"_match_impl","input":"a","args":[null,null,false],"err":"null (null) is not a string"}
+{"f":"_match_impl","input":"a","args":[["x"],null,false],"err":"array ([\"x\"]) is not a string"}
+{"f":"_match_impl","input":"a","args":[{"a":1},null,false],"err":"object ({\"a\":1}) is not a string"}
+{"f":"_match_impl","input":"a","args":[true,null,false],"err":"boolean (true) is not a string"}
+{"f":"_match_impl","input":"a","args":[{"a":"verylongstringhere"},null,false],"err":"object ({\"a\":\"veryl...) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",1,false],"err":"number (1) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",1,true],"err":"number (1) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",true,false],"err":"boolean (true) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",true,true],"err":"boolean (true) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",false,false],"err":"boolean (false) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",false,true],"err":"boolean (false) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",[],false],"err":"array ([]) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",[],true],"err":"array ([]) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",{},false],"err":"object ({}) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",{},true],"err":"object ({}) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",["g"],false],"err":"array ([\"g\"]) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",["g"],true],"err":"array ([\"g\"]) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",[1,2,3,4,5,6,7,8,9],false],"err":"array ([1,2,3,4,5,...) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",[1,2,3,4,5,6,7,8,9],true],"err":"array ([1,2,3,4,5,...) is not a string"}
+{"f":"_match_impl","input":1,"args":[2,3,false],"err":"number (1) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":"a","args":[2,3,false],"err":"number (2) is not a string"}
+{"f":"_match_impl","input":1,"args":["a",3,false],"err":"number (1) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":"a","args":["(",3,false],"err":"number (3) is not a string"}
+{"f":"_match_impl","input":"a","args":["(","q",false],"err":"q is not a valid modifier string"}
+{"f":"_match_impl","input":"a","args":["(","q",true],"err":"q is not a valid modifier string"}
+{"f":"_match_impl","input":null,"args":["(","q",true],"err":"null (null) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":"a","args":["a","q",false],"err":"q is not a valid modifier string"}
+{"f":"_match_impl","input":"a","args":["a","gq",false],"err":"gq is not a valid modifier string"}
+{"f":"_match_impl","input":"a","args":["a","G",false],"err":"G is not a valid modifier string"}
+{"f":"_match_impl","input":"a","args":["a","é",false],"err":"é is not a valid modifier string"}
+{"f":"_match_impl","input":"a","args":["a","g\u0000",false],"err":"g\u0000 is not a valid modifier string"}
+{"f":"_match_impl","input":"a","args":["a","gixsnlpm ",false],"err":"gixsnlpm  is not a valid modifier string"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c",null,false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","g",false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","i",false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","x",false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","n",false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","s",false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","m",false],"ok":"[{\"offset\":1,\"length\":3,\"string\":\"b\\nc\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","p",false],"ok":"[{\"offset\":1,\"length\":3,\"string\":\"b\\nc\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","l",false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["b.c","gixsnlpm",false],"ok":"[{\"offset\":1,\"length\":3,\"string\":\"b\\nc\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["ab","gi",false],"ok":"[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[]},{\"offset\":6,\"length\":2,\"string\":\"AB\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["a b","x",false],"ok":"[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["^cd",null,false],"ok":"[]"}
+{"f":"_match_impl","input":"ab\ncd AB","args":["^cd","s",false],"ok":"[]"}
+{"f":"_match_impl","input":"aaa","args":["","gn",false],"ok":"[]"}
+{"f":"_match_impl","input":"aaa","args":["a|aa|aaa","gl",false],"ok":"[{\"offset\":0,\"length\":3,\"string\":\"aaa\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"aaa","args":["a|aa|aaa","g",false],"ok":"[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"f":"_match_impl","input":"a","args":["(",null,false],"err":"Regex failure: end pattern with unmatched parenthesis"}
+{"f":"_match_impl","input":"a","args":["(",null,true],"err":"Regex failure: end pattern with unmatched parenthesis"}
+{"f":"_match_impl","input":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab!","args":["(a|a)*b$",null,false],"err":"Regex failure: retry-limit-in-match over"}
+{"f":"_match_impl","input":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab!","args":["(a|a)*b$",null,true],"err":"Regex failure: retry-limit-in-match over"}
+{"f":"_match_impl","input":"x","args":["\\k<a\u0000b>",null,false],"err":"Regex failure: invalid char in group name <a"}
+{"f":"gmtime","input":1425599507,"args":[],"ok":"[2015,2,5,23,51,47,4,63]"}
+{"f":"gmtime","input":1425599507.5,"args":[],"ok":"[2015,2,5,23,51,47.5,4,63]"}
+{"f":"gmtime","input":1425599507.822351,"args":[],"ok":"[2015,2,5,23,51,47.82235097885132,4,63]"}
+{"f":"gmtime","input":0,"args":[],"ok":"[1970,0,1,0,0,0,4,0]"}
+{"f":"gmtime","input":-1.5,"args":[],"ok":"[1969,11,31,23,59,59.5,3,364]"}
+{"f":"gmtime","input":-0.25,"args":[],"ok":"[1970,0,1,0,0,0.75,4,0]"}
+{"f":"gmtime","input":1E+2,"args":[],"ok":"[1970,0,1,0,1,40,4,0]"}
+{"f":"gmtime","input":253402300799,"args":[],"ok":"[9999,11,31,23,59,59,5,364]"}
+{"f":"gmtime","input":-62135596800,"args":[],"ok":"[1,0,1,0,0,0,1,0]"}
+{"f":"gmtime","input":1e30,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"gmtime","input":-1e30,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"gmtime","input":1e18,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"gmtime","input":1e1000,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"gmtime","input":-1e1000,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"gmtime","input":nan,"args":[],"only":"aarch64","ok":"[1970,0,1,0,0,null,4,0]"}
+{"f":"gmtime","input":67767976233316800,"args":[],"only":"macos","ok":"[2147483647,11,29,12,0,0,0,362]"}
+{"f":"gmtime","input":67768036191676799,"args":[],"only":"macos","err":"error converting number of seconds since epoch to datetime"}
+{"f":"gmtime","input":"x","args":[],"err":"gmtime() requires numeric inputs"}
+{"f":"gmtime","input":null,"args":[],"err":"gmtime() requires numeric inputs"}
+{"f":"gmtime","input":[1],"args":[],"err":"gmtime() requires numeric inputs"}
+{"f":"gmtime","input":{},"args":[],"err":"gmtime() requires numeric inputs"}
+{"f":"gmtime","input":true,"args":[],"err":"gmtime() requires numeric inputs"}
+{"f":"gmtime","input":"1425599507","args":[],"err":"gmtime() requires numeric inputs"}
+{"f":"localtime","input":"x","args":[],"err":"localtime() requires numeric inputs"}
+{"f":"localtime","input":null,"args":[],"err":"localtime() requires numeric inputs"}
+{"f":"localtime","input":[1],"args":[],"err":"localtime() requires numeric inputs"}
+{"f":"localtime","input":{},"args":[],"err":"localtime() requires numeric inputs"}
+{"f":"localtime","input":false,"args":[],"err":"localtime() requires numeric inputs"}
+{"f":"localtime","input":1e30,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"localtime","input":-1e30,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"localtime","input":1e1000,"args":[],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"localtime","input":1425599507,"args":[],"tz":"UTC","ok":"[2015,2,5,23,51,47,4,63]"}
+{"f":"localtime","input":1425599507.25,"args":[],"tz":"UTC","ok":"[2015,2,5,23,51,47.25,4,63]"}
+{"f":"localtime","input":1436140307.75,"args":[],"tz":"UTC","ok":"[2015,6,5,23,51,47.75,0,185]"}
+{"f":"localtime","input":-1.5,"args":[],"tz":"UTC","ok":"[1969,11,31,23,59,59.5,3,364]"}
+{"f":"localtime","input":0,"args":[],"tz":"UTC","ok":"[1970,0,1,0,0,0,4,0]"}
+{"f":"localtime","input":1425599507,"args":[],"tz":"Asia/Tokyo","ok":"[2015,2,6,8,51,47,5,64]"}
+{"f":"localtime","input":1425599507.25,"args":[],"tz":"Asia/Tokyo","ok":"[2015,2,6,8,51,47.25,5,64]"}
+{"f":"localtime","input":1436140307.75,"args":[],"tz":"Asia/Tokyo","ok":"[2015,6,6,8,51,47.75,1,186]"}
+{"f":"localtime","input":-1.5,"args":[],"tz":"Asia/Tokyo","ok":"[1970,0,1,8,59,59.5,4,0]"}
+{"f":"localtime","input":0,"args":[],"tz":"Asia/Tokyo","ok":"[1970,0,1,9,0,0,4,0]"}
+{"f":"localtime","input":1425599507,"args":[],"tz":"America/New_York","ok":"[2015,2,5,18,51,47,4,63]"}
+{"f":"localtime","input":1425599507.25,"args":[],"tz":"America/New_York","ok":"[2015,2,5,18,51,47.25,4,63]"}
+{"f":"localtime","input":1436140307.75,"args":[],"tz":"America/New_York","ok":"[2015,6,5,19,51,47.75,0,185]"}
+{"f":"localtime","input":-1.5,"args":[],"tz":"America/New_York","ok":"[1969,11,31,18,59,59.5,3,364]"}
+{"f":"localtime","input":0,"args":[],"tz":"America/New_York","ok":"[1969,11,31,19,0,0,3,364]"}
+{"f":"localtime","input":nan,"args":[],"tz":"Asia/Tokyo","only":"aarch64","ok":"[1970,0,1,9,0,null,4,0]"}
+{"f":"mktime","input":[2015,2,5,23,51,47,4,63],"args":[],"ok":"1425599507"}
+{"f":"mktime","input":[2015,2,5,23,51,47],"args":[],"ok":"1425599507"}
+{"f":"mktime","input":[2024,8,21],"args":[],"ok":"1726876800"}
+{"f":"mktime","input":[2015,2,5],"args":[],"ok":"1425513600"}
+{"f":"mktime","input":[2015],"args":[],"ok":"1419984000"}
+{"f":"mktime","input":[2015,2,5,23,51,47,4,63,"rest"],"args":[],"ok":"1425599507"}
+{"f":"mktime","input":[2015,2,5,23,51,47,"x","y"],"args":[],"err":"mktime requires parsed datetime inputs"}
+{"f":"mktime","input":[2015,2,5,23,51,47,0,0,{"ninth":"ignored"}],"args":[],"ok":"1425599507"}
+{"f":"mktime","input":[2015.9,2.9,5.9,23.9,51.9,47.9],"args":[],"ok":"1425599507"}
+{"f":"mktime","input":[2015,14,5,23,51,47],"args":[],"ok":"1457221907"}
+{"f":"mktime","input":[2015,-1,5,23,51,47],"args":[],"ok":"1417823507"}
+{"f":"mktime","input":[2015,2,5,23,51,1e10],"args":[],"ok":"3573083107"}
+{"f":"mktime","input":[2015,2,5,23,51,-1e10],"args":[],"ok":"-721884188"}
+{"f":"mktime","input":[2.015E+3,2,5,23,51,47],"args":[],"ok":"1425599507"}
+{"f":"mktime","input":[1970,0,1,0,0,0],"args":[],"ok":"0"}
+{"f":"mktime","input":[1969,11,31,23,59,59],"args":[],"err":"invalid gmtime representation"}
+{"f":"mktime","input":[1969,11,31,23,59,58],"args":[],"err":"mktime not supported on this platform"}
+{"f":"mktime","input":[1969,11,31,23,59,57],"args":[],"ok":"-3"}
+{"f":"mktime","input":[2037,1,11,1,2,3,3,41],"args":[],"ok":"2117926923"}
+{"f":"mktime","input":[10000,0,1],"args":[],"ok":"253402300800"}
+{"f":"mktime","input":["a",1,2,3,4,5,6,7],"args":[],"err":"mktime requires parsed datetime inputs"}
+{"f":"mktime","input":[2015,"x"],"args":[],"err":"mktime requires parsed datetime inputs"}
+{"f":"mktime","input":[2015,2,5,23,51,47,4,null],"args":[],"err":"mktime requires parsed datetime inputs"}
+{"f":"mktime","input":[2015,2,5,23,51,nan],"args":[],"err":"mktime requires parsed datetime inputs"}
+{"f":"mktime","input":[null],"args":[],"err":"mktime requires parsed datetime inputs"}
+{"f":"mktime","input":"x","args":[],"err":"mktime requires array inputs"}
+{"f":"mktime","input":1,"args":[],"err":"mktime requires array inputs"}
+{"f":"mktime","input":null,"args":[],"err":"mktime requires array inputs"}
+{"f":"mktime","input":{},"args":[],"err":"mktime requires array inputs"}
+{"f":"mktime","input":true,"args":[],"err":"mktime requires array inputs"}
+{"f":"mktime","input":[],"args":[],"only":"macos","err":"invalid gmtime representation"}
+{"f":"mktime","input":[1899,11,31],"args":[],"only":"macos","err":"invalid gmtime representation"}
+{"f":"mktime","input":[1900,0,1],"args":[],"only":"macos","ok":"-2208988800"}
+{"f":"mktime","input":[1e30,2,5],"args":[],"only":"macos","ok":"67768036165584000"}
+{"f":"mktime","input":[-1e30,2,5],"args":[],"only":"macos","err":"invalid gmtime representation"}
+{"f":"strftime","input":1425599507,"args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"\"2015-03-05T23:51:47Z\""}
+{"f":"strftime","input":[2015,2,5,23,51,47,4,63],"args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"\"2015-03-05T23:51:47Z\""}
+{"f":"strftime","input":[2024,2,15],"args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"\"2024-03-15T00:00:00Z\""}
+{"f":"strftime","input":1425599507.9,"args":["%j %U %W %u %w %e %C %y %G %g %V %k %l %I %M %S %H %d %m %Y"],"ok":"\"064 09 09 4 4  5 20 15 2015 15 10 23 11 11 51 47 23 05 03 2015\""}
+{"f":"strftime","input":1425599507,"args":["%D %F %T %R %n %t %%"],"ok":"\"03/05/15 2015-03-05 23:51:47 23:51 \\n \\t %\""}
+{"f":"strftime","input":[2015,2,5,23,51,47,0,0],"args":["%u %w %j"],"ok":"\"4 4 064\""}
+{"f":"strftime","input":[2015,14,40,25,61,61],"args":["%F %T %j %u"],"ok":"\"2016-04-10 02:02:01 101 7\""}
+{"f":"strftime","input":[2015,2,5,23,51,47,4,63,"rest"],"args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"\"2015-03-05T23:51:47Z\""}
+{"f":"strftime","input":1425599507,"args":[""],"ok":"\"\""}
+{"f":"strftime","input":0,"args":["abc\u0000def"],"ok":"\"abc\""}
+{"f":"strftime","input":1E+2,"args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"\"1970-01-01T00:01:40Z\""}
+{"f":"strftime","input":-1.5,"args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"\"1969-12-31T23:59:59Z\""}
+{"f":"strftime","input":[2015.9,2.9,5.9,23.9,51.9,47.9],"args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"\"2015-03-05T23:51:47Z\""}
+{"f":"strftime","input":1425599507,"args":["%Z %z %s"],"only":"macos","ok":"\"UTC +0000 1425599507\""}
+{"f":"strftime","input":1435677542.822351,"args":["%A, %B %d, %Y"],"tz":"UTC","ok":"\"Tuesday, June 30, 2015\""}
+{"f":"strftime","input":1425599507,"args":["%c | %x | %X | %r | %p | %a %b %h"],"tz":"UTC","ok":"\"Thu Mar  5 23:51:47 2015 | 03/05/15 | 23:51:47 | 11:51:47 PM | PM | Thu Mar Mar\""}
+{"f":"strftime","input":0,"args":["%c%c%c%c"],"tz":"UTC","ok":"\"Thu Jan  1 00:00:00 1970Thu Jan  1 00:00:00 1970Thu Jan  1 00:00:00 1970Thu Jan  1 00:00:00 1970\""}
+{"f":"strftime","input":0,"args":["%c%c%c%c%c"],"tz":"UTC","err":"strftime/1: unknown system failure"}
+{"f":"strftime","input":"x","args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":"x","args":[1],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":null,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":null,"args":[1],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":{},"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":{},"args":[1],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":true,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":true,"args":[1],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":0,"args":[1],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":[2015,2,5],"args":[1],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":["a",1,2,3,4,5,6,7],"args":[1],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":0,"args":[[]],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":[2015,2,5],"args":[[]],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":["a",1,2,3,4,5,6,7],"args":[[]],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":0,"args":[{}],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":[2015,2,5],"args":[{}],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":["a",1,2,3,4,5,6,7],"args":[{}],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":0,"args":[null],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":[2015,2,5],"args":[null],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":["a",1,2,3,4,5,6,7],"args":[null],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":0,"args":[true],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":[2015,2,5],"args":[true],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":["a",1,2,3,4,5,6,7],"args":[true],"err":"strftime/1 requires a string format"}
+{"f":"strftime","input":["a",1,2,3,4,5,6,7],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":[2015,2,5,23,51,nan],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":[2015,2,5,23,51,47,4,null],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strftime","input":1e30,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"strftime","input":1e30,"args":[1],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"strftime","input":1e1000,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"strftime","input":nan,"args":["%Y-%m-%dT%H:%M:%SZ"],"only":"aarch64","err":"strftime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":1425599507,"args":["%Y-%m-%dT%H:%M:%S %Z %z %s %j %u"],"tz":"UTC","ok":"\"2015-03-05T23:51:47 UTC +0000 1425599507 064 4\""}
+{"f":"strflocaltime","input":[2015,2,5,23,51,47],"args":["%c %Z %z %s"],"tz":"UTC","ok":"\"Thu Mar  5 23:51:47 2015 UTC +0000 1425599507\""}
+{"f":"strflocaltime","input":[2015,6,5,23,51,47],"args":["%c %Z %z %s"],"tz":"UTC","ok":"\"Sun Jul  5 23:51:47 2015 UTC +0000 1436140307\""}
+{"f":"strflocaltime","input":1425599507.25,"args":["%Y-%m-%dT%H:%M:%SZ"],"tz":"UTC","ok":"\"2015-03-05T23:51:47Z\""}
+{"f":"strflocaltime","input":1425599507,"args":["%Y-%m-%dT%H:%M:%S %Z %z %s %j %u"],"tz":"Asia/Tokyo","ok":"\"2015-03-06T08:51:47 JST +0900 1425599507 065 5\""}
+{"f":"strflocaltime","input":[2015,2,5,23,51,47],"args":["%c %Z %z %s"],"tz":"Asia/Tokyo","ok":"\"Thu Mar  5 23:51:47 2015 JST +0900 1425567107\""}
+{"f":"strflocaltime","input":[2015,6,5,23,51,47],"args":["%c %Z %z %s"],"tz":"Asia/Tokyo","ok":"\"Sun Jul  5 23:51:47 2015 JST +0900 1436107907\""}
+{"f":"strflocaltime","input":1425599507.25,"args":["%Y-%m-%dT%H:%M:%SZ"],"tz":"Asia/Tokyo","ok":"\"2015-03-06T08:51:47Z\""}
+{"f":"strflocaltime","input":1425599507,"args":["%Y-%m-%dT%H:%M:%S %Z %z %s %j %u"],"tz":"America/New_York","ok":"\"2015-03-05T18:51:47 EST -0500 1425599507 064 4\""}
+{"f":"strflocaltime","input":[2015,2,5,23,51,47],"args":["%c %Z %z %s"],"tz":"America/New_York","ok":"\"Thu Mar  5 23:51:47 2015 EST -0500 1425617507\""}
+{"f":"strflocaltime","input":[2015,6,5,23,51,47],"args":["%c %Z %z %s"],"tz":"America/New_York","ok":"\"Sun Jul  5 23:51:47 2015 EDT -0400 1436154707\""}
+{"f":"strflocaltime","input":1425599507.25,"args":["%Y-%m-%dT%H:%M:%SZ"],"tz":"America/New_York","ok":"\"2015-03-05T18:51:47Z\""}
+{"f":"strflocaltime","input":[2015,2,8,2,30,0],"args":["%c %Z %z %s"],"tz":"America/New_York","only":"macos","ok":"\"Sun Mar  8 03:30:00 2015 EDT -0400 1425799800\""}
+{"f":"strflocaltime","input":0,"args":["%c%c%c%c%c"],"tz":"UTC","err":"strflocaltime/1: unknown system failure"}
+{"f":"strflocaltime","input":0,"args":["%c%c%c%c"],"tz":"UTC","ok":"\"Thu Jan  1 00:00:00 1970Thu Jan  1 00:00:00 1970Thu Jan  1 00:00:00 1970Thu Jan  1 00:00:00 1970\""}
+{"f":"strflocaltime","input":0,"args":[""],"ok":"\"\""}
+{"f":"strflocaltime","input":1,"args":["abc\u0000def"],"ok":"\"abc\""}
+{"f":"strflocaltime","input":"x","args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":"x","args":[1],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":null,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":null,"args":[1],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":{},"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":{},"args":[1],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":true,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":true,"args":[1],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":0,"args":[1],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":[2015,2,5],"args":[1],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":["a",1,2,3,4,5,6,7],"args":[1],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":0,"args":[[]],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":[2015,2,5],"args":[[]],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":["a",1,2,3,4,5,6,7],"args":[[]],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":0,"args":[{}],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":[2015,2,5],"args":[{}],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":["a",1,2,3,4,5,6,7],"args":[{}],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":0,"args":[null],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":[2015,2,5],"args":[null],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":["a",1,2,3,4,5,6,7],"args":[null],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":["a",1,2,3,4,5,6,7],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":[2015,2,5,23,51,nan],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strflocaltime","input":1e30,"args":[1],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":1e30,"args":[{}],"err":"strflocaltime/1 requires a string format"}
+{"f":"strflocaltime","input":1e30,"args":["%Y-%m-%dT%H:%M:%SZ"],"abort":"Assertion failed: (JVP_HAS_KIND(j, JV_KIND_ARRAY)), function jv_array_get, file jv.c, line 1006."}
+{"f":"strflocaltime","input":-1e1000,"args":["%c"],"abort":"Assertion failed: (JVP_HAS_KIND(j, JV_KIND_ARRAY)), function jv_array_get, file jv.c, line 1006."}
+{"f":"strflocaltime","input":nan,"args":["%Y-%m-%dT%H:%M:%SZ"],"only":"aarch64","err":"strflocaltime/1 requires parsed datetime inputs"}
+{"f":"strptime","input":"2015-03-05T23:51:47Z","args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"[2015,2,5,23,51,47,4,63]"}
+{"f":"strptime","input":"2025-06-07T08:09:10","args":["%FT%T"],"ok":"[2025,5,7,8,9,10,6,157]"}
+{"f":"strptime","input":"2015-03-05T23:51:47Z","args":["%FT%TZ"],"ok":"[2015,2,5,23,51,47,4,63]"}
+{"f":"strptime","input":"12/31/99","args":["%D"],"ok":"[1999,11,31,0,0,0,5,364]"}
+{"f":"strptime","input":"2015-03-05T23:51:47Z \n x","args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"[2015,2,5,23,51,47,4,63,\" \\n x\"]"}
+{"f":"strptime","input":"2015\t\n","args":["%Y"],"only":"macos","ok":"[2015,0,0,0,0,0,3,-1,\"\\t\\n\"]"}
+{"f":"strptime","input":"1970-03-01T01:02:03Z","args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"[1970,2,1,1,2,3,0,59]"}
+{"f":"strptime","input":"2037-02-11T01:02:03Z","args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"[2037,1,11,1,2,3,3,41]"}
+{"f":"strptime","input":"2000-02-29","args":["%Y-%m-%d"],"ok":"[2000,1,29,0,0,0,2,59]"}
+{"f":"strptime","input":"Mar 5 2015","args":["%b %d %Y"],"tz":"UTC","ok":"[2015,2,5,0,0,0,4,63]"}
+{"f":"strptime","input":"March 5 2015 11:51:47 PM","args":["%B %d %Y %I:%M:%S %p"],"tz":"UTC","ok":"[2015,2,5,23,51,47,4,63]"}
+{"f":"strptime","input":"Thursday 1970","args":["%A %Y"],"tz":"UTC","only":"macos","ok":"[1970,0,0,0,0,0,3,-1]"}
+{"f":"strptime","input":"2015-03-05T23:51:47Zx","args":["%Y-%m-%dT%H:%M:%SZ"],"err":"date \"2015-03-05T23:51:47Zx\" does not match format \"%Y-%m-%dT%H:%M:%SZ\""}
+{"f":"strptime","input":"2015-03-05 23:51:47","args":["%Y-%m-%dT%H:%M:%SZ"],"err":"date \"2015-03-05 23:51:47\" does not match format \"%Y-%m-%dT%H:%M:%SZ\""}
+{"f":"strptime","input":"2015-13-01","args":["%Y-%m-%d"],"err":"date \"2015-13-01\" does not match format \"%Y-%m-%d\""}
+{"f":"strptime","input":"abc","args":["%Y"],"err":"date \"abc\" does not match format \"%Y\""}
+{"f":"strptime","input":"abc\u0000","args":["abcd"],"err":"date \"abc\" does not match format \"abcd\""}
+{"f":"strptime","input":"abc\u0000x","args":["abc\u0000y"],"only":"macos","ok":"[1900,0,0,0,0,0,6,-1]"}
+{"f":"strptime","input":"é2015","args":["%Y"],"err":"date \"é2015\" does not match format \"%Y\""}
+{"f":"strptime","input":"2015\u00a0","args":["%Y"],"only":"macos","err":"date \"2015 \" does not match format \"%Y\""}
+{"f":"strptime","input":1,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":"2015","args":[1],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":null,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":"2015","args":[null],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":[],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":"2015","args":[[]],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":{},"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":"2015","args":[{}],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":1E+2,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":"2015","args":[1E+2],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":1,"args":[2],"err":"strptime/1 requires string inputs and arguments"}
+{"f":"strptime","input":"12","args":["%H"],"only":"macos","ok":"[1900,0,0,12,0,0,6,-1]"}
+{"f":"strptime","input":"1900-01-01","args":["%Y-%m-%d"],"only":"macos","ok":"[1900,0,1,0,0,0,0,0]"}
+{"f":"strptime","input":" 2015","args":["%Y"],"only":"macos","ok":"[1900,0,0,0,0,0,6,-1,\" 2015\"]"}
+{"f":"strptime","input":"2015 100","args":["%Y %j"],"only":"macos","ok":"[2015,3,10,0,0,0,5,99]"}
+{"f":"strptime","input":"100","args":["%j"],"only":"macos","abort":"Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1549."}
+{"f":"strptime","input":"2015 3 5 100","args":["%Y %m %d %j"],"only":"macos","abort":"Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1549."}
+{"f":"strptime","input":"1425599507","args":["%s"],"tz":"UTC","only":"macos","ok":"[2015,2,5,23,51,47,4,63]"}
+{"f":"strptime","input":"1425599507","args":["%s"],"tz":"America/New_York","only":"macos","ok":"[2015,2,5,18,51,47,4,63]"}
+{"f":"strptime","input":"2015-03-05 +0900","args":["%Y-%m-%d %z"],"tz":"America/New_York","only":"macos","ok":"[2015,2,4,10,0,0,3,62]"}
+{"f":"floor","input":-2.5,"args":[],"ok":"-3"}
+{"f":"floor","input":1E+2,"args":[],"ok":"100"}
+{"f":"floor","input":1.000,"args":[],"ok":"1"}
+{"f":"sqrt","input":2,"args":[],"ok":"1.4142135623730951"}
+{"f":"sqrt","input":1E+2,"args":[],"ok":"10"}
+{"f":"sqrt","input":-1,"args":[],"ok":"null"}
+{"f":"exp","input":1000,"args":[],"ok":"1.7976931348623157e+308"}
+{"f":"exp","input":-1000,"args":[],"ok":"0"}
+{"f":"fabs","input":-0.5,"args":[],"ok":"0.5"}
+{"f":"floor","input":nan,"args":[],"ok":"null"}
+{"f":"floor","input":1e1000,"args":[],"ok":"1.7976931348623157e+308"}
+{"f":"trunc","input":-0.5,"args":[],"ok":"-0"}
+{"f":"floor","input":"a","args":[],"err":"string (\"a\") number required"}
+{"f":"frexp","input":"a","args":[],"err":"string (\"a\") number required"}
+{"f":"floor","input":null,"args":[],"err":"null (null) number required"}
+{"f":"frexp","input":null,"args":[],"err":"null (null) number required"}
+{"f":"floor","input":true,"args":[],"err":"boolean (true) number required"}
+{"f":"frexp","input":true,"args":[],"err":"boolean (true) number required"}
+{"f":"floor","input":[1,2,3,4,5,6,7,8,9],"args":[],"err":"array ([1,2,3,4,5,...) number required"}
+{"f":"frexp","input":[1,2,3,4,5,6,7,8,9],"args":[],"err":"array ([1,2,3,4,5,...) number required"}
+{"f":"floor","input":{"a":"verylongstringhere"},"args":[],"err":"object ({\"a\":\"veryl...) number required"}
+{"f":"frexp","input":{"a":"verylongstringhere"},"args":[],"err":"object ({\"a\":\"veryl...) number required"}
+{"f":"floor","input":"1","args":[],"err":"string (\"1\") number required"}
+{"f":"frexp","input":"1","args":[],"err":"string (\"1\") number required"}
+{"f":"pow","input":null,"args":[2,10],"ok":"1024"}
+{"f":"pow","input":"x","args":[2,0.5],"ok":"1.4142135623730951"}
+{"f":"pow","input":null,"args":[1E+1,2],"ok":"100"}
+{"f":"atan2","input":null,"args":[1,1],"ok":"0.7853981633974483"}
+{"f":"fmod","input":null,"args":[5,3],"ok":"2"}
+{"f":"ldexp","input":null,"args":[1,2.9],"ok":"4"}
+{"f":"scalbln","input":null,"args":[1,-1.9],"ok":"0.5"}
+{"f":"nextafter","input":null,"args":[0,1],"ok":"5e-324"}
+{"f":"nexttoward","input":null,"args":[0.5,2],"ok":"0.5000000000000001"}
+{"f":"copysign","input":null,"args":[1,-0],"ok":"-1"}
+{"f":"pow","input":0,"args":["a",1],"err":"string (\"a\") number required"}
+{"f":"fmin","input":"input ignored","args":["a",1],"err":"string (\"a\") number required"}
+{"f":"pow","input":0,"args":[1,"b"],"err":"string (\"b\") number required"}
+{"f":"fmin","input":"input ignored","args":[1,"b"],"err":"string (\"b\") number required"}
+{"f":"pow","input":0,"args":["a","b"],"err":"string (\"a\") number required"}
+{"f":"fmin","input":"input ignored","args":["a","b"],"err":"string (\"a\") number required"}
+{"f":"pow","input":0,"args":[null,[]],"err":"null (null) number required"}
+{"f":"fmin","input":"input ignored","args":[null,[]],"err":"null (null) number required"}
+{"f":"pow","input":0,"args":[{},null],"err":"object ({}) number required"}
+{"f":"fmin","input":"input ignored","args":[{},null],"err":"object ({}) number required"}
+{"f":"fma","input":null,"args":[2,3,4],"ok":"10"}
+{"f":"fma","input":"x","args":[0.1,10,-1],"ok":"5.551115123125783e-17"}
+{"f":"fma","input":0,"args":["a",1,1],"err":"string (\"a\") number required"}
+{"f":"fma","input":0,"args":[1,"b",1],"err":"string (\"b\") number required"}
+{"f":"fma","input":0,"args":[1,1,"c"],"err":"string (\"c\") number required"}
+{"f":"fma","input":0,"args":["a","b","c"],"err":"string (\"a\") number required"}
+{"f":"fma","input":0,"args":[1,{},"c"],"err":"object ({}) number required"}
+{"f":"fma","input":0,"args":[[],null,true],"err":"array ([]) number required"}
+{"f":"frexp","input":8,"args":[],"ok":"[0.5,4]"}
+{"f":"frexp","input":0,"args":[],"ok":"[0,0]"}
+{"f":"frexp","input":-0,"args":[],"ok":"[-0,0]"}
+{"f":"frexp","input":1E+2,"args":[],"ok":"[0.78125,7]"}
+{"f":"frexp","input":5e-324,"args":[],"ok":"[0.5,-1073]"}
+{"f":"frexp","input":1e1000,"args":[],"ok":"[1.7976931348623157e+308,0]"}
+{"f":"frexp","input":nan,"args":[],"ok":"[null,0]"}
+{"f":"modf","input":-3.5,"args":[],"ok":"[-0.5,-3]"}
+{"f":"modf","input":1e1000,"args":[],"ok":"[0,1.7976931348623157e+308]"}
+{"f":"modf","input":nan,"args":[],"ok":"[null,null]"}
+{"f":"lgamma_r","input":1,"args":[],"ok":"[0,1]"}
+{"f":"lgamma_r","input":0.5,"args":[],"only":"macos","ok":"[0.5723649429247,1]"}
+{"f":"lgamma_r","input":-0.5,"args":[],"only":"macos","ok":"[1.2655121234846454,-1]"}
+{"f":"significand","input":12,"args":[],"only":"macos","ok":"1.5"}
+{"f":"gamma","input":0.5,"args":[],"only":"macos","ok":"1.772453850905516"}
+{"f":"drem","input":null,"args":[5,3],"only":"macos","ok":"-1"}
+{"f":"exp10","input":2,"args":[],"only":"macos","ok":"100"}
+{"f":"jn","input":null,"args":[nan,1],"only":"macos-aarch64","ok":"0.7651976865579666"}
+{"f":"ldexp","input":null,"args":[1,1e10],"only":"aarch64","ok":"1.7976931348623157e+308"}

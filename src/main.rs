@@ -1,43 +1,33 @@
 use anyhow::{Context, Result};
-use clap::Parser;
 use mimalloc::MiMalloc;
+use qj::cli::args::{self, Action, ArgError, ArgValue, ProgramArgument, print_flags};
 use std::io::{self, BufWriter, IsTerminal, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
-// File I/O helpers (compression-aware)
+// File I/O helpers (compression-aware; `-` is stdin, as in jq)
 // ---------------------------------------------------------------------------
 
-/// Expand glob patterns in file arguments.
-/// Literal paths are passed through unchanged. Arguments containing glob
-/// metacharacters (*, ?, [) are expanded against the filesystem.
-fn expand_globs(files: Vec<String>) -> Result<Vec<String>> {
-    let mut result = Vec::new();
-    for f in files {
-        // Literal file — use as-is (also handles the case where the filename
-        // happens to contain glob metacharacters, e.g. "file[1].json")
-        if std::path::Path::new(&f).exists() {
-            result.push(f);
-            continue;
-        }
-        if f.contains('*') || f.contains('?') || f.contains('[') {
-            let mut paths: Vec<String> = Vec::new();
-            for entry in glob::glob(&f).with_context(|| format!("invalid glob pattern: {f}"))? {
-                let path = entry.with_context(|| format!("failed to read glob match for: {f}"))?;
-                paths.push(path.display().to_string());
-            }
-            if paths.is_empty() {
-                anyhow::bail!("no files matched pattern: {f}");
-            }
-            paths.sort();
-            result.extend(paths);
-        } else {
-            // Not a glob, not an existing file — pass through (will fail at open)
-            result.push(f);
-        }
+/// Read all of stdin.
+fn read_stdin() -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    io::stdin()
+        .read_to_end(&mut buf)
+        .context("failed to read stdin")?;
+    Ok(buf)
+}
+
+/// Read an input file's bytes, decompressing if needed.
+fn read_input_bytes(path: &str) -> Result<Vec<u8>> {
+    if path == "-" {
+        read_stdin()
+    } else if qj::decompress::is_compressed(path) {
+        qj::decompress::decompress_file(path)
+    } else {
+        std::fs::read(path).with_context(|| format!("failed to read file: {path}"))
     }
-    Ok(result)
 }
 
 /// Collect parsed JSON values from a file, decompressing if needed.
@@ -47,7 +37,11 @@ fn collect_file_values(
     force_jsonl: bool,
     values: &mut Vec<qj::value::Value>,
 ) -> Result<()> {
-    if qj::decompress::is_compressed(path) {
+    if path == "-" {
+        let mut buf = read_stdin()?;
+        qj::input::strip_bom(&mut buf);
+        qj::input::collect_values_from_buf(&buf, force_jsonl, values)
+    } else if qj::decompress::is_compressed(path) {
         let bytes = qj::decompress::decompress_file(path)?;
         qj::input::collect_values_from_buf(&bytes, force_jsonl, values)
     } else {
@@ -59,7 +53,9 @@ fn collect_file_values(
 
 /// Read a file as a UTF-8 string, decompressing if needed.
 fn read_file_text(path: &str) -> Result<String> {
-    if qj::decompress::is_compressed(path) {
+    if path == "-" {
+        String::from_utf8(read_stdin()?).context("stdin is not valid UTF-8")
+    } else if qj::decompress::is_compressed(path) {
         let bytes = qj::decompress::decompress_file(path)?;
         String::from_utf8(bytes).with_context(|| format!("file is not valid UTF-8: {path}"))
     } else {
@@ -159,127 +155,88 @@ fn apple_non_efficiency_cpus() -> Option<usize> {
     (total > 0).then_some(total)
 }
 
-#[derive(Parser)]
-#[command(
-    name = "qj",
-    about = "qj - a faster jq",
-    version,
-    after_help = "Example:\n\n\t$ echo '{\"foo\": 0}' | qj .\n\t{\n\t  \"foo\": 0\n\t}"
-)]
-struct Cli {
-    /// jq filter expression (not needed with --from-file/-f)
-    filter: Option<String>,
+/// The old core's side of jq's option loop: JSON for `--argjson`,
+/// `--jsonargs` and `--slurpfile`.
+struct ArgJson;
 
-    /// Input file(s); defaults to stdin
-    files: Vec<String>,
+impl args::ArgHost for ArgJson {
+    type Value = qj::value::Value;
 
-    /// Compact output (no pretty-printing)
-    #[arg(short = 'c', long = "compact-output")]
-    compact: bool,
+    /// Exactly one JSON text. Validated with a full simdjson parse first:
+    /// `dom_parse_to_value` alone takes some non-JSON words (`invalid`) as
+    /// null. Integers beyond 64 bits fail validation but convert fine. jq's
+    /// parser also accepts `nan` and `infinity`.
+    fn parse_json(&mut self, text: &[u8]) -> std::result::Result<Self::Value, String> {
+        // simdjson `error_code::BIGINT_ERROR` (simdjson/simdjson.h).
+        const BIGINT_ERROR: &str = "simdjson error code 10";
+        let parse = |text: &[u8]| {
+            let padded = qj::simdjson::pad_buffer(text);
+            match qj::simdjson::dom_validate(&padded, text.len()) {
+                Err(e) if e.to_string() != BIGINT_ERROR => Err(e),
+                _ => qj::simdjson::dom_parse_to_value(&padded, text.len()),
+            }
+            .map_err(|e| format!("{e:#}"))
+        };
+        match parse(text) {
+            Err(_) if qj::input::has_special_float_tokens_pub(text) => {
+                let preprocessed = qj::input::preprocess_special_floats_pub(text);
+                parse(&preprocessed).map(qj::input::fixup_special_float_sentinels_pub)
+            }
+            result => result,
+        }
+    }
 
-    /// Raw output (strings without quotes)
-    #[arg(short = 'r', long = "raw-output")]
-    raw: bool,
+    fn slurp_json(&mut self, data: &[u8]) -> std::result::Result<Self::Value, String> {
+        let mut values = Vec::new();
+        qj::input::collect_values_from_buf(data, false, &mut values)
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(qj::value::Value::Array(Arc::new(values)))
+    }
+}
 
-    /// Raw output with NUL separator instead of newline (implies -r)
-    #[arg(long = "raw-output0")]
-    raw_output0: bool,
+/// A named or positional argument as an old-core value. jq makes strings with
+/// `jv_string`, which replaces invalid UTF-8 as well (not always with the
+/// same number of U+FFFD).
+fn arg_value(v: &ArgValue<qj::value::Value>) -> qj::value::Value {
+    match v {
+        ArgValue::Text(bytes) => qj::value::Value::String(String::from_utf8_lossy(bytes).into()),
+        ArgValue::Json(value) => value.clone(),
+    }
+}
 
-    /// Escape non-ASCII characters to \uXXXX sequences
-    #[arg(short = 'a', long = "ascii-output")]
-    ascii_output: bool,
+/// Print qj's own help or version text and exit as jq does: 0, or 2 when
+/// stdout can't be written.
+fn print_and_exit(text: &str) -> ! {
+    let mut stdout = io::stdout().lock();
+    let ok = stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush());
+    std::process::exit(if ok.is_ok() { 0 } else { 2 });
+}
 
-    /// Flush stdout after each output value
-    #[arg(long = "unbuffered")]
-    unbuffered: bool,
+/// util.c's message for an input file that can't be processed: "Could not
+/// open file FILE: REASON" (with the C library's `strerror`), except that a
+/// directory opens fine in jq and then fails to read, which it reports as just
+/// the reason.
+fn file_error_message(path: &str, e: &anyhow::Error) -> String {
+    let root = e.root_cause();
+    match root
+        .downcast_ref::<io::Error>()
+        .and_then(io::Error::raw_os_error)
+    {
+        Some(libc::EISDIR) => String::from_utf8_lossy(&args::strerror(libc::EISDIR)).into(),
+        Some(errno) => format!(
+            "Could not open file {path}: {}",
+            String::from_utf8_lossy(&args::strerror(errno))
+        ),
+        None => format!("Could not open file {path}: {root}"),
+    }
+}
 
-    /// Use tab for indentation
-    #[arg(long)]
-    tab: bool,
-
-    /// Number of spaces for indentation (default: 2)
-    #[arg(long, default_value_t = 2)]
-    indent: u32,
-
-    /// Set exit status based on output
-    #[arg(short = 'e', long = "exit-status")]
-    exit_status: bool,
-
-    /// Null input — don't read any input, use `null` as the sole input
-    #[arg(short = 'n', long = "null-input")]
-    null_input: bool,
-
-    /// Treat input as NDJSON (newline-delimited JSON)
-    #[arg(long)]
-    jsonl: bool,
-
-    /// Slurp all inputs into an array
-    #[arg(short = 's', long = "slurp")]
-    slurp: bool,
-
-    /// Parse input in streaming fashion, emitting [path, value] pairs
-    #[arg(long = "stream")]
-    stream: bool,
-
-    /// Like --stream but emit parse errors as ["error", []] entries
-    #[arg(long = "stream-errors")]
-    stream_errors: bool,
-
-    /// Use application/json-seq (RFC 7464) RS-delimited I/O
-    #[arg(long = "seq")]
-    seq: bool,
-
-    /// Read each line as a raw string instead of parsing as JSON
-    #[arg(short = 'R', long = "raw-input")]
-    raw_input: bool,
-
-    /// Sort object keys
-    #[arg(short = 'S', long = "sort-keys")]
-    sort_keys: bool,
-
-    /// Don't print newline after each output value
-    #[arg(short = 'j', long = "join-output")]
-    join_output: bool,
-
-    /// Force color output even when piped
-    #[arg(short = 'C', long = "color-output")]
-    color: bool,
-
-    /// Monochrome output (no color)
-    #[arg(short = 'M', long = "monochrome-output")]
-    monochrome: bool,
-
-    /// Bind $name to string value
-    #[arg(long = "arg", num_args = 2, value_names = ["NAME", "VALUE"], action = clap::ArgAction::Append)]
-    args: Vec<String>,
-
-    /// Bind $name to parsed JSON value
-    #[arg(long = "argjson", num_args = 2, value_names = ["NAME", "VALUE"], action = clap::ArgAction::Append)]
-    argjson: Vec<String>,
-
-    /// Bind $NAME to raw string contents of FILE
-    #[arg(long = "rawfile", num_args = 2, value_names = ["NAME", "FILE"], action = clap::ArgAction::Append)]
-    rawfile: Vec<String>,
-
-    /// Bind $NAME to array of JSON values parsed from FILE
-    #[arg(long = "slurpfile", num_args = 2, value_names = ["NAME", "FILE"], action = clap::ArgAction::Append)]
-    slurpfile: Vec<String>,
-
-    /// Read filter from file instead of first argument
-    #[arg(short = 'f', long = "from-file", value_name = "FILE")]
-    from_file: Option<String>,
-
-    /// Print timing breakdown to stderr (for profiling)
-    #[arg(long = "debug-timing", hide = true)]
-    debug_timing: bool,
-
-    /// Number of threads for parallel NDJSON processing
-    #[arg(long, value_name = "N")]
-    threads: Option<usize>,
-
-    /// Library search path for jq modules (import/include)
-    #[arg(short = 'L', value_name = "DIR")]
-    library_paths: Vec<String>,
+/// Report a command-line error exactly as jq does, and exit.
+fn fail(err: &ArgError) -> ! {
+    let _ = io::stderr().write_all(&err.render("qj"));
+    std::process::exit(err.exit_code());
 }
 
 /// Check if a filter AST contains import/include/module statements.
@@ -300,62 +257,55 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    // Pre-scan for --args / --jsonargs: split argv before clap sees them.
-    // Everything after --args or --jsonargs becomes positional string/JSON values.
-    let raw_args: Vec<String> = std::env::args().collect();
-    let (clap_args, positional_args, positional_json) = {
-        let mut clap_part = raw_args.clone();
-        let mut pos_str = Vec::new();
-        let mut pos_json = false;
-        if let Some(idx) = raw_args
-            .iter()
-            .position(|a| a == "--args" || a == "--jsonargs")
-        {
-            pos_json = raw_args[idx] == "--jsonargs";
-            let tail: Vec<String> = raw_args[idx + 1..].to_vec();
-            clap_part = raw_args[..idx].to_vec();
-            pos_str = tail;
+    // jq's option loop (src/cli/args.rs), in the locale jq would use.
+    let argv = args::argv_bytes();
+    let opts = match args::with_environment_locale(|| args::parse(&argv, &mut ArgJson)) {
+        Ok(Action::Run(opts)) => opts,
+        Ok(Action::Help) => print_and_exit(&qj::cli::usage::help()),
+        Ok(Action::Version) => print_and_exit(&qj::cli::usage::version()),
+        Ok(Action::BuildConfiguration) => {
+            print_and_exit(&format!("{}\n", qj::cli::usage::BUILD_CONFIGURATION))
         }
-        (clap_part, pos_str, pos_json)
+        Ok(Action::RunTests { .. }) => {
+            eprintln!("qj: error: --run-tests is not supported");
+            std::process::exit(2);
+        }
+        Err(e) => fail(&e),
     };
-
-    let cli = Cli::parse_from(&clap_args);
 
     // Configure Rayon thread pool to skip efficiency cores on Apple Silicon.
     // E-cores add contention without throughput benefit for I/O-bound NDJSON work.
     rayon::ThreadPoolBuilder::new()
-        .num_threads(cli.threads.unwrap_or_else(default_thread_count))
+        .num_threads(opts.threads.unwrap_or_else(default_thread_count))
         .build_global()
         .ok(); // Ignore error if pool already initialized (e.g., in tests)
 
-    // Resolve filter string and input files.
-    // With --from-file, all positional args are input files.
-    // Without it, the first positional is the filter expression.
-    // If no filter given: default to "." (like jq). On TTY with no files, show usage hint.
-    let (filter_str, input_files) = if let Some(ref path) = cli.from_file {
-        let filter_str = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read filter file: {path}"))?;
-        let mut files = cli.files.clone();
-        if let Some(ref f) = cli.filter {
-            files.insert(0, f.clone());
-        }
-        (filter_str, files)
-    } else {
-        match cli.filter.clone() {
-            Some(f) => (f, cli.files.clone()),
-            None if !cli.null_input && cli.files.is_empty() && io::stdin().is_terminal() => {
-                eprintln!("qj - a faster jq [version {}]", env!("CARGO_PKG_VERSION"));
-                eprintln!("Usage: qj [OPTIONS] [FILTER] [FILES...]");
-                eprintln!("       echo '{{}}' | qj '.'");
-                eprintln!("For help: qj --help");
-                std::process::exit(0);
-            }
-            None => (".".to_string(), cli.files.clone()),
-        }
+    // The rest of main.c's setup, in jq's order: output flags (color on for a
+    // terminal unless NO_COLOR; -C, then -M), the JQ_COLORS warning, the
+    // default program or usage, then the -f file.
+    let stdout_is_tty = io::stdout().is_terminal();
+    let no_color = std::env::var_os("NO_COLOR");
+    let dumpopts = opts.dumpopts(stdout_is_tty, no_color.as_deref().map(OsStrExt::as_bytes));
+    if let Some(spec) = std::env::var_os("JQ_COLORS")
+        && args::jq_colors(spec.as_bytes()).is_none()
+    {
+        eprint!("{}", args::JQ_COLORS_WARNING);
+    }
+    let Some(program) = opts.program_or_default(io::stdin().is_terminal(), stdout_is_tty) else {
+        fail(&ArgError::NoProgram);
     };
+    let program = if opts.from_file {
+        args::load_program(program).unwrap_or_else(|e| fail(&e))
+    } else {
+        program.to_vec()
+    };
+    let filter_str = String::from_utf8_lossy(&program).into_owned();
 
-    // Expand glob patterns in file arguments (e.g., '*.json.gz')
-    let input_files = expand_globs(input_files)?;
+    // qj extension: expand glob patterns among the input files ('*.json.gz').
+    let input_files: Vec<String> = args::expand_file_globs(&opts.files)
+        .iter()
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect();
 
     let filter = match qj::filter::parse(&filter_str) {
         Ok(f) => f,
@@ -368,12 +318,14 @@ fn main() -> Result<()> {
     // Resolve module imports (import/include) if the filter uses them.
     // The module loader resolves all imports into the Env and strips
     // the import/include nodes from the filter AST.
-    let (filter, module_loader) = if !cli.library_paths.is_empty() || has_module_stmts(&filter) {
-        let search_paths: Vec<std::path::PathBuf> = cli
-            .library_paths
-            .iter()
-            .map(std::path::PathBuf::from)
-            .collect();
+    let library_paths: Vec<std::path::PathBuf> = opts
+        .lib_search_paths
+        .iter()
+        .flatten()
+        .map(|p| std::path::PathBuf::from(std::ffi::OsStr::from_bytes(p)))
+        .collect();
+    let (filter, module_loader) = if !library_paths.is_empty() || has_module_stmts(&filter) {
+        let search_paths = library_paths;
         let mut loader = qj::filter::module::ModuleLoader::new(search_paths.clone());
         match loader.resolve(&filter, qj::filter::Env::empty()) {
             Ok((resolved_filter, module_env)) => {
@@ -393,18 +345,18 @@ fn main() -> Result<()> {
         (filter, None)
     };
 
-    // --stream-errors implies --stream behavior
-    let effective_stream = cli.stream || cli.stream_errors;
+    // --stream-errors implies --stream (opts.stream is set for both).
+    let effective_stream = opts.stream;
 
     // --stream: wrap filter with `tostream |` for the common case (non-slurp, non-null-input).
     // For slurp and null-input, the expansion happens later at the value level.
     // For --stream-errors, keep the unwrapped filter for error entries.
-    let unwrapped_filter = if cli.stream_errors && !cli.slurp && !cli.null_input {
+    let unwrapped_filter = if opts.stream_errors && !opts.slurp && !opts.null_input {
         Some(filter.clone())
     } else {
         None
     };
-    let filter = if effective_stream && !cli.slurp && !cli.null_input {
+    let filter = if effective_stream && !opts.slurp && !opts.null_input {
         qj::filter::Filter::Pipe(
             Box::new(qj::filter::Filter::Builtin("tostream".to_string(), vec![])),
             Box::new(filter),
@@ -413,120 +365,51 @@ fn main() -> Result<()> {
         filter
     };
 
-    // Build environment from --arg / --argjson
-    // Variable names in the AST include the '$' prefix (e.g., "$name"),
-    // so we prepend '$' when binding.
+    // Bind the variables main.c passes to jq_compile_args. Variable names in
+    // the AST include the '$' prefix (e.g., "$name").
     let mut env = if let Some((_, ref module_env)) = module_loader {
         module_env.clone()
     } else {
         qj::filter::Env::empty()
     };
-    for pair in cli.args.chunks(2) {
-        if pair.len() == 2 {
-            env = env.bind_var(
-                format!("${}", pair[0]),
-                qj::value::Value::String(pair[1].clone()),
-            );
-        }
-    }
-    for pair in cli.argjson.chunks(2) {
-        if pair.len() == 2 {
-            let padded = qj::simdjson::pad_buffer(pair[1].as_bytes());
-            let val = qj::simdjson::dom_parse_to_value(&padded, pair[1].len())
-                .with_context(|| format!("invalid JSON for --argjson {}: {}", pair[0], pair[1]))?;
-            env = env.bind_var(format!("${}", pair[0]), val);
-        }
-    }
-    for pair in cli.rawfile.chunks(2) {
-        if pair.len() == 2 {
-            let content = std::fs::read_to_string(&pair[1])
-                .with_context(|| format!("failed to read --rawfile {}: {}", pair[0], pair[1]))?;
-            env = env.bind_var(format!("${}", pair[0]), qj::value::Value::String(content));
-        }
-    }
-    for pair in cli.slurpfile.chunks(2) {
-        if pair.len() == 2 {
-            let buf = std::fs::read(&pair[1])
-                .with_context(|| format!("failed to read --slurpfile {}: {}", pair[0], pair[1]))?;
-            let mut values = Vec::new();
-            qj::input::collect_values_from_buf(&buf, false, &mut values)
-                .with_context(|| format!("failed to parse --slurpfile {}: {}", pair[0], pair[1]))?;
-            env = env.bind_var(
-                format!("${}", pair[0]),
-                qj::value::Value::Array(Arc::new(values)),
-            );
-        }
-    }
-
-    // Build $ARGS: {positional: [...], named: {...}}
-    {
-        let pos_values: Vec<qj::value::Value> = if positional_json {
-            let mut vals = Vec::new();
-            for s in &positional_args {
-                let padded = qj::simdjson::pad_buffer(s.as_bytes());
-                match qj::simdjson::dom_parse_to_value(&padded, s.len()) {
-                    Ok(v) => vals.push(v),
-                    Err(e) => {
-                        eprintln!(
-                            "qj: invalid JSON text passed to --jsonargs: {s}\n\nCaused by:\n    {e}"
-                        );
-                        std::process::exit(2);
-                    }
-                }
+    for var in opts.program_arguments() {
+        match var {
+            // jq resolves `$ENV` before named arguments; `--arg ENV x` only
+            // shows up in $ARGS.named.
+            ProgramArgument::Named(b"ENV", _) => {}
+            ProgramArgument::Named(name, value) => {
+                let name = format!("${}", String::from_utf8_lossy(name));
+                env = env.bind_var(name, arg_value(value));
             }
-            vals
-        } else {
-            positional_args
-                .iter()
-                .map(|s| qj::value::Value::String(s.clone()))
-                .collect()
-        };
-
-        let named_pairs: Vec<(String, qj::value::Value)> = {
-            let mut pairs = Vec::new();
-            for pair in cli.args.chunks(2) {
-                if pair.len() == 2 {
-                    pairs.push((pair[0].clone(), qj::value::Value::String(pair[1].clone())));
-                }
+            ProgramArgument::Args => {
+                let positional = opts.positional.iter().map(arg_value).collect();
+                let named = opts
+                    .named
+                    .iter()
+                    .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), arg_value(v)))
+                    .collect();
+                let args_obj = qj::value::Value::Object(Arc::new(vec![
+                    (
+                        "positional".to_string(),
+                        qj::value::Value::Array(Arc::new(positional)),
+                    ),
+                    (
+                        "named".to_string(),
+                        qj::value::Value::Object(Arc::new(named)),
+                    ),
+                ]));
+                env = env.bind_var("$ARGS".to_string(), args_obj);
             }
-            for pair in cli.argjson.chunks(2) {
-                if pair.len() == 2 {
-                    let padded = qj::simdjson::pad_buffer(pair[1].as_bytes());
-                    if let Ok(val) = qj::simdjson::dom_parse_to_value(&padded, pair[1].len()) {
-                        pairs.push((pair[0].clone(), val));
-                    }
-                }
+            ProgramArgument::BuildConfiguration => {
+                env = env.bind_var(
+                    "$JQ_BUILD_CONFIGURATION".to_string(),
+                    qj::value::Value::String(qj::cli::usage::BUILD_CONFIGURATION.to_string()),
+                );
             }
-            pairs
-        };
-
-        let args_obj = qj::value::Value::Object(Arc::new(vec![
-            (
-                "positional".to_string(),
-                qj::value::Value::Array(Arc::new(pos_values)),
-            ),
-            (
-                "named".to_string(),
-                qj::value::Value::Object(Arc::new(named_pairs)),
-            ),
-        ]));
-        env = env.bind_var("$ARGS".to_string(), args_obj);
+        }
     }
 
-    // Color: on by default for TTY, overridden by -C (force on) or -M (force off).
-    // NO_COLOR env var (https://no-color.org/) disables color by default,
-    // but -C still overrides it (matches jq behavior).
-    // Check before locking stdout.
-    let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-    let use_color = if cli.monochrome {
-        false
-    } else if cli.color {
-        true
-    } else if no_color_env {
-        false
-    } else {
-        io::stdout().is_terminal()
-    };
+    let use_color = dumpopts & print_flags::COLOR != 0;
     let color_scheme = if use_color {
         qj::output::ColorScheme::jq_default()
     } else {
@@ -536,46 +419,50 @@ fn main() -> Result<()> {
     let stdout = io::stdout().lock();
     let mut out = BufWriter::with_capacity(128 * 1024, stdout);
 
-    // -j / --join-output implies raw output (matches jq behavior)
-    let config = if cli.raw || cli.raw_output0 || cli.join_output {
+    // jq's process(): with -r (also set by -j and --raw-output0), strings are
+    // written raw; -j and --raw-output0 drop the newline, and --raw-output0
+    // writes a NUL after every output.
+    let pretty = dumpopts & print_flags::PRETTY != 0;
+    let join_output = opts.raw_no_lf && !opts.raw_output0;
+    let config = if opts.raw_output {
         qj::output::OutputConfig {
             mode: qj::output::OutputMode::Raw,
             indent: String::new(),
-            sort_keys: cli.sort_keys,
-            join_output: cli.join_output,
+            sort_keys: opts.sorted_output,
+            join_output,
             color: color_scheme,
-            null_separator: cli.raw_output0,
-            ascii_output: cli.ascii_output,
-            unbuffered: cli.unbuffered,
-            seq: cli.seq,
+            null_separator: opts.raw_output0,
+            ascii_output: opts.ascii_output,
+            unbuffered: opts.unbuffered_output,
+            seq: opts.seq,
         }
-    } else if cli.compact {
+    } else if !pretty {
         qj::output::OutputConfig {
             mode: qj::output::OutputMode::Compact,
             indent: String::new(),
-            sort_keys: cli.sort_keys,
-            join_output: cli.join_output,
+            sort_keys: opts.sorted_output,
+            join_output,
             color: color_scheme,
             null_separator: false,
-            ascii_output: cli.ascii_output,
-            unbuffered: cli.unbuffered,
-            seq: cli.seq,
+            ascii_output: opts.ascii_output,
+            unbuffered: opts.unbuffered_output,
+            seq: opts.seq,
         }
     } else {
         qj::output::OutputConfig {
             mode: qj::output::OutputMode::Pretty,
-            indent: if cli.tab {
+            indent: if dumpopts & print_flags::TAB != 0 {
                 "\t".to_string()
             } else {
-                " ".repeat(cli.indent as usize)
+                " ".repeat(print_flags::indent_width(dumpopts) as usize)
             },
-            sort_keys: cli.sort_keys,
-            join_output: cli.join_output,
+            sort_keys: opts.sorted_output,
+            join_output,
             color: color_scheme,
             null_separator: false,
-            ascii_output: cli.ascii_output,
-            unbuffered: cli.unbuffered,
-            seq: cli.seq,
+            ascii_output: opts.ascii_output,
+            unbuffered: opts.unbuffered_output,
+            seq: opts.seq,
         }
     };
 
@@ -583,50 +470,53 @@ fn main() -> Result<()> {
     // flags are active (slurp, raw_input, sort_keys, join_output) or when
     // color is enabled (passthrough bypasses the output formatter).
     // Also disable when -e is active — we need full eval to inspect output values.
-    let passthrough = if cli.slurp
-        || cli.raw_input
-        || cli.sort_keys
-        || cli.join_output
+    let passthrough = if opts.slurp
+        || opts.raw_input
+        || opts.sorted_output
+        || opts.raw_no_lf
         || use_color
-        || cli.ascii_output
-        || cli.raw
-        || cli.raw_output0
-        || cli.exit_status
+        || opts.ascii_output
+        || opts.raw_output
+        || opts.exit_status
         || effective_stream
-        || cli.seq
+        || opts.seq
     {
         None
     } else {
-        qj::filter::passthrough_path(&filter).filter(|p| !p.requires_compact() || cli.compact)
+        qj::filter::passthrough_path(&filter).filter(|p| !p.requires_compact() || !pretty)
     };
 
     let uses_input = filter.uses_input_builtins();
+    let ctx = ProcessCtx {
+        passthrough: &passthrough,
+        force_jsonl: opts.jsonl,
+        exit_status: opts.exit_status,
+        filter: &filter,
+        env: &env,
+        config: &config,
+        debug_timing: opts.debug_timing,
+    };
     let mut had_output = false;
     let mut had_error = false;
     let mut last_was_falsy = false;
 
-    if cli.null_input {
+    if opts.null_input {
         // With -n: collect all input values into the input queue (for input/inputs),
         // then eval with null input.
         if uses_input {
             let mut values = Vec::new();
             if !input_files.is_empty() {
                 for path in &input_files {
-                    if cli.raw_input {
+                    if opts.raw_input {
                         let content = read_file_text(path)?;
                         for line in content.lines() {
                             values.push(qj::value::Value::String(line.to_string()));
                         }
-                    } else if cli.seq {
-                        let buf = if qj::decompress::is_compressed(path) {
-                            qj::decompress::decompress_file(path)?
-                        } else {
-                            std::fs::read(path)
-                                .with_context(|| format!("failed to read file: {path}"))?
-                        };
+                    } else if opts.seq {
+                        let buf = read_input_bytes(path)?;
                         collect_seq_values(&buf, &mut values)?;
                     } else {
-                        collect_file_values(path, cli.jsonl, &mut values)?;
+                        collect_file_values(path, opts.jsonl, &mut values)?;
                     }
                 }
             } else {
@@ -634,16 +524,16 @@ fn main() -> Result<()> {
                 io::stdin()
                     .read_to_end(&mut buf)
                     .context("failed to read stdin")?;
-                if cli.raw_input {
+                if opts.raw_input {
                     let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
                     for line in text.lines() {
                         values.push(qj::value::Value::String(line.to_string()));
                     }
-                } else if cli.seq {
+                } else if opts.seq {
                     collect_seq_values(&buf, &mut values)?;
                 } else {
                     qj::input::strip_bom(&mut buf);
-                    qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+                    qj::input::collect_values_from_buf(&buf, opts.jsonl, &mut values)?;
                 }
             }
             let values = if effective_stream {
@@ -665,7 +555,7 @@ fn main() -> Result<()> {
             &mut had_error,
             &mut last_was_falsy,
         );
-    } else if cli.raw_input {
+    } else if opts.raw_input {
         // --raw-input: read lines as strings instead of parsing JSON
         if input_files.is_empty() {
             let mut buf = Vec::new();
@@ -675,7 +565,7 @@ fn main() -> Result<()> {
             let text = std::str::from_utf8(&buf).context("stdin is not valid UTF-8")?;
             process_raw_input(
                 text,
-                cli.slurp,
+                opts.slurp,
                 &filter,
                 &env,
                 &mut out,
@@ -684,7 +574,7 @@ fn main() -> Result<()> {
                 &mut had_error,
                 &mut last_was_falsy,
             )?;
-        } else if cli.slurp {
+        } else if opts.slurp {
             // --raw-input --slurp with files: concatenate all file contents
             // into a single string (matches jq -Rs behavior)
             let mut all_text = String::new();
@@ -719,7 +609,7 @@ fn main() -> Result<()> {
                 )?;
             }
         }
-    } else if cli.seq {
+    } else if opts.seq {
         // --seq: RS-delimited (RFC 7464) input
         let mut values = Vec::new();
         if input_files.is_empty() {
@@ -730,15 +620,11 @@ fn main() -> Result<()> {
             collect_seq_values(&buf, &mut values)?;
         } else {
             for path in &input_files {
-                let buf = if qj::decompress::is_compressed(path) {
-                    qj::decompress::decompress_file(path)?
-                } else {
-                    std::fs::read(path).with_context(|| format!("failed to read file: {path}"))?
-                };
+                let buf = read_input_bytes(path)?;
                 collect_seq_values(&buf, &mut values)?;
             }
         }
-        if cli.slurp {
+        if opts.slurp {
             let input = qj::value::Value::Array(Arc::new(values));
             eval_and_output(
                 &filter,
@@ -764,7 +650,7 @@ fn main() -> Result<()> {
                 );
             }
         }
-    } else if cli.stream_errors && !cli.slurp && !cli.null_input {
+    } else if opts.stream_errors && !opts.slurp && !opts.null_input {
         // --stream-errors: like --stream but parse errors become ["error msg", []] entries
         let error_filter = unwrapped_filter.as_ref().unwrap();
         let mut bufs: Vec<Vec<u8>> = Vec::new();
@@ -777,12 +663,7 @@ fn main() -> Result<()> {
             bufs.push(buf);
         } else {
             for path in &input_files {
-                let buf = if qj::decompress::is_compressed(path) {
-                    qj::decompress::decompress_file(path)?
-                } else {
-                    std::fs::read(path).with_context(|| format!("failed to read file: {path}"))?
-                };
-                bufs.push(buf);
+                bufs.push(read_input_bytes(path)?);
             }
         }
         for buf in &bufs {
@@ -824,7 +705,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-    } else if cli.slurp {
+    } else if opts.slurp {
         // --slurp: collect all values into an array, eval once
         let mut values = Vec::new();
         if input_files.is_empty() {
@@ -833,10 +714,10 @@ fn main() -> Result<()> {
                 .read_to_end(&mut buf)
                 .context("failed to read stdin")?;
             qj::input::strip_bom(&mut buf);
-            qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+            qj::input::collect_values_from_buf(&buf, opts.jsonl, &mut values)?;
         } else {
             for path in &input_files {
-                collect_file_values(path, cli.jsonl, &mut values)?;
+                collect_file_values(path, opts.jsonl, &mut values)?;
             }
         }
         let values = if effective_stream {
@@ -857,38 +738,14 @@ fn main() -> Result<()> {
         );
     } else if input_files.is_empty() {
         // stdin
-        let mut buf = Vec::new();
-        io::stdin()
-            .read_to_end(&mut buf)
-            .context("failed to read stdin")?;
+        let mut buf = read_stdin()?;
         qj::input::strip_bom(&mut buf);
-        // Empty input produces no output (matches jq behavior)
-        let is_empty = buf
-            .iter()
-            .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'));
-        if !is_empty {
-            if !uses_input
-                && !cli.exit_status
-                && (cli.jsonl || qj::parallel::ndjson::is_ndjson(&buf))
-            {
-                let (output, ho, errs) =
-                    qj::parallel::ndjson::process_ndjson(&buf, &filter, &config, &env)
-                        .context("failed to process NDJSON from stdin")?;
-                out.write_all(&output)?;
-                had_output |= ho;
-                if !errs.is_empty() {
-                    // Always surface per-line errors to stderr (matching jq).
-                    // Only set had_error (exit 5) when no output was produced —
-                    // jq exits 0 for mixed success/error NDJSON.
-                    if !ho {
-                        had_error = true;
-                    }
-                    std::io::Write::write_all(&mut std::io::stderr(), &errs)?;
-                }
-            } else if uses_input {
+        if uses_input {
+            // Empty input produces no output (matches jq behavior)
+            if !is_blank(&buf) {
                 // Collect all values; first becomes input, rest go to queue
                 let mut values = Vec::new();
-                qj::input::collect_values_from_buf(&buf, cli.jsonl, &mut values)?;
+                qj::input::collect_values_from_buf(&buf, opts.jsonl, &mut values)?;
                 let mut queue: std::collections::VecDeque<_> = values.into();
                 let input = queue.pop_front().unwrap_or(qj::value::Value::Null);
                 qj::filter::eval::set_input_queue(queue);
@@ -902,28 +759,16 @@ fn main() -> Result<()> {
                     &mut had_error,
                     &mut last_was_falsy,
                 );
-            } else {
-                let json_len = buf.len();
-                let padded = qj::simdjson::pad_buffer(&buf);
-                let mut handled = false;
-                if let Some(pt) = &passthrough {
-                    handled = try_passthrough(&padded, json_len, pt, &mut out, &mut had_output)
-                        .context("passthrough failed")?;
-                }
-                if !handled {
-                    process_padded(
-                        &padded,
-                        json_len,
-                        &filter,
-                        &env,
-                        &mut out,
-                        &config,
-                        &mut had_output,
-                        &mut had_error,
-                        &mut last_was_falsy,
-                    )?;
-                }
             }
+        } else {
+            process_buffer(
+                &buf,
+                &ctx,
+                &mut out,
+                &mut had_output,
+                &mut had_error,
+                &mut last_was_falsy,
+            )?;
         }
     } else {
         // files
@@ -931,7 +776,7 @@ fn main() -> Result<()> {
             // Collect all values from all files; first becomes input, rest go to queue
             let mut values = Vec::new();
             for path in &input_files {
-                collect_file_values(path, cli.jsonl, &mut values)?;
+                collect_file_values(path, opts.jsonl, &mut values)?;
             }
             let mut queue: std::collections::VecDeque<_> = values.into();
             let input = queue.pop_front().unwrap_or(qj::value::Value::Null);
@@ -947,14 +792,6 @@ fn main() -> Result<()> {
                 &mut last_was_falsy,
             );
         } else {
-            let ctx = ProcessCtx {
-                passthrough: &passthrough,
-                force_jsonl: cli.jsonl,
-                filter: &filter,
-                env: &env,
-                config: &config,
-                debug_timing: cli.debug_timing,
-            };
             let mut had_file_error = false;
             for path in &input_files {
                 match process_file(
@@ -967,9 +804,7 @@ fn main() -> Result<()> {
                 ) {
                     Ok(()) => {}
                     Err(e) => {
-                        // Strip the redundant anyhow context wrapping — just show root cause
-                        let root = e.root_cause();
-                        eprintln!("qj: error: Could not open file {path}: {root}");
+                        eprintln!("qj: error: {}", file_error_message(path, &e));
                         had_file_error = true;
                     }
                 }
@@ -988,7 +823,7 @@ fn main() -> Result<()> {
         std::process::exit(5);
     }
 
-    if cli.exit_status {
+    if opts.exit_status {
         if !had_output {
             std::process::exit(4);
         }
@@ -1333,10 +1168,68 @@ fn try_passthrough(
 struct ProcessCtx<'a> {
     passthrough: &'a Option<qj::filter::PassthroughPath>,
     force_jsonl: bool,
+    exit_status: bool,
     filter: &'a qj::filter::Filter,
     env: &'a qj::filter::Env,
     config: &'a qj::output::OutputConfig,
     debug_timing: bool,
+}
+
+/// Whether a buffer has nothing but JSON whitespace.
+fn is_blank(buf: &[u8]) -> bool {
+    buf.iter()
+        .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+}
+
+/// Process input read into memory (stdin, or a `-` file argument): NDJSON in
+/// parallel, a passthrough, or the normal pipeline.
+fn process_buffer(
+    buf: &[u8],
+    ctx: &ProcessCtx,
+    out: &mut impl Write,
+    had_output: &mut bool,
+    had_error: &mut bool,
+    last_was_falsy: &mut bool,
+) -> Result<()> {
+    // Empty input produces no output (matches jq behavior)
+    if is_blank(buf) {
+        return Ok(());
+    }
+    if !ctx.exit_status && (ctx.force_jsonl || qj::parallel::ndjson::is_ndjson(buf)) {
+        let (output, ho, errs) =
+            qj::parallel::ndjson::process_ndjson(buf, ctx.filter, ctx.config, ctx.env)
+                .context("failed to process NDJSON from stdin")?;
+        out.write_all(&output)?;
+        *had_output |= ho;
+        if !errs.is_empty() {
+            // Always surface per-line errors to stderr (matching jq).
+            // Only set had_error (exit 5) when no output was produced —
+            // jq exits 0 for mixed success/error NDJSON.
+            if !ho {
+                *had_error = true;
+            }
+            io::stderr().write_all(&errs)?;
+        }
+        return Ok(());
+    }
+    let json_len = buf.len();
+    let padded = qj::simdjson::pad_buffer(buf);
+    if let Some(pt) = ctx.passthrough
+        && try_passthrough(&padded, json_len, pt, out, had_output).context("passthrough failed")?
+    {
+        return Ok(());
+    }
+    process_padded(
+        &padded,
+        json_len,
+        ctx.filter,
+        ctx.env,
+        out,
+        ctx.config,
+        had_output,
+        had_error,
+        last_was_falsy,
+    )
 }
 
 /// Process a single file: read, detect NDJSON, try passthrough, or run the
@@ -1349,6 +1242,12 @@ fn process_file(
     had_error: &mut bool,
     last_was_falsy: &mut bool,
 ) -> Result<()> {
+    if path == "-" {
+        let mut buf = read_stdin()?;
+        qj::input::strip_bom(&mut buf);
+        return process_buffer(&buf, ctx, out, had_output, had_error, last_was_falsy);
+    }
+
     // ---- Compressed file handling ----
     // Decompress to memory, then process the decompressed buffer.
     // Can't use mmap or streaming NDJSON directly on compressed data.

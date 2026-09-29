@@ -49,7 +49,7 @@ fn arr(items: Vec<Value>) -> Value {
 
 /// `[0, value]` or `[1, error message]`, as the generator's
 /// `try (... | [0, .]) catch [1, .]` prints them.
-fn tagged(r: Result<Value, Error>) -> String {
+pub(super) fn tagged(r: Result<Value, Error>) -> String {
     match r {
         Ok(v) => arr(vec![Value::from(0), v]).to_json(),
         Err(e) => arr(vec![Value::from(1), e.into_value()]).to_json(),
@@ -157,7 +157,7 @@ fn fromjson_fixture() {
 /// How jq's `jq_util_input_read_more` chunks stdin for the parser: `fgets`
 /// into a 4096-byte buffer (so a chunk ends after a newline or 4095 bytes),
 /// and a chunk without a newline is cut at its first NUL (`strlen`).
-fn jq_stdin_chunks(input: &[u8]) -> Vec<&[u8]> {
+pub(super) fn jq_stdin_chunks(input: &[u8]) -> Vec<&[u8]> {
     let mut chunks = Vec::new();
     let mut pos = 0;
     while pos < input.len() {
@@ -177,7 +177,7 @@ fn jq_stdin_chunks(input: &[u8]) -> Vec<&[u8]> {
 
 /// jq's input loop (`main.c` + `jq_util_input_next_input`) over the given
 /// chunks of stdin, printing with `-c`.
-fn simulate_cli(chunks: &[&[u8]], flags: &[String]) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn simulate_cli(chunks: &[&[u8]], flags: &[String]) -> (Vec<u8>, Vec<u8>) {
     let has = |f: &str| flags.iter().any(|x| x == f);
     let pf = ParseFlags {
         seq: has("--seq"),
@@ -408,7 +408,7 @@ fn by_impl(a: &Value, b: &Value, f: fn(&Array, &Array) -> Array) -> Result<Value
     }
 }
 
-fn run_op(op: &str, a: Value, b: Value, c: Value) -> Result<Value, Error> {
+pub(super) fn run_op(op: &str, a: Value, b: Value, c: Value) -> Result<Value, Error> {
     use std::cmp::Ordering::*;
     match op {
         "get" => a.get(&b),
@@ -684,4 +684,149 @@ fn colors_parse() {
     );
     assert!(Colors::parse("x").is_none());
     assert_eq!(Colors::parse("").unwrap(), Colors::default());
+}
+
+#[test]
+fn updates_never_affect_other_references() {
+    let a = jv("{\"x\":[1,2,{\"y\":3}],\"s\":\"ab\"}");
+    let keep = a.clone();
+    let b = a
+        .setpath(&jv("[\"x\",2,\"y\"]"), Value::from(9))
+        .unwrap()
+        .delpaths(&jv("[[\"x\",0]]"))
+        .unwrap()
+        .set(&jv("\"s\""), Value::from("zz"))
+        .unwrap();
+    assert_eq!(keep.to_json(), "{\"x\":[1,2,{\"y\":3}],\"s\":\"ab\"}");
+    assert_eq!(b.to_json(), "{\"x\":[2,{\"y\":9}],\"s\":\"zz\"}");
+    // Slices share storage but writes go to a copy when shared.
+    let arr = jv("[1,2,3,4]");
+    let mut view = arr.get(&jv("{\"start\":1,\"end\":3}")).unwrap();
+    if let Value::Array(v) = &mut view {
+        v.as_mut_slice()[0] = Value::from(7);
+        assert_eq!(v.get_mut(1).map(|x| x.to_json()), Some("3".into()));
+        assert!(v.get_mut(2).is_none());
+    }
+    assert_eq!(view.to_json(), "[7,3]");
+    assert_eq!(arr.to_json(), "[1,2,3,4]");
+    // Strings and objects too.
+    let mut s = Str::from("ab");
+    let s2 = s.clone();
+    s.push_str("c");
+    assert_eq!((s.as_str(), s2.as_str()), ("abc", "ab"));
+    let mut o = jv("{\"a\":1,\"b\":2,\"c\":3}").as_object().unwrap().clone();
+    let o2 = o.clone();
+    *o.get_mut("b").unwrap() = Value::from(20);
+    assert!(o.get_mut("zz").is_none());
+    o.retain(|k, _| k != "a");
+    assert_eq!(Value::Object(o).to_json(), "{\"b\":20,\"c\":3}");
+    assert_eq!(Value::Object(o2).to_json(), "{\"a\":1,\"b\":2,\"c\":3}");
+}
+
+#[test]
+fn array_conversions() {
+    let a = jv("[0,1,2,3,4,5]");
+    let v = a.get(&jv("{\"start\":2,\"end\":5}")).unwrap();
+    let Value::Array(view) = v else { panic!() };
+    // A shared view converts by copying...
+    assert_eq!(Value::from(view.clone().into_vec()).to_json(), "[2,3,4]");
+    drop(a);
+    // ...a unique one by moving its elements out.
+    let items: Vec<Value> = view.into_iter().collect();
+    assert_eq!(Value::from(items).to_json(), "[2,3,4]");
+    let mut b: Array = (0..3).map(Value::from).collect();
+    b.extend([Value::from("x")]);
+    b.extend_from_array(&Array::from_vec(vec![Value::Null]));
+    assert_eq!(Value::Array(b).to_json(), "[0,1,2,\"x\",null]");
+}
+
+#[test]
+fn delpaths_many_object_keys() {
+    // `jq -nc '[range(20) | {key: "k\(.)", value: .}] | from_entries
+    //   | delpaths([range(0;20;2) | ["k\(.)"]] + [["zz"]]) | keys_unsorted'`
+    let obj: Object = (0..20)
+        .map(|i| (Str::from(format!("k{i}")), Value::from(i)))
+        .collect();
+    let mut paths: Vec<Value> = (0..20)
+        .step_by(2)
+        .map(|i| Value::from(vec![Value::from(format!("k{i}"))]))
+        .collect();
+    paths.push(jv("[\"zz\"]"));
+    let r = Value::Object(obj).delpaths(&Value::from(paths)).unwrap();
+    assert_eq!(
+        r.keys_unsorted().unwrap().to_json(),
+        "[\"k1\",\"k3\",\"k5\",\"k7\",\"k9\",\"k11\",\"k13\",\"k15\",\"k17\",\"k19\"]"
+    );
+}
+
+#[test]
+fn refcounted_dump_like_debug_trace() {
+    // `jq -n --debug-trace '["ab",[1],{"x":"y"},[],{}] | .[0]'` prints
+    // `["ab" (1),[1] (1),{"x":"y" (1)} (1),[],{}] (2)` for the constant held
+    // by both the bytecode and the stack.
+    let v = jv("[\"ab\",[1],{\"x\":\"y\"},[],{}]");
+    let held = v.clone();
+    let mut out = Vec::new();
+    dump_refcounted(&v, &DumpOptions::compact(), &mut out).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "[\"ab\" (1),[1] (1),{\"x\":\"y\" (1)} (1),[],{}] (2)"
+    );
+    assert_eq!(held.refcount(), 2);
+    assert_eq!(Value::Null.refcount(), 1);
+    assert_eq!(Value::number(1.0).refcount(), 1);
+    let lit = jv("1.0");
+    let lit2 = lit.clone();
+    assert_eq!(lit2.refcount(), 2);
+}
+
+#[test]
+fn deep_values_compare_without_overflow() {
+    // Distinct maximally deep inputs (jq's parser allows 10000 stack
+    // entries: 10000 nested arrays, or 5000 objects with their pending
+    // keys), compared on a 2 MB thread like a worker thread.
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            for (open, close, levels) in [("[", "]", 10000), ("{\"a\":", "}", 5000)] {
+                let deep = |leaf: &str| {
+                    let doc = open.repeat(levels) + leaf + &close.repeat(levels);
+                    parse_sized(doc.as_bytes()).unwrap()
+                };
+                let (a, b, c) = (deep("1"), deep("1"), deep("2"));
+                assert!(a.equal(&b));
+                assert!(!a.equal(&c));
+                assert_eq!(a.compare(&c), std::cmp::Ordering::Less);
+                assert!(a.contains(&b));
+                assert!(!a.identical(&b));
+                // Paths as deep as the values.
+                let step = if open == "[" {
+                    Value::from(0)
+                } else {
+                    Value::from("a")
+                };
+                let path = Value::from(vec![step; levels]);
+                assert_eq!(a.getpath(&path).unwrap().to_json(), "1");
+                let d = a.clone().setpath(&path, Value::from(2)).unwrap();
+                assert!(d.equal(&c));
+                let e = a
+                    .clone()
+                    .delpaths(&Value::from(vec![path.clone()]))
+                    .unwrap();
+                assert!(!e.equal(&a));
+                // Sorting deep keys, and printing (elided past depth 256).
+                let arr = Array::from_vec(vec![c.clone(), a.clone()]);
+                let sorted = sort(&arr, &arr);
+                assert!(sorted.get(0).unwrap().equal(&a));
+                assert!(a.to_json().contains("<skipped: too deep>"));
+                // Object `*` merges all the way down.
+                if let (Value::Object(x), Value::Object(y)) = (&a, &c) {
+                    let mut m = x.clone();
+                    m.merge_recursive(y);
+                    assert!(Value::Object(m).equal(&c));
+                }
+            }
+        })
+        .unwrap();
+    handle.join().unwrap();
 }

@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod decompress;
 pub mod filter;
 pub mod flat_eval;

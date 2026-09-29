@@ -5280,11 +5280,21 @@ fn glob_expansion_gz() {
 }
 
 #[test]
-fn glob_no_match_error() {
-    // Glob pattern with no matches should report an error
-    let (code, _stdout, stderr) = qj_exit(&["-c", ".", "/tmp/qj_nonexistent_glob_*.json"], "");
-    assert_ne!(code, 0);
-    assert!(stderr.contains("no files matched"), "stderr: {stderr}");
+fn glob_no_match_is_a_missing_file() {
+    // A pattern that matches nothing stays a file name, so it fails to open
+    // exactly as it does in jq.
+    let pattern = "/tmp/qj_nonexistent_glob_*.json";
+    let (code, stdout, stderr) = qj_exit(&["-c", ".", pattern], "");
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        format!("qj: error: Could not open file {pattern}: No such file or directory\n")
+    );
+    if jq_available() {
+        let (_, jq_stderr, _) = run_tool_full("jq", &["-c", ".", pattern], "");
+        assert_eq!(stderr.replacen("qj:", "jq:", 1), jq_stderr);
+    }
 }
 
 #[test]
