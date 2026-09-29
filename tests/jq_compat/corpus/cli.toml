@@ -891,8 +891,15 @@ args = ["-nc", "-L", "../../modules", 'import "syntaxerror" as e; 1']
 
 [[case]]
 name = "home-jq-file-autoload"
-args = ["-nc", "1"]
+note = "A ~/.jq file is included into every program (jq's shtest)"
+args = ["-nr", "fg"]
 env = { HOME = "../../modules/home1" }
+
+[[case]]
+name = "home-jq-dir-search-path"
+note = "A ~/.jq directory is on the module search path (jq's shtest)"
+args = ["-nc", 'include "g"; g']
+env = { HOME = "../../modules/home2" }
 
 [[case]]
 name = "compile-error-location"

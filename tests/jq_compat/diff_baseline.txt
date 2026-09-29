@@ -5367,7 +5367,6 @@ stdout corpus/cli.toml:exit-status-with-error:cli a355bb022512
 pass corpus/cli.toml:flag-after-program:cli 164cda5a8792
 pass corpus/cli.toml:getpath-pretty-flag-c:cli cec0bbee66af
 pass corpus/cli.toml:halt:cli 5ce510f11fe0
-pass corpus/cli.toml:home-jq-file-autoload:cli 13d41d3b7611
 pass corpus/cli.toml:import-data-module:cli 707000d664db
 stdout corpus/cli.toml:import-missing-module:cli c35ba3af13ca
 pass corpus/cli.toml:import-module:cli 47ebb29a833e
