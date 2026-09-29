@@ -932,3 +932,461 @@ stdin = "a\nb\n"
 name = "seq-raw-output"
 args = ["--seq", "-r", ".[]"]
 stdin = '["a",1]'
+
+# ---------------------------------------------------------------------------
+# jq main.c option handling (src/cli/args.rs, track A). Expected behavior is
+# jq 1.8.1's; the harness runs in the C locale.
+# ---------------------------------------------------------------------------
+
+# Which arguments are options: '-' then '-' or a letter; bundles of short
+# options; long options match exactly.
+
+[[case]]
+name = "opt-unknown-short-in-bundle"
+args = ["-nx", "1"]
+
+[[case]]
+name = "opt-unknown-short-digit-in-bundle"
+args = ["-n1"]
+
+[[case]]
+name = "opt-dash-digit-is-program"
+args = ["-n", "-1"]
+
+[[case]]
+name = "opt-triple-dash-unknown"
+args = ["---"]
+
+[[case]]
+name = "opt-long-with-equals-unknown"
+args = ["--indent=2", "."]
+stdin = "1"
+
+[[case]]
+name = "opt-long-prefix-unknown"
+args = ["--s", "-n", "1"]
+
+[[case]]
+name = "opt-debug-trace-bad-value"
+args = ["-n", "--debug-trace=foo", "1"]
+
+[[case]]
+name = "opt-binary-accepted"
+args = ["-b", "-n", "1"]
+
+[[case]]
+name = "opt-binary-long-accepted"
+args = ["--binary", "-n", "1"]
+
+[[case]]
+name = "opt-exit-status-bundled"
+args = ["-ne", "null"]
+
+[[case]]
+name = "opt-unknown-before-help"
+args = ["-n", "--foo", "-h"]
+
+[[case]]
+name = "opt-unknown-before-version"
+args = ["--foo", "-V"]
+
+[[case]]
+name = "opt-null-input-files-not-opened"
+args = ["-n", "1", "missing1.json", "missing2.json"]
+
+# `--`: everything after it is the program, a file, or a positional value.
+
+[[case]]
+name = "dashdash-args-then-option-like"
+args = ["-nc", "--args", "$ARGS.positional", "a", "--", "-c", "--foo"]
+
+[[case]]
+name = "dashdash-before-args-flag"
+args = ["-nc", "--", "$ARGS", "--args", "x"]
+
+[[case]]
+name = "dashdash-program-after"
+note = "shtest #2919"
+args = ["--args", "-rn", "--", "$ARGS.positional[0]", "bar"]
+
+[[case]]
+name = "dashdash-program-before"
+note = "shtest #2919"
+args = ["--args", "-rn", "1", "--", "$ARGS.positional[0]", "bar"]
+
+# --args / --jsonargs
+
+[[case]]
+name = "args-option-after-positional"
+args = ["-n", "$ARGS", "--args", "a", "-c", "b"]
+
+[[case]]
+name = "args-empty-string"
+args = ["-nc", "--args", "$ARGS.positional", "a", "", "b"]
+
+[[case]]
+name = "args-files-before-stay-files"
+args = ["-nc", "$ARGS", "missing.json", "--args", "a"]
+
+[[case]]
+name = "args-jsonargs-alternate"
+note = "shtest"
+args = ["-n", "-c", "$ARGS.positional", "--args", "foo", "1", "--jsonargs", "2", "{}", "--args", "3", "4"]
+
+[[case]]
+name = "args-jsonargs-no-values"
+note = "shtest"
+args = ["-n", "-c", "$ARGS.positional", "--args", "--jsonargs"]
+
+[[case]]
+name = "jsonargs-literals"
+args = ["-nc", "--jsonargs", "$ARGS.positional", "null", "true", "[]", "{}", " 1 "]
+
+[[case]]
+name = "jsonargs-two-values-rejected"
+args = ["-n", "--jsonargs", "$ARGS", "1 2"]
+
+[[case]]
+name = "jsonargs-empty-rejected"
+args = ["-n", "--jsonargs", "$ARGS", ""]
+
+[[case]]
+name = "jsonargs-invalid-after-dashdash"
+note = "shtest #2572"
+args = ["-n", "--jsonargs", "null", "--", "invalid"]
+
+# Named arguments: the first definition wins; later ones aren't parsed or read.
+
+[[case]]
+name = "arg-first-definition-wins"
+args = ["-nc", "--arg", "x", "1", "--arg", "x", "2", "$x"]
+
+[[case]]
+name = "argjson-duplicate-not-parsed"
+args = ["-nc", "--arg", "x", "1", "--argjson", "x", "{bad", "[$x, $ARGS.named]"]
+
+[[case]]
+name = "slurpfile-duplicate-not-read"
+args = ["-nc", "--arg", "x", "1", "--slurpfile", "x", "missing.json", "$x"]
+
+[[case]]
+name = "arg-value-looks-like-option"
+args = ["-nc", "--arg", "x", "--y", "$x"]
+
+[[case]]
+name = "arg-named-ARGS"
+args = ["-nc", "--arg", "ARGS", "x", "$ARGS"]
+
+[[case]]
+name = "arg-named-build-configuration"
+args = ["-nc", "--arg", "JQ_BUILD_CONFIGURATION", "x", "$JQ_BUILD_CONFIGURATION, $ARGS"]
+
+[[case]]
+name = "build-configuration-variable"
+args = ["-n", "$JQ_BUILD_CONFIGURATION | type"]
+
+[[case]]
+name = "named-args-command-line-order"
+args = ["-nc", "--argjson", "b", "2", "--arg", "a", "1", "--rawfile", "r", "f.txt", "--slurpfile", "s", "f.json", "$ARGS.named"]
+files = { "f.txt" = "text\n", "f.json" = "[1] 2" }
+
+[[case]]
+name = "argjson-surrounding-whitespace"
+args = ["-nc", "--argjson", "x", " [1] ", "$x"]
+
+[[case]]
+name = "argjson-two-values-rejected"
+args = ["-n", "--argjson", "x", "1 2", "$x"]
+
+[[case]]
+name = "argjson-bare-word-rejected"
+args = ["-n", "--argjson", "x", "invalid", "$x"]
+
+[[case]]
+name = "argjson-nan-literals"
+args = ["-nc", "--jsonargs", "$ARGS.positional", "nan", "NaN", "-nan", "[nan]"]
+
+[[case]]
+name = "argjson-infinity-literals"
+args = ["-nc", "--jsonargs", "$ARGS.positional", "infinity", "-Infinity"]
+
+[[case]]
+name = "argjson-big-integer"
+args = ["-nc", "--argjson", "x", "[100000000000000000000000000001]", "$x"]
+
+[[case]]
+name = "argjson-huge-exponent"
+args = ["-nc", "--argjson", "x", "1e1000", "$x"]
+
+[[case]]
+name = "argjson-leading-zero"
+args = ["-nc", "--argjson", "x", "01", "$x"]
+
+[[case]]
+name = "argjson-missing-params"
+args = ["-n", "--argjson", "x"]
+
+[[case]]
+name = "arg-missing-both-params"
+args = ["-n", "--arg"]
+
+[[case]]
+name = "rawfile-missing-params"
+args = ["-n", "--rawfile", "x"]
+
+[[case]]
+name = "slurpfile-missing-params"
+args = ["-n", "--slurpfile", "x"]
+
+[[case]]
+name = "rawfile-missing"
+args = ["-nc", "--rawfile", "x", "missing.txt", "$x"]
+
+[[case]]
+name = "rawfile-directory"
+args = ["-nc", "--rawfile", "x", ".", "$x"]
+
+[[case]]
+name = "slurpfile-directory"
+args = ["-nc", "--slurpfile", "x", ".", "$x"]
+
+[[case]]
+name = "rawfile-error-before-unknown-option"
+args = ["-nc", "--rawfile", "x", "missing.txt", "--foo"]
+
+[[case]]
+name = "unknown-option-before-argjson-error"
+args = ["-nc", "--foo", "--argjson", "x", "{bad"]
+
+[[case]]
+name = "argjson-error-before-unknown-option"
+args = ["-nc", "--argjson", "x", "{bad", "--foo"]
+
+# -f is a flag: the first non-option argument is the program file.
+
+[[case]]
+name = "from-file-flag-last"
+args = ["prog.jq", "in.json", "-f"]
+files = { "prog.jq" = ".a", "in.json" = '{"a":7}' }
+
+[[case]]
+name = "from-file-bundled"
+args = ["-nf", "prog.jq"]
+files = { "prog.jq" = "[1, 2]" }
+
+[[case]]
+name = "from-file-bundled-reversed"
+args = ["-fnc", "prog.jq"]
+files = { "prog.jq" = "[1, 2]" }
+
+[[case]]
+name = "from-file-missing"
+args = ["-f", "missing.jq"]
+
+[[case]]
+name = "from-file-directory"
+args = ["-f", "."]
+
+[[case]]
+name = "from-file-stops-at-nul"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = "[1]\u0000 | garbage(" }
+
+# -L
+
+[[case]]
+name = "library-path-missing-param"
+args = ["-n", "-L"]
+
+[[case]]
+name = "library-path-bundled-missing-param"
+args = ["-nL"]
+
+[[case]]
+name = "library-path-joined"
+args = ["-nc", "-L../../modules", 'import "a" as a; a::a']
+
+[[case]]
+name = "library-path-rest-of-bundle"
+args = ["-ncL../../modules", 'import "a" as a; a::a']
+
+[[case]]
+name = "library-path-long"
+args = ["-nc", "--library-path", "../../modules", 'import "a" as a; a::a']
+
+[[case]]
+name = "library-path-long-equals-rejected"
+args = ["-nc", "--library-path=../../modules", "1"]
+
+# --indent / --tab / -c
+
+[[case]]
+name = "indent-missing-param"
+args = ["-n", "--indent"]
+
+[[case]]
+name = "indent-plus-sign"
+args = ["--indent", "+3", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "indent-leading-zero"
+args = ["--indent", "03", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "indent-minus-zero"
+args = ["--indent", "-0", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "indent-leading-space-rejected"
+args = ["--indent", " 3", "."]
+stdin = "1"
+
+[[case]]
+name = "indent-trailing-space-rejected"
+args = ["--indent", "3 ", "."]
+stdin = "1"
+
+[[case]]
+name = "indent-empty-rejected"
+args = ["--indent", "", "."]
+stdin = "1"
+
+[[case]]
+name = "indent-hex-rejected"
+args = ["--indent", "0x3", "."]
+stdin = "1"
+
+[[case]]
+name = "indent-overflow-rejected"
+args = ["--indent", "99999999999999999999999", "."]
+stdin = "1"
+
+[[case]]
+name = "indent-minus-two-rejected"
+args = ["--indent", "-2", "."]
+stdin = "1"
+
+[[case]]
+name = "indent-then-tab"
+args = ["--indent", "3", "--tab", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "tab-then-compact"
+args = ["--tab", "-c", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "compact-then-tab"
+args = ["-c", "--tab", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "indent-0-nested"
+note = "shtest #1465"
+args = ["--indent", "0", "-n", "[{a:1}]"]
+
+[[case]]
+name = "indent-6-nested"
+note = "shtest #1465"
+args = ["--indent", "6", "-n", "[{a:1}]"]
+
+# Colors: -M beats -C in any order; JQ_COLORS is checked after the options.
+
+[[case]]
+name = "color-monochrome-before-color"
+args = ["-M", "-C", "-c", "."]
+stdin = '{"a":1}'
+
+[[case]]
+name = "color-bundled-CM"
+args = ["-CMc", "."]
+stdin = '{"a":1}'
+
+[[case]]
+name = "jq-colors-invalid-monochrome"
+args = ["-M", "-c", "."]
+stdin = "1"
+env = { JQ_COLORS = "garbage" }
+
+[[case]]
+name = "jq-colors-invalid-no-color"
+args = ["-c", "."]
+stdin = "1"
+env = { JQ_COLORS = "30:*:31" }
+
+[[case]]
+name = "jq-colors-invalid-seventh-field"
+args = ["-c", "."]
+stdin = "1"
+env = { JQ_COLORS = "1:2:3:4:5:6:7junk" }
+
+[[case]]
+name = "jq-colors-junk-after-eighth-field"
+args = ["-c", "."]
+stdin = "1"
+env = { JQ_COLORS = "1:2:3:4:5:6:7:8junk" }
+
+[[case]]
+name = "jq-colors-invalid-then-option-error"
+args = ["--foo"]
+env = { JQ_COLORS = "garbage" }
+
+[[case]]
+name = "jq-colors-invalid-then-from-file-error"
+args = ["-f", "missing.jq"]
+env = { JQ_COLORS = "garbage" }
+
+[[case]]
+name = "jq-colors-invalid-then-compile-error"
+args = ["-n", "1 +"]
+env = { JQ_COLORS = "30m" }
+
+# Raw output variants
+
+[[case]]
+name = "join-output-with-raw-output0"
+args = ["-n", "-j", "--raw-output0", '"a", "b"']
+
+# `-` is stdin, wherever it appears.
+
+[[case]]
+name = "dash-between-files"
+args = ["-c", ".", "a.json", "-", "b.json"]
+stdin = "2\n"
+files = { "a.json" = "1\n", "b.json" = "3\n" }
+
+[[case]]
+name = "dash-twice"
+args = ["-c", ".", "-", "-"]
+stdin = "1\n"
+
+[[case]]
+name = "dash-with-slurp"
+args = ["-c", "-s", ".", "a.json", "-"]
+stdin = "2\n"
+files = { "a.json" = "1\n" }
+
+[[case]]
+name = "dash-with-raw-input"
+args = ["-R", ".", "-"]
+stdin = "x\ny\n"
+
+# Input files that can't be opened. qj's glob extension must not change what
+# happens when a pattern matches nothing.
+
+[[case]]
+name = "missing-file-single"
+args = ["-c", ".", "missing.json"]
+
+[[case]]
+name = "unmatched-glob-is-missing-file"
+args = ["-c", ".", "nomatch*.json"]
+
+[[case]]
+name = "glob-metachar-literal-file"
+args = ["-c", ".", "lit[1].json"]
+files = { "lit[1].json" = "1" }

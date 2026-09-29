@@ -209,3 +209,19 @@ interface scaffold before spawning it.
   cases. Old qj scores 9,286 strict (51.3%) and 11,038 stdout+rc (61.0%); upstream suites
   alone are 2,639/2,903 strict (90.9%). There's no Linux baseline yet, so CI only reports.
   Track A (jq `main.c` argument handling) started.
+- 2026-09-29: **X merged** (`dc9ff95`): Oniguruma `_match_impl` primitive (650/650 calls
+  byte-exact), libc time functions, libm table (4415/4415 bit-exact on macOS).
+- 2026-09-29: **P merged** (`f2a7029`): lexer, plus bison's own LALR tables driven by a
+  port of the yacc skeleton. Accept/reject and parse-error text match jq by construction
+  (100% on 56k programs).
+- 2026-09-29: **V merged in progress** (`2c69b8d`); refinements still coming. Builtin
+  interface scaffold landed (`3eeba5e`). Wave 2 started: C1 (compiler, checked against
+  `--debug-dump-disasm`), B1 (core builtins), B2 (platform builtins), IO (simdjson → Value,
+  streams, parallel engine).
+- 2026-09-29: **A merged** (`0dc1608`): `src/cli/args.rs` ports main.c's option loop and
+  replaces clap. jq_diff: 9,397/18,185 strict. Next: C2 (VM) as soon as C1 commits
+  `bytecode.rs`.
+- Pending policy: the usage hint and other mid-line program names should say `qj`, with
+  the harness normalizing them the same way as the prefix. This lands with the wave 3 CLI.
+- Harness hygiene: jq's `lgamma_r` sign is random at 0, -0, NaN and ±inf (uninitialized in
+  jq), so exclude those inputs from the corpus.
