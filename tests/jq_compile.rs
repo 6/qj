@@ -10,18 +10,25 @@
 //!   cases, named arguments, `$ENV`, modules), and generated deep programs. Our
 //!   compiler must print exactly the same.
 //! * `disasm_vs_live_jq` (ignored): the same against the jq binary; `QJ_BLESS=1`
-//!   rewrites `disasm.jsonl`, `QJ_FILTER=text` selects programs.
+//!   rewrites `disasm.jsonl`, `QJ_FILTER=text` selects programs, and
+//!   `QJ_EXTRA=file.jsonl` compares the programs of another file instead, such as
+//!   random ones from `tests/jq_compile/gen_programs.py`.
+//! * `binding_and_scoping`: edge cases with jq's output inline.
+//! * `deepest_programs_compile_on_a_small_stack`: programs at jq's nesting limits.
 //! * `adhoc` (ignored): `QJ_PROGRAM='...'` shows ours and jq's output.
 //!
 //!   ```text
 //!   cargo test --release --test jq_compile -- --ignored --nocapture
 //!   QJ_BLESS=1 cargo test --release --test jq_compile disasm_vs_live_jq -- --ignored --nocapture
+//!   python3 tests/jq_compile/gen_programs.py 20000 1 > /tmp/rand.jsonl
+//!   QJ_EXTRA=/tmp/rand.jsonl cargo test --release --test jq_compile disasm_vs_live_jq -- --ignored --nocapture
 //!   QJ_PROGRAM='def f: .; f' cargo test --release --test jq_compile adhoc -- --ignored --nocapture
 //!   ```
 //!
 //! jq runs in `tests/jq_compat` with a fixed environment (see [`ENV`]) and
-//! `-L modules`; paths under `tests/jq_compat` are recorded as `$ROOT`. Outputs
-//! longer than [`MAX_RECORDED`] bytes are recorded as a hash.
+//! `-L modules`; paths under `tests/jq_compat` are recorded as `$ROOT` (and this
+//! track's module fixtures, under `tests/jq_compile`, as `$C1`). Outputs longer than
+//! [`MAX_RECORDED`] bytes are recorded as a hash.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -692,8 +699,19 @@ fn disasm_vs_live_jq_impl() {
             return;
         }
     }
+    // QJ_EXTRA=file.jsonl compares the programs of that file instead (e.g. generated
+    // ones), without recording them.
+    let extra = std::env::var("QJ_EXTRA").ok();
     let filter = std::env::var("QJ_FILTER").ok();
-    let programs: Vec<Program> = collect_programs()
+    let all = match &extra {
+        Some(path) => {
+            let mut v = Vec::new();
+            jsonl_programs(Path::new(path), &mut v);
+            v
+        }
+        None => collect_programs(),
+    };
+    let programs: Vec<Program> = all
         .into_iter()
         .filter(|p| {
             filter.as_ref().is_none_or(|f| {
@@ -793,7 +811,7 @@ fn disasm_vs_live_jq_impl() {
             )
         );
     }
-    if std::env::var("QJ_BLESS").is_ok_and(|v| v == "1") && filter.is_none() {
+    if std::env::var("QJ_BLESS").is_ok_and(|v| v == "1") && filter.is_none() && extra.is_none() {
         let path = data_dir().join("disasm.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(
