@@ -212,8 +212,9 @@ impl<'a> Lexer<'a> {
     pub fn next_token(&mut self, lloc: &mut Loc) -> Token {
         loop {
             if self.pos >= self.src.len() {
-                // <IN_COMMENT><<EOF>> pops (without YY_USER_ACTION); every other state
-                // terminates the scan.
+                // Every state ends with the end-of-file token and leaves the location
+                // alone (EOF rules don't run YY_USER_ACTION; IN_COMMENT's just pops
+                // first, which makes no difference here).
                 return Token::simple(sym::YYEOF);
             }
             match self.state {
@@ -253,7 +254,7 @@ impl<'a> Lexer<'a> {
             last = (p, p + len);
             p += len;
             if end {
-                self.state = self.stack.pop().unwrap_or(State::Initial);
+                self.pop_state();
                 break;
             }
         }
