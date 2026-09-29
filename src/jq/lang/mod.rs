@@ -39,14 +39,37 @@
 //!   carets, and maps byte offsets to lines for `$__loc__`.
 //! * [`lexer`] is the scanner (port of `lexer.l`), including jq's string-escape
 //!   decoding and UTF-8 replacement rules.
+//!
+//! # Compiler (Track C1): AST → bytecode
+//!
+//! [`jq_compile_args`]`(program, &`[`CompileOptions`]`) -> Result<Rc<bytecode::Bytecode>, `[`CompileError`]`>`
+//! is jq's `jq_compile_args`, run as jq runs it:
+//!
+//! * [`linker::load_program`] parses the program ([`linker::jq_parse`], with
+//!   [`lower::CompileHooks`]), lowers it with parser.y's actions ([`lower`]), adds the
+//!   implicit `~/.jq` include, and loads and binds its modules (port of `linker.c`);
+//! * [`crate::jq::builtins::bind::builtins_bind`] binds the builtins it uses;
+//! * [`compile::Compiler::block_compile`] resolves `$ENV` and named arguments,
+//!   reports unbound symbols, and emits [`bytecode::Bytecode`] (port of `compile.c`),
+//!   with execute.c's tail-call pass applied.
+//!
+//! [`bytecode::dump_disassembly`] prints what `jq --debug-dump-disasm` prints; the
+//! output matches jq's on every program of the test corpora (`tests/jq_compile.rs`).
 
 pub mod ast;
+pub mod bytecode;
+pub mod compile;
+pub mod execute;
 pub mod lexer;
+pub mod linker;
 pub mod locfile;
+pub mod lower;
 pub mod parser;
 mod parser_tables;
+pub mod program;
 
 pub use parser::{
     NUM_RULES, NoHooks, ParseError, ParseHooks, parse, parse_library, parse_program, reductions,
     rule_name,
 };
+pub use program::{CompileError, CompileOptions, jq_compile_args};
