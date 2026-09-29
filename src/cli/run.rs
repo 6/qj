@@ -1,6 +1,6 @@
 //! Port of jq 1.8.1's `main.c` after option parsing: setup, compilation, the
 //! `process()` loop over inputs, and exit codes, on the ported core
-//! (`src/jq`). [`main`] is what the `qj` binary runs with `QJ_CORE=port`.
+//! (`src/jq`). [`main`] is what the `qj` binary runs by default.
 //!
 //! In main.c's order:
 //!
@@ -1052,10 +1052,18 @@ fn run_parallel(
         ret: JQ_OK_NO_OUTPUT,
         last_result: -1,
     };
-    let engine = crate::io::parallel::EngineOptions {
+    let mut engine = crate::io::parallel::EngineOptions {
         threads: plan.threads,
         ..crate::io::parallel::EngineOptions::default()
     };
+    // QJ_WINDOW_SIZE=N: at most N MB of input in flight (as for the old core).
+    if let Some(mb) = std::env::var("QJ_WINDOW_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&mb| mb > 0)
+    {
+        engine.window_bytes = mb << 20;
+    }
     let factory = PortFactory { plan, p };
     let stats = crate::io::parallel::run_with(&mut reader, &factory, main, &mut sink, &engine);
     if std::env::var_os("QJ_ENGINE_STATS").is_some() {

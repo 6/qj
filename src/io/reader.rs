@@ -1087,7 +1087,9 @@ impl InputReader {
         };
         let cur = self.cur.as_mut()?;
         if matches!(cur.kind, DataKind::Stream { .. }) && !cur.eof {
-            cur.fill(keep, false, (at.pos - keep).saturating_add(max));
+            // (Room for a job of `max` and for extending one to `min`.)
+            let want = max.max(min).saturating_mul(2);
+            cur.fill(keep, false, (at.pos - keep).saturating_add(want));
         }
         let start = at.pos;
         let avail = cur.avail_end();
