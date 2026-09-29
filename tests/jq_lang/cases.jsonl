@@ -2144,12 +2144,13 @@
 {"exit":3,"origin":"corpus.jsonl:618 mutation 8","src":"\"x\\(\"y\\(\"z\")\"break\"","stderr":"jq: error: syntax error, unexpected break, expecting QQSTRING_INTERP_END or '|' or ',' at <top-level>, line 1, column 14:\n    \"x\\(\"y\\(\"z\")\"break\"\n                 ^^^^^\njq: 1 compile error\n"}
 {"exit":0,"origin":"chain-plus[100000]"}
 {"exit":0,"origin":"chain-comma[100000]"}
-{"exit":0,"origin":"object-pairs[3000]"}
-{"exit":0,"origin":"object-pairs[3300]"}
-{"exit":0,"origin":"object-pairs[3332]"}
-{"exit":0,"origin":"object-pairs[3333]"}
-{"exit":0,"origin":"object-pairs[3334]"}
 {"exit":0,"origin":"object-pairs[3400]"}
+{"exit":0,"origin":"object-pairs[4990]"}
+{"exit":0,"origin":"object-pairs[4994]"}
+{"exit":0,"origin":"object-pairs[4995]"}
+{"exit":0,"origin":"object-pairs[4996]"}
+{"exit":0,"origin":"object-pairs[4997]"}
+{"exit":3,"origin":"object-pairs[5000]","stderr_fnv":"0b896b8c1673012a","stderr_heads":"jq: error: memory exhausted at <top-level>, line 1, column 38873:\njq: 1 compile error\n"}
 {"exit":0,"origin":"deep-neg[9990]"}
 {"exit":0,"origin":"deep-neg[9995]"}
 {"exit":3,"origin":"deep-neg[9996]","stderr_fnv":"46bead93882a7866","stderr_heads":"jq: error: memory exhausted at <top-level>, line 1, column 9997:\njq: 1 compile error\n"}

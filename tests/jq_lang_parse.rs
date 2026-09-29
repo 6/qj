@@ -803,7 +803,7 @@ fn generated_programs() -> Vec<(String, Vec<u8>)> {
         format!("chain-comma[{n}]"),
         format!("[1{}]", ",1".repeat(n)).into_bytes(),
     ));
-    for n in [3000usize, 3300, 3332, 3333, 3334, 3400] {
+    for n in [3400usize, 4990, 4994, 4995, 4996, 4997, 5000] {
         let pairs: Vec<String> = (0..n).map(|i| format!("a{i}:1")).collect();
         out.push((
             format!("object-pairs[{n}]"),

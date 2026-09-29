@@ -99,6 +99,23 @@ pub fn parse_program(src: impl AsRef<[u8]>) -> Result<Program, Vec<ParseError>> 
     parse(src.as_ref(), &mut NoHooks)
 }
 
+/// Port of `jq_parse_library`, used for builtin.jq and imported modules: a library
+/// may only contain definitions (plus `module`/`import` directives).
+///
+/// The main-expression error has no location, and jq formats it with a doubled
+/// prefix: `jq: error: jq: error: library should only have function definitions, not
+/// a main expression` (which is what [`ParseError::render`] produces).
+pub fn parse_library(src: &[u8], hooks: &mut dyn ParseHooks) -> Result<Program, Vec<ParseError>> {
+    let program = parse(src, hooks)?;
+    if let ProgramBody::Main(_) = program.body {
+        return Err(vec![ParseError {
+            message: "library should only have function definitions, not a main expression".into(),
+            loc: Loc::UNKNOWN,
+        }]);
+    }
+    Ok(program)
+}
+
 /// `YYINITDEPTH`
 const YYINITDEPTH: usize = 200;
 /// `YYMAXDEPTH`: pushing the 10000th state fails with "memory exhausted".
@@ -1604,6 +1621,28 @@ mod tests {
         assert!(parse_program(&fields).is_ok());
         let opt = format!(".{}", "?".repeat(200_000));
         assert!(parse_program(&opt).is_ok());
+    }
+
+    #[test]
+    fn libraries() {
+        let lib = parse_library(b"def f: 1; def g: f;", &mut NoHooks).unwrap();
+        assert!(matches!(&lib.body, ProgramBody::Library(defs) if defs.len() == 2));
+        assert!(parse_library(b"", &mut NoHooks).is_ok());
+        let src = b"def f: 1; 1";
+        let errors = parse_library(src, &mut NoHooks).unwrap_err();
+        let lf = LocFile::new("m.jq", src);
+        assert_eq!(
+            errors[0].render(&lf),
+            "jq: error: jq: error: library should only have function definitions, not a main expression"
+        );
+        // syntax errors are reported as by `parse`, located in the module's file
+        let src = b"def f: 1; .a b";
+        let errors = parse_library(src, &mut NoHooks).unwrap_err();
+        let lf = LocFile::new("lib/s.jq", src);
+        assert_eq!(
+            errors[0].render(&lf),
+            "jq: error: syntax error, unexpected IDENT, expecting end of file at lib/s.jq, line 1, column 14:\n    def f: 1; .a b\n                 ^"
+        );
     }
 
     #[test]
