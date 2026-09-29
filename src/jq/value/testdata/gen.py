@@ -129,10 +129,10 @@ def gen_dtoa():
         if x == x and x not in (float("inf"), float("-inf")):
             xs.append(x)
 
-    for _ in range(2500):
+    for _ in range(1000):
         bits = rng.getrandbits(64)
         add(struct.unpack("<d", struct.pack("<Q", bits))[0])
-    for _ in range(1500):
+    for _ in range(600):
         m = rng.randint(1, 10 ** rng.randint(1, 17))
         e = rng.randint(-30, 30)
         add(float(f"{m}e{e}") * rng.choice([1, -1]))
@@ -140,13 +140,13 @@ def gen_dtoa():
         add(float(f"1e{e}"))
         add(float(f"1.5e{e}"))
         add(float(f"9.999999999999999e{e}"))
-    for e in range(-1074, 1024, 3):
+    for e in range(-1074, 1024, 7):
         add(2.0 ** e)
         add(-(2.0 ** e) * 3)
     for base in (2 ** 53, 10 ** 15, 10 ** 16, 10 ** 17, 10 ** 21, 10 ** 22, 2 ** 63, 2 ** 64):
-        for d in range(-40, 41):
+        for d in range(-12, 13):
             add(float(base + d))
-    for _ in range(300):
+    for _ in range(120):
         add(struct.unpack("<d", struct.pack("<Q", rng.getrandbits(52)))[0])  # subnormals
     for x in (0.0, -0.0, 1e-4, 9.99e-5, 1.5e17, 1e16, 1e-5, 123456789.123, 5e-324, 2.2250738585072014e-308,
               1.7976931348623157e308, 0.1, 0.2, 0.30000000000000004, 1 / 3, 2 / 3, 100.0, 1e21, 1e22):

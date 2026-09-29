@@ -188,6 +188,12 @@ impl Array {
         Rc::get_mut(&mut self.storage).is_some()
     }
 
+    /// The number of references to the storage (`jv_get_refcnt`; views of
+    /// the same storage share it).
+    pub fn refcount(&self) -> usize {
+        Rc::strong_count(&self.storage)
+    }
+
     /// Port of `jvp_array_write`: returns the slot for index `i`, extending
     /// the array with nulls, writing in place when possible.
     fn write_slot(&mut self, i: usize) -> &mut Value {
