@@ -587,10 +587,12 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         let front = self.queue.front_mut().expect("non-empty");
         let Some(r) = front.result.take() else {
             // Wait for a worker message (any: they all move things along).
+            // Tests turn a deadlock into a failure, with a timeout generous
+            // enough for unoptimized builds on a loaded machine.
             #[cfg(test)]
             let m = self
                 .msg_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(std::time::Duration::from_secs(120))
                 .unwrap_or_else(|e| {
                     let q: Vec<_> = self
                         .queue
