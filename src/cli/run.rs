@@ -105,10 +105,11 @@ thread_local! {
 }
 
 /// The buffer size stdio picks for stdout (fd 1) when it's first written to.
-/// FreeBSD's and macOS's `__swhatbuf`: `st_blksize`, or `BUFSIZ` when fstat
-/// fails or reports none. glibc's `_IO_file_doallocate`: `BUFSIZ`, or
-/// `st_blksize` when that is smaller.
-fn stdio_buffer_size() -> usize {
+/// macOS's `__swhatbuf`: `st_blksize` up to 64 KB (`MAXBUFSIZE`), or `BUFSIZ`
+/// when fstat fails or reports none, and `__smakebuf` caps a terminal's at
+/// 4096 (`TTYBUFSIZE`: a tty's `st_blksize` is 64-128 KB). glibc's
+/// `_IO_file_doallocate`: `BUFSIZ`, or `st_blksize` when that is smaller.
+fn stdio_buffer_size(tty: bool) -> usize {
     let bufsiz = libc::BUFSIZ as usize;
     // SAFETY: fstat writes a `stat` into `st`, which is valid for writes.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
@@ -120,14 +121,15 @@ fn stdio_buffer_size() -> usize {
     if cfg!(target_os = "linux") {
         blksize.filter(|&b| b < bufsiz).unwrap_or(bufsiz)
     } else {
-        blksize.unwrap_or(bufsiz)
+        let size = blksize.map_or(bufsiz, |b| b.min(1 << 16));
+        if tty { size.min(4096) } else { size }
     }
 }
 
 impl Stdout {
     fn size(&mut self) -> usize {
         if self.size == 0 {
-            self.size = stdio_buffer_size().max(1);
+            self.size = stdio_buffer_size(self.line_buffered).max(1);
         }
         self.size
     }
@@ -200,9 +202,41 @@ impl Stdout {
     /// same bytes written piecemeal in when the last buffer goes out.
     fn fwrite(&mut self, data: &[u8]) {
         let size = self.size();
-        // (Anything shorter than the buffer goes out as if piecemeal.)
-        if self.line_buffered || data.len() < size {
+        // (Anything shorter than the buffer goes out as if piecemeal; so does
+        // everything on a line-buffered glibc stream, approximately.)
+        if data.len() < size || (self.line_buffered && cfg!(target_os = "linux")) {
             return self.write(data);
+        }
+        if self.line_buffered {
+            // FreeBSD/macOS __sfvwrite, line buffered: the same, a line at a
+            // time, and a buffer holding a newline is written out.
+            let mut p = data;
+            let mut nldist = None;
+            while !p.is_empty() {
+                let nd = *nldist
+                    .get_or_insert_with(|| memchr::memchr(b'\n', p).map_or(p.len() + 1, |i| i + 1));
+                let s = p.len().min(nd);
+                let space = size - self.buf.len();
+                let w = if !self.buf.is_empty() && s > space {
+                    self.buf.extend_from_slice(&p[..space]);
+                    self.flush();
+                    space
+                } else if s >= size {
+                    self.write_fd(&p[..size]);
+                    size
+                } else {
+                    self.buf.extend_from_slice(&p[..s]);
+                    s
+                };
+                if nd == w {
+                    self.flush();
+                    nldist = None;
+                } else {
+                    nldist = Some(nd - w);
+                }
+                p = &p[w..];
+            }
+            return;
         }
         if cfg!(target_os = "linux") {
             // glibc _IO_new_file_xsputn: fill the buffer; if more is left,

@@ -318,6 +318,9 @@ pub struct InputReader {
     bom_done: bool,
     /// Everything has been read (and the end reported).
     ended: bool,
+    /// jq's parser port has been given the last chunk of the last input
+    /// (`read_more` returned `is_last`).
+    fed_last: bool,
     /// `-s`: the array (or `-R -s` string) being collected; `None` once
     /// returned.
     slurped: Option<Value>,
@@ -384,6 +387,7 @@ impl InputReader {
             pcol: 0,
             bom_done: false,
             ended: false,
+            fed_last: false,
             slurped,
             simd: SimdParser::new(),
             fast,
@@ -474,6 +478,17 @@ impl InputReader {
                     Some(Ok(v)) => {
                         if let Some(Value::Array(a)) = &mut self.slurped {
                             a.push(v);
+                        }
+                        // util.c's slurp loop runs `while (!is_last ||
+                        // has_more)`: once the parser has used up the last
+                        // chunk, the slurped value is returned, and whatever
+                        // the parser says at EOF (with --stream, possibly an
+                        // error: `[[1]` ends inside a text) comes on the next
+                        // call.
+                        if self.fed_last
+                            && matches!(&self.json, Json::Slow { parser, .. } if parser.remaining() == 0)
+                        {
+                            return self.slurped.take().map(Ok);
                         }
                     }
                     Some(Err(e)) => return Some(Err(e)),
@@ -657,6 +672,7 @@ impl InputReader {
             };
             if parser.remaining() == 0 {
                 is_last = self.slow_read_more();
+                self.fed_last |= is_last;
             }
             let Json::Slow {
                 parser,

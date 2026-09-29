@@ -11191,6 +11191,13 @@ pass corpus/fuzz_found.toml:run-tests-expected-nan-without-result:cli 29b31cfe6c
 pass corpus/fuzz_found.toml:run-tests-input-builtins-without-input:cli 09f99a18e780
 pass corpus/fuzz_found.toml:run-tests-input-line-number-fails:cli 68a3d65bcf5d
 pass corpus/fuzz_found.toml:run-tests-input-line-number-insufficient:cli b64d1acabc4e
+pass corpus/fuzz_found.toml:slurp-stream-ends-after-text:cli f853e9e71ad7
+pass corpus/fuzz_found.toml:slurp-stream-ends-inside-text-files:cli 1524b2f499c9
+pass corpus/fuzz_found.toml:slurp-stream-ends-inside-text-input:cli fd24602773d6
+pass corpus/fuzz_found.toml:slurp-stream-ends-inside-text-inputs:cli 036897c908b6
+pass corpus/fuzz_found.toml:slurp-stream-ends-inside-text-newline:cli e114e9fe84bc
+pass corpus/fuzz_found.toml:slurp-stream-ends-inside-text:cli 53861e2931c4
+pass corpus/fuzz_found.toml:slurp-stream-errors-ends-inside-text:cli e5b082d5273e
 pass corpus/fuzz_found.toml:trace-args-refcount:cli 0c4391d38d46
 pass corpus/fuzz_found.toml:trace-input-keys-file:cli c592702d8028
 pass corpus/fuzz_found.toml:trace-input-keys-stdin:cli 599ebe9dcbd6

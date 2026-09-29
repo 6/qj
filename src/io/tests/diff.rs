@@ -42,6 +42,11 @@ enum Mode {
     Seq,
     Stream,
     StreamErrors,
+    /// `-s --stream` (and `-s --stream-errors`): the streaming parser can end
+    /// inside a text right at the end of the last chunk, where util.c returns
+    /// the slurped events first (found by tests/jq_fuzz).
+    SlurpStream,
+    SlurpStreamErrors,
 }
 
 fn options(mode: Mode) -> ReaderOptions {
@@ -57,6 +62,14 @@ fn options(mode: Mode) -> ReaderOptions {
         Mode::Seq => o.seq = true,
         Mode::Stream => o.stream = true,
         Mode::StreamErrors => o.stream_errors = true,
+        Mode::SlurpStream => {
+            o.slurp = true;
+            o.stream = true;
+        }
+        Mode::SlurpStreamErrors => {
+            o.slurp = true;
+            o.stream_errors = true;
+        }
     }
     o
 }
@@ -69,6 +82,8 @@ fn pick_mode(r: &mut Rng) -> Mode {
         5 => Mode::Seq,
         6 => Mode::Stream,
         7 => Mode::StreamErrors,
+        8 => Mode::SlurpStream,
+        9 => Mode::SlurpStreamErrors,
         _ => Mode::Json,
     }
 }

@@ -84,3 +84,42 @@ fn parse_cli_fixture() {
         failures[..failures.len().min(20)].join("\n")
     );
 }
+
+/// `-s --stream` when the input ends inside a text right after a nested
+/// value: util.c's slurp loop stops once the parser has used up the last
+/// chunk, so the events so far come first and the parse error on the next
+/// read (jq 1.8.1: `printf '[[1]' | jq -c -s --stream .` prints
+/// `[[[0,0],1],[[0,0]]]`, then the error). Found by tests/jq_fuzz.
+#[test]
+fn slurped_stream_ending_inside_a_text() {
+    for (input, events, error) in [
+        (
+            &b"[[1]"[..],
+            r#"[[[0,0],1],[[0,0]]]"#,
+            "Unfinished JSON term at EOF at line 1, column 4",
+        ),
+        (
+            &b"[{\"\":0}"[..],
+            r#"[[[0,""],0],[[0,""]]]"#,
+            "Unfinished JSON term at EOF at line 1, column 7",
+        ),
+    ] {
+        for delivery in DELIVERIES {
+            let opts = ReaderOptions {
+                slurp: true,
+                stream: true,
+                ..ReaderOptions::default()
+            };
+            let files = vec![("-".into(), MemFile::Data(input.to_vec()))];
+            let (mut r, _) = mem_reader(&["-"], files, opts, delivery, true);
+            let first = r
+                .next()
+                .map(|v| v.map(|v| v.to_json()).map_err(|e| e.to_string()));
+            let second = r
+                .next()
+                .map(|v| v.map(|v| v.to_json()).map_err(|e| e.to_string()));
+            assert_eq!(first, Some(Ok(events.to_string())), "{delivery:?}");
+            assert_eq!(second, Some(Err(error.to_string())), "{delivery:?}");
+        }
+    }
+}
