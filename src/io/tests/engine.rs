@@ -201,9 +201,11 @@ fn check_seeds(seeds: std::ops::Range<u64>) {
     let mut failures = Vec::new();
     let mut total = EngineStats::default();
     for seed in seeds {
+        if std::env::var_os("QJ_ENGINE_SEEDS").is_some() {
+            eprintln!("seed {seed}");
+        }
         match check_seed(seed) {
             Ok(s) => {
-                total.windows += s.windows;
                 total.jobs += s.jobs;
                 total.worker_records += s.worker_records;
                 total.sequential += s.sequential;
@@ -225,7 +227,13 @@ fn check_seeds(seeds: std::ops::Range<u64>) {
 
 #[test]
 fn engine_matches_sequential_reader() {
-    check_seeds(0..300);
+    match std::env::var("QJ_ENGINE_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        Some(seed) => check_seeds(seed..seed + 1),
+        None => check_seeds(0..300),
+    }
 }
 
 /// `cargo test --release --lib engine_matches_sequential_reader_long -- --ignored`

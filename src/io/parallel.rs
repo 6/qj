@@ -1,18 +1,29 @@
 //! The parallel record engine: jq's main loop (`main.c`: `process()` for
 //! each input) with records processed on worker threads.
 //!
-//! The calling thread owns the [`InputReader`]. Whenever the reader is
-//! between records with whole lines buffered (NDJSON-like input, or `-R`
-//! lines), it takes a window of complete lines, splits it into jobs at line
-//! boundaries, and hands them to worker threads. Each worker has its own
+//! The calling thread owns the [`InputReader`]. While the reader is between
+//! records with whole lines buffered (NDJSON-like input, or `-R` lines), the
+//! calling thread cuts the lines ahead into jobs at line boundaries and
+//! hands them to worker threads, keeping up to
+//! [`EngineOptions::window_bytes`] in flight. Each worker has its own
 //! [`RecordWorker`] (its own compiled program: values are `Rc`, not `Send`)
-//! and its own simdjson parser. A worker takes every line that is exactly
-//! one text the reader's fast path would take (see
-//! [`super::reader`]); at the first line that isn't (a parse error, `nan`,
-//! a text spanning lines, two texts on a line, ...), it stops, and the
-//! calling thread reads from that line on with the reader itself, one
-//! record at a time, until the reader is idle at a job boundary again. So
-//! the records, their `input_filename`/`input_line_number`, parse errors and
+//! and its own simdjson parser.
+//!
+//! A job runs in two phases. First the worker parses its lines, taking every
+//! line that is exactly one text the reader's fast path would take (see
+//! [`super::reader`]) and stopping at the first that isn't (a parse error,
+//! `nan`, a text spanning lines, two texts on a line, ...). It reports
+//! whether it took every line. Only then, when the calling thread confirms
+//! that the job starts where the reader will be idle, does it run the
+//! program on those values. A job is confirmed when the reader is idle at
+//! its start, or when the job before it was confirmed and parsed completely.
+//! So user code never runs on a line that isn't really a record, such as a
+//! line inside a pretty-printed text a job happened to start in.
+//!
+//! When a job stops at a line, the calling thread reads from that line on
+//! with the reader itself, one record at a time, until the reader is idle
+//! at the start of a later job. Jobs it read into are cancelled. So the
+//! records, their `input_filename`/`input_line_number`, parse errors and
 //! everything else are exactly what the sequential reader gives.
 //!
 //! Results come back to the calling thread in input order through a
@@ -22,20 +33,22 @@
 //! does.
 //!
 //! **When not to use it.** The engine is only correct when records are
-//! independent. The CLI must process sequentially (`threads: 0`) for
-//! programs that read input themselves (`input`, `inputs`), stop the run
-//! (`halt`, `halt_error`), or whose output interleaving or state spans
-//! records (`debug`, `stderr`, `input_line_number`... unless the worker
-//! answers them from [`RecordMeta`], `$__loc__`, `limit` over `inputs`,
-//! `-s`, `-n`, `--seq`, `--stream`). It is also pointless for a single large
-//! document (there's one record).
+//! independent. The CLI must process sequentially (`threads: 0`, or its
+//! own loop over a [`super::SharedReader`]) for programs that read input
+//! themselves (`input`, `inputs`), stop the run (`halt`, `halt_error`), or
+//! whose output interleaving or state spans records (`debug`, `stderr`,
+//! `input_line_number`... unless the worker answers them from
+//! [`RecordMeta`], `$__loc__`, `limit` over `inputs`, `-s`, `-n`, `--seq`,
+//! `--stream`). It is also pointless for a single large document (there's
+//! one record), and gains little on inputs whose texts mostly span lines.
 
+use std::collections::{HashMap, VecDeque};
 use std::ops::ControlFlow;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
-use super::reader::{CatchUp, InputReader, Window, window_line, window_line_number};
+use super::reader::{CatchUp, Cut, InputReader, window_line, window_line_number};
 use super::simd::SimdParser;
 use super::source::SharedBytes;
 use crate::jq::value::print::dump_to_vec;
@@ -88,13 +101,14 @@ pub trait RecordSink {
 pub struct EngineOptions {
     /// Worker threads. `0` processes everything on the calling thread.
     pub threads: usize,
-    /// Largest window of lines taken at once (bytes).
+    /// Most input bytes handed to workers and not yet consumed.
     pub window_bytes: usize,
-    /// Smallest window worth handing to workers; less is read one record
-    /// at a time (so a slow producer's records are processed as they come).
+    /// Fewest bytes of complete lines worth a job; with less available, the
+    /// calling thread reads one record at a time (so a slow producer's
+    /// records are processed as they come).
     pub min_window: usize,
-    /// Largest job (bytes); windows are split into at least four jobs per
-    /// thread when possible.
+    /// Largest job (bytes). Jobs are smaller when little input is available,
+    /// so that every thread gets some.
     pub max_job_bytes: usize,
     /// Stack size of worker threads. jq accepts 10000-deep input and
     /// recurses on its 8 MB main stack; only touched pages are committed.
@@ -118,21 +132,19 @@ impl Default for EngineOptions {
 /// What the engine did (for diagnostics and tests).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EngineStats {
-    /// Windows of lines handed to workers.
-    pub windows: u64,
-    /// Jobs (parts of windows) processed by workers.
+    /// Jobs handed to workers.
     pub jobs: u64,
     /// Records processed by workers.
     pub worker_records: u64,
     /// Records (and parse errors) read one at a time on the calling thread.
     pub sequential: u64,
-    /// Jobs whose later results were discarded because reading on from a
-    /// line the worker didn't take went past the job's end.
+    /// Jobs cancelled because reading on from a line a worker didn't take
+    /// went past their start (their records were read one at a time).
     pub discarded_jobs: u64,
 }
 
 struct Job {
-    id: usize,
+    id: u64,
     data: SharedBytes,
     base: usize,
     start: usize,
@@ -152,13 +164,66 @@ struct Rec {
 }
 
 struct JobResult {
-    id: usize,
     out: Vec<u8>,
     err: Vec<u8>,
     recs: Vec<Rec>,
     /// The line the worker didn't take (the rest of the job is unread).
     failed_at: Option<usize>,
-    panic: Option<Box<dyn std::any::Any + Send>>,
+}
+
+enum FromWorker {
+    /// Phase 1 done: whether every line was taken.
+    Parsed { id: u64, complete: bool },
+    /// Phase 2 done.
+    Done { id: u64, result: JobResult },
+    /// The program panicked on this job.
+    Panicked {
+        id: u64,
+        payload: Box<dyn std::any::Any + Send>,
+    },
+}
+
+/// Go/cancel decisions for parsed jobs, and the shutdown flag.
+#[derive(Default)]
+struct Board {
+    state: Mutex<BoardState>,
+    cv: Condvar,
+}
+
+#[derive(Default)]
+struct BoardState {
+    decisions: HashMap<u64, bool>,
+    closed: bool,
+}
+
+impl Board {
+    fn decide(&self, id: u64, go: bool) {
+        self.state.lock().expect("board").decisions.insert(id, go);
+        self.cv.notify_all();
+    }
+
+    fn close(&self) {
+        self.state.lock().expect("board").closed = true;
+        self.cv.notify_all();
+    }
+
+    fn closed(&self) -> bool {
+        self.state.lock().expect("board").closed
+    }
+
+    /// Waits for job `id`'s decision (`false` once the board is closed).
+    fn wait(&self, id: u64) -> bool {
+        let mut st = self.state.lock().expect("board");
+        loop {
+            if let Some(go) = st.decisions.remove(&id) {
+                return go;
+            }
+            if st.closed {
+                return false;
+            }
+            st = self.cv.wait(st).expect("board");
+        }
+    }
 }
 
 /// Reads all input with `reader`, processing records with workers from
@@ -187,18 +252,31 @@ pub fn run<F: WorkerFactory, S: RecordSink>(
     }
     let (job_tx, job_rx) = mpsc::channel::<Job>();
     let job_rx = Mutex::new(job_rx);
-    let (res_tx, res_rx) = mpsc::channel::<JobResult>();
+    let (msg_tx, msg_rx) = mpsc::channel::<FromWorker>();
+    let board = Board::default();
+    let mut panic_payload = None;
+    /// Releases the workers however the calling thread leaves the scope
+    /// (including by panicking, so that the scope's join can't hang).
+    struct Release<'a>(&'a Board);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
     std::thread::scope(|scope| {
+        let job_tx = job_tx; // owned here: dropped (closing the channel) on unwind
+        let _release = Release(&board);
         for i in 0..opts.threads {
             let job_rx = &job_rx;
-            let res_tx = res_tx.clone();
+            let board = &board;
+            let msg_tx = msg_tx.clone();
             std::thread::Builder::new()
                 .name(format!("qj-worker-{i}"))
                 .stack_size(opts.stack_size)
-                .spawn_scoped(scope, move || worker_thread(factory, job_rx, res_tx))
+                .spawn_scoped(scope, move || worker_thread(factory, job_rx, board, msg_tx))
                 .expect("spawn worker thread");
         }
-        drop(res_tx);
+        drop(msg_tx);
         let mut ctx = Ctx {
             reader,
             main: &mut main,
@@ -206,20 +284,34 @@ pub fn run<F: WorkerFactory, S: RecordSink>(
             out: &mut out,
             err: &mut err,
             job_tx: &job_tx,
-            res_rx: &res_rx,
+            msg_rx: &msg_rx,
+            board: &board,
             opts,
             stats: &mut stats,
+            queue: VecDeque::new(),
+            in_flight: 0,
+            cursor: None,
+            next_id: 0,
+            next_go: 0,
+            panic: None,
         };
         ctx.run();
-        drop(job_tx); // workers exit
+        panic_payload = ctx.panic.take();
+        // Release waiting workers and stop the rest.
+        board.close();
+        drop(job_tx);
     });
+    if let Some(p) = panic_payload {
+        panic::resume_unwind(p);
+    }
     stats
 }
 
 fn worker_thread<F: WorkerFactory>(
     factory: &F,
     jobs: &Mutex<mpsc::Receiver<Job>>,
-    results: mpsc::Sender<JobResult>,
+    board: &Board,
+    msgs: mpsc::Sender<FromWorker>,
 ) {
     let mut worker = None;
     let mut simd = SimdParser::new();
@@ -229,37 +321,68 @@ fn worker_thread<F: WorkerFactory>(
             Err(_) => return,
         };
         let Ok(job) = job else { return };
+        if board.closed() {
+            continue;
+        }
         let id = job.id;
-        let w = worker.get_or_insert_with(|| factory.new_worker());
-        let result = panic::catch_unwind(AssertUnwindSafe(|| run_job(w, &mut simd, &job)))
-            .unwrap_or_else(|p| {
-                worker = None; // don't reuse a worker that panicked
-                JobResult {
-                    id,
-                    out: Vec::new(),
-                    err: Vec::new(),
-                    recs: Vec::new(),
-                    failed_at: None,
-                    panic: Some(p),
+        // Phase 1: parse (bounded work, no user code).
+        let parsed = panic::catch_unwind(AssertUnwindSafe(|| parse_job(&mut simd, &job)));
+        let (values, failed_at) = match parsed {
+            Ok(p) => p,
+            Err(payload) => {
+                simd = SimdParser::new();
+                if msgs.send(FromWorker::Panicked { id, payload }).is_err() {
+                    return;
                 }
-            });
-        if results.send(result).is_err() {
+                continue;
+            }
+        };
+        let complete = failed_at.is_none();
+        if msgs.send(FromWorker::Parsed { id, complete }).is_err() {
+            return;
+        }
+        if !board.wait(id) {
+            continue; // cancelled
+        }
+        // Phase 2: the program, on values that are known to be records.
+        let w = worker.get_or_insert_with(|| factory.new_worker());
+        let filename = job.filename.as_deref();
+        let run = panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut r = JobResult {
+                out: Vec::new(),
+                err: Vec::new(),
+                recs: Vec::with_capacity(values.len()),
+                failed_at,
+            };
+            for (value, line) in values {
+                let meta = RecordMeta { filename, line };
+                let status = w.process(value, &meta, &mut r.out, &mut r.err);
+                r.recs.push(Rec {
+                    out_end: r.out.len(),
+                    err_end: r.err.len(),
+                    status,
+                });
+            }
+            r
+        }));
+        let msg = match run {
+            Ok(result) => FromWorker::Done { id, result },
+            Err(payload) => {
+                worker = None; // don't reuse a worker that panicked
+                FromWorker::Panicked { id, payload }
+            }
+        };
+        if msgs.send(msg).is_err() {
             return;
         }
     }
 }
 
-/// Processes a job's lines until one the fast path wouldn't take.
-fn run_job<W: RecordWorker>(worker: &mut W, simd: &mut SimdParser, job: &Job) -> JobResult {
+/// Phase 1: the values (with their `input_line_number`) of a job's lines,
+/// up to the first line the fast path wouldn't take.
+fn parse_job(simd: &mut SimdParser, job: &Job) -> (Vec<(Value, u64)>, Option<usize>) {
     let buf = (*job.data).as_ref();
-    let mut r = JobResult {
-        id: job.id,
-        out: Vec::new(),
-        err: Vec::new(),
-        recs: Vec::new(),
-        failed_at: None,
-        panic: None,
-    };
+    let mut values = Vec::new();
     let mut a = job.start;
     let mut nl = job.nl;
     let mut ls = job.line_start;
@@ -270,28 +393,14 @@ fn run_job<W: RecordWorker>(worker: &mut W, simd: &mut SimdParser, job: &Job) ->
             + 1;
         match window_line(simd, buf, job.base, a, b, job.raw) {
             Ok(None) => {}
-            Ok(Some((value, e))) => {
-                let meta = RecordMeta {
-                    filename: job.filename.as_deref(),
-                    line: window_line_number(nl, ls, b, e),
-                };
-                let status = worker.process(value, &meta, &mut r.out, &mut r.err);
-                r.recs.push(Rec {
-                    out_end: r.out.len(),
-                    err_end: r.err.len(),
-                    status,
-                });
-            }
-            Err(()) => {
-                r.failed_at = Some(a);
-                return r;
-            }
+            Ok(Some((value, e))) => values.push((value, window_line_number(nl, ls, b, e))),
+            Err(()) => return (values, Some(a)),
         }
         nl += 1;
         a = b;
         ls = b;
     }
-    r
+    (values, None)
 }
 
 /// One record read by the reader itself, processed on the calling thread.
@@ -319,6 +428,19 @@ fn step<W: RecordWorker, S: RecordSink>(
     }
 }
 
+/// A job in flight, in input order.
+struct Slot {
+    id: u64,
+    start: usize,
+    end: usize,
+    generation: u64,
+    /// Phase 1 reported: whether every line was taken.
+    complete: Option<bool>,
+    /// Confirmed and told to run the program.
+    go: bool,
+    result: Option<JobResult>,
+}
+
 struct Ctx<'a, W: RecordWorker, S: RecordSink> {
     reader: &'a mut InputReader,
     main: &'a mut W,
@@ -326,143 +448,235 @@ struct Ctx<'a, W: RecordWorker, S: RecordSink> {
     out: &'a mut Vec<u8>,
     err: &'a mut Vec<u8>,
     job_tx: &'a mpsc::Sender<Job>,
-    res_rx: &'a mpsc::Receiver<JobResult>,
+    msg_rx: &'a mpsc::Receiver<FromWorker>,
+    board: &'a Board,
     opts: &'a EngineOptions,
     stats: &'a mut EngineStats,
+    queue: VecDeque<Slot>,
+    /// Bytes of the jobs in `queue`.
+    in_flight: usize,
+    /// Where the next job starts (ahead of the reader).
+    cursor: Option<Cut>,
+    next_id: u64,
+    /// Jobs before this id are confirmed (or gone); from it on, not yet.
+    next_go: u64,
+    panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
     fn run(&mut self) {
-        while self.reader.failures() == 0 {
-            let flow = match self
-                .reader
-                .window(self.opts.min_window, self.opts.window_bytes)
-            {
-                Some(w) => self.window(w),
-                None => {
-                    self.stats.sequential += 1;
-                    step(self.reader, self.main, self.sink, self.out, self.err)
-                }
+        while self.reader.failures() == 0 && self.panic.is_none() {
+            while let Ok(m) = self.msg_rx.try_recv() {
+                self.absorb(m);
+            }
+            self.dispatch();
+            let flow = match self.queue.front() {
+                None => self.sequential(),
+                Some(front) => match self.reader.catch_up(front.generation, front.start) {
+                    CatchUp::Reached => self.front_reached(),
+                    CatchUp::Behind => self.sequential(),
+                    CatchUp::Beyond => {
+                        self.cancel_front();
+                        ControlFlow::Continue(())
+                    }
+                    CatchUp::Left => {
+                        while !self.queue.is_empty() {
+                            self.cancel_front();
+                        }
+                        self.cursor = None;
+                        ControlFlow::Continue(())
+                    }
+                },
             };
             if flow.is_break() {
+                break;
+            }
+        }
+        while !self.queue.is_empty() {
+            let s = self.queue.pop_front().expect("non-empty");
+            self.board.decide(s.id, false);
+        }
+    }
+
+    fn sequential(&mut self) -> ControlFlow<()> {
+        self.stats.sequential += 1;
+        step(self.reader, self.main, self.sink, self.out, self.err)
+    }
+
+    /// The reader is idle at the front job's start: confirm it, and hand
+    /// over its results once they're in.
+    fn front_reached(&mut self) -> ControlFlow<()> {
+        let front = self.queue.front_mut().expect("non-empty");
+        if !front.go {
+            front.go = true;
+            self.board.decide(front.id, true);
+            self.next_go = front.id + 1;
+            self.confirm_chain();
+        }
+        let front = self.queue.front_mut().expect("non-empty");
+        let Some(r) = front.result.take() else {
+            // Wait for a worker message (any: they all move things along).
+            #[cfg(test)]
+            let m = self
+                .msg_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|e| {
+                    let q: Vec<_> = self
+                        .queue
+                        .iter()
+                        .map(|s| (s.id, s.start, s.end, s.complete, s.go, s.result.is_some()))
+                        .collect();
+                    panic!("engine stuck ({e:?}): next_go {} queue {q:?}", self.next_go)
+                });
+            #[cfg(not(test))]
+            let m = self.msg_rx.recv().expect("worker threads exited");
+            self.absorb(m);
+            return ControlFlow::Continue(());
+        };
+        let slot = self.queue.pop_front().expect("non-empty");
+        self.in_flight -= slot.end - slot.start;
+        self.stats.worker_records += r.recs.len() as u64;
+        let (mut o, mut e) = (0, 0);
+        for rec in &r.recs {
+            let flow = self
+                .sink
+                .record(&r.out[o..rec.out_end], &r.err[e..rec.err_end], rec.status);
+            o = rec.out_end;
+            e = rec.err_end;
+            flow?;
+        }
+        // Everything before the line the worker didn't take was consumed
+        // like the fast path would; the reader reads on from there.
+        self.reader.commit(r.failed_at.unwrap_or(slot.end));
+        if r.failed_at.is_some() {
+            // Read that line now: a job cut from here would stop at it again.
+            return self.sequential();
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn cancel_front(&mut self) {
+        let s = self.queue.pop_front().expect("non-empty");
+        self.in_flight -= s.end - s.start;
+        self.board.decide(s.id, false);
+        self.stats.discarded_jobs += 1;
+    }
+
+    /// A job starts where the reader will be idle if the job before it is
+    /// confirmed and took all its lines.
+    fn confirm_chain(&mut self) {
+        loop {
+            let Some(front) = self.queue.front() else {
                 return;
+            };
+            // Index of the first job not confirmed yet (the front itself is
+            // confirmed only when the reader reaches it).
+            let i = self.next_go.saturating_sub(front.id) as usize;
+            if i == 0 || i >= self.queue.len() {
+                return;
+            }
+            let prev = &self.queue[i - 1];
+            if !(prev.go && prev.complete == Some(true)) {
+                return;
+            }
+            let s = &mut self.queue[i];
+            s.go = true;
+            self.board.decide(s.id, true);
+            self.next_go = s.id + 1;
+        }
+    }
+
+    /// The job with this id, if still in flight (ids are consecutive).
+    fn slot(&mut self, id: u64) -> Option<&mut Slot> {
+        let front = self.queue.front()?.id;
+        if id < front {
+            return None;
+        }
+        self.queue.get_mut((id - front) as usize)
+    }
+
+    fn absorb(&mut self, m: FromWorker) {
+        match m {
+            FromWorker::Parsed { id, complete } => {
+                if let Some(s) = self.slot(id) {
+                    s.complete = Some(complete);
+                    self.confirm_chain();
+                }
+            }
+            FromWorker::Done { id, result } => {
+                if let Some(s) = self.slot(id) {
+                    s.result = Some(result);
+                }
+            }
+            FromWorker::Panicked { id, payload } => {
+                if self.slot(id).is_some() {
+                    self.panic = Some(payload);
+                }
             }
         }
     }
 
-    fn window(&mut self, w: Window) -> ControlFlow<()> {
-        let filename: Option<Arc<str>> = self.reader.filename_text().map(Arc::from);
-        let buf = (*w.data).as_ref();
-        let len = w.end - w.start;
-        let floor = (16 << 10).min(self.opts.max_job_bytes).max(1);
-        let job_bytes =
-            (len / (self.opts.threads * 4)).clamp(floor, self.opts.max_job_bytes.max(floor));
-        // Split at line boundaries, counting newlines for line numbers.
-        let mut jobs = Vec::new();
-        let mut s = w.start;
-        let mut nl = w.nl;
-        let mut ls = w.line_start;
-        while s < w.end {
-            let target = s + job_bytes;
-            let e = if target >= w.end {
-                w.end
-            } else {
-                match memchr::memchr(b'\n', &buf[target - 1 - w.base..w.end - w.base]) {
-                    Some(i) => target + i,
-                    None => w.end,
+    /// Keeps up to `window_bytes` of jobs in flight, cut ahead of the
+    /// reader.
+    fn dispatch(&mut self) {
+        let max_jobs = self.opts.threads * 8;
+        while self.in_flight < self.opts.window_bytes && self.queue.len() < max_jobs {
+            let cursor = match self.cursor {
+                Some(c)
+                    if self
+                        .queue
+                        .back()
+                        .is_none_or(|b| b.generation == c.generation) =>
+                {
+                    c
                 }
+                _ => match self.reader.cut_start() {
+                    // Start over from the reader when nothing is in flight.
+                    Some(c) if self.queue.is_empty() => c,
+                    _ => return,
+                },
             };
-            let lines = memchr::memchr_iter(b'\n', &buf[s - w.base..e - w.base]).count() as u64;
-            jobs.push((s, e, nl, ls));
-            nl += lines;
-            s = e;
-            ls = e;
-        }
-        let n = jobs.len();
-        self.stats.windows += 1;
-        self.stats.jobs += n as u64;
-        for (id, &(start, end, nl, line_start)) in jobs.iter().enumerate() {
+            let ahead = self.reader.available_after(&cursor);
+            // (At least min_window, or cuts near the end would never succeed.)
+            let floor = (16 << 10)
+                .min(self.opts.max_job_bytes)
+                .max(self.opts.min_window)
+                .max(1);
+            let job_bytes =
+                (ahead / (self.opts.threads * 4)).clamp(floor, self.opts.max_job_bytes.max(floor));
+            let Some((w, next)) = self.reader.cut(cursor, self.opts.min_window, job_bytes) else {
+                self.cursor = None;
+                return;
+            };
+            let id = self.next_id;
+            self.next_id += 1;
             let job = Job {
                 id,
-                data: w.data.clone(),
+                data: w.data,
                 base: w.base,
-                start,
-                end,
-                nl,
-                line_start,
+                start: w.start,
+                end: w.end,
+                nl: w.nl,
+                line_start: w.line_start,
                 raw: w.raw,
-                filename: filename.clone(),
+                filename: self.reader.filename_text().map(Arc::from),
             };
             if self.job_tx.send(job).is_err() {
                 panic!("worker threads exited");
             }
+            self.queue.push_back(Slot {
+                id,
+                start: w.start,
+                end: w.end,
+                generation: w.generation,
+                complete: None,
+                go: false,
+                result: None,
+            });
+            self.in_flight += w.end - w.start;
+            self.stats.jobs += 1;
+            self.cursor = Some(next);
         }
-        let mut results: Vec<Option<JobResult>> = (0..n).map(|_| None).collect();
-        for _ in 0..n {
-            let r = self.res_rx.recv().expect("worker threads exited");
-            let id = r.id;
-            results[id] = Some(r);
-        }
-        if let Some(p) = results
-            .iter_mut()
-            .find_map(|r| r.as_mut().and_then(|r| r.panic.take()))
-        {
-            panic::resume_unwind(p);
-        }
-        let mut k = 0;
-        while k < n {
-            let r = results[k].take().expect("every job reports");
-            self.stats.worker_records += r.recs.len() as u64;
-            let (mut o, mut e) = (0, 0);
-            for rec in &r.recs {
-                let flow =
-                    self.sink
-                        .record(&r.out[o..rec.out_end], &r.err[e..rec.err_end], rec.status);
-                o = rec.out_end;
-                e = rec.err_end;
-                flow?;
-            }
-            let Some(failed_at) = r.failed_at else {
-                self.reader.commit(jobs[k].1);
-                k += 1;
-                continue;
-            };
-            // Read on from the line the worker didn't take until the reader
-            // is idle at the start of a later job, whose results are then
-            // valid. Jobs it read into are skipped.
-            self.reader.commit(failed_at);
-            let mut next = k + 1;
-            loop {
-                let Some(pos) = self.reader.window_position(w.generation) else {
-                    self.stats.discarded_jobs += (n - next) as u64;
-                    return ControlFlow::Continue(());
-                };
-                while next < n && jobs[next].0 < pos {
-                    next += 1;
-                    self.stats.discarded_jobs += 1;
-                }
-                let target = if next < n { jobs[next].0 } else { w.end };
-                match self.reader.catch_up(w.generation, target) {
-                    CatchUp::Reached => break,
-                    // Past it: look for the next job (none left: done).
-                    CatchUp::Beyond if next >= n => return ControlFlow::Continue(()),
-                    CatchUp::Beyond => {}
-                    CatchUp::Left => {
-                        self.stats.discarded_jobs += (n - next) as u64;
-                        return ControlFlow::Continue(());
-                    }
-                    CatchUp::Behind => {
-                        self.stats.sequential += 1;
-                        step(self.reader, self.main, self.sink, self.out, self.err)?;
-                        if self.reader.failures() > 0 {
-                            return ControlFlow::Break(());
-                        }
-                    }
-                }
-            }
-            k = next;
-        }
-        ControlFlow::Continue(())
     }
 }
 

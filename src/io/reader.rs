@@ -1044,34 +1044,65 @@ impl InputReader {
         self.fast && matches!(self.json, Json::Fast) && self.bom_done && self.pending_scan.is_none()
     }
 
-    /// The complete lines of the current input from the current position,
-    /// at most `max` bytes (a longer first line is taken whole), if at least
-    /// `min` bytes are available now. Reads more of a stream only if it is
-    /// available without waiting. `None` when records must be read one at a
-    /// time (at the start of the input, between inputs, when jq's parser has
-    /// the stream, or when there's too little data).
-    pub(crate) fn window(&mut self, min: usize, max: usize) -> Option<Window> {
+    /// Where a job of whole lines could start now: the reader's position,
+    /// if it is idle between records in a mode that allows jobs.
+    pub(crate) fn cut_start(&self) -> Option<Cut> {
         if !self.windowable() {
             return None;
         }
-        let keep = self.fp.pos;
+        self.cur.as_ref()?;
+        Some(Cut {
+            generation: self.generation,
+            pos: self.fp.pos,
+            nl: self.fp.nl,
+            line_start: self.fp.line_start,
+        })
+    }
+
+    /// The complete lines of the current input from `at` (at or after the
+    /// reader's position; the reader needn't be idle there, this is
+    /// speculative): at most `max` bytes (a longer first line whole), if at
+    /// least `min` are available now. Reads more of a stream only if it is
+    /// available without waiting. Returns the lines and where the next cut
+    /// starts.
+    pub(crate) fn cut(&mut self, at: Cut, min: usize, max: usize) -> Option<(Window, Cut)> {
+        if self.generation != at.generation
+            || self.opts.slurp
+            || self.ended
+            || !(self.opts.raw || self.fast)
+            || at.pos < self.fp.pos
+        {
+            return None;
+        }
+        let keep = match self.pending_scan {
+            Some(s) => s.start.min(self.fp.pos),
+            None => self.fp.pos,
+        };
         let cur = self.cur.as_mut()?;
         if matches!(cur.kind, DataKind::Stream { .. }) && !cur.eof {
-            cur.fill(keep, false, max.saturating_add(keep - cur.base));
+            cur.fill(keep, false, (at.pos - keep).saturating_add(max));
         }
-        let start = self.fp.pos;
+        let start = at.pos;
         let avail = cur.avail_end();
         if avail <= start {
             return None;
         }
         let limit = avail.min(start.saturating_add(max));
-        let end = match memchr::memrchr(b'\n', cur.slice(start, limit)) {
+        let mut end = match memchr::memrchr(b'\n', cur.slice(start, limit)) {
             Some(i) => start + i + 1,
             None => start + memchr::memchr(b'\n', cur.slice(start, avail))? + 1,
         };
-        if end - start < min {
+        if end - start < min && start + min < avail {
+            // Snapping back to a line end made it too small: go forward.
+            if let Some(i) = memchr::memchr(b'\n', cur.slice(start + min, avail)) {
+                end = start + min + i + 1;
+            }
+        }
+        // (Once the input is complete, a small rest won't grow by waiting.)
+        if end - start < min && !(cur.eof && end == avail) {
             return None;
         }
+        let lines = memchr::memchr_iter(b'\n', cur.slice(start, end)).count() as u64;
         let (data, base) = match &cur.kind {
             DataKind::Whole(b) => (b.clone(), 0),
             DataKind::Stream { buf, .. } => {
@@ -1081,19 +1112,34 @@ impl InputReader {
                 (std::sync::Arc::new(copy) as SharedBytes, start)
             }
         };
-        Some(Window {
+        let window = Window {
             data,
             base,
             start,
             end,
-            nl: self.fp.nl,
-            line_start: self.fp.line_start,
-            generation: self.generation,
+            nl: at.nl,
+            line_start: at.line_start,
+            generation: at.generation,
             raw: self.opts.raw,
-        })
+        };
+        let next = Cut {
+            generation: at.generation,
+            pos: end,
+            nl: at.nl + lines,
+            line_start: end,
+        };
+        Some((window, next))
     }
 
-    /// Records up to `upto` (a line start within the last window) were
+    /// Bytes of complete lines available from `at` without waiting.
+    pub(crate) fn available_after(&self, at: &Cut) -> usize {
+        match &self.cur {
+            Some(cur) if self.generation == at.generation => cur.avail_end().saturating_sub(at.pos),
+            _ => 0,
+        }
+    }
+
+    /// Records up to `upto` (a line start within the last job) were
     /// processed by the engine: move past them as the fast path would have.
     pub(crate) fn commit(&mut self, upto: usize) {
         self.advance(upto, true);
@@ -1133,12 +1179,6 @@ impl InputReader {
         }
     }
 
-    /// Where the fast path is in input `generation` (`None` if the reader
-    /// moved on).
-    pub(crate) fn window_position(&self, generation: u64) -> Option<usize> {
-        (self.generation == generation && self.cur.is_some() && !self.ended).then_some(self.fp.pos)
-    }
-
     /// Bytes held for the current input's stream buffer (0 for inputs
     /// read whole).
     #[cfg(test)]
@@ -1156,7 +1196,7 @@ impl InputReader {
 }
 
 /// A run of complete lines for the parallel engine (see
-/// [`InputReader::window`]).
+/// [`InputReader::cut`]).
 pub(crate) struct Window {
     /// The bytes; absolute offset `p` is at `data[p - base]`, and at least
     /// `PAD` readable bytes follow `end` unless it is the end of a whole
@@ -1174,6 +1214,18 @@ pub(crate) struct Window {
     pub(crate) generation: u64,
     /// `-R`: lines are strings.
     pub(crate) raw: bool,
+}
+
+/// A position in an input where a job of whole lines starts, with its
+/// line bookkeeping (see [`InputReader::cut`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Cut {
+    pub(crate) generation: u64,
+    pub(crate) pos: usize,
+    /// Newlines before `pos`.
+    pub(crate) nl: u64,
+    /// Start of the line containing `pos`.
+    pub(crate) line_start: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
