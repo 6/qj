@@ -47,8 +47,10 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 
 `tests/jq_diff.rs` (`#[ignore]`) measures the definition of done in `docs/JQ_PORT_PLAN.md`.
 It runs jq 1.8.1 and qj with identical argv, stdin, environment and cwd, and compares stdout
-bytes, exit code, and stderr with only a line-initial `qj:` rewritten to `jq:`. Nothing else
-is normalized, and jq's output is the only expectation. Levels: `pass` (all three match),
+bytes, exit code, and stderr with only the program name rewritten: a line-initial `qj:` to
+`jq:`, and the exact line `Use qj --help for help with command-line options,` (the usage hint
+after option errors) to `Use jq --help ...`. Nothing else is normalized, and jq's output is the
+only expectation. Levels: `pass` (all three match),
 `stdout` (stdout + exit code match), `fail`. The scoreboard shows both per suite and mode.
 - **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
   `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no
@@ -260,6 +262,9 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
 ```
 
 ### Environment variables
+- `QJ_CORE=port` — run on the jq 1.8.1 port (`src/jq`, `src/cli/run.rs`) instead of the old
+  evaluator. Until it becomes the default, measure it with
+  `JQ_DIFF_QJ_ENV=QJ_CORE=port JQ_DIFF_BASELINE=tests/jq_compat/diff_baseline_port.txt`.
 - `QJ_WINDOW_SIZE=N` — NDJSON streaming window size in megabytes. Default is `num_cores × 2` MB
   (floor 8 MB). Larger values use more memory but may help on machines with many cores.
 - `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
@@ -274,7 +279,12 @@ Benchmarks require exclusive CPU access for reliable results.
 
 ## Architecture
 - `src/cli/` — the command line: port of jq's `main.c` option handling (`args.rs`: options,
-  their errors and exit codes, colors, `-f`), and qj's own help/version text (`usage.rs`)
+  their errors and exit codes, colors, `-f`), and qj's own help/version text (`usage.rs`).
+  With `QJ_CORE=port`: the rest of `main.c` on the jq port (`run.rs`: compile, `process()`,
+  output, exit codes), `util.c`'s input reader (`input.rs`, behind the `Reader` trait) and
+  `jq_test.c` (`run_tests.rs`, `--run-tests`)
+- `src/jq/` — the jq 1.8.1 port: values, lexer/parser, compiler, VM, builtins (see
+  `docs/JQ_PORT_PLAN.md`)
 - `src/simdjson/` — vendored simdjson.h/cpp + C-linkage bridge + safe Rust FFI wrapper
 - `src/filter/` — jq filter lexer, parser, AST evaluator (On-Demand fast path + DOM fallback)
 - `src/value.rs` — JSON value representation (Arc-based arrays/objects)

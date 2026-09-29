@@ -59,7 +59,11 @@ INFINITE = {"repeat/1", "recurse/1", "recurse/2", "while/2"}
 def skip_input(builtin, inp):
     # until(cond; update) with a falsy cond and update `.` loops forever
     # without output, so limit() can't stop it.
-    return builtin == "until/2" and inp in FALSY
+    if builtin == "until/2" and inp in FALSY:
+        return True
+    # jq's lgamma_r leaves the sign uninitialized at its poles (and for NaN
+    # and infinities), so `0 | lgamma_r` differs from run to run.
+    return builtin == "lgamma_r/0" and inp == "0"
 
 
 def main():

@@ -2,9 +2,10 @@
 //!
 //! Every case runs jq and qj with identical argv, stdin, environment and
 //! working directory, and compares stdout bytes, exit code, and stderr after
-//! rewriting a line-initial `qj:` program-name prefix to `jq:`. Nothing else
-//! is normalized. jq's results are the only expectations: the `.test` files'
-//! expected-output lines are never used.
+//! rewriting the program name: a line-initial `qj:` prefix to `jq:`, and the
+//! usage-hint line `Use qj --help for help with command-line options,` to
+//! jq's. Nothing else is normalized. jq's results are the only expectations:
+//! the `.test` files' expected-output lines are never used.
 //!
 //! Levels: `pass` (all three equal), `stdout` (stdout + exit code equal,
 //! stderr differs), `fail`. A case is skipped only when jq itself times out or

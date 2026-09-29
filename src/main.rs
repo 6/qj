@@ -257,6 +257,12 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    // The jq 1.8.1 port (src/jq, src/cli/run.rs), until it becomes the
+    // default.
+    if std::env::var_os("QJ_CORE").is_some_and(|c| c == "port") {
+        qj::cli::run::main();
+    }
+
     // jq's option loop (src/cli/args.rs), in the locale jq would use.
     let argv = args::argv_bytes();
     let opts = match args::with_environment_locale(|| args::parse(&argv, &mut ArgJson)) {
