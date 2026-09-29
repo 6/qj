@@ -62,11 +62,18 @@ fn run_fixture(name: &str, json: &str) {
         let want = text(case, "out");
 
         let mut input = parse(&input_text);
-        let mut args: Vec<Value> = arg_texts.iter().map(|t| parse(t)).collect();
         if is_native {
             input = native(input);
-            args = args.into_iter().map(native).collect();
         }
+        // An argument `.` is the input itself (the same value, as jq passes it).
+        let mut args: Vec<Value> = arg_texts
+            .iter()
+            .map(|t| match t.as_str() {
+                "." => input.clone(),
+                t if is_native => native(parse(t)),
+                t => parse(t),
+            })
+            .collect();
         let cf: &CFunction = list
             .iter()
             .find(|c| c.name == f && c.nargs == args.len() + 1)
@@ -124,6 +131,11 @@ fn fixture_format() {
 #[test]
 fn fixture_random() {
     run_fixture("b1_random.json", include_str!("../testdata/b1_random.json"));
+}
+
+#[test]
+fn fixture_matrix() {
+    run_fixture("b1_matrix.json", include_str!("../testdata/b1_matrix.json"));
 }
 
 // ---------------------------------------------------------------- host-dependent builtins

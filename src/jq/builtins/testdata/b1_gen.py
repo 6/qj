@@ -8,7 +8,10 @@ Each case calls one C builtin directly, as `$in | NAME($a; $b)` with the input a
 arguments given as JSON text (so numbers are literals exactly as the port's parser
 reads them), and records jq's compact output of `try [0, NAME(...)] catch [1, .]`.
 With `"native": true` every number in the input and arguments is first turned into a
-native double (`. * 1`), which is how arithmetic results reach builtins.
+native double (`. * 1`), which is how arithmetic results reach builtins. An argument
+written `.` is the input itself (`NAME(.; .)`, as in the builtin matrix corpus): jq then
+passes the same value twice, which `jv_equal`'s identity fast path can see
+(`[nan] | . == .` is true).
 `src/jq/builtins/general/tests.rs` replays the cases through `function_list()`.
 """
 
@@ -54,17 +57,20 @@ class Cases:
         self.cases.append({"f": f, "in": inp, "args": list(args), "native": native})
 
     @staticmethod
-    def _batch(f, nargs, cases, timeout):
-        """jq's output lines for `cases`, or None if jq crashed or hung."""
-        params = ["$a", "$b"][:nargs]
-        call = f + ("(" + "; ".join(params) + ")" if nargs else "")
+    def _batch(f, aliased, cases, timeout):
+        """jq's output lines for `cases`, or None if jq crashed or hung. `aliased`
+        tells, per argument, whether it is `.` (the input itself, so jq passes the very
+        same value, which matters for jv_equal's identity fast path)."""
+        params = ["." if alias else var for alias, var in zip(aliased, ["$a", "$b"])]
+        call = f + ("(" + "; ".join(params) + ")" if params else "")
         prog = (
             NAT
             + ".[] | (if .[0] then .[1:] | nat else .[1:] end) as [$in, $a, $b]"
             + f" | $in | try [0, {call}] catch [1, .]"
         )
         doc = "[" + ",".join(
-            "[" + ",".join(["true" if c["native"] else "false", c["in"]] + c["args"]) + "]"
+            "[" + ",".join(["true" if c["native"] else "false", c["in"]]
+                           + ["null" if a == "." else a for a in c["args"]]) + "]"
             for c in cases
         ) + "]"
         out, err, rc = run(["-c", prog], doc.encode(), timeout)
@@ -79,14 +85,15 @@ class Cases:
         some inputs) are dropped and listed on stderr."""
         groups = {}
         for c in self.cases:
-            groups.setdefault((c["f"], len(c["args"])), []).append(c)
-        for (f, nargs), cases in groups.items():
-            lines = self._batch(f, nargs, cases, 120)
+            aliased = tuple(a == "." for a in c["args"])
+            groups.setdefault((c["f"], aliased), []).append(c)
+        for (f, aliased), cases in groups.items():
+            lines = self._batch(f, aliased, cases, 120)
             if lines is None:
                 # Find the culprits one case at a time.
                 lines = []
                 for c in cases:
-                    one = self._batch(f, nargs, [c], 5)
+                    one = self._batch(f, aliased, [c], 5)
                     if one is None:
                         print(f"skipped (jq crashes or hangs): {c['in']} | {f}"
                               f"({'; '.join(c['args'])})", file=sys.stderr)
@@ -252,7 +259,13 @@ def gen_general():
               ".5", "+1", "[1,2]\n[3]", "\u00a01", "{\"a\":nan}", "infinity", "Infinity",
               "-Infinity", "'a'", "[1,2,3]]", "\"\\x\"", "\"\t\"", "[1,2]  ", "{\"a\":1}x",
               "\"\\u00e9\"", "\ufeff1", "[" * 3, "]", "{\"a\"}", "{1:2}", "\"abc", "1 // c",
-              "\"\\u12\"", "1e", "-0", "0.10", "[1e2,1E-2]"]:
+              "\"\\u12\"", "1e", "-0", "0.10", "[1e2,1E-2]", "1\u0000", "\u00001", "[1,\u00002]",
+              "\"a\u0000b\"", "{\"a\u0000\":1}", "1\u00002", "nan1", "[nan,-nan]", "[1,2]x",
+              "\u001e1", "\u001e", "1\u001e", "\ufeff[1]", "[1]\ufeff", "\"\\u0000\"",
+              "[1e999999999, 1e-999999999]", "{\"a\":1} {\"b\":2}", "\u00e9", "\"\u00e9\"",
+              "[\"\\ud83d\"]", "[\"\\udc00\\ud800\"]", "tru e", "nul", "[-]", "[.5]", "[1.e2]",
+              "1E+2", "-01.50", "[true false]", "{\"a\":1,}", "{,}", "[,1]", "\"\\/\"",
+              "[[[[[[[[[[[[1]]]]]]]]]]]]", "2e308", "-2e308", "4.9e-324", "1e-400"]:
         c.add("fromjson", js(s))
     # keys / keys_unsorted / length / utf8bytelength
     for v in ["{\"b\":1,\"a\":2,\"c\":3}", "{\"b\":1,\"B\":2,\"\\u00e9\":3,\"e\":4,\"aa\":5,\"a\":6}",
@@ -503,9 +516,46 @@ def gen_random():
     c.write("b1_random.json")
 
 
+# The inputs of tests/jq_compat/corpus/gen_builtin_matrix.py, plus values whose
+# identity is visible (NaN inside containers).
+MATRIX_INPUTS = [
+    "null", "true", "false", "0", "42", "-3", "-1.5", "3.75", '""', '"abc"', '"a,b"',
+    '"2015-03-05T23:51:47Z"', '"h\\u00e9llo w\\u00f6rld \\ud83d\\ude00"', "[]", "[3,1,2]",
+    '["b","a"]', "[[1,2],[3,4]]", '[{"a":2},{"a":1}]', "{}", '{"a":1,"b":[2,3]}',
+    "nan", "[nan]", '{"a":nan}', "[[nan],[nan]]", "[1,[1]]", "[\"a\",[\"a\"]]",
+    "[0,1]", "[\"a\"]", "[[]]", "[{\"start\":0}]",
+]
+
+# The argument-taking B1 builtins with their argument counts (host-dependent ones, and
+# halt_error, are tested by hand).
+MATRIX_BUILTINS = [
+    ("_plus", 2), ("_minus", 2), ("_multiply", 2), ("_divide", 2), ("_mod", 2),
+    ("_equal", 2), ("_notequal", 2), ("_less", 2), ("_lesseq", 2), ("_greater", 2),
+    ("_greatereq", 2), ("startswith", 1), ("endswith", 1), ("split", 1), ("_strindices", 1),
+    ("setpath", 2), ("getpath", 1), ("delpaths", 1), ("has", 1), ("contains", 1),
+    ("_sort_by_impl", 1), ("_group_by_impl", 1), ("_unique_by_impl", 1), ("bsearch", 1),
+    ("_min_by_impl", 1), ("_max_by_impl", 1), ("format", 1),
+]
+
+
+def gen_matrix():
+    """Every argument-taking builtin as `NAME(.; .)`, as the builtin matrix corpus calls
+    them: the arguments are the input itself."""
+    c = Cases()
+    for f, nargs in MATRIX_BUILTINS:
+        for v in MATRIX_INPUTS:
+            if f == "_strindices" and not v.startswith('"'):
+                continue  # jq aborts on an assertion for non-strings
+            c.add(f, v, *(["."] * nargs))
+            if has_number(v):
+                c.add(f, v, *(["."] * nargs), native=True)
+    c.write("b1_matrix.json")
+
+
 if __name__ == "__main__":
     gen_binops()
     gen_general()
     gen_strings()
     gen_format()
     gen_random()
+    gen_matrix()
