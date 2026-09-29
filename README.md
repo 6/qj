@@ -9,7 +9,7 @@ Benchmarked on M4 MacBook Pro, with qj's previous core (being re-measured on the
 
 ## qj vs jq
 
-**Drop-in replacement.** qj runs a port of jq 1.8.1's own implementation, so it matches jq byte for byte: the same stdout, exit codes, and error messages. A differential harness runs 19,955 cases against jq 1.8.1, including jq's own test suites in each input and output mode (2,903 cases, all byte-exact). qj matches 19,944 of them; 7 of the rest are qj's own help and version text, and 4 are programs jq never finishes. A differential fuzzer also generates random programs, inputs and flags and compares qj with jq. ([details](docs/COMPATIBILITY.md))
+**Drop-in replacement.** qj runs a port of jq 1.8.1's own implementation, so it matches jq byte for byte: the same stdout, exit codes, and error messages. A differential harness runs 19,976 cases against jq 1.8.1, including jq's own test suites in each input and output mode (2,903 cases, all byte-exact). qj matches 19,965 of them; 7 of the rest are qj's own help and version text, and 4 are programs jq never finishes. A differential fuzzer also generates random programs, inputs and flags and compares qj with jq. ([details](docs/COMPATIBILITY.md))
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, and automatic parallelism across cores. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters (being re-measured: these numbers came from the previous core's NDJSON fast paths). Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
