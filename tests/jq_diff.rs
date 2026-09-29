@@ -23,7 +23,7 @@
 //! - `JQ_DIFF_MODES=compact,pretty,file,ndjson,fail,cli`: subset of modes.
 //! - `JQ_DIFF_VERBOSE=1`: print every non-passing case with its program,
 //!   input, and jq vs qj stdout/stderr/exit code.
-//! - `JQ_DIFF_QJ_ENV="K=V K2=V2"`: extra environment (e.g. `QJ_CORE=old`).
+//! - `JQ_DIFF_QJ_ENV="K=V K2=V2"`: extra environment (e.g. `QJ_NO_SIMD_INPUT=1`).
 //!   It is given to jq too, so `env`/`$ENV` output stays comparable.
 //! - `JQ_DIFF_BASELINE=path`: ratchet baseline (default
 //!   `tests/jq_compat/diff_baseline.txt` on macOS,
