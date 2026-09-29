@@ -129,6 +129,55 @@ impl Default for EngineOptions {
     }
 }
 
+/// qj's default thread count: the available parallelism, but only the
+/// non-efficiency cores on Apple Silicon (efficiency cores add contention
+/// without throughput for this work).
+pub fn default_threads() -> usize {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if let Some(n) = apple_non_efficiency_cpus() {
+        return n;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+/// Logical CPUs across every perflevel not named "Efficiency" (M1-M4 have
+/// "Performance" + "Efficiency"; M5 Pro/Max "Super" + "Performance").
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn apple_non_efficiency_cpus() -> Option<usize> {
+    fn sysctl_raw(name: &str, buf: &mut [u8]) -> Option<usize> {
+        let name = std::ffi::CString::new(name).ok()?;
+        let mut size = buf.len();
+        // SAFETY: sysctlbyname writes at most `size` bytes into `buf`.
+        let ret = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (ret == 0).then_some(size)
+    }
+    fn sysctl_u32(name: &str) -> Option<u32> {
+        let mut buf = [0u8; 4];
+        (sysctl_raw(name, &mut buf)? == 4).then(|| u32::from_ne_bytes(buf))
+    }
+    let levels = sysctl_u32("hw.nperflevels")?;
+    let mut total = 0;
+    for i in 0..levels {
+        let mut name = [0u8; 64];
+        let n = sysctl_raw(&format!("hw.perflevel{i}.name"), &mut name)?;
+        let name = String::from_utf8_lossy(&name[..n]);
+        if name.trim_end_matches('\0') != "Efficiency" {
+            total += sysctl_u32(&format!("hw.perflevel{i}.logicalcpu"))?;
+        }
+    }
+    (total > 0).then_some(total as usize)
+}
+
 /// What the engine did (for diagnostics and tests).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EngineStats {

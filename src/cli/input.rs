@@ -322,9 +322,84 @@ pub trait Reader {
     fn position(&self) -> String;
 }
 
-/// The reader for main.c's inputs (`-` is standard input).
+/// The reader for main.c's inputs (`-` is standard input): `src/io`'s
+/// [`crate::io::InputReader`] (util.c exactly, with a simdjson fast path and
+/// memory-mapped files), or with `QJ_INPUT=util` this module's plain port.
 pub fn open_inputs(files: Vec<Vec<u8>>, opts: InputOptions) -> Rc<RefCell<dyn Reader>> {
-    Rc::new(RefCell::new(UtilInput::new(files, opts)))
+    if std::env::var_os("QJ_INPUT").is_some_and(|v| v == "util") {
+        return Rc::new(RefCell::new(UtilInput::new(files, opts)));
+    }
+    Rc::new(RefCell::new(open_reader(files, opts)))
+}
+
+/// `src/io`'s reader over main.c's inputs, opening them like [`UtilInput`]
+/// does (see [`CliOpener`]).
+pub fn open_reader(files: Vec<Vec<u8>>, opts: InputOptions) -> crate::io::InputReader {
+    use std::os::unix::ffi::OsStringExt;
+    let names = files
+        .into_iter()
+        .map(std::ffi::OsString::from_vec)
+        .collect();
+    let ropts = crate::io::ReaderOptions {
+        raw: opts.raw,
+        slurp: opts.slurp,
+        seq: opts.flags.seq,
+        stream: opts.flags.streaming,
+        stream_errors: opts.flags.stream_errors,
+    };
+    crate::io::InputReader::with_opener(names, ropts, Box::new(CliOpener::default()))
+}
+
+/// Opens inputs for `src/io`'s reader the way [`UtilInput`] does: a terminal
+/// on stdin flushes line-buffered stdout before each read (as stdio does);
+/// `.gz`/`.zst` names are decompressed when they have the format's magic
+/// bytes, with errors naming the file. Everything else goes through the
+/// default opener, which memory-maps regular files (stdin too).
+#[derive(Default)]
+struct CliOpener {
+    fs: crate::io::FsOpener,
+}
+
+impl crate::io::Opener for CliOpener {
+    fn open(&mut self, name: &OsStr) -> io::Result<crate::io::Opened> {
+        use crate::io::Opened;
+        if name == "-" {
+            // SAFETY: isatty has no memory-safety preconditions.
+            if unsafe { libc::isatty(0) } != 0 {
+                return Ok(Opened::Stream {
+                    reader: Box::new(StdinReader::new()),
+                    fd: Some(0),
+                });
+            }
+            return crate::io::source::open_borrowed_fd(0);
+        }
+        let bytes = name.as_bytes();
+        if crate::decompress::is_compressed(&String::from_utf8_lossy(bytes)) {
+            return Ok(Opened::Stream {
+                reader: open_file(bytes)?,
+                fd: None,
+            });
+        }
+        crate::io::Opener::open(&mut self.fs, name)
+    }
+}
+
+impl Reader for crate::io::InputReader {
+    fn next(&mut self) -> Option<Result<Value, Error>> {
+        crate::io::InputReader::next(self)
+    }
+    fn failures(&self) -> usize {
+        crate::io::InputReader::failures(self)
+    }
+    fn current_filename(&self) -> Value {
+        crate::io::InputReader::current_filename(self)
+    }
+    fn current_line(&self) -> u64 {
+        crate::io::InputReader::current_line(self)
+    }
+    fn position(&self) -> String {
+        crate::io::InputReader::position(self)
+    }
 }
 
 impl Reader for UtilInput {

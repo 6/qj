@@ -453,7 +453,8 @@ impl InputReader {
     /// `<unknown>` before any input was opened.
     pub fn position(&self) -> String {
         match &self.filename {
-            Some(s) => format!("{}:{}", s.as_str(), self.current_line),
+            // (`%s` stops at a NUL.)
+            Some(s) => format!("{}:{}", s.as_c_str(), self.current_line),
             None => "<unknown>".to_owned(),
         }
     }
