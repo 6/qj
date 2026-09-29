@@ -1,47 +1,46 @@
 # Known limitations
 
-## Malformed JSON error handling disagreement
+qj runs a port of jq 1.8.1 (see [JQ_PORT_PLAN.md](JQ_PORT_PLAN.md)), so its behavior is
+jq's: what differs is listed in [COMPATIBILITY.md](COMPATIBILITY.md) under exemptions
+(help and version text, the `qj:` name in messages, jq's own nondeterminism). This page
+lists the rest.
 
-**Status**: Partially mitigated, remainder accepted as architectural limitation
+## Platforms
 
-The fast path (on-demand parser) and normal path (DOM parser) use different simdjson
-APIs with different strictness. The on-demand parser is lazy and can extract fields from
-partially valid JSON; the DOM parser does full validation upfront. This is fundamental
-to simdjson's architecture.
+qj builds for Unix (macOS and Linux). The CLI, the input layer and the port's platform
+layer use Unix APIs (file descriptors, `mmap`, libc's time functions), and Windows isn't
+supported.
 
-**Mitigations applied** in `src/simdjson/bridge.cpp`:
-1. Parse error propagation in `jx_dom_find_fields_raw_reuse`: `nav == 2` now returns -1
-   instead of silently writing "null"
-2. First-byte validation in `navigate_fields_raw`: rejects garbage values the lenient
-   parser might extract from structurally invalid JSON
+## Where the fast paths don't apply
 
-**Why accepted**: Real NDJSON data from well-formed sources (APIs, log pipelines,
-databases) is always valid JSON. The fast path handles valid JSON correctly. Adding a
-pre-validation DOM parse to close the gap would add overhead that penalizes the normal
-case. The fuzzer's `is_plausible_ndjson` validator filters out non-object input to focus
-on finding real bugs.
+qj's speed comes from its input layer (`src/io`): simdjson parses each text, memory-mapped
+files avoid copies, and independent records run on worker threads with ordered output.
+Programs themselves run on the ported VM, at jq-like speed. The old core's NDJSON fast
+paths, which answered common filters from raw bytes, were removed with it; any fast path
+that comes back must first be proven equivalent to jq (see JQ_PORT_PLAN.md).
 
-## Fuzzer infrastructure: non-reproducible false positives
+- **Sequential programs.** Records are processed in parallel only when they are
+  independent. `-n`, `-s`, `-R`, `--seq`, `--stream` and `--debug-trace` run sequentially,
+  as do programs that use `input`/`inputs`, `halt`, `debug`/`stderr`, `now`, local time,
+  `$__loc__`, labels or modules (the full list is `SEQUENTIAL_BUILTINS` and
+  `parallel_plan` in `src/cli/run.rs`). Their output is the same; only the speedup is
+  smaller.
+- **jq's parser.** simdjson accepts strict JSON only. Anything else (`nan`, invalid UTF-8,
+  lone surrogates, numbers beyond 64-bit integers or double range, nesting deeper than
+  1024, malformed text) goes through the port of jq's parser, which produces jq's values
+  and error messages, more slowly. So do `--seq` and `--stream`.
+- **Documents over 4 GiB.** simdjson can't parse a single text larger than 4 GiB, so such
+  a document is parsed by jq's parser port: correct, but slower. NDJSON is unaffected,
+  since each line is its own text.
 
-The differential fuzzer (`fuzz/fuzz_targets/fuzz_ndjson_diff.rs`) produces
-**non-reproducible false positive crashes** on valid JSON input (e.g. `{}`)
-during continuous runs, but these crashes never reproduce when the artifact is replayed.
-A standalone test confirmed 1.5M calls to `process_ndjson` vs `process_ndjson_no_fast_path`
-on `{}` with 15 different filters produce identical output every time.
+## Memory
 
-Iterations tried to eliminate the false positives:
-1. **serde_json pre-validation**: Heap allocation pressure in the long-running libfuzzer
-   process caused false positives
-2. **simdjson pre-validation**: Same issue
-3. **No pre-validation**: Still produced non-reproducible crashes on `{}`
-4. **Final approach**: Lightweight allocation-free validator (`is_plausible_ndjson`) that
-   does byte-level checks (control char rejection, brace-balance, starts-with-`{`). Still
-   produces occasional non-reproducible false positives, but catches real divergences.
+Like jq, qj builds the whole value of each input text in memory. For NDJSON the parallel
+engine keeps a bounded window of input in flight (`QJ_WINDOW_SIZE`, see `CLAUDE.md`), and
+memory-mapped files are read as the kernel pages them in.
 
-Root cause is likely a libfuzzer infrastructure issue with C++ FFI objects on macOS ARM64
-(`-s none` disables sanitizers to work around the Apple Clang / rustc ASan
-incompatibility, which may reduce fuzzer stability).
+## qj's additions
 
-The `process_ndjson_no_fast_path` function was added to avoid env var mutation
-(`QJ_NO_FAST_PATH`) within the fuzzer process, which was another source of
-non-determinism. The env var still works for CLI benchmarking.
+`--threads`, transparent `.gz`/`.zst` decompression and glob expansion are qj's own. None
+of them changes output relative to jq. Two options of the old core are still accepted and
+do nothing: `--jsonl` (jq's input loop reads NDJSON as it is) and `--debug-timing`.

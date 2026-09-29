@@ -92,9 +92,9 @@ jq 1.8.1 is built with decNumber, and qj follows its number model exactly:
 - `have_decnum` and `have_literal_numbers` are `true`.
 
 **`QJ_JQ_COMPAT` is obsolete.** qj used to compute with i64 and f64, and needed
-`QJ_JQ_COMPAT=1` to imitate jq's precision. jq's behavior is now the default, and qj
-ignores the variable. Only the old evaluator reads it, and that evaluator is still
-selectable with `QJ_CORE=old` for comparison until it's removed.
+`QJ_JQ_COMPAT=1` to imitate jq's precision. jq's behavior is now the only one: the old
+evaluator that read the variable (and `QJ_CORE=old`, which selected it) has been removed,
+and qj ignores both.
 
 ## qj's additions
 

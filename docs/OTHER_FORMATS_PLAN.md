@@ -6,8 +6,11 @@ qj's current value proposition is speed on JSON/NDJSON. Adding input format supp
 for CSV/TSV, Parquet, and optionally YAML/TOML would make it a "one tool for all
 structured data" option — jq syntax applied to any format, with speed as a bonus.
 
-The architecture is clean: convert at the input boundary to `serde_json::Value`, then
-the entire filter/eval/output pipeline works unchanged.
+The architecture is clean: convert at the input boundary to jq values
+(`qj::jq::value::Value`), then the port's compiler, VM and printer work unchanged. (This
+plan predates the jq port: where the sketches below build a `serde_json::Value`, read a jq
+`Value`, and where they mention rayon, read the parallel record engine in
+`src/io/parallel.rs`.)
 
 ---
 
