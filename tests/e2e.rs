@@ -6765,9 +6765,11 @@ fn assert_ndjson_vs_single_doc(filter: &str, ndjson_input: &str) {
         "NDJSON vs single-doc mismatch for filter={filter:?}\n\
          ndjson output: {ndjson_out}\nsingle-doc output: {single_out}"
     );
+    assert_jq_compat_with_flags(&["-c", filter], ndjson_input);
 }
 
-/// Assert that mmap and read() paths produce identical output for file I/O.
+/// Assert that mmap and read() paths produce identical output for file I/O,
+/// and the same output as jq on that file.
 fn assert_mmap_vs_read(args: &[&str], content: &str) {
     let mmap_out = qj_file_with_env(args, content, &[]);
     let read_out = qj_file_with_env(args, content, &[("QJ_NO_MMAP", "1")]);
@@ -6776,6 +6778,19 @@ fn assert_mmap_vs_read(args: &[&str], content: &str) {
         "mmap vs read() mismatch for args={args:?}\n\
          mmap output: {mmap_out}\nread output: {read_out}"
     );
+    if jq_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.json");
+        std::fs::write(&path, content).unwrap();
+        let mut jq_args = args.to_vec();
+        jq_args.push(path.to_str().unwrap());
+        let (jq_code, jq_out, jq_err) = jq_exit(&jq_args, "");
+        assert_eq!(
+            (jq_code, jq_out.as_str()),
+            (0, mmap_out.as_str()),
+            "qj vs jq mismatch for args={args:?}; jq stderr: {jq_err}"
+        );
+    }
 }
 
 // --- NDJSON auto-detect vs single-doc processing ---
