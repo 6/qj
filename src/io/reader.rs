@@ -1111,6 +1111,16 @@ impl InputReader {
         }
     }
 
+    /// Bytes held for the current input's stream buffer (0 for inputs
+    /// read whole).
+    #[cfg(test)]
+    pub(crate) fn buffer_capacity(&self) -> usize {
+        match self.cur.as_ref().map(|c| &c.kind) {
+            Some(DataKind::Stream { buf, .. }) => buf.len(),
+            _ => 0,
+        }
+    }
+
     /// `input_filename` as text (for workers on other threads).
     pub(crate) fn filename_text(&self) -> Option<String> {
         self.filename.as_ref().map(|s| s.as_str().to_owned())

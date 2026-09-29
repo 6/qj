@@ -9,6 +9,7 @@ mod live;
 mod reader;
 mod reference;
 mod simd;
+mod stream;
 
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
