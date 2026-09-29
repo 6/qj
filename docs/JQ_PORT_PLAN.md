@@ -48,6 +48,10 @@ The root causes are structural, and they are the reason for the port:
    documented. Common idioms (`reduce` into objects, `INDEX`, `add` of arrays, `first`,
    `limit`) must not go quadratic.
 
+**Help and version text** (`-h`, `--help`, `-V`, `--version`, `--build-configuration`) are
+qj's own and exempt from comparison. Everything else on the command line (option parsing,
+errors, exit codes) must match.
+
 **stderr policy:** compared after replacing the program-name prefix (`qj:` for `jq:`).
 Everything else must match, including runtime error messages (they are observable via
 `catch`) and `(at <file>:<line>)` locations. Syntax-error wording is tracked as a separate
@@ -201,3 +205,7 @@ interface scaffold before spawning it.
 ## Status
 
 - 2026-09-29: plan written. Thread-count fix landed (`0f9f2cc`). Wave 1 started.
+- 2026-09-29: **H merged** (`0ef13b5`): `cargo test --release jq_diff -- --ignored` has 18,085
+  cases. Old qj scores 9,286 strict (51.3%) and 11,038 stdout+rc (61.0%); upstream suites
+  alone are 2,639/2,903 strict (90.9%). There's no Linux baseline yet, so CI only reports.
+  Track A (jq `main.c` argument handling) started.
