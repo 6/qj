@@ -7,7 +7,7 @@
 //!
 //! * each `builtin.jq` definition's name, arity, source span and free calls
 //!   (`name/arity` pairs left unbound in its body) are precomputed in
-//!   [`table`] (generated from `builtin.jq` and checked by a test);
+//!   `bind/table.rs` (generated from `builtin.jq` and checked by a test);
 //! * a compile first simulates `block_bind_referenced` on those signatures to find
 //!   which binders would bind something, then parses (once per process), lowers and
 //!   binds only those.
