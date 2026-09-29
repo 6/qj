@@ -6,6 +6,11 @@
 use super::*;
 use std::sync::Mutex;
 
+// Not bound by the `libc` crate.
+unsafe extern "C" {
+    fn tzset();
+}
+
 /// Serializes these tests: some change `TZ`, which the others read through libc.
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -14,19 +19,30 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Run `f` with `TZ` set (`TIME_LOCK` is held while the variable changes).
+///
+/// `tzset()` makes the change visible to glibc's `localtime_r`, which (unlike macOS's)
+/// doesn't re-read `TZ` once initialized. jq never changes `TZ` mid-process there, so
+/// only the tests need this.
 fn with_tz<R>(tz: &str, f: impl FnOnce() -> R) -> R {
     let saved = {
         let _g = lock();
         let saved = std::env::var_os("TZ");
         // SAFETY: TIME_LOCK is held and the tests that read TZ are serialized.
-        unsafe { std::env::set_var("TZ", tz) };
+        unsafe {
+            std::env::set_var("TZ", tz);
+            tzset();
+        }
         saved
     };
     let r = f();
     let _g = lock();
-    match saved {
-        Some(v) => unsafe { std::env::set_var("TZ", v) },
-        None => unsafe { std::env::remove_var("TZ") },
+    // SAFETY: as above.
+    unsafe {
+        match saved {
+            Some(v) => std::env::set_var("TZ", v),
+            None => std::env::remove_var("TZ"),
+        }
+        tzset();
     }
     r
 }
@@ -437,7 +453,9 @@ fn strflocaltime_in_zones() {
             f(&[2015.0, 0.0, 5.0, 23.0, 51.0, 47.0]),
             "Mon Jan  5 23:51:47 2015 EST -0500 1420519907"
         );
-        // 02:30 on the spring-forward day doesn't exist: mktime moves it.
+        // 02:30 on the spring-forward day doesn't exist; how mktime resolves it is up
+        // to the libc (macOS moves it to 03:30 EDT).
+        #[cfg(target_os = "macos")]
         assert_eq!(
             f(&[2015.0, 2.0, 8.0, 2.0, 30.0, 0.0]),
             "Sun Mar  8 03:30:00 2015 EDT -0400 1425799800"

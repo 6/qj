@@ -396,6 +396,34 @@ fn cached_regex_gives_the_same_results() {
     }
 }
 
+/// Parallel NDJSON workers call the primitive from many threads at once: compiling
+/// (serialized), searching and per-thread caches must not interfere.
+#[test]
+fn concurrent_use_is_consistent() {
+    let cases: Vec<(String, &str, Option<&str>)> = vec![
+        ("foo bar foo".into(), "(?<w>fo+)", Some("g")),
+        ("aéb日c😀".into(), ".", Some("g")),
+        ("éé".into(), "", Some("g")),
+        ("test".into(), "(", None),
+    ];
+    let expected: Vec<_> = cases.iter().map(|(i, r, f)| run(i, r, *f, false)).collect();
+    std::thread::scope(|s| {
+        for t in 0..8 {
+            let (cases, expected) = (&cases, &expected);
+            s.spawn(move || {
+                for k in 0..20 {
+                    // Vary the pattern per thread so compiles overlap with searches.
+                    let unique = format!("x{t}_{k}|y");
+                    assert_eq!(run("y", &unique, None, true), Ok("true".into()));
+                    for ((i, r, f), want) in cases.iter().zip(expected) {
+                        assert_eq!(&run(i, r, *f, false), want);
+                    }
+                }
+            });
+        }
+    });
+}
+
 /// Every `_match_impl` call made by the regex cases in jq 1.8.1's `onig.test` and
 /// `manonig.test` (collected by running them with the regex builtins shadowed by
 /// logging copies), plus curated edge cases, with jq's exact output.
