@@ -41,12 +41,19 @@
 //!   decoding and UTF-8 replacement rules.
 
 pub mod ast;
+pub mod bytecode;
+pub mod compile;
+pub mod execute;
 pub mod lexer;
+pub mod linker;
 pub mod locfile;
+pub mod lower;
 pub mod parser;
 mod parser_tables;
+pub mod program;
 
 pub use parser::{
     NUM_RULES, NoHooks, ParseError, ParseHooks, parse, parse_library, parse_program, reductions,
     rule_name,
 };
+pub use program::{CompileError, CompileOptions, jq_compile_args};
