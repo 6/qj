@@ -22,7 +22,9 @@ deduplicated across runs) and stats.json. Case K of seed S is reproducible:
 `run --seed S --start K --cases 1`. Modes: general, builtins, values, paths,
 control, regex, dates, cli, parse, debug (--debug-trace, --debug-dump-disasm),
 runtests (--run-tests), progfile (multi-line -f programs), modules (-L, import,
-include, ~/.jq), env (TZ and other variables). `probe '{"args": [...],
+include, ~/.jq), env (locales, TZ and other variables), bulk (64 KB-3 MB
+NDJSON: qj's parallel record engine), tty (stdout on a pseudo-terminal),
+merged (stderr into stdout's file: buffering order). `probe '{"args": [...],
 "stdin": "...", "files": {...}, "env": {...}}'` runs one invocation under both
 tools (`--diff` for a line diff). Environment: JQ (default: jq on PATH, must be
 jq-1.8.1), QJ (default: target/release/qj).
@@ -463,9 +465,7 @@ def verdict(j, q):
 MODES = [
     (30, "general"), (13, "builtins"), (8, "values"), (11, "paths"), (9, "control"),
     (5, "regex"), (4, "dates"), (11, "cli"), (9, "parse"), (4, "debug"), (2, "runtests"),
-    (4, "progfile"), (3, "modules"), (3, "env"), (3, "bulk"), (3, "tty"),
-    # Opt-in (--modes merged) until qj flushes stdout like stdio: see gen_merged_case.
-    (0, "merged"),
+    (4, "progfile"), (3, "modules"), (3, "env"), (3, "bulk"), (3, "tty"), (2, "merged"),
 ]
 
 
@@ -612,24 +612,30 @@ MERGED_PROGRAMS = [
     "range({N}) | if . == {N1} then input else . end", ".[]? | if . == null then error else . end",
     ".", ".[]?", "tostring", "debug", "stderr", "error?", "try error catch .",
     "if type == \"number\" then error(\"n\") else . end",
+    # -r/-j strings of buffer-sized lengths: one fwrite each in jq.
+    "range({K}) | (\"x\" * {L}), error(\"e\")?", "range({K}) | \"y\" * {L} | ., (select(. == \"\") | error)",
+    "(\"x\" * {L}), error(\"after\")", "range({K}) | (\"z\" * {L}), (select(. == 3) | error(\"three\"))",
+    "tostring | . * ({L} / (length + 1) | floor + 1) | .[:{L}]",
+    "if type == \"object\" then error(\"obj\") else tostring * 100 end",
 ]
+MERGED_LENGTHS = [1, 1023, 1024, 1025, 4095, 4096, 4097, 8191, 8192, 8193, 16383, 16384,
+                  16385, 65535, 65536, 65537, 12288, 20000]
 
 
 def gen_merged_case(r):
     """stdout and stderr into one file (`>out 2>&1`): the interleaving shows
-    where stdout's buffer is flushed relative to each stderr message.
-
-    Known divergence (src/cli/run.rs): jq's stdout is a stdio FILE whose buffer
-    is fstat(1).st_blksize (4096 for a regular file on macOS, 16384 for a pipe)
-    and is flushed each time it fills, at exact multiples of that size; qj
-    buffers 64 KB and flushes past the boundary. E.g.
-    `qj -n 'range(2000), error("x")' >out 2>&1` writes the error first."""
+    where stdout's buffer is flushed relative to each stderr message: jq's
+    stdout is a stdio FILE whose buffer is fstat(1).st_blksize (4096 for a
+    regular file on macOS, 16384 for a pipe), written out whenever a write
+    doesn't fit, and a large `-r` string is a single fwrite."""
     n = r.choice([10, 500, 1000, 2000, 4000, 20000, 30000])
     k = r.choice([100, 333, 700, 1000, 5000])
     prog = r.choice(MERGED_PROGRAMS)
     prog = prog.replace("{N1}", str(n - 1)).replace("{N}", str(n)).replace(
-        "{K1}", str(k - 1)).replace("{K}", str(k))
-    flags = [["-c"]] if r.random() < 0.7 else [r.choice(gen.OUTPUT_FLAGS)]
+        "{K1}", str(k - 1)).replace("{K}", str(k)).replace("{L}", str(r.choice(MERGED_LENGTHS)))
+    flags = [["-c"]] if r.random() < 0.6 else [r.choice(gen.OUTPUT_FLAGS)]
+    if "\" * " in prog or r.random() < 0.2:
+        flags.append(r.choice([["-r"], ["-j"], ["-j"], ["--raw-output0"], ["-rj"]]))
     if r.random() < 0.15:
         flags.append(["--unbuffered"])
     if "{" not in prog and "range(" in prog:
