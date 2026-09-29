@@ -8,7 +8,7 @@
 //!
 //! Levels: `pass` (all three equal), `stdout` (stdout + exit code equal,
 //! stderr differs), `fail`. A case is skipped only when jq itself times out or
-//! floods the output cap.
+//! hits the output or memory cap.
 //!
 //! Case sources (see `tests/jq_diff/cases.rs` for modes):
 //! - `tests/jq_compat/*.test`: jq 1.8.1's own suites (`upstream/...`).
@@ -34,7 +34,8 @@
 //!
 //! The test fails when a case in the baseline drops to a lower level. Full
 //! details of every non-passing case are written to
-//! `target/tmp/jq_diff/report.txt`, and one line per case to `results.tsv`.
+//! `target/tmp/jq_diff/report.txt`, one line per case to `results.tsv`, and
+//! the baseline this run would produce to `baseline_candidate.txt`.
 
 #[path = "jq_diff/baseline.rs"]
 mod baseline;
@@ -162,7 +163,7 @@ impl Config {
 
     /// Whether this run covers every case (so the baseline can be pruned).
     fn complete(&self) -> bool {
-        self.filters.is_empty() && self.modes.len() == cases::ALL_MODES.len()
+        self.filters.is_empty() && cases::ALL_MODES.iter().all(|m| self.modes.contains(m))
     }
 
     fn selects(&self, job: &Job) -> bool {
