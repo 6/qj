@@ -60,8 +60,9 @@ finishes it (timeout, or the output or memory cap) **and** qj doesn't either; a 
 answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode.
 - **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
   `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no
-  expected output); `tests/jq_compat/corpus/*.toml` (CLI cases with any argv, files, env or
-  binary stdin; format in `tests/jq_diff/cli.rs`). A CLI case with `merge = "file"` or
+  expected output); `tests/jq_compat/corpus/*.toml` (CLI cases with any argv, files, env,
+  binary stdin, or standard descriptors closed with `close_fds = [0, 1, 2]`;
+  format in `tests/jq_diff/cli.rs`). A CLI case with `merge = "file"` or
   `"pipe"` sends stderr where stdout goes (`>out 2>&1`, `2>&1 |`), which shows stdio's
   buffering order (`corpus/merged_output.toml`). Ids look like `upstream/man.test:280:compact`.
 - **Modes** for `.test` cases: `compact` (`-c`, stdin), `pretty` (stdin), `file` (`-c`, input
