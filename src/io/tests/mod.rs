@@ -4,6 +4,7 @@
 
 mod diff;
 mod generate;
+mod live;
 mod reader;
 mod reference;
 mod simd;
