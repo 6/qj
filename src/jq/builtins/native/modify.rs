@@ -44,6 +44,9 @@ pub(super) fn modify(
     update: Closure,
     path_fn: Closure,
 ) -> Result<Value, Stop> {
+    if let Some(opt) = vm.each_closure(paths) {
+        return modify_each(vm, input, opt, update);
+    }
     // `[., []]`: the value being updated and the paths to delete.
     let mut root = input.clone();
     let mut dels: Vec<Value> = Vec::new();
@@ -55,6 +58,44 @@ pub(super) fn modify(
         }
         r = vm.sub_next(s)?;
     }
+    finish(root, dels)
+}
+
+/// `_modify(.[]; update)` (`map_values`, `.[] |= f`), or `.[]?` if `opt`: the paths of
+/// `path(.[])` are the input's keys in order, so no path expression needs to run.
+/// `.[]` holds its container (the input, which the state starts out as) in its fork
+/// point until it produces the last element of an array (an object's to the end), so
+/// the input is held just as long: the first update then copies it, or updates it in
+/// place, as in jq.
+fn modify_each(vm: &mut Jq, input: Value, opt: bool, update: Closure) -> Result<Value, Stop> {
+    let n = match &input {
+        Value::Array(a) => a.len(),
+        Value::Object(o) => o.len(),
+        _ if opt => return Ok(input),
+        _ => return Err(super::cannot_iterate(&input)),
+    };
+    let is_array = matches!(input, Value::Array(_));
+    let mut held = Some(input.clone());
+    let mut root = input;
+    let mut dels: Vec<Value> = Vec::new();
+    for i in 0..n {
+        let container = held.as_ref().expect("the container");
+        let k = match container {
+            Value::Array(_) => Value::number(i as f64),
+            Value::Object(o) => Value::String(o.get_index(i).expect("key").0.clone()),
+            _ => unreachable!(),
+        };
+        if is_array && i + 1 == n {
+            held = None;
+        }
+        modify_one(vm, &mut root, &mut dels, Value::from(vec![k]), update)?;
+    }
+    drop(held);
+    finish(root, dels)
+}
+
+/// `. as $dot | $dot[0] | delpaths($dot[1])`.
+fn finish(root: Value, dels: Vec<Value>) -> Result<Value, Stop> {
     if dels.is_empty() {
         // `delpaths([])` returns its input.
         return Ok(root);

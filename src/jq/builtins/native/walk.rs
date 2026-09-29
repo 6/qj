@@ -36,12 +36,13 @@ pub(super) fn walk(vm: &mut Jq, input: Value, f: Closure, c: ConstView<'_>) -> O
 enum Frame {
     /// `map(w)`: child `i` of `src` is being walked; `out` collects.
     Arr { src: Array, i: usize, out: Array },
-    /// `map_values(w)`: key `i` of `src` is being walked; `obj` gets the updates and
-    /// `dels` the keys whose `w` was empty.
+    /// `map_values(w)`: key `i` of `src` is being walked; `updates` has the new values
+    /// by position (`setpath([0] + $p; $v)`, applied together at the end: no key moves,
+    /// and nothing sees the object in between) and `dels` the keys whose `w` was empty.
     Obj {
         src: Object,
         i: usize,
-        obj: Object,
+        updates: Vec<Option<Value>>,
         dels: Vec<Value>,
     },
 }
@@ -68,10 +69,11 @@ fn transform(vm: &mut Jq, root: Value, f: Closure, map_empty: &Value) -> Result<
                     // `_modify`'s `label $out`, for the first key.
                     vm.gen_labels(1);
                     let first = o.get_index(0).expect("non-empty").1.clone();
+                    let n = o.len();
                     stack.push(Frame::Obj {
-                        src: o.clone(),
+                        src: o,
                         i: 0,
-                        obj: o,
+                        updates: Vec::with_capacity(n),
                         dels: Vec::new(),
                     });
                     cur = first;
@@ -94,14 +96,19 @@ fn transform(vm: &mut Jq, root: Value, f: Closure, map_empty: &Value) -> Result<
                     *i += 1;
                     src.get(*i).cloned()
                 }
-                Frame::Obj { src, i, obj, dels } => {
-                    let (k, _) = src.get_index(*i).expect("walked key");
-                    match vm.sub_first(f, t)? {
-                        // setpath([0] + $p; $v)
-                        Some(u) => obj.insert(k.clone(), u),
+                Frame::Obj {
+                    src,
+                    i,
+                    updates,
+                    dels,
+                } => {
+                    let u = vm.sub_first(f, t)?;
+                    if u.is_none() {
                         // setpath([1, (.[1] | length)]; $p)
-                        None => dels.push(Value::from(vec![Value::String(k.clone())])),
+                        let (k, _) = src.get_index(*i).expect("walked key");
+                        dels.push(Value::from(vec![Value::String(k.clone())]));
                     }
+                    updates.push(u);
                     *i += 1;
                     let next = src.get_index(*i).map(|(_, v)| v.clone());
                     if next.is_some() {
@@ -116,14 +123,24 @@ fn transform(vm: &mut Jq, root: Value, f: Closure, map_empty: &Value) -> Result<
             }
             t = match stack.pop().expect("top frame") {
                 Frame::Arr { out, .. } => Value::Array(out),
-                Frame::Obj { obj, dels, .. } => finish(obj, dels)?,
+                Frame::Obj {
+                    src, updates, dels, ..
+                } => finish(src, updates, dels)?,
             };
         }
     }
 }
 
-/// `$dot[0] | delpaths($dot[1])`.
-fn finish(obj: Object, dels: Vec<Value>) -> Result<Value, Stop> {
+/// The updates, then `$dot[0] | delpaths($dot[1])`.
+fn finish(mut obj: Object, updates: Vec<Option<Value>>, dels: Vec<Value>) -> Result<Value, Stop> {
+    if updates.iter().any(Option::is_some) {
+        // The first setpath copies the (shared) object; the rest write in place.
+        for (v, u) in obj.values_mut().zip(updates) {
+            if let Some(u) = u {
+                *v = u;
+            }
+        }
+    }
     if dels.is_empty() {
         return Ok(Value::Object(obj));
     }

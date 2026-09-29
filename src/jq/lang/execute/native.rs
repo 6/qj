@@ -489,9 +489,23 @@ impl Jq {
     /// The next output of a suspended sub-run.
     pub(crate) fn sub_next(&mut self, s: Sub) -> Result<Option<(Sub, Value)>, Stop> {
         debug_assert!(self.error.is_none());
+        if self.sub_idle(&s) {
+            // Only the base is left: restoring it is all backtracking would do.
+            self.pop_base(&s);
+            return Ok(None);
+        }
         let prog = self.prog.clone();
         let pc = self.stack_restore().expect("sub-run base fork point");
         self.sub_continue(&prog, pc, true, s.base)
+    }
+
+    /// Restores (pops) the base fork point of an idle sub-run, as `BT_SUBRUN_BASE` would.
+    #[inline]
+    fn pop_base(&mut self, s: &Sub) {
+        debug_assert!(self.sub_idle(s));
+        let pc = self.stack_restore().expect("sub-run base fork point");
+        debug_assert_eq!(pc, self.prog.subrun_base_pc as usize);
+        debug_assert_eq!(self.last_fork, s.base);
     }
 
     fn sub_continue(
@@ -521,14 +535,17 @@ impl Jq {
 
     /// Ends a sub-run that is [`Jq::sub_idle`] (pops its base fork point).
     pub(crate) fn sub_finish(&mut self, s: Sub) {
-        debug_assert!(self.sub_idle(&s));
-        self.sub_abandon(s);
+        self.pop_base(&s);
     }
 
     /// Ends a suspended sub-run the way jq's `break` does: an error unwinds its fork
     /// points (their handlers restore paths and propagate it) down to the base.
     pub(crate) fn sub_abandon(&mut self, s: Sub) {
         debug_assert!(self.error.is_none());
+        if self.sub_idle(&s) {
+            self.pop_base(&s);
+            return;
+        }
         self.error = Some(Raised::new(Value::Null));
         self.sub_unwind(s);
         self.error = None;
@@ -538,6 +555,10 @@ impl Jq {
     /// when that error propagates through the fork points of jq's definition.
     pub(crate) fn sub_unwind(&mut self, s: Sub) {
         debug_assert!(self.error.is_some());
+        if self.sub_idle(&s) {
+            self.pop_base(&s);
+            return;
+        }
         let prog = self.prog.clone();
         let pc = self.stack_restore().expect("sub-run base fork point");
         match self.run::<false>(&prog, pc, true, s.base) {
@@ -616,6 +637,23 @@ impl Jq {
                     .locals
                     .get(fr.locals as usize + *var as usize)
                     .cloned()
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether closure `f` is `.[]` (`Some(false)`) or `.[]?` (`Some(true)`).
+    pub(crate) fn each_closure(&self, f: Closure) -> Option<bool> {
+        let code = &self.prog.funcs[f.func as usize].bc.code;
+        match code.as_slice() {
+            [op, ret] if *ret == Opcode::RET as u16 => {
+                if *op == Opcode::EACH as u16 {
+                    Some(false)
+                } else if *op == Opcode::EACH_OPT as u16 {
+                    Some(true)
+                } else {
+                    None
+                }
             }
             _ => None,
         }
