@@ -46,4 +46,7 @@ pub mod locfile;
 pub mod parser;
 mod parser_tables;
 
-pub use parser::{NoHooks, ParseError, ParseHooks, parse, parse_library, parse_program};
+pub use parser::{
+    NUM_RULES, NoHooks, ParseError, ParseHooks, parse, parse_library, parse_program, reductions,
+    rule_name,
+};

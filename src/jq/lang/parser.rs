@@ -78,21 +78,33 @@ impl ParseHooks for NoHooks {}
 /// outside strings and is replaced inside them). jq's CLI passes the program as a C
 /// string, so callers should cut the text at the first NUL byte to match.
 pub fn parse(src: &[u8], hooks: &mut dyn ParseHooks) -> Result<Program, Vec<ParseError>> {
-    let mut p = Parser {
-        lexer: Lexer::new(src),
-        hooks,
-        errors: Vec::new(),
-        ss: Vec::with_capacity(YYINITDEPTH),
-        vs: Vec::with_capacity(YYINITDEPTH),
-        ls: Vec::with_capacity(YYINITDEPTH),
-        answer: None,
-    };
+    let mut p = Parser::new(src, hooks);
     let accepted = p.run();
     match (accepted, p.answer) {
         (true, Some(program)) if p.errors.is_empty() => Ok(program),
         _ => Err(p.errors),
     }
 }
+
+/// The grammar rules reduced while parsing `src`, in order: bison's `YYDEBUG` trace,
+/// for debugging and coverage tests. Rule numbers are those of jq's generated
+/// `parser.c` (see [`rule_name`]).
+pub fn reductions(src: &[u8]) -> Vec<u16> {
+    let mut hooks = NoHooks;
+    let mut p = Parser::new(src, &mut hooks);
+    p.trace = Some(Vec::new());
+    p.run();
+    p.trace.unwrap_or_default()
+}
+
+/// The production of a grammar rule, e.g. `rule_name(13)` is `Query: Query '|' Query`.
+pub fn rule_name(rule: u16) -> &'static str {
+    RULE_NAMES.get(rule as usize).copied().unwrap_or("")
+}
+
+/// Number of grammar rules (`YYNRULES`); rules are numbered `1..=NUM_RULES`, and rule 1
+/// (`$accept`) is never reduced.
+pub const NUM_RULES: u16 = YYNRULES as u16;
 
 /// [`parse`] without semantic hooks.
 pub fn parse_program(src: impl AsRef<[u8]>) -> Result<Program, Vec<ParseError>> {
@@ -210,6 +222,23 @@ struct Parser<'a, 'h> {
     vs: Vec<Sem>,
     ls: Vec<Loc>,
     answer: Option<Program>,
+    /// Reduced rules, when tracing ([`reductions`]).
+    trace: Option<Vec<u16>>,
+}
+
+impl<'a, 'h> Parser<'a, 'h> {
+    fn new(src: &'a [u8], hooks: &'h mut dyn ParseHooks) -> Parser<'a, 'h> {
+        Parser {
+            lexer: Lexer::new(src),
+            hooks,
+            errors: Vec::new(),
+            ss: Vec::with_capacity(YYINITDEPTH),
+            vs: Vec::with_capacity(YYINITDEPTH),
+            ls: Vec::with_capacity(YYINITDEPTH),
+            answer: None,
+            trace: None,
+        }
+    }
 }
 
 /// Where control goes next in the skeleton (its labels).
@@ -403,6 +432,9 @@ impl Parser<'_, '_> {
                         let prev = self.ls[base - 1];
                         Loc::new(prev.end, prev.end)
                     };
+                    if let Some(trace) = &mut self.trace {
+                        trace.push(rule as u16);
+                    }
                     let value = self.action(rule, loc, base);
                     self.ss.truncate(base);
                     self.vs.truncate(base);

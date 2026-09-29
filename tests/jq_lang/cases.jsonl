@@ -1354,6 +1354,23 @@
 {"exit":3,"origin":"corpus.jsonl:640","src":"try\n  error(\"x\")\ncatch\n","stderr":"jq: error: syntax error, unexpected end of file at <top-level>, line 3, column 6:\n    catch\n         ^\njq: error: Possibly unterminated 'try' statement at <top-level>, line 1, column 1:\n    try\n    ^^^\njq: 2 compile errors\n"}
 {"exit":3,"origin":"corpus.jsonl:641","src":"label $f\n| break $g $h","stderr":"jq: error: syntax error, unexpected BINDING, expecting end of file at <top-level>, line 2, column 12:\n    | break $g $h\n               ^^\njq: 1 compile error\n"}
 {"exit":3,"origin":"corpus.jsonl:642","src":"{(\n0\n):1}","stderr":"jq: error: Cannot use number (0) as object key at <top-level>, line 2, column 1:\n    0\n    ^\njq: 1 compile error\n"}
+{"exit":0,"origin":"corpus.jsonl:644","src":".a.\"b\"?"}
+{"exit":0,"origin":"corpus.jsonl:645","src":".a.\"b\\(1)\"?"}
+{"exit":0,"origin":"corpus.jsonl:646","src":".[\"a\"].\"b\"?"}
+{"exit":0,"origin":"corpus.jsonl:647","src":".a.[0]?"}
+{"exit":0,"origin":"corpus.jsonl:648","src":".a.[\"b\"]?"}
+{"exit":0,"origin":"corpus.jsonl:649","src":".[1:]?"}
+{"exit":0,"origin":"corpus.jsonl:650","src":".[:2]?"}
+{"exit":0,"origin":"corpus.jsonl:651","src":".a[1:]?"}
+{"exit":0,"origin":"corpus.jsonl:652","src":".a[:2]?"}
+{"exit":0,"origin":"corpus.jsonl:653","src":".a[1:2]?"}
+{"exit":0,"origin":"corpus.jsonl:655","src":"\"abc\"[1:]?"}
+{"exit":0,"origin":"corpus.jsonl:656","src":"[1,2,3][:2]?"}
+{"exit":0,"origin":"corpus.jsonl:657","src":".a.\"b\"?.c"}
+{"exit":0,"origin":"corpus.jsonl:658","src":".a.[0]?[1]"}
+{"exit":0,"origin":"corpus.jsonl:659","src":".[1:]?[0]"}
+{"exit":0,"origin":"corpus.jsonl:660","src":"try .a.\"b\"? catch 1"}
+{"exit":0,"origin":"corpus.jsonl:661","src":".a.\"b\"??"}
 {"exit":3,"origin":"jq.test:16 mutation 3","src":"nu","stderr":"jq: error: nu/0 is not defined at <top-level>, line 1, column 1:\n    nu\n    ^^\njq: 1 compile error\n"}
 {"exit":3,"origin":"jq.test:35 mutation 11","src":"[$__loc__","stderr":"jq: error: syntax error, unexpected end of file, expecting '|' or ',' or ']' at <top-level>, line 1, column 2:\n    [$__loc__\n     ^^^^^^^^\njq: 1 compile error\n"}
 {"exit":3,"origin":"jq.test:39 mutation 5","src":"{x:-1},{x:-.},{x:-.","stderr":"jq: error: syntax error, unexpected end of file, expecting '}' at <top-level>, line 1, column 19:\n    {x:-1},{x:-.},{x:-.\n                      ^\njq: 1 compile error\n"}
@@ -2181,6 +2198,15 @@
 {"exit":3,"origin":"corpus.jsonl:641 mutation 16","src":"label $f\n| break break $g $h","stderr":"jq: error: syntax error, unexpected break, expecting BINDING at <top-level>, line 2, column 9:\n    | break break $g $h\n            ^^^^^\njq: error: break requires a label to break to at <top-level>, line 2, column 3:\n    | break break $g $h\n      ^^^^^^^^^^^\njq: 2 compile errors\n"}
 {"exit":3,"origin":"corpus.jsonl:642 mutation 1","src":"{(\n0","stderr":"jq: error: syntax error, unexpected end of file, expecting '|' or ',' or ')' at <top-level>, line 2, column 1:\n    0\n    ^\njq: 1 compile error\n"}
 {"exit":3,"origin":"corpus.jsonl:642 mutation 23","src":".(\n0\n):1}","stderr":"jq: error: syntax error, unexpected '(' at <top-level>, line 1, column 2:\n    .(\n     ^\njq: error: try .[\"field\"] instead of .field for unusually named fields at <top-level>, line 1, column 1:\n    .(\n    ^^\njq: 2 compile errors\n"}
+{"exit":0,"origin":"corpus.jsonl:645 mutation 9","src":".a.\"b\\(1) )\"?"}
+{"exit":3,"origin":"corpus.jsonl:647 mutation 16","src":".a.[0] ]?","stderr":"jq: error: syntax error, unexpected INVALID_CHARACTER, expecting end of file at <top-level>, line 1, column 8:\n    .a.[0] ]?\n           ^\njq: 1 compile error\n"}
+{"exit":3,"origin":"corpus.jsonl:650 mutation 7","src":". .[:2]?","stderr":"jq: error: syntax error, unexpected ':' at <top-level>, line 1, column 5:\n    . .[:2]?\n        ^\njq: 1 compile error\n"}
+{"exit":3,"origin":"corpus.jsonl:652 mutation 1","src":".a:2]?","stderr":"jq: error: syntax error, unexpected ':', expecting end of file at <top-level>, line 1, column 3:\n    .a:2]?\n      ^\njq: 1 compile error\n"}
+{"exit":3,"origin":"corpus.jsonl:652 mutation 21","src":".a[:2] ]?","stderr":"jq: error: syntax error, unexpected INVALID_CHARACTER, expecting end of file at <top-level>, line 1, column 8:\n    .a[:2] ]?\n           ^\njq: 1 compile error\n"}
+{"exit":3,"origin":"corpus.jsonl:656 mutation 17","src":"[1,2,3][:2 2]?","stderr":"jq: error: syntax error, unexpected LITERAL, expecting '|' or ',' or ']' at <top-level>, line 1, column 12:\n    [1,2,3][:2 2]?\n               ^\njq: 1 compile error\n"}
+{"exit":0,"origin":"corpus.jsonl:657 mutation 5","src":".a.\"\"?.c"}
+{"exit":3,"origin":"corpus.jsonl:657 mutation 9","src":".a.b\"?.c","stderr":"jq: error: syntax error, unexpected QQSTRING_START, expecting end of file at <top-level>, line 1, column 5:\n    .a.b\"?.c\n        ^\njq: 1 compile error\n"}
+{"exit":3,"origin":"corpus.jsonl:657 mutation 14","src":".a.\"b\"?-","stderr":"jq: error: syntax error, unexpected end of file at <top-level>, line 1, column 8:\n    .a.\"b\"?-\n           ^\njq: 1 compile error\n"}
 {"exit":0,"origin":"chain-plus[100000]"}
 {"exit":0,"origin":"chain-comma[100000]"}
 {"exit":0,"origin":"object-pairs[3400]"}

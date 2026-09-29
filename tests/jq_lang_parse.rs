@@ -484,6 +484,46 @@ fn parse_matches_recorded_jq() {
     );
 }
 
+/// Every grammar rule's action runs somewhere in the recorded corpus (the error
+/// recovery rules included), so a mismatch between an action and the value stack
+/// can't hide in a rarely used rule.
+#[test]
+fn recorded_cases_reduce_every_rule() {
+    let cases = load_cases(&data_dir().join("cases.jsonl"));
+    let mut seen = vec![false; qj::jq::lang::NUM_RULES as usize + 1];
+    for c in &cases {
+        for r in qj::jq::lang::reductions(&c.src) {
+            seen[r as usize] = true;
+        }
+    }
+    let missing: Vec<String> = (2..=qj::jq::lang::NUM_RULES)
+        .filter(|&r| !seen[r as usize])
+        .map(|r| format!("{r}: {}", qj::jq::lang::rule_name(r)))
+        .collect();
+    assert!(missing.is_empty(), "rules never reduced: {missing:#?}");
+}
+
+/// Arbitrary bytes never panic the lexer, parser, hooks or error rendering.
+#[test]
+fn random_bytes_do_not_panic() {
+    const ALPHABET: &[u8] = b" \n\r\t.$@\"\\()[]{}|,;:?+-*/%=<>!#`'_aefilnrstu0159\x80\xc3\xa9\xff";
+    let mut rng = Rng(0xD1B54A32D192ED03);
+    for _ in 0..20_000 {
+        let len = rng.below(40);
+        let src: Vec<u8> = (0..len)
+            .map(|_| {
+                if rng.below(8) == 0 {
+                    rng.next() as u8
+                } else {
+                    ALPHABET[rng.below(ALPHABET.len())]
+                }
+            })
+            .collect();
+        let o = ours(&src);
+        assert_eq!(o.syntax_reject, parse(&src, &mut NoHooks).is_err());
+    }
+}
+
 #[test]
 fn builtin_jq_parses_as_library() {
     let src = std::fs::read(data_dir().join("builtin.jq")).unwrap();
