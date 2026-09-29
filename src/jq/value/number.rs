@@ -466,6 +466,23 @@ impl Literal {
     fn is_zero(&self) -> bool {
         !self.inf && self.coeff.is_zero()
     }
+
+    /// Whether distinct literals may share this literal's double: more than
+    /// 15 significant digits, or outside the normal double range.
+    fn is_lossy(&self) -> bool {
+        if self.inf {
+            return true;
+        }
+        if self.coeff.is_zero() {
+            return false;
+        }
+        let mut buf = itoa::Buffer::new();
+        let digits = self.coeff.digits(&mut buf);
+        let trailing = digits.iter().rev().take_while(|&&c| c == b'0').count();
+        let sig = (digits.len() - trailing) as i64;
+        let adjusted = self.exp + trailing as i64 + sig - 1;
+        sig > 15 || !(-307..=307).contains(&adjusted)
+    }
 }
 
 static POW10: [f64; 23] = [
@@ -596,6 +613,15 @@ impl Number {
         match &self.0 {
             Repr::Native(_) => None,
             Repr::Literal(l) => l.canonical_string(),
+        }
+    }
+
+    /// Whether this is a literal whose decimal value may not survive the
+    /// conversion to double (see `qsort` for why sorting cares).
+    pub(crate) fn is_lossy_literal(&self) -> bool {
+        match &self.0 {
+            Repr::Native(_) => false,
+            Repr::Literal(l) => l.is_lossy(),
         }
     }
 

@@ -51,6 +51,7 @@ pub mod number;
 pub mod object;
 pub mod parse;
 pub mod print;
+mod qsort;
 pub mod string;
 pub mod unicode;
 

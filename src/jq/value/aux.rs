@@ -562,8 +562,16 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
 fn sort_items(keys: &Array) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..keys.len()).collect();
     let k = keys.as_slice();
-    // comparing by index if the keys compare equal makes the sort stable
-    idx.sort_by(|&a, &b| cmp_impl(&k[a], &k[b], true).then(a.cmp(&b)));
+    // jq's sort_cmp: jv_cmp, then the index (which makes the sort stable).
+    let sort_cmp = |a: usize, b: usize| cmp_impl(&k[a], &k[b], false).then(a.cmp(&b));
+    if super::qsort::needs_platform_qsort(k) {
+        // jv_cmp is not a consistent order here, so the result depends on
+        // the sorting algorithm: use the C library's qsort, as jq does.
+        super::qsort::platform_qsort(&mut idx, &sort_cmp);
+    } else {
+        // A strict total order: every correct sort gives jq's result.
+        idx.sort_by(|&a, &b| sort_cmp(a, b));
+    }
     idx
 }
 

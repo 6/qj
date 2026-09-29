@@ -708,3 +708,183 @@ fn live_parse_mutations() {
     }
     eprintln!("{} damaged documents match jq", docs.len());
 }
+
+/// Sorting with NaN keys, where jq's result depends on its qsort.
+#[test]
+#[ignore]
+fn live_nan_sorts() {
+    if !jq_available() {
+        return;
+    }
+    let seed = env_u64("QJ_SEED", 0x7a7);
+    let cases = env_u64("QJ_CASES", 3000);
+    let mut rng = Rng(seed | 1);
+    let mut docs: Vec<String> = Vec::new();
+    for _ in 0..cases {
+        let n = if rng.chance(80) {
+            rng.below(60)
+        } else {
+            rng.below(400)
+        };
+        let nan_pct = rng.below(101);
+        let items: Vec<String> = (0..n)
+            .map(|i| {
+                let k = if rng.chance(nan_pct) {
+                    (*rng.pick(&["nan", "[nan]", "[nan,1]", "[nan,0]", "{\"a\":nan}"])).to_owned()
+                } else {
+                    match rng.below(4) {
+                        0 => format!("[{}]", rng.below(3)),
+                        1 => "null".to_owned(),
+                        _ => rng.below(5).to_string(),
+                    }
+                };
+                format!("{{\"k\":{k},\"i\":{i}}}")
+            })
+            .collect();
+        docs.push(format!("[{}]", items.join(",")));
+    }
+    let input = docs.join("\n");
+    let programs = [
+        "sort_by(.k) | map(.i)",
+        "group_by(.k) | map(map(.i))",
+        "unique_by(.k) | map(.i)",
+        "map([.k, .i]) | sort | map(.[1])",
+    ];
+    for prog in programs {
+        let (want, err) = run_jq(&["-c", prog], input.as_bytes());
+        assert!(
+            err.is_empty(),
+            "jq failed: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let want = String::from_utf8(want).unwrap();
+        let mut failures = 0;
+        for (doc, line) in docs.iter().zip(want.lines()) {
+            let arr = parse_sized(doc.as_bytes()).unwrap();
+            let arr = arr.as_array().unwrap();
+            let get = |v: &Value, key: &str| v.as_object().unwrap().get(key).cloned().unwrap();
+            let got = match prog {
+                "map([.k, .i]) | sort | map(.[1])" => {
+                    let pairs: Array = arr
+                        .iter()
+                        .map(|v| Value::from(vec![get(v, "k"), get(v, "i")]))
+                        .collect();
+                    let sorted = sort(&pairs, &pairs);
+                    Value::from(
+                        sorted
+                            .iter()
+                            .map(|p| p.as_array().unwrap().get(1).cloned().unwrap())
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                _ => {
+                    let keys: Array = arr.iter().map(|v| Value::from(vec![get(v, "k")])).collect();
+                    let ids = |a: &Array| -> Value {
+                        Value::from(a.iter().map(|v| get(v, "i")).collect::<Vec<_>>())
+                    };
+                    match prog {
+                        "sort_by(.k) | map(.i)" => ids(&sort(arr, &keys)),
+                        "unique_by(.k) | map(.i)" => ids(&unique(arr, &keys)),
+                        _ => Value::from(
+                            group(arr, &keys)
+                                .iter()
+                                .map(|g| ids(g.as_array().unwrap()))
+                                .collect::<Vec<_>>(),
+                        ),
+                    }
+                }
+            }
+            .to_json();
+            if got != line {
+                failures += 1;
+                if failures <= 5 {
+                    eprintln!("{prog} on {doc}\n  got {got}\n  jq  {line}");
+                }
+            }
+        }
+        assert_eq!(failures, 0, "{prog}: {failures} of {} differ", docs.len());
+    }
+    eprintln!(
+        "{} NaN-keyed sorts x {} programs match jq",
+        docs.len(),
+        programs.len()
+    );
+}
+
+/// Sorting keys that mix literals differing only beyond double precision
+/// with native numbers (jv_cmp is not transitive then).
+#[test]
+#[ignore]
+fn live_lossy_literal_sorts() {
+    if !jq_available() {
+        return;
+    }
+    let seed = env_u64("QJ_SEED", 0x1055);
+    let cases = env_u64("QJ_CASES", 2000);
+    let mut rng = Rng(seed | 1);
+    let lits = [
+        "100000000000000000001",
+        "100000000000000000000",
+        "99999999999999999999",
+        "100000000000000000002",
+        "1e20",
+        "1.0000000000000000001e20",
+        "5",
+        "1e400",
+        "1e401",
+    ];
+    let mut docs: Vec<String> = Vec::new();
+    for _ in 0..cases {
+        let n = rng.below(40);
+        let items: Vec<String> = (0..n)
+            .map(|i| {
+                let k = *rng.pick(&lits);
+                let native = rng.chance(40);
+                format!("{{\"k\":{k},\"n\":{native},\"i\":{i}}}")
+            })
+            .collect();
+        docs.push(format!("[{}]", items.join(",")));
+    }
+    let input = docs.join("\n");
+    let prog = "sort_by(if .n then .k * 1 else .k end) | map(.i)";
+    let (want, err) = run_jq(&["-c", prog], input.as_bytes());
+    assert!(
+        err.is_empty(),
+        "jq failed: {}",
+        String::from_utf8_lossy(&err)
+    );
+    let want = String::from_utf8(want).unwrap();
+    let mut failures = 0;
+    for (doc, line) in docs.iter().zip(want.lines()) {
+        let arr = parse_sized(doc.as_bytes()).unwrap();
+        let arr = arr.as_array().unwrap();
+        let get = |v: &Value, key: &str| v.as_object().unwrap().get(key).cloned().unwrap();
+        let keys: Array = arr
+            .iter()
+            .map(|v| {
+                let k = get(v, "k");
+                let k = if get(v, "n").is_truthy() {
+                    Value::number(k.as_f64().unwrap() * 1.0)
+                } else {
+                    k
+                };
+                Value::from(vec![k])
+            })
+            .collect();
+        let got = Value::from(
+            sort(arr, &keys)
+                .iter()
+                .map(|v| get(v, "i"))
+                .collect::<Vec<_>>(),
+        )
+        .to_json();
+        if got != line {
+            failures += 1;
+            if failures <= 5 {
+                eprintln!("{prog} on {doc}\n  got {got}\n  jq  {line}");
+            }
+        }
+    }
+    assert_eq!(failures, 0, "{failures} of {} differ", docs.len());
+    eprintln!("{} mixed-precision sorts match jq", docs.len());
+}
