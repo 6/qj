@@ -225,6 +225,13 @@ interface scaffold before spawning it.
   the harness normalizing them the same way as the prefix. This lands with the wave 3 CLI.
 - 2026-09-29: **B1 binops merged** early (`cbb5a49`) for constant folding. **B2 merged**
   (`245b459`). C2 (VM) started, merging C1's `bytecode.rs` as it lands.
+- 2026-09-29: **V final merged** (`04c6ba2`) and **B1 merged** (`ce4c7f5`): every C builtin
+  is ported, and B1's fixture suite (15,163 cases) matches jq byte for byte.
+- 2026-09-29: **C2 merged, including C1's compiler** (`21eeaa7`). The whole new core
+  (compiler, VM, builtins) passes jq's upstream suites **819/819** against the binary, and
+  the corpus 11,200/11,205 (the rest is jq nondeterminism). `--debug-trace` matches jq on
+  11,202 programs. Wave 3 started: CLI (main.c/util.c processing on the new core, behind
+  `QJ_CORE=port`). C1 (disassembly parity, startup) and IO are still running.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
