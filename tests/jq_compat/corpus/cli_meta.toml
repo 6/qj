@@ -1,0 +1,30 @@
+# Help, usage and version output (format: tests/jq_diff/cli.rs). Kept apart
+# from cli.toml so the scoreboard shows them as their own row: whether qj
+# should reproduce jq's help and version text byte for byte is a policy
+# decision, and these cases measure the current gap either way.
+
+[[case]]
+name = "help-short"
+args = ["-h"]
+
+[[case]]
+name = "help-long"
+args = ["--help"]
+
+[[case]]
+name = "version"
+args = ["--version"]
+
+[[case]]
+name = "usage-no-args"
+args = []
+
+[[case]]
+name = "usage-no-program-with-stdin"
+args = []
+stdin = "1"
+
+[[case]]
+name = "unknown-short-option"
+args = ["-Z", "."]
+stdin = "1"

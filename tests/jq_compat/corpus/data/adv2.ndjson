@@ -1,0 +1,22 @@
+{"payload":{"type":"PushEvent"},"type":"Other"}
+{"msg":"\"type\":\"PushEvent\"","type":"Other"}
+{"type":"PushEvent","id":1}
+{"type":"PushEvent","id":2}
+{"type":"PushEvent","type":"Other","id":3}
+{"type":"Other","type":"PushEvent","id":4}
+{"type" : "PushEvent" , "id" : 5}
+{ "id":6, "type":"PushEvent", "s":"a\/b" }
+{"type":"PushEvent","n":1e2,"id":7}
+{"type":"PushEvent","s":"é","id":8}
+{"type":"PushEventX","id":9}
+{"type":["PushEvent"],"id":10}
+{"n":1.0,"id":12}
+{"n":1e0,"id":13}
+{"n":10e-1,"id":14}
+{"n":1,"id":15}
+{"n":1.00000000000000000001,"id":16}
+{"a":{"b":1},"a":{"b":2},"id":17}
+{"actor":{"type":"User"},"type":"PushEvent","id":20}
+{"type":"PushEvent","pr":{"user":{"type":"User"}},"id":21}
+{"type":"PushEvent","id":22}
+{"type":"PushEvent","id":23}

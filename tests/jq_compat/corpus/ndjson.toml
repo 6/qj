@@ -1,0 +1,196 @@
+# Adversarial NDJSON for qj's parallel NDJSON path and its fast paths
+# (NdjsonFastPath in src/parallel/ndjson.rs). Format: tests/jq_diff/cli.rs.
+#
+# Data (tests/jq_compat/corpus/data/):
+# - adv.ndjson, adv2.ndjson, bad.ndjson: from the orchestrator's audit.
+#   Nested same-name keys, duplicate keys, whitespace, escapes, number
+#   spellings; adv.ndjson has an invalid line 13, bad.ndjson an invalid line 2.
+# - adv3.ndjson: strict JSON, one value per line: escaped keys and values,
+#   NUL, odd and big number literals, non-object lines, deep same-name keys.
+# - adv4.ndjson: a valid jq value stream that isn't strict NDJSON: CRLF,
+#   blank and whitespace-only lines, two values on a line, a value split
+#   across lines, no final newline.
+# - bom.ndjson, utf8.ndjson, nan.ndjson: one token class each that jq accepts
+#   but a strict JSON parser rejects (kept apart so one can't mask the others).
+#
+# Every program runs over every file through the file-argument path, plus
+# pretty output, two file arguments, and stdin.
+
+[[sweep]]
+name = "fastpath"
+note = "One program per NdjsonFastPath shape, plus neighbors that must not take a fast path"
+files = { "adv.ndjson" = { path = "data/adv.ndjson" }, "adv2.ndjson" = { path = "data/adv2.ndjson" }, "bad.ndjson" = { path = "data/bad.ndjson" }, "adv3.ndjson" = { path = "data/adv3.ndjson" }, "adv4.ndjson" = { path = "data/adv4.ndjson" } }
+variants = { adv = ["-c", "{program}", "adv.ndjson"], adv2 = ["-c", "{program}", "adv2.ndjson"], bad = ["-c", "{program}", "bad.ndjson"], adv3 = ["-c", "{program}", "adv3.ndjson"], adv4 = ["-c", "{program}", "adv4.ndjson"], adv3pretty = ["{program}", "adv3.ndjson"], adv3twice = ["-c", "{program}", "adv3.ndjson", "adv3.ndjson"] }
+programs = [
+  # identity and field chains
+  ".",
+  ".type",
+  ".id",
+  ".n",
+  ".s",
+  ".a.b",
+  ".actor.type",
+  ".payload.type",
+  ".pr.user.type",
+  ".type?",
+  # select with ==, != and ordering, on strings, numbers, null, booleans
+  'select(.type == "PushEvent")',
+  'select(.type != "PushEvent")',
+  'select("PushEvent" == .type)',
+  'select(.type == "PushEventX")',
+  'select(.type == null)',
+  'select(.type == true)',
+  "select(.id == 3)",
+  "select(.id > 5)",
+  "select(.id < 5)",
+  "select(.id >= 22)",
+  "select(.id <= 2)",
+  "select(.n == 1)",
+  "select(.n != 1)",
+  "select(.n == 1.0)",
+  "select(.n == 100)",
+  "select(.n > 0.5)",
+  'select(.s == "é")',
+  'select(.s == "a/b")',
+  'select(.type > "P")',
+  'select(.actor.type == "User")',
+  'select(.a.b == 2)',
+  # select + projection
+  'select(.type == "PushEvent") | .id',
+  'select(.type == "PushEvent") | .n',
+  'select(.id > 5) | .type',
+  'select(.type == "PushEvent") | {id, type}',
+  'select(.type == "PushEvent") | {id: .id, t: .type}',
+  'select(.type == "PushEvent") | [.id, .type]',
+  # compound predicates
+  'select(.type == "PushEvent" and .id > 3)',
+  'select(.type == "PushEvent" or .type == "Other")',
+  'select(.type != "PushEvent" or .id < 5)',
+  'select(.id > 3 and .n == 1)',
+  'select((.type == "PushEvent") | not)',
+  # string predicates
+  'select(.type | test("^Push"))',
+  'select(.type | test("event$"; "i"))',
+  'select(.type | startswith("Push"))',
+  'select(.type | endswith("Event"))',
+  'select(.type | contains("Push"))',
+  'select(.type | contains("Push")) | .id',
+  'select(.type | strings | startswith("Push"))',
+  # object / array construction
+  "{id, type}",
+  "{id: .id, t: .type}",
+  "{type: .type, login: .actor.login}",
+  "{(.type // \"none\" | tostring): .id}",
+  "[.id, .type]",
+  "[.type, .a.b]",
+  "[.n]",
+  # length / keys / type / has
+  "length",
+  ".type | length",
+  ".a | length",
+  "keys",
+  "keys_unsorted",
+  ".a | keys",
+  "type",
+  ".type | type",
+  ".n | type",
+  'has("type")',
+  'has("id")',
+  '.a | has("b")',
+  "has(0)",
+  # values that must round-trip exactly
+  ".n + 0",
+  ".n | tostring",
+  "tojson",
+  "tostring",
+  ".s | length",
+  ".s | utf8bytelength",
+  ".type | explode | length",
+  "to_entries",
+  "del(.id)",
+  ".id |= . + 1",
+  # per-line error behavior
+  ".type + 1",
+  ".id | ltrimstr(1)",
+  "error",
+  'if .id == 3 then error("x") else .id end',
+  ".[0]",
+  ".type[0]",
+  "try .type[0] catch .",
+  # state across lines
+  "input_line_number",
+  "$__loc__",
+  "input_filename",
+  "[., input]",
+]
+
+[[sweep]]
+name = "stdin"
+note = "The same file fed on stdin"
+stdin = { path = "data/adv3.ndjson" }
+variants = { c = ["-c", "{program}"], pretty = ["{program}"] }
+programs = [
+  ".",
+  ".type",
+  'select(.type == "PushEvent")',
+  'select(.type == "PushEvent") | {id, type}',
+  'select(.type | contains("Push")) | .id',
+  "[.id, .type]",
+  "length",
+  "keys",
+  'has("type")',
+  ".n + 0",
+  "input_line_number",
+]
+
+[[sweep]]
+name = "whole-stream"
+note = "Programs that consume the stream as a whole"
+files = { "adv2.ndjson" = { path = "data/adv2.ndjson" }, "adv3.ndjson" = { path = "data/adv3.ndjson" }, "adv4.ndjson" = { path = "data/adv4.ndjson" }, "bad.ndjson" = { path = "data/bad.ndjson" } }
+variants = { adv2 = ["-c", "{program}", "adv2.ndjson"], adv3 = ["-c", "{program}", "adv3.ndjson"], adv4 = ["-c", "{program}", "adv4.ndjson"], bad = ["-c", "{program}", "bad.ndjson"], slurp = ["-sc", "{program}", "adv3.ndjson"], null = ["-nc", "{program}", "adv3.ndjson"] }
+programs = [
+  "[inputs | .id?]",
+  "reduce inputs as $l (0; . + 1)",
+  "[limit(3; inputs)]",
+  "first(inputs)",
+  "input",
+  "map(.id?)",
+  "length",
+  "[.[]?.type?] | unique",
+  "group_by(.type?) | map(length)",
+]
+
+[[sweep]]
+name = "stdin4"
+note = "adv4 (not strict NDJSON) on stdin"
+stdin = { path = "data/adv4.ndjson" }
+variants = { c = ["-c", "{program}"] }
+programs = [
+  ".",
+  ".type",
+  'select(.type == "PushEvent")',
+  "[.id, .type]",
+  "input_line_number",
+]
+
+[[sweep]]
+name = "tokens"
+note = "BOM, invalid UTF-8 and NaN, each in its own file"
+files = { "bom.ndjson" = { path = "data/bom.ndjson" }, "utf8.ndjson" = { path = "data/utf8.ndjson" }, "nan.ndjson" = { path = "data/nan.ndjson" } }
+variants = { bom = ["-c", "{program}", "bom.ndjson"], utf8 = ["-c", "{program}", "utf8.ndjson"], nan = ["-c", "{program}", "nan.ndjson"] }
+programs = [
+  ".",
+  ".type",
+  ".n",
+  'select(.type == "PushEvent")',
+  'select(.type == "PushEvent") | .id',
+  'select(.type | contains("Push"))',
+  "{id, type}",
+  "[.id, .type]",
+  "length",
+  "keys",
+  "type",
+  'has("n")',
+  ".type | length",
+  "tojson",
+]

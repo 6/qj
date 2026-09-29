@@ -1,0 +1,158 @@
+# reduce, foreach, generators, limit/first/nth, destructuring
+# Source: orchestrator audit probe catprobe.py ['reduce/foreach/gen']
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+reduce empty as $x (0; . + 1)
+null
+
+reduce .[] as $x (0; empty)
+[1,2]
+
+[foreach .[] as $x (0; . + $x; [$x, .])]
+[1,2,3]
+
+[foreach .[] as $x (0; . + $x)]
+[1,2,3]
+
+[reduce .[] as $x (0, 10; . + $x)]
+[1,2]
+
+[foreach .[] as $x (0; (. + $x), (. - $x); .)]
+[1,2]
+
+reduce .[] as [$a, $b] (0; . + $a * $b)
+[[1,2],[3,4]]
+
+reduce .[] as {a: $a} (0; . + $a)
+[{"a":1},{"a":2}]
+
+[limit(2; foreach .[] as $x (0; . + $x))]
+[1,2,3]
+
+[limit(0; 1, 2)]
+null
+
+[first(empty)]
+null
+
+try nth(-1; 1,2) catch .
+null
+
+[nth(1,0; 10,20,30)]
+null
+
+[range(0; 10; 3)]
+null
+
+[range(10; 0; -3)]
+null
+
+[range(0; 1; 0.3)]
+null
+
+[limit(5; range(0; 10; 0))]
+null
+
+[range(1, 2; 4)]
+null
+
+try [range("a")] catch .
+null
+
+[.[] as $x | $x * 2]
+[1,2]
+
+[. as [$a, $b, {c: $c}] | $a, $b, $c]
+[1, 2, {"c": 3}]
+
+[. as {a: $x, $b} | $x, $b]
+{"a":1,"b":2}
+
+[.[] as [$a] ?// $a | $a]
+[[1], 2]
+
+[.[] as {$a} ?// [$a] | $a]
+[{"a":1}, [2]]
+
+[. as [$a] ?// $a | if ($a|type) == "number" then error("n") else $a end]
+[1]
+
+[until(. > 100; . * 2)]
+1
+
+[while(. < 20; . * 2)]
+1
+
+[limit(4; repeat(. * 2))]
+1
+
+[recurse(if . < 3 then . + 1 else empty end)]
+0
+
+[recurse(.[]?; . != 2)]
+[1,[2]]
+
+[.[] | select(. > 1)] | length
+[1,2,3]
+
+[splits(", ")]
+"a, b, c"
+
+isempty(empty), isempty(1)
+null
+
+[combinations]
+[[1,2],[3,4]]
+
+[combinations(2)]
+[0,1]
+
+[.[] | getpath(["a"])?]
+[{"a":1}, 1, null]
+
+input
+1
+
+[inputs]
+1
+
+[., input]
+1
+
+[limit(3; .[])]
+[1,2,3,4]
+
+[skip(2; .[])]
+[1,2,3,4]
+
+try [skip(-1; .[])] catch .
+[1,2,3,4]
+
+add(.[] | . * 2)
+[1,2]
+
+[.[] | tostring] | add
+[1,"a",null]
+
+[.[] | ascii_downcase] | unique
+["B","a","b"]
+
+any(.[]; . > 2), all(.[]; . > 0)
+[1,2,3]
+
+[any, all]
+[]
+
+IN(.[]; 2, 3)
+[1,2]
+
+[.[] | IN(2, 3)]
+[1,2]
+
+INDEX(.[]; .id) | keys
+[{"id":"b"},{"id":"a"}]

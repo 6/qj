@@ -21,7 +21,9 @@ Compat suites are `#[ignore]` — run them with `--release` after adding feature
 ```
 cargo test                                                              # fast: unit + e2e (~5s)
 cargo test --release -- --ignored --nocapture                           # all tests including compat (~50s)
-cargo test --release jq_conformance -- --ignored                        # jq.test pass rate (summary on stderr)
+cargo test --release jq_diff -- --ignored                               # strict differential vs jq 1.8.1 (scoreboard on stderr)
+JQ_DIFF_FILTER=onig.test JQ_DIFF_VERBOSE=1 cargo test --release jq_diff -- --ignored  # one suite, with details
+cargo test --release jq_conformance -- --ignored                        # jq.test pass rate (lenient, legacy)
 cargo test --release jq_conformance_ndjson -- --ignored --nocapture     # jq.test via NDJSON path (single vs NDJSON diff)
 cargo test --release jq_conformance_verbose -- --ignored --nocapture    # jq.test with failure details
 cargo test --release conformance_gaps -- --ignored                      # gap tests by category
@@ -35,9 +37,49 @@ cargo test --release differential_builtins -- --ignored --nocapture    # differe
 cargo test --release differential_formats -- --ignored --nocapture     # differential: format strings
 ```
 
-**Note:** The conformance test prints its summary to stderr (visible without `--nocapture`).
+**Note:** libtest captures `eprintln!` (even from spawned threads), so the older runners'
+summaries only show with `--nocapture`; jq_diff writes its scoreboard straight to the stderr
+handle, so it shows without it.
 Never pipe `--nocapture` output through `tail` — the verbose test produces 500+ lines which
 can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose test.
+
+### jq_diff: the strict conformance harness
+
+`tests/jq_diff.rs` (`#[ignore]`) measures the definition of done in `docs/JQ_PORT_PLAN.md`.
+It runs jq 1.8.1 and qj with identical argv, stdin, environment and cwd, and compares stdout
+bytes, exit code, and stderr with only a line-initial `qj:` rewritten to `jq:`. Nothing else
+is normalized, and jq's output is the only expectation. Levels: `pass` (all three match),
+`stdout` (stdout + exit code match), `fail`. The scoreboard shows both per suite and mode.
+- **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
+  `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no
+  expected output); `tests/jq_compat/corpus/*.toml` (CLI cases with any argv, files, env or
+  binary stdin; format in `tests/jq_diff/cli.rs`). Ids look like `upstream/man.test:280:compact`.
+- **Modes** for `.test` cases: `compact` (`-c`, stdin), `pretty` (stdin), `file` (`-c`, input
+  as a file argument, which reaches qj's passthroughs), `ndjson` (`-c`, input line twice in a
+  file; only single objects/arrays, no `input`/`$__loc__`/`halt`). `%%FAIL` blocks run once as
+  `fail` (`-c -n`); TOML cases as `cli`. `# jq_diff: modes=compact` limits a `.test` file.
+- **Adding cases:** found a divergence? Add it to the corpus file for its category (or a
+  `[[case]]` in `corpus/cli.toml`), run jq_diff, and fix it. `corpus/builtins_matrix.test` is
+  generated: `python3 tests/jq_compat/corpus/gen_builtin_matrix.py`.
+- **Knobs:** `JQ_DIFF_FILTER=a,b` (id substrings), `JQ_DIFF_MODES=compact,pretty,file,ndjson,fail,cli`,
+  `JQ_DIFF_VERBOSE=1` (print every non-passing case), `JQ_DIFF_QJ_ENV="QJ_CORE=port"` (extra env,
+  given to jq too so `$ENV` stays comparable), `JQ_DIFF_BASELINE=path`, `JQ_DIFF_UPDATE_BASELINE=1`,
+  `JQ_DIFF_JQ`/`JQ_DIFF_QJ` (binaries), `JQ_DIFF_TIMEOUT` (s, default 10), `JQ_DIFF_MEM_MB`
+  (per-process RSS cap, default 2048), `JQ_DIFF_JOBS`.
+- **Outputs:** `target/tmp/jq_diff/report.txt` (every non-passing case, jq vs qj stdout, stderr,
+  exit code), `results.tsv` (one line per case), `baseline_candidate.txt`.
+- **Ratchet:** `tests/jq_compat/diff_baseline.txt` (macOS; `diff_baseline_linux.txt` on Linux)
+  lists each case at `pass` or `stdout`. The test fails when a listed case drops a level, and
+  prints cases that improved. After a fix, record the gains with
+  `JQ_DIFF_UPDATE_BASELINE=1 cargo test --release jq_diff -- --ignored` and commit the baseline
+  with the fix. Never regenerate the baseline to make a regression pass. Runs filtered with
+  `JQ_DIFF_FILTER`/`JQ_DIFF_MODES` update only their cases. Entries match by fingerprint, so
+  moving a case within its file is fine. To measure the port:
+  `JQ_DIFF_QJ_ENV=QJ_CORE=port JQ_DIFF_BASELINE=tests/jq_compat/diff_baseline_port.txt`.
+- CI runs it on Linux. Until `diff_baseline_linux.txt` exists it only reports; the
+  `jq-diff-linux` artifact has a `baseline_candidate.txt` to commit.
+- jq results are cached in `tests/jq_compat/.cache/jq_diff.json` (invalidated automatically).
+  A full run takes ~10s cold and ~7s cached on 18 cores.
 
 - **Unit tests:** `#[cfg(test)]` modules alongside code.
 - **Integration tests:** `tests/e2e.rs` — runs the `qj` binary against known JSON inputs.
@@ -67,8 +109,10 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
   tests: general filters, arithmetic, builtins, and format strings. 2000 cases each. Catches
   behavioral divergences that hand-written tests miss. Run iteratively: fix or exclude each
   failure, re-run to find the next.
-- **Updating the vendored test suite:** `tests/jq_compat/update_test_suite.sh` — downloads
-  `jq.test` and test modules from a jq release tag and updates `mise.toml`.
+- **Updating the vendored test suites:** `tests/jq_compat/update_test_suite.sh` — downloads
+  all of jq's `.test` suites, `shtest` (reference only, in `tests/jq_compat/shtest/`) and the
+  test modules from a jq release tag, and updates `mise.toml`. Then regenerate the builtin
+  matrix and the jq_diff baselines.
   ```
   bash tests/jq_compat/update_test_suite.sh          # uses version from mise.toml
   bash tests/jq_compat/update_test_suite.sh 1.9.0    # upgrade to new version
@@ -76,12 +120,16 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 - **When adding new jq builtins or language features**, always:
   1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
   2. Run `cargo test --release jq_compat -- --ignored --nocapture` and update jq compat % in `README.md`
+  3. Run `cargo test --release jq_diff -- --ignored`: no regressions, and record improvements
+     with `JQ_DIFF_UPDATE_BASELINE=1`
 - **When adding or modifying NDJSON fast-path variants** (`NdjsonFastPath` enum in
   `src/parallel/ndjson.rs`), always:
   1. Add a filter for the new variant in `all_fast_path_test_filters()` (same file) —
      the exhaustive match will cause a compile error if you forget
   2. Add the filter to `FILTERS` in `fuzz/fuzz_targets/fuzz_ndjson_diff.rs`
   3. Run `cargo +nightly fuzz run fuzz_ndjson_diff -s none -- -max_total_time=120`
+  4. Add its shape to the `fastpath` sweep in `tests/jq_compat/corpus/ndjson.toml` (run over
+     adversarial NDJSON by jq_diff)
 - **Cache:** External tool results (jq, jaq, gojq) are cached in `tests/jq_compat/.cache/`.
   Cache auto-invalidates when test definitions or tool versions (`mise.toml`) change.
   Delete to force full re-run: `rm -rf tests/jq_compat/.cache/`

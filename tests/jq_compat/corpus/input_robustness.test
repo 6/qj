@@ -1,0 +1,65 @@
+# Input robustness: surrogates, NaN/Infinity, malformed JSON, multiple documents, BOM
+# Source: orchestrator audit probe t3.sh (one-line inputs; binary and multi-line ones are in cli.toml)
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+.
+"\ud800"
+
+.
+"\udc00x"
+
+.
+"😀"
+
+.
+"a	b"
+
+.
+nan
+
+.
+NaN
+
+.
+[NaN, Infinity, -Infinity]
+
+.
+01
+
+.
+{"a":1,}
+
+.
+[1,2
+
+.
+{"a":
+
+.
+1 2 3
+
+.
+{"a":1}{"b":2}
+
+.
+[1][2]
+
+.
+"a""b"
+
+.
+true false
+
+.
+truex
+
+.
+1 [ 2
+
+.
+﻿{"a":1}

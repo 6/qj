@@ -1,0 +1,161 @@
+# Sorting, comparison, equality and arithmetic
+# Source: orchestrator audit probe catprobe.py ['sort/compare']
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+sort
+[3, null, true, false, "a", [1], {"a":1}, 1.5, -1, {"a":0,"b":1}, {"b":0}, [0,1], "B", ""]
+
+sort_by(.a, .b)
+[{"a":2,"b":1},{"a":1,"b":2},{"a":1,"b":1}]
+
+group_by(.a) | map(length)
+[{"a":2},{"a":1},{"a":2},{"a":null}]
+
+unique_by(.a) | map(.b)
+[{"a":2,"b":1},{"a":1,"b":2},{"a":2,"b":3}]
+
+min_by(.a), max_by(.a)
+[{"a":1,"i":0},{"a":3,"i":1},{"a":1,"i":2},{"a":3,"i":3}]
+
+min, max
+[]
+
+[.[] | [. < 1, . == 1]]
+[1, 1.0, "1", null, true, [1]]
+
+{"a":[1,2]} == {"a":[1,2.0]}
+null
+
+[{"b":1,"a":2}, {"a":2,"b":1}] | unique | length
+null
+
+[{"a":1}, {"a":1,"b":0}, {"b":0}] | sort
+null
+
+[[1,2],[1],[0,5]] | sort
+null
+
+["é", "z", "a", "Z", "😀", "\u00ff"] | sort
+null
+
+[nan, 1, -infinite, infinite, null] | sort
+null
+
+[nan] | min
+null
+
+[1, nan] | max
+null
+
+nan == nan, nan < 1, nan > 1, [nan] == [nan]
+null
+
+[.[] | tostring]
+[1, -0, 0.1, 1e100, 100000000000000000000, 1.5e-7]
+
+[.[] | tojson]
+[1, -0, 0.1, 1e100, 100000000000000000000, 1.5e-7]
+
+map(. == 1)
+[1, 1.0, 1.00, 1e0, 10e-1]
+
+contains({"a":[1]})
+{"a":[1,2],"b":3}
+
+contains("bar")
+"foobar"
+
+contains(["ba"])
+["foobar"]
+
+inside({"a":[1,2,3]})
+{"a":[1]}
+
+index(","), rindex(","), indices(",")
+"a,b,c"
+
+indices(1)
+[0,1,1,2,1]
+
+indices([1,1])
+[1,1,1]
+
+indices("aa")
+"aaaa"
+
+bsearch(3), bsearch(0), bsearch(10)
+[1,3,5]
+
+[.[] | length]
+[[1,2], "ab", {"a":1}, null, -3, 2.5]
+
+flatten(1), flatten
+[1,[2,[3,[4]]]]
+
+try flatten(-1) catch .
+[1]
+
+transpose
+[[1,2],[3]]
+
+add
+[[1],[2]]
+
+add
+[{"a":1},{"b":2},{"a":3}]
+
+add
+["a",null,"b"]
+
+add
+[]
+
+{} * {"a":{"b":1}} * {"a":{"c":2}}
+null
+
+[1,2,3,2] - [2]
+null
+
+"abc" / "b", "a,b" / ","
+null
+
+"x" * 3, "x" * 0.5, "x" * 0
+null
+
+10 % 3, -10 % 3, 10 % -3, 5.5 % 2, try (1 % 0) catch .
+null
+
+1 / 3, 1e308 * 10, -1 / 3 * 3
+null
+
+[.[] | floor, ceil, round, fabs, sqrt]
+[2.5, -2.5]
+
+pow(2; 0.5), log, exp10?, significand, logb, gamma, frexp, modf, ldexp(3; 2)
+8
+
+[.[] | trunc]
+[2.7, -2.7]
+
+tostring, (tostring|tonumber)
+1.1
+
+infinite, -infinite, nan | tostring
+null
+
+[infinite, -infinite, nan]
+null
+
+[1e1000, -1e1000] | map(. * 1)
+null
+
+9007199254740993, 9007199254740993 + 0, [9007199254740993] | .[0]
+null
+
+0.1 + 0.2, 1e-7, 1e-4, 123456789012 * 1000000
+null

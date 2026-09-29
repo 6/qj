@@ -1,0 +1,3 @@
+# Byte-exact fixtures for the conformance harnesses (CRLF lines, BOMs, raw
+# tabs, invalid UTF-8): never convert line endings.
+* -text
