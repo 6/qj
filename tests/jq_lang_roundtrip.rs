@@ -638,6 +638,10 @@ fn ast_roundtrip_vs_live_jq() {
         let Ok(ast) = parse_program(src) else {
             continue;
         };
+        // The unparsed text is one line, so `$__loc__` would report other lines.
+        if src.contains(&b'\n') && src.windows(8).any(|w| w == b"$__loc__") {
+            continue;
+        }
         let text = unparse(&ast);
         jobs.push((origin.clone(), src.clone(), text.clone(), input.clone()));
         for e in extra {
