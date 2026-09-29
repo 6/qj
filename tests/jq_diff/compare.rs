@@ -1,9 +1,11 @@
 //! Output representation, stderr normalization and case classification.
 //!
-//! The only normalization is on stderr: a `qj:` program-name prefix at the
-//! start of a line is rewritten to `jq:` (on both sides, so user text that
-//! happens to start a line with `qj:` compares equal too). stdout and exit
-//! codes are compared exactly.
+//! The only normalization is on stderr, for the program name: a `qj:` prefix
+//! at the start of a line is rewritten to `jq:`, and the exact line
+//! `Use qj --help for help with command-line options,` (the usage hint after
+//! option errors) to `Use jq --help ...` (on both sides, so user text that
+//! happens to look like these compares equal too). stdout and exit codes are
+//! compared exactly.
 
 use crate::exec::Status;
 use crate::hash;
@@ -91,7 +93,12 @@ mod bytes_repr {
     }
 }
 
-/// Rewrite a `qj:` program-name prefix at the start of any line to `jq:`.
+/// The first line of jq's usage hint (main.c `die()`), as qj prints it.
+const QJ_USAGE_HINT: &[u8] = b"Use qj --help for help with command-line options,";
+
+/// Rewrite a `qj:` program-name prefix at the start of any line to `jq:`, and
+/// the whole line `Use qj --help for help with command-line options,` (the
+/// usage hint after option errors) to jq's `Use jq --help ...`.
 pub fn normalize_stderr(stderr: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(stderr.len());
     let mut at_line_start = true;
@@ -100,6 +107,15 @@ pub fn normalize_stderr(stderr: &[u8]) -> Vec<u8> {
         if at_line_start && stderr[i..].starts_with(b"qj:") {
             out.extend_from_slice(b"jq:");
             i += 3;
+            at_line_start = false;
+            continue;
+        }
+        if at_line_start
+            && stderr[i..].starts_with(QJ_USAGE_HINT)
+            && matches!(stderr.get(i + QJ_USAGE_HINT.len()), None | Some(b'\n'))
+        {
+            out.extend_from_slice(b"Use jq");
+            i += b"Use qj".len();
             at_line_start = false;
             continue;
         }
@@ -198,6 +214,31 @@ mod tests {
         );
         assert_eq!(normalize_stderr(b" qj: indented"), b" qj: indented");
         assert_eq!(normalize_stderr(b"qjx"), b"qjx");
+    }
+
+    #[test]
+    fn normalizes_exactly_the_usage_hint_line() {
+        assert_eq!(
+            normalize_stderr(
+                b"qj: Unknown option --foo\nUse qj --help for help with command-line options,\n\
+                  or see the jq manpage, or online docs  at https://jqlang.org\n"
+            ),
+            b"jq: Unknown option --foo\nUse jq --help for help with command-line options,\n\
+              or see the jq manpage, or online docs  at https://jqlang.org\n"
+        );
+        assert_eq!(
+            normalize_stderr(b"Use qj --help for help with command-line options,"),
+            b"Use jq --help for help with command-line options,"
+        );
+        // Only that exact line, and only at the start of a line.
+        for s in [
+            &b"Use qj --help for help with command-line options, x\n"[..],
+            b"Use qj --help\n",
+            b"x Use qj --help for help with command-line options,\n",
+            b"For listing the command options, use qj --help.\n",
+        ] {
+            assert_eq!(normalize_stderr(s), s);
+        }
     }
 
     #[test]

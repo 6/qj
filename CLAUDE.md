@@ -47,8 +47,10 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 
 `tests/jq_diff.rs` (`#[ignore]`) measures the definition of done in `docs/JQ_PORT_PLAN.md`.
 It runs jq 1.8.1 and qj with identical argv, stdin, environment and cwd, and compares stdout
-bytes, exit code, and stderr with only a line-initial `qj:` rewritten to `jq:`. Nothing else
-is normalized, and jq's output is the only expectation. Levels: `pass` (all three match),
+bytes, exit code, and stderr with only the program name rewritten: a line-initial `qj:` to
+`jq:`, and the exact line `Use qj --help for help with command-line options,` (the usage hint
+after option errors) to `Use jq --help ...`. Nothing else is normalized, and jq's output is the
+only expectation. Levels: `pass` (all three match),
 `stdout` (stdout + exit code match), `fail`. The scoreboard shows both per suite and mode.
 - **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
   `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no

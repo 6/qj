@@ -99,6 +99,14 @@ pub trait ArgHost {
     /// JSON text in `data`, as an array, or the parser's message, which jq
     /// shows as "Bad JSON in --slurpfile NAME FILE: MESSAGE".
     fn slurp_json(&mut self, data: &[u8]) -> Result<Self::Value, String>;
+
+    /// The string half of `jv_load_file(file, 1)` (`--rawfile`). jq builds
+    /// the string from 4096-byte reads, each repaired as UTF-8 on its own; a
+    /// host that can do that returns the value. The default keeps the bytes
+    /// ([`ArgValue::Text`]).
+    fn raw_file(&mut self, data: Vec<u8>) -> ArgValue<Self::Value> {
+        ArgValue::Text(data)
+    }
 }
 
 /// A named (`$name`) or positional (`$ARGS.positional`) argument.
@@ -260,10 +268,15 @@ pub enum ArgError {
     ThreadsInvalid(Vec<u8>),
 }
 
-/// main.c `die()`, printed after most option errors. Verbatim, "jq" included:
-/// qj's stderr must match jq's except for the leading program name.
-pub const USAGE_HINT: &str = "Use jq --help for help with command-line options,\n\
-                              or see the jq manpage, or online docs  at https://jqlang.org\n";
+/// main.c `die()`, printed after most option errors, with the program name
+/// where jq prints `jq` in "Use jq --help". The jq_diff harness maps exactly
+/// this line (like the line-initial `qj:` prefix) back to jq's.
+pub fn usage_hint(prog: &str) -> String {
+    format!(
+        "Use {prog} --help for help with command-line options,\n\
+         or see the jq manpage, or online docs  at https://jqlang.org\n"
+    )
+}
 
 impl ArgError {
     /// The exit status jq uses (always 2: `die()`, `usage(2, 1)`, or
@@ -333,7 +346,7 @@ impl ArgError {
             ]),
         }
         if self.prints_usage_hint() {
-            s.extend_from_slice(USAGE_HINT.as_bytes());
+            s.extend_from_slice(usage_hint(prog).as_bytes());
         }
         s
     }
@@ -952,7 +965,9 @@ fn named_value<H: ArgHost>(
             .parse_json(param)
             .map(ArgValue::Json)
             .map_err(|_| ArgError::InvalidArgjson),
-        NamedOption::Rawfile => load_file(param).map(ArgValue::Text).map_err(bad_file),
+        NamedOption::Rawfile => load_file(param)
+            .map(|data| host.raw_file(data))
+            .map_err(bad_file),
         NamedOption::Slurpfile => {
             let data = load_file(param).map_err(bad_file)?;
             host.slurp_json(&data)
