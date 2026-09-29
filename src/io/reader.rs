@@ -322,6 +322,18 @@ pub struct InputReader {
     /// valid JSON: find text ends by scanning, not by trying the line.
     no_line_try_until: usize,
     on_message: Box<dyn FnMut(InputMessage)>,
+    stats: ReaderStats,
+}
+
+/// How the reader produced its values (for diagnostics and tests).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReaderStats {
+    /// Values produced by the fast path (simdjson or top-level literals).
+    pub fast_values: u64,
+    /// Values and errors produced by jq's parser port.
+    pub parser_results: u64,
+    /// Times the fast path handed the stream to jq's parser.
+    pub handovers: u64,
 }
 
 impl InputReader {
@@ -368,6 +380,7 @@ impl InputReader {
             pending_scan: None,
             no_line_try_until: 0,
             on_message: Box::new(default_message_sink),
+            stats: ReaderStats::default(),
         };
         if !r.fast {
             r.enter_slow();
@@ -412,6 +425,11 @@ impl InputReader {
             Some(s) => Value::String(s.clone()),
             None => Value::Null,
         }
+    }
+
+    /// Counts of how values were produced so far.
+    pub fn stats(&self) -> ReaderStats {
+        self.stats
     }
 
     /// `input_line_number`.
@@ -600,8 +618,14 @@ impl InputReader {
                 return None;
             }
             match self.fast_step() {
-                Fast::Value(v) => return Some(Ok(v)),
-                Fast::Slow => self.enter_slow(),
+                Fast::Value(v) => {
+                    self.stats.fast_values += 1;
+                    return Some(Ok(v));
+                }
+                Fast::Slow => {
+                    self.stats.handovers += 1;
+                    self.enter_slow();
+                }
                 Fast::NeedData => self.fill(),
                 Fast::Exhausted => self.close_current(),
             }
@@ -652,6 +676,7 @@ impl InputReader {
                             self.advance(resume, false);
                         }
                     }
+                    self.stats.parser_results += 1;
                     return Some(r);
                 }
                 None if is_last => {

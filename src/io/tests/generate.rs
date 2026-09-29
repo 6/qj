@@ -1,156 +1,175 @@
-//! Random input generator for the differential tests: mostly valid JSON
-//! texts with jq's extensions, adversarial bytes and chunk-boundary cases
-//! mixed in, split across several in-memory inputs.
+//! Random input generator for the differential tests: JSON texts with
+//! jq's extensions, adversarial bytes and chunk-boundary cases mixed in at
+//! a per-case rate, split across several in-memory inputs.
 
 use super::Rng;
 
 const WS: [&str; 8] = [" ", "\n", "\t", "\r\n", "  ", "\n\n", " \n ", ""];
 
-pub(crate) fn number(r: &mut Rng) -> String {
-    match r.below(24) {
-        0 => "0".into(),
-        1 => "-0".into(),
-        2 => format!("{}", r.below(1000)),
-        3 => format!("-{}", r.below(100000)),
-        4 => format!("{}.{}", r.below(100), r.below(1000)),
-        5 => format!("{}.{}0", r.below(100), r.below(10)),
-        6 => format!("{}e{}", r.below(10), r.below(30)),
-        7 => format!("{}E-{}", r.below(10), r.below(30)),
-        8 => format!("{}.{}e+{}", r.below(10), r.below(100), r.below(400)),
-        9 => "100000000000000000001".into(),
-        10 => "18446744073709551616".into(),
-        11 => "123456789012345678901234567890.5".into(),
-        12 => "1e400".into(),
-        13 => "-1e-400".into(),
-        14 => "01".into(),
-        15 => ".5".into(),
-        16 => "+1".into(),
-        17 => "1.".into(),
-        18 => ["nan", "NaN", "-nan", "Infinity", "-Infinity", "inf"][r.below(6)].into(),
-        19 => "9007199254740993".into(),
-        20 => format!("{}", r.next() as i64),
-        21 => "1.000".into(),
-        22 => "0.0000001".into(),
-        _ => format!("{}", r.next() % 1_000_000_000_000),
-    }
+/// A generator with a "weirdness" rate: the chance, per 1000, that any
+/// given element is something other than plain valid JSON.
+pub(crate) struct Gen<'a> {
+    pub(crate) r: &'a mut Rng,
+    pub(crate) weird: usize,
 }
 
-fn string_body(r: &mut Rng, out: &mut Vec<u8>) {
-    let n = r.below(12);
-    for _ in 0..n {
-        match r.below(40) {
-            0 => out.extend_from_slice(b"\\n"),
-            1 => out.extend_from_slice(b"\\\""),
-            2 => out.extend_from_slice(b"\\\\"),
-            3 => out.extend_from_slice(b"\\/"),
-            4 => out.extend_from_slice(b"\\u00e9"),
-            5 => out.extend_from_slice(b"\\ud83d\\ude00"),
-            6 => out.extend_from_slice(b"\\u0000"),
-            7 => out.extend_from_slice("é".as_bytes()),
-            8 => out.extend_from_slice("😀".as_bytes()),
-            9 if r.chance(1, 4) => out.extend_from_slice(b"\\ud800"), // lone high
-            10 if r.chance(1, 4) => out.extend_from_slice(b"\\udc00"), // lone low
-            11 if r.chance(1, 6) => out.push(0xff),                   // invalid UTF-8
-            12 if r.chance(1, 6) => out.extend_from_slice(b"\xe2\x82"), // truncated seq
-            13 if r.chance(1, 8) => out.push(b'\t'),                  // raw control
-            14 if r.chance(1, 10) => out.extend_from_slice(b"\\x"),   // bad escape
-            15 if r.chance(1, 10) => out.push(b'\n'),                 // raw newline
-            16 => out.extend_from_slice(b"\\t\\r\\b\\f"),
-            17 => out.extend_from_slice(b" spaced out "),
-            18 if r.chance(1, 12) => out.push(0),
-            19 if r.chance(1, 20) => {
-                // long enough to cross fgets chunks
-                let len = 3000 + r.below(6000);
-                out.extend(std::iter::repeat_n(b'x', len));
+impl Gen<'_> {
+    fn odd(&mut self) -> bool {
+        self.r.below(1000) < self.weird
+    }
+
+    pub(crate) fn number(&mut self) -> String {
+        if self.odd() {
+            return match self.r.below(12) {
+                0 => "100000000000000000001".into(),
+                1 => "18446744073709551616".into(),
+                2 => "123456789012345678901234567890.5".into(),
+                3 => "1e400".into(),
+                4 => "-1e-400".into(),
+                5 => "01".into(),
+                6 => ".5".into(),
+                7 => "+1".into(),
+                8 => "1.".into(),
+                9 => ["nan", "NaN", "-nan", "Infinity", "-Infinity", "inf"][self.r.below(6)].into(),
+                10 => "1e".into(),
+                _ => "-".into(),
+            };
+        }
+        let r = &mut *self.r;
+        match r.below(14) {
+            0 => "0".into(),
+            1 => "-0".into(),
+            2 => format!("{}", r.below(1000)),
+            3 => format!("-{}", r.below(100000)),
+            4 => format!("{}.{}", r.below(100), r.below(1000)),
+            5 => format!("{}.{}0", r.below(100), r.below(10)),
+            6 => format!("{}e{}", r.below(10), r.below(30)),
+            7 => format!("{}E-{}", r.below(10), r.below(30)),
+            8 => format!("{}.{}e+{}", r.below(10), r.below(100), r.below(300)),
+            9 => "9007199254740993".into(),
+            10 => format!("{}", r.next() as i64),
+            11 => "1.000".into(),
+            12 => "0.0000001".into(),
+            _ => format!("{}", r.next() % 1_000_000_000_000),
+        }
+    }
+
+    fn string_body(&mut self, out: &mut Vec<u8>) {
+        let n = self.r.below(12);
+        for _ in 0..n {
+            if self.odd() {
+                match self.r.below(9) {
+                    0 => out.extend_from_slice(b"\\ud800"), // lone high surrogate
+                    1 => out.extend_from_slice(b"\\udc00"), // lone low surrogate
+                    2 => out.push(0xff),                    // invalid UTF-8
+                    3 => out.extend_from_slice(b"\xe2\x82"), // truncated sequence
+                    4 => out.push(b'\t'),                   // raw control character
+                    5 => out.extend_from_slice(b"\\x"),     // bad escape
+                    6 => out.push(b'\n'),                   // raw newline
+                    7 => out.push(0),
+                    _ => out.extend_from_slice(b"\\ud800\\u0041"), // bad pair
+                }
+                continue;
             }
-            20 => out.extend_from_slice(b"\xc3\xa9\xe2\x82\xac"),
+            let r = &mut *self.r;
+            match r.below(24) {
+                0 => out.extend_from_slice(b"\\n"),
+                1 => out.extend_from_slice(b"\\\""),
+                2 => out.extend_from_slice(b"\\\\"),
+                3 => out.extend_from_slice(b"\\/"),
+                4 => out.extend_from_slice(b"\\u00e9"),
+                5 => out.extend_from_slice(b"\\ud83d\\ude00"),
+                6 => out.extend_from_slice(b"\\u0000"),
+                7 => out.extend_from_slice("é".as_bytes()),
+                8 => out.extend_from_slice("😀".as_bytes()),
+                9 => out.extend_from_slice(b"\\t\\r\\b\\f"),
+                10 => out.extend_from_slice(b" spaced out "),
+                11 if r.chance(1, 20) => {
+                    // long enough to cross fgets chunks
+                    let len = 3000 + r.below(6000);
+                    out.extend(std::iter::repeat_n(b'x', len));
+                }
+                12 => out.extend_from_slice(b"\xc3\xa9\xe2\x82\xac"),
+                13 => out.extend_from_slice(b"\\u20AC\\uFFFF"),
+                _ => {
+                    let len = 1 + r.below(10);
+                    for _ in 0..len {
+                        out.push(b"abcdefghijklmnopqrstuvwxyz0123456789_ -{}[]:,"[r.below(45)]);
+                    }
+                }
+            }
+        }
+    }
+
+    fn ws(&mut self, out: &mut Vec<u8>, pretty: bool) {
+        if pretty {
+            out.extend_from_slice(WS[self.r.below(WS.len())].as_bytes());
+        } else if self.r.chance(1, 8) {
+            out.push(b' ');
+        }
+    }
+
+    pub(crate) fn value(&mut self, out: &mut Vec<u8>, depth: usize, pretty: bool) {
+        let k = if depth > 5 {
+            self.r.below(6)
+        } else {
+            self.r.below(10)
+        };
+        match k {
+            0 | 3 | 4 | 5 => out.extend_from_slice(self.number().as_bytes()),
+            1 => {
+                out.push(b'"');
+                self.string_body(out);
+                out.push(b'"');
+            }
+            2 => out.extend_from_slice([&b"true"[..], b"false", b"null"][self.r.below(3)]),
+            6 | 7 => {
+                out.push(b'[');
+                let n = self.r.below(5);
+                for i in 0..n {
+                    if i > 0 {
+                        self.ws(out, pretty);
+                        out.push(b',');
+                    }
+                    self.ws(out, pretty);
+                    self.value(out, depth + 1, pretty);
+                }
+                self.ws(out, pretty);
+                if self.odd() {
+                    out.push(b','); // trailing comma
+                }
+                out.push(b']');
+            }
             _ => {
-                let len = 1 + r.below(10);
-                for _ in 0..len {
-                    out.push(b"abcdefghijklmnopqrstuvwxyz0123456789_ -{}[]:,"[r.below(45)]);
+                out.push(b'{');
+                let n = self.r.below(5);
+                for i in 0..n {
+                    if i > 0 {
+                        self.ws(out, pretty);
+                        out.push(b',');
+                    }
+                    self.ws(out, pretty);
+                    out.push(b'"');
+                    if self.r.chance(1, 3) {
+                        out.push(b"abc"[self.r.below(3)]); // duplicate keys
+                    } else {
+                        self.string_body(out);
+                    }
+                    out.push(b'"');
+                    self.ws(out, pretty);
+                    out.push(b':');
+                    self.ws(out, pretty);
+                    self.value(out, depth + 1, pretty);
                 }
+                self.ws(out, pretty);
+                out.push(b'}');
             }
         }
     }
-}
 
-fn ws(r: &mut Rng, out: &mut Vec<u8>, pretty: bool) {
-    if pretty {
-        out.extend_from_slice(WS[r.below(WS.len())].as_bytes());
-    } else if r.chance(1, 8) {
-        out.push(b' ');
-    }
-}
-
-pub(crate) fn value(r: &mut Rng, out: &mut Vec<u8>, depth: usize, pretty: bool) {
-    let k = if depth > 5 { r.below(6) } else { r.below(10) };
-    match k {
-        0 => out.extend_from_slice(number(r).as_bytes()),
-        1 => {
-            out.push(b'"');
-            string_body(r, out);
-            out.push(b'"');
-        }
-        2 => out.extend_from_slice([&b"true"[..], b"false", b"null"][r.below(3)]),
-        3 | 4 | 5 => out.extend_from_slice(number(r).as_bytes()),
-        6 | 7 => {
-            out.push(b'[');
-            let n = r.below(5);
-            for i in 0..n {
-                if i > 0 {
-                    ws(r, out, pretty);
-                    out.push(b',');
-                }
-                ws(r, out, pretty);
-                value(r, out, depth + 1, pretty);
-            }
-            ws(r, out, pretty);
-            if r.chance(1, 40) {
-                out.push(b','); // trailing comma
-            }
-            out.push(b']');
-        }
-        _ => {
-            out.push(b'{');
-            let n = r.below(5);
-            for i in 0..n {
-                if i > 0 {
-                    ws(r, out, pretty);
-                    out.push(b',');
-                }
-                ws(r, out, pretty);
-                out.push(b'"');
-                if r.chance(1, 3) {
-                    out.push(b"abc"[r.below(3)]); // duplicate keys
-                } else {
-                    string_body(r, out);
-                }
-                out.push(b'"');
-                ws(r, out, pretty);
-                out.push(b':');
-                ws(r, out, pretty);
-                value(r, out, depth + 1, pretty);
-            }
-            ws(r, out, pretty);
-            out.push(b'}');
-        }
-    }
-}
-
-/// One input stream: texts separated by whitespace (or nothing), with
-/// occasional garbage.
-pub(crate) fn stream(r: &mut Rng) -> Vec<u8> {
-    let mut out = Vec::new();
-    match r.below(30) {
-        0 => out.extend_from_slice(b"\xEF\xBB\xBF"),
-        1 => out.extend_from_slice(b"\xEF\xBB"),
-        2 => out.extend_from_slice(b"\xEF\xBB\x41"),
-        _ => {}
-    }
-    let texts = 1 + r.below(12);
-    for _ in 0..texts {
-        let pretty = r.chance(1, 4);
-        match r.below(60) {
+    /// Something between texts that isn't a plain text.
+    fn oddity(&mut self, out: &mut Vec<u8>, pretty: bool) {
+        match self.r.below(12) {
             0 => out.push(b']'),
             1 => out.push(b'}'),
             2 => out.push(b','),
@@ -162,29 +181,51 @@ pub(crate) fn stream(r: &mut Rng) -> Vec<u8> {
             8 => {
                 // truncated text
                 let mut t = Vec::new();
-                value(r, &mut t, 0, pretty);
-                let cut = r.below(t.len() + 1);
+                self.value(&mut t, 0, pretty);
+                let cut = self.r.below(t.len() + 1);
                 out.extend_from_slice(&t[..cut]);
             }
             9 => {
                 // deep nesting (beyond simdjson's 1024, sometimes beyond jq's)
-                let d = [1030, 5000, 10001][r.below(3)];
+                let d = [1030, 5000, 10001][self.r.below(3)];
                 out.extend(std::iter::repeat_n(b'[', d));
                 out.extend(std::iter::repeat_n(b']', d));
             }
-            10 => {
-                // padding to put the next text near a 4095-byte boundary
-                let len = 4000 + r.below(200);
-                out.extend(std::iter::repeat_n(b' ', len));
-            }
-            11 => out.extend_from_slice(b"\x00\x00garbage\x00"),
-            _ => value(r, &mut out, 0, pretty),
+            10 => out.extend_from_slice(b"\x00\x00garbage\x00"),
+            _ => out.extend_from_slice(b"\xEF\xBB\xBF"),
+        }
+    }
+}
+
+/// One input stream: texts separated by whitespace (or nothing), with
+/// oddities at the case's rate.
+pub(crate) fn stream(r: &mut Rng) -> Vec<u8> {
+    let weird = [0, 0, 5, 20, 60, 200][r.below(6)];
+    let mut g = Gen { r, weird };
+    let mut out = Vec::new();
+    match g.r.below(30) {
+        0 => out.extend_from_slice(b"\xEF\xBB\xBF"),
+        1 if weird > 0 => out.extend_from_slice(b"\xEF\xBB"),
+        2 if weird > 0 => out.extend_from_slice(b"\xEF\xBB\x41"),
+        _ => {}
+    }
+    let texts = 1 + g.r.below(16);
+    for _ in 0..texts {
+        let pretty = g.r.chance(1, 4);
+        if g.odd() {
+            g.oddity(&mut out, pretty);
+        } else if g.r.chance(1, 40) {
+            // padding to put the next text near a 4095-byte boundary
+            let len = 4000 + g.r.below(200);
+            out.extend(std::iter::repeat_n(b' ', len));
+        } else {
+            g.value(&mut out, 0, pretty);
         }
         // separator
-        match r.below(12) {
+        match g.r.below(12) {
             0 => {}
             1 => out.push(b' '),
-            2 | 3 | 4 | 5 | 6 => out.push(b'\n'),
+            2..=6 => out.push(b'\n'),
             7 => out.extend_from_slice(b"\r\n"),
             8 => out.push(b'\t'),
             9 => out.extend_from_slice(b"\n\n"),
@@ -192,7 +233,7 @@ pub(crate) fn stream(r: &mut Rng) -> Vec<u8> {
             _ => out.push(b' '),
         }
     }
-    if r.chance(1, 3) && out.last() == Some(&b'\n') {
+    if g.r.chance(1, 3) && out.last() == Some(&b'\n') {
         out.pop();
     }
     out

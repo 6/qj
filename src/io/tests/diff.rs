@@ -5,7 +5,7 @@
 use super::generate as gen_input;
 use super::reference::RefInput;
 use super::{Delivery, Ev, Rng, events, mem_reader};
-use crate::io::reader::ReaderOptions;
+use crate::io::reader::{ReaderOptions, ReaderStats};
 use crate::jq::value::ParseFlags;
 
 /// `next()` calls per case (the reader keeps going after errors, as
@@ -97,8 +97,9 @@ fn trunc(s: &str) -> String {
     }
 }
 
-/// Runs one generated case; `Err` describes a divergence.
-fn run_case(seed: u64) -> Result<(), String> {
+/// Runs one generated case; `Err` describes a divergence. Adds the fast
+/// reader's statistics to `stats`.
+fn run_case(seed: u64, stats: &mut ReaderStats) -> Result<(), String> {
     let mut rng = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
     let mode = pick_mode(&mut rng);
     let data = gen_input::stream(&mut rng);
@@ -127,6 +128,12 @@ fn run_case(seed: u64) -> Result<(), String> {
     for fast in [true, false] {
         let (mut r, msgs) = mem_reader(&names, files.clone(), opts, delivery, fast);
         let got = events(&mut r, &msgs, LIMIT);
+        if fast {
+            let s = r.stats();
+            stats.fast_values += s.fast_values;
+            stats.parser_results += s.parser_results;
+            stats.handovers += s.handovers;
+        }
         if got != want {
             let first = got
                 .iter()
@@ -147,14 +154,16 @@ fn run_case(seed: u64) -> Result<(), String> {
 fn run(seeds: std::ops::Range<u64>) {
     let mut failures = Vec::new();
     let n = seeds.end - seeds.start;
+    let mut stats = ReaderStats::default();
     for seed in seeds {
-        if let Err(e) = run_case(seed) {
+        if let Err(e) = run_case(seed, &mut stats) {
             failures.push(e);
             if failures.len() >= 5 {
                 break;
             }
         }
     }
+    eprintln!("io diff: {n} cases, fast reader {stats:?}");
     assert!(
         failures.is_empty(),
         "{} of {n} cases diverge from jq's util.c:\n{}",
@@ -166,6 +175,60 @@ fn run(seeds: std::ops::Range<u64>) {
 #[test]
 fn reader_matches_util_c() {
     run(0..600);
+}
+
+/// On clean JSON the fast path does (nearly) all the work: jq's parser
+/// only sees a trailing top-level literal with no byte after it.
+#[test]
+fn fast_path_covers_clean_json() {
+    let mut stats = ReaderStats::default();
+    for seed in 0..300u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+        let mut g = gen_input::Gen {
+            r: &mut rng,
+            weird: 0,
+        };
+        let mut data = Vec::new();
+        for i in 0..20 {
+            let pretty = i % 3 == 0;
+            g.value(&mut data, 0, pretty);
+            data.extend_from_slice(if i % 5 == 4 { b" " } else { b"\n" });
+        }
+        let files = vec![("f".into(), super::MemFile::Data(data.clone()))];
+        let mut reference =
+            RefInput::new(&["f"], files.clone(), false, false, ParseFlags::default());
+        let want = ref_events(&mut reference, LIMIT);
+        for delivery in [
+            Delivery::Whole,
+            Delivery::Stream {
+                seed,
+                max: 1 + (seed as usize % 3000),
+            },
+        ] {
+            let (mut r, msgs) = mem_reader(
+                &["f"],
+                files.clone(),
+                ReaderOptions::default(),
+                delivery,
+                true,
+            );
+            let got = events(&mut r, &msgs, LIMIT);
+            assert!(
+                got == want,
+                "seed {seed} {delivery:?}: {}\n  got:\n    {}\n  want:\n    {}",
+                trunc(&String::from_utf8_lossy(&data)),
+                describe(&got),
+                describe(&want)
+            );
+            let s = r.stats();
+            stats.fast_values += s.fast_values;
+            stats.parser_results += s.parser_results;
+            stats.handovers += s.handovers;
+        }
+    }
+    eprintln!("clean JSON: {stats:?}");
+    assert_eq!(stats.handovers, 0, "{stats:?}");
+    assert_eq!(stats.fast_values, 300 * 20 * 2);
 }
 
 /// The long run: `cargo test --release --lib reader_matches_util_c_long -- --ignored`
