@@ -1,0 +1,137 @@
+# Value representation: behavior that depends on how parsed values are laid out
+# (array allocation, duplicate keys, key order in big objects, identity of
+# parsed numbers and strings in path expressions). Guards qj's value and
+# input-layer optimizations: every case must behave as with jq's own parser.
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines.
+
+# jq's parser appends to jv_array() (alloc 16, then 3/2 growth); writes past
+# a unique slice's end reuse that storage, so hidden elements reappear.
+.[0:2] | .[5] = 9
+[1,2,3,4,5]
+
+.[0:2] | .[4] = 9
+[1,2,3,4,5]
+
+.[0:1] | .[15] = 0
+[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+
+.[0:1] | .[16] = 0
+[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+
+.[0:1] | .[24] = 0
+[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]
+
+.[0:1] | .[25] = 0
+[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]
+
+.[1:3] | .[4] = 0
+[[1],[2],[3],[4],[5],[6]]
+
+.[0] | .[0:1] | .[3] = 9
+[[1,2,3,4]]
+
+.a | .[0:2] | .[3] = 9
+{"a":[1,2,3,4,5],"b":2}
+
+map(.[0:1] | .[2] = 0)
+[[1,2,3],[4,5,6,7],[]]
+
+.[0:0] | .[2] = 1
+[]
+
+.[2:] | .[0:1] | .[3] = 0
+[1,2,3,4,5,6,7]
+
+# Duplicate keys: the last value, at the first key's position.
+., keys_unsorted, to_entries
+{"a":1,"b":2,"a":3}
+
+.
+{"a":1,"a":2,"a":3}
+
+., keys_unsorted, length
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k0":10,"k9":"x"}
+
+.[0], .[1]
+[{"x":1,"y":{"x":2,"x":3},"x":4},{"":1,"":2}]
+
+# Big objects: lookups, updates, deletes and re-adds keep jq's order.
+[.k0, .k11, .k5, .missing, .k7]
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+del(.k3) | .k3 = "back" | keys_unsorted
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+del(.k3) | [.k2, .k3, .k4, .k11]
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+delpaths([["k1"],["k7"],["nope"]]) | ., [.k0, .k1, .k2, .k8, .k11]
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+. + {"k5": "x", "new": 1} | keys_unsorted, .k5, .new
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+. * {"k5": {"z":1}, "k9": 0} | .k5, .k9, keys_unsorted
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":{"a":1},"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+with_entries(select(.value % 2 == 0)) | ., .k4, .k5
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+reduce range(30) as $i (.; .["n\($i % 7)"] += $i) | keys_unsorted, .n3
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+(to_entries | from_entries) == ., (to_entries | from_entries | keys_unsorted)
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+[.[] | has("k10")], (.[0] | del(.k10) | has("k10"))
+[{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11},{"k10":null}]
+
+. == {"k11":11,"k10":10,"k9":9,"k8":8,"k7":7,"k6":6,"k5":5,"k4":4,"k3":3,"k2":2,"k1":1,"k0":0}
+{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}
+
+# Identity of parsed numbers and strings in path expressions: only the value
+# itself (not an equal one) is intact.
+path(.a)
+{"a":1}
+
+try path(.a | . + 0) catch .
+{"a":1}
+
+. as $d | try path(.a | $d.b) catch .
+{"a":1,"b":1}
+
+. as $d | try path(.a | $d.a) catch .
+{"a":1,"b":1}
+
+try path(.a | 1) catch .
+{"a":1}
+
+. as $d | try path(.s | $d.t) catch .
+{"s":"x","t":"x"}
+
+. as $d | try path(.[0] | $d[1]) catch .
+[123456789,123456789]
+
+. as $d | [path(.[0] | $d[0])]
+[123456789,123456789]
+
+[paths], [paths(type == "number")]
+{"a":[1,2.5,{"b":-3}],"c":1e2,"d":100000000000000000001}
+
+[path(..)], [path(.. | numbers)]
+[1,[2,3],{"x":0}]
+
+path(getpath(["a"]))
+{"a":5}
+
+[path(.a | select(. == 1))], [path(first(.a, .b))]
+{"a":1,"b":2}
+
+try path(to_entries) catch .
+{"a":1}
+
+[.[] | tostring], [.[] | tojson], [.[] | . == 1]
+[1, 1.0, 1.50, 1e2, 100, -0, 0, 12345678901234567, 123456789012345678901]
