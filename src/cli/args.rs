@@ -99,6 +99,14 @@ pub trait ArgHost {
     /// JSON text in `data`, as an array, or the parser's message, which jq
     /// shows as "Bad JSON in --slurpfile NAME FILE: MESSAGE".
     fn slurp_json(&mut self, data: &[u8]) -> Result<Self::Value, String>;
+
+    /// The string half of `jv_load_file(file, 1)` (`--rawfile`). jq builds
+    /// the string from 4096-byte reads, each repaired as UTF-8 on its own; a
+    /// host that can do that returns the value. The default keeps the bytes
+    /// ([`ArgValue::Text`]).
+    fn raw_file(&mut self, data: Vec<u8>) -> ArgValue<Self::Value> {
+        ArgValue::Text(data)
+    }
 }
 
 /// A named (`$name`) or positional (`$ARGS.positional`) argument.
@@ -260,10 +268,15 @@ pub enum ArgError {
     ThreadsInvalid(Vec<u8>),
 }
 
-/// main.c `die()`, printed after most option errors. Verbatim, "jq" included:
-/// qj's stderr must match jq's except for the leading program name.
-pub const USAGE_HINT: &str = "Use jq --help for help with command-line options,\n\
-                              or see the jq manpage, or online docs  at https://jqlang.org\n";
+/// main.c `die()`, printed after most option errors, with the program name
+/// where jq prints `jq` in "Use jq --help". The jq_diff harness maps exactly
+/// this line (like the line-initial `qj:` prefix) back to jq's.
+pub fn usage_hint(prog: &str) -> String {
+    format!(
+        "Use {prog} --help for help with command-line options,\n\
+         or see the jq manpage, or online docs  at https://jqlang.org\n"
+    )
+}
 
 impl ArgError {
     /// The exit status jq uses (always 2: `die()`, `usage(2, 1)`, or
@@ -333,7 +346,7 @@ impl ArgError {
             ]),
         }
         if self.prints_usage_hint() {
-            s.extend_from_slice(USAGE_HINT.as_bytes());
+            s.extend_from_slice(usage_hint(prog).as_bytes());
         }
         s
     }
@@ -602,17 +615,21 @@ pub fn dirname(path: &[u8]) -> Vec<u8> {
 }
 
 /// `strerror(errnum)`: the C library's text, which jq prints (Rust's
-/// `io::Error` adds " (os error N)").
+/// `io::Error` adds " (os error N)"), in the environment's locale as after
+/// jq's `setlocale(LC_ALL, "")`: glibc translates it for `LC_MESSAGES`
+/// (Apple's libc doesn't translate these).
 pub fn strerror(errnum: i32) -> Vec<u8> {
-    let mut buf = [0 as c_char; 512];
-    // SAFETY: `buf` is writable for its length; strerror_r (the XSI version,
-    // which the libc crate binds on glibc too) NUL-terminates it.
-    let rc = unsafe { libc::strerror_r(errnum, buf.as_mut_ptr(), buf.len()) };
-    if rc != 0 {
-        return format!("Unknown error: {errnum}").into_bytes();
-    }
-    // SAFETY: NUL-terminated by strerror_r.
-    unsafe { CStr::from_ptr(buf.as_ptr()) }.to_bytes().to_vec()
+    in_environment_locale(libc::LC_ALL_MASK, || {
+        let mut buf = [0 as c_char; 512];
+        // SAFETY: `buf` is writable for its length; strerror_r (the XSI
+        // version, which the libc crate binds on glibc too) NUL-terminates it.
+        let rc = unsafe { libc::strerror_r(errnum, buf.as_mut_ptr(), buf.len()) };
+        if rc != 0 {
+            return format!("Unknown error: {errnum}").into_bytes();
+        }
+        // SAFETY: NUL-terminated by strerror_r.
+        unsafe { CStr::from_ptr(buf.as_ptr()) }.to_bytes().to_vec()
+    })
 }
 
 /// The I/O half of jv_file.c `jv_load_file`: the file's bytes, or jq's
@@ -712,6 +729,12 @@ pub fn jq_colors(spec: &[u8]) -> Option<[Vec<u8>; 8]> {
 /// duration of `f`; like `setlocale`, an environment locale that can't be
 /// loaded leaves the C locale in place.
 pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
+    in_environment_locale(libc::LC_CTYPE_MASK, f)
+}
+
+/// Run `f` with the categories in `mask` of the calling thread's locale set
+/// from the environment, as `setlocale(LC_ALL, "")` would set them.
+fn in_environment_locale<R>(mask: c_int, f: impl FnOnce() -> R) -> R {
     struct Restore {
         previous: libc::locale_t,
         ours: libc::locale_t,
@@ -736,7 +759,7 @@ pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
     // SAFETY: `all` came from newlocale and isn't in use.
     unsafe { libc::freelocale(all) };
     // SAFETY: as above.
-    let ours = unsafe { libc::newlocale(libc::LC_CTYPE_MASK, c"".as_ptr(), std::ptr::null_mut()) };
+    let ours = unsafe { libc::newlocale(mask, c"".as_ptr(), std::ptr::null_mut()) };
     if ours.is_null() {
         return f();
     }
@@ -952,7 +975,9 @@ fn named_value<H: ArgHost>(
             .parse_json(param)
             .map(ArgValue::Json)
             .map_err(|_| ArgError::InvalidArgjson),
-        NamedOption::Rawfile => load_file(param).map(ArgValue::Text).map_err(bad_file),
+        NamedOption::Rawfile => load_file(param)
+            .map(|data| host.raw_file(data))
+            .map_err(bad_file),
         NamedOption::Slurpfile => {
             let data = load_file(param).map_err(bad_file)?;
             host.slurp_json(&data)

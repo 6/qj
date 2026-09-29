@@ -67,10 +67,26 @@ impl Error {
         #[cfg(target_vendor = "apple")]
         {
             use std::io::Write;
+            if let Some(flush) = BEFORE_ABORT.get() {
+                flush();
+            }
             let _ = std::io::stdout().flush();
         }
         std::process::abort()
     }
+}
+
+/// What [`Error::abort_process`] calls on Apple targets before aborting, where
+/// jq's `abort()` flushes stdio: the CLI registers a function that flushes its
+/// own stdout buffer ([`set_before_abort`]).
+static BEFORE_ABORT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// Registers the function [`Error::abort_process`] calls to flush buffered
+/// standard output before aborting, on Apple targets only (glibc's `abort()`
+/// doesn't flush, so there the buffered output is lost, as in jq). Only the
+/// first registration counts.
+pub fn set_before_abort(flush: fn()) {
+    let _ = BEFORE_ABORT.set(flush);
 }
 
 impl fmt::Display for Error {
