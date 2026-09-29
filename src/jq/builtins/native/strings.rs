@@ -1,14 +1,72 @@
 //! String builtins defined in `builtin.jq`.
 //!
 //! ```jq
+//! def join($x): reduce .[] as $i (null;
+//!             (if .==null then "" else .+$x end) +
+//!             ($i | if type=="boolean" or type=="number" then tostring else .//"" end)
+//!         ) // "";
 //! def ascii_downcase:
 //!   explode | map( if 65 <= . and . <= 90 then . + 32  else . end) | implode;
 //! def ascii_upcase:
 //!   explode | map( if 97 <= . and . <= 122 then . - 32  else . end) | implode;
 //! ```
 
-use crate::jq::lang::execute::native::Stop;
+use super::cannot_iterate;
+use crate::jq::builtins::binops::binop_plus;
+use crate::jq::builtins::general::tostring;
+use crate::jq::lang::execute::Jq;
+use crate::jq::lang::execute::native::{Closure, ConstView, Outcome, Stop};
 use crate::jq::value::{Error, Str, Value};
+
+/// `join($x)`, when `$x` is pure (else the definition runs). `c`: join's `""`s in pool
+/// order: `.//""`'s, `if .==null then ""`'s, and the final `// ""`'s.
+///
+/// The accumulator is updated in place, where jq's copies it (its subexpressions hold
+/// references), so this is linear where jq is quadratic; strings have no views, so
+/// only the time differs.
+pub(super) fn join(vm: &mut Jq, input: Value, x: Closure, c: ConstView<'_>) -> Outcome {
+    match vm.pure_arg(x, &input) {
+        Some(x) => join_with(input, x, c).into(),
+        None => Outcome::Fallback(input),
+    }
+}
+
+fn join_with(input: Value, x: Value, c: ConstView<'_>) -> Result<Value, Stop> {
+    let mut acc = Value::Null;
+    let mut step = |i: &Value| -> Result<(), Stop> {
+        // `A + B`: B (the element's text) is evaluated first, then A.
+        let b = match i {
+            Value::Bool(_) | Value::Number(_) => tostring(i.clone()),
+            Value::Null => c.get(0).clone(),
+            _ => i.clone(),
+        };
+        let a = if acc.is_null() {
+            c.get(1).clone()
+        } else {
+            binop_plus(std::mem::take(&mut acc), x.clone())?
+        };
+        acc = binop_plus(a, b)?;
+        Ok(())
+    };
+    match &input {
+        Value::Array(a) => {
+            for i in a.iter() {
+                step(i)?;
+            }
+        }
+        Value::Object(o) => {
+            for i in o.values() {
+                step(i)?;
+            }
+        }
+        _ => return Err(cannot_iterate(&input)),
+    }
+    Ok(if acc.is_truthy() {
+        acc
+    } else {
+        c.get(2).clone()
+    })
+}
 
 /// `ascii_downcase` (`lo..=hi` is `A..=Z`) or `ascii_upcase` (`a..=z`): `explode`'s
 /// error for non-strings, else a new string (`implode` always makes one) with those

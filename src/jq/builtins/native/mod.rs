@@ -36,6 +36,7 @@
 //! the differential fuzzer.
 
 mod entries;
+mod modify;
 mod paths;
 mod strings;
 mod walk;
@@ -46,8 +47,8 @@ mod cases;
 mod tests;
 
 use crate::jq::lang::execute::Jq;
-use crate::jq::lang::execute::native::{Call, ConstRef, Outcome, Pool, Pools};
-use crate::jq::value::Value;
+use crate::jq::lang::execute::native::{Call, ConstRef, Outcome, Pool, Pools, Stop};
+use crate::jq::value::{Error, Value, dump_string_trunc};
 
 /// The `builtin.jq` definitions with a native implementation, plus helper marks for
 /// definitions whose constants other natives return.
@@ -56,6 +57,11 @@ use crate::jq::value::Value;
 pub enum NativeId {
     /// `map/1` (not native; walk and with_entries return its `[]`).
     Map,
+    /// The bytecoded `path/1` (not native; natives call it).
+    Path,
+    Modify,
+    Assign,
+    Join,
     ToEntries,
     FromEntries,
     WithEntries,
@@ -70,6 +76,10 @@ pub enum NativeId {
 /// Every id, by `NativeId as usize`.
 const ALL: [NativeId; NativeId::COUNT] = [
     NativeId::Map,
+    NativeId::Path,
+    NativeId::Modify,
+    NativeId::Assign,
+    NativeId::Join,
     NativeId::ToEntries,
     NativeId::FromEntries,
     NativeId::WithEntries,
@@ -82,13 +92,16 @@ const ALL: [NativeId; NativeId::COUNT] = [
 ];
 
 impl NativeId {
-    pub const COUNT: usize = 10;
+    pub const COUNT: usize = 14;
 
     /// The native for `builtin.jq`'s definition `name/arity`, if any.
     pub fn lookup(name: &str, arity: i32) -> Option<NativeId> {
         use NativeId::*;
         Some(match (name, arity) {
             ("map", 1) => Map,
+            ("_modify", 2) => Modify,
+            ("_assign", 2) => Assign,
+            ("join", 1) => Join,
             ("to_entries", 0) => ToEntries,
             ("from_entries", 0) => FromEntries,
             ("with_entries", 1) => WithEntries,
@@ -115,7 +128,7 @@ impl NativeId {
     /// Whether calls run a native implementation (else the mark only locates
     /// constants).
     pub fn dispatches(self) -> bool {
-        !matches!(self, NativeId::Map)
+        !matches!(self, NativeId::Map | NativeId::Path)
     }
 
     /// Whether the native abandons a closure argument before it is exhausted, or keeps
@@ -124,9 +137,9 @@ impl NativeId {
     pub fn abandons_closures(self) -> bool {
         use NativeId::*;
         match self {
-            Walk | Paths1 => true,
-            Map | ToEntries | FromEntries | WithEntries | Paths0 | Tostream | AsciiDowncase
-            | AsciiUpcase => false,
+            Walk | Paths1 | Modify | Assign => true,
+            Map | Path | Join | ToEntries | FromEntries | WithEntries | Paths0 | Tostream
+            | AsciiDowncase | AsciiUpcase => false,
         }
     }
 }
@@ -137,6 +150,13 @@ pub(crate) fn consts(id: NativeId, pools: &Pools<'_>) -> Option<Vec<ConstRef>> {
     use NativeId::*;
     match id {
         Map => Some(vec![empty_array(&pools.own(), 0)?]),
+        Path => Some(Vec::new()),
+        Modify | Assign => Some(vec![pools.func(Path)?]),
+        Join => Some(vec![
+            string(&pools.own(), 0, "")?,
+            string(&pools.own(), 1, "")?,
+            string(&pools.own(), 2, "")?,
+        ]),
         ToEntries => entries::to_entries_consts(&pools.own()),
         FromEntries => entries::from_entries_consts(&pools.own()),
         WithEntries => {
@@ -164,16 +184,35 @@ fn empty_object(pool: &Pool<'_>, n: usize) -> Option<ConstRef> {
     pool.find(|v| matches!(v, Value::Object(o) if o.is_empty()), n)
 }
 
-/// The string constant `s` of a pool.
-fn string(pool: &Pool<'_>, s: &str) -> Option<ConstRef> {
-    pool.find(|v| v.as_str() == Some(s), 0)
+/// The `n`th string constant `s` of a pool.
+fn string(pool: &Pool<'_>, n: usize, s: &str) -> Option<ConstRef> {
+    pool.find(|v| v.as_str() == Some(s), n)
+}
+
+/// `.[]`'s error on a value that isn't iterable (`EACH`).
+fn cannot_iterate(v: &Value) -> Stop {
+    Error::msg(format!(
+        "Cannot iterate over {} ({})",
+        v.kind_name(),
+        dump_string_trunc(v, 15)
+    ))
+    .into()
 }
 
 /// Runs native `id`.
 pub(crate) fn call(id: NativeId, vm: &mut Jq, c: Call<'_>) -> Outcome {
     use NativeId::*;
     match id {
-        Map => Outcome::Fallback(c.input),
+        Map | Path => Outcome::Fallback(c.input),
+        Modify => {
+            let path_fn = c.consts.func(0, &c.callee);
+            modify::modify(vm, c.input, c.args[0], c.args[1], path_fn).into()
+        }
+        Assign => {
+            let path_fn = c.consts.func(0, &c.callee);
+            modify::assign(vm, c.input, c.args[0], c.args[1], path_fn)
+        }
+        Join => strings::join(vm, c.input, c.args[0], c.consts),
         ToEntries => entries::to_entries(c.input, c.consts).into(),
         FromEntries => entries::from_entries(vm, c.input, c.consts).into(),
         WithEntries => entries::with_entries(vm, c.input, c.args[0], c.consts).into(),

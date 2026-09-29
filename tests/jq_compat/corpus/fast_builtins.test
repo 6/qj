@@ -1,6 +1,6 @@
 # Builtins that qj implements natively (src/jq/builtins/native/): walk, paths,
 # paths(f), tostream, to_entries, from_entries, with_entries, ascii_downcase,
-# ascii_upcase. Each must match its builtin.jq definition exactly: outputs, laziness,
+# ascii_upcase, join, and _modify/_assign (|=, =, +=, //=, map_values, ...). Each must match its builtin.jq definition exactly: outputs, laziness,
 # errors, labels (break values), path expressions, value identity (path($x)) and array
 # storage (writing past the end of a view), and ?// (which disables natives that
 # abandon closures). Generated from the edge cases in src/jq/builtins/native/tests.rs.
@@ -2518,6 +2518,1062 @@ try ascii_downcase catch .
 
 (tostring | ascii_downcase) as $a | ascii_downcase? | try path($a) catch "E"
 []
+
+.a |= .+1
+[1,[2,[3]],{"a":[]}]
+
+.a |= .+1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a |= .+1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a |= .+1
+{"x":{"a":{"b":1},"c":2}}
+
+.a |= .+1
+[]
+
+.a |= .+1
+{}
+
+.a |= .+1
+1
+
+.a |= .+1
+null
+
+.[]? |= .
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= .
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= .
+[]
+
+.[]? |= .
+{}
+
+.[]? |= .
+1
+
+.[]? |= .
+null
+
+.[]? |= empty
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= empty
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= empty
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= empty
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= empty
+[]
+
+.[]? |= empty
+{}
+
+.[]? |= empty
+1
+
+.[]? |= empty
+null
+
+.[]? |= (., .)
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= (., .)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= (., .)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= (., .)
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= (., .)
+[]
+
+.[]? |= (., .)
+{}
+
+.[]? |= (., .)
+1
+
+.[]? |= (., .)
+null
+
+.x.y |= 1
+[1,[2,[3]],{"a":[]}]
+
+.x.y |= 1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.x.y |= 1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.x.y |= 1
+{"x":{"a":{"b":1},"c":2}}
+
+.x.y |= 1
+[]
+
+.x.y |= 1
+{}
+
+.x.y |= 1
+1
+
+.x.y |= 1
+null
+
+.a += 1
+[1,[2,[3]],{"a":[]}]
+
+.a += 1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a += 1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a += 1
+{"x":{"a":{"b":1},"c":2}}
+
+.a += 1
+[]
+
+.a += 1
+{}
+
+.a += 1
+1
+
+.a += 1
+null
+
+.a //= 5
+[1,[2,[3]],{"a":[]}]
+
+.a //= 5
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a //= 5
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a //= 5
+{"x":{"a":{"b":1},"c":2}}
+
+.a //= 5
+[]
+
+.a //= 5
+{}
+
+.a //= 5
+1
+
+.a //= 5
+null
+
+map_values(.)
+[1,[2,[3]],{"a":[]}]
+
+map_values(.)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+map_values(.)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+map_values(.)
+{"x":{"a":{"b":1},"c":2}}
+
+map_values(.)
+[]
+
+map_values(.)
+{}
+
+map_values(.)
+1
+
+map_values(.)
+null
+
+map_values(empty)
+[1,[2,[3]],{"a":[]}]
+
+map_values(empty)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+map_values(empty)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+map_values(empty)
+{"x":{"a":{"b":1},"c":2}}
+
+map_values(empty)
+[]
+
+map_values(empty)
+{}
+
+map_values(empty)
+1
+
+map_values(empty)
+null
+
+map_values(tostring)
+[1,[2,[3]],{"a":[]}]
+
+map_values(tostring)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+map_values(tostring)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+map_values(tostring)
+{"x":{"a":{"b":1},"c":2}}
+
+map_values(tostring)
+[]
+
+map_values(tostring)
+{}
+
+map_values(tostring)
+1
+
+map_values(tostring)
+null
+
+.. |= .
+[1,[2,[3]],{"a":[]}]
+
+.. |= .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.. |= .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.. |= .
+{"x":{"a":{"b":1},"c":2}}
+
+.. |= .
+[]
+
+.. |= .
+{}
+
+.. |= .
+1
+
+.. |= .
+null
+
+(.. | numbers) |= .+1
+[1,[2,[3]],{"a":[]}]
+
+(.. | numbers) |= .+1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+(.. | numbers) |= .+1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+(.. | numbers) |= .+1
+{"x":{"a":{"b":1},"c":2}}
+
+(.. | numbers) |= .+1
+[]
+
+(.. | numbers) |= .+1
+{}
+
+(.. | numbers) |= .+1
+1
+
+(.. | numbers) |= .+1
+null
+
+try (.a |= error) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.a |= error) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.a |= error) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.a |= error) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.a |= error) catch .
+[]
+
+try (.a |= error) catch .
+{}
+
+try (.a |= error) catch .
+1
+
+try (.a |= error) catch .
+null
+
+try (.[]? |= error) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.[]? |= error) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.[]? |= error) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.[]? |= error) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.[]? |= error) catch .
+[]
+
+try (.[]? |= error) catch .
+{}
+
+try (.[]? |= error) catch .
+1
+
+try (.[]? |= error) catch .
+null
+
+.a = 1
+[1,[2,[3]],{"a":[]}]
+
+.a = 1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a = 1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a = 1
+{"x":{"a":{"b":1},"c":2}}
+
+.a = 1
+[]
+
+.a = 1
+{}
+
+.a = 1
+1
+
+.a = 1
+null
+
+.a = (1, 2)
+[1,[2,[3]],{"a":[]}]
+
+.a = (1, 2)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a = (1, 2)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a = (1, 2)
+{"x":{"a":{"b":1},"c":2}}
+
+.a = (1, 2)
+[]
+
+.a = (1, 2)
+{}
+
+.a = (1, 2)
+1
+
+.a = (1, 2)
+null
+
+.[]? = 1
+[1,[2,[3]],{"a":[]}]
+
+.[]? = 1
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? = 1
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? = 1
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? = 1
+[]
+
+.[]? = 1
+{}
+
+.[]? = 1
+1
+
+.[]? = 1
+null
+
+.x.y = .a
+[1,[2,[3]],{"a":[]}]
+
+.x.y = .a
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.x.y = .a
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.x.y = .a
+{"x":{"a":{"b":1},"c":2}}
+
+.x.y = .a
+[]
+
+.x.y = .a
+{}
+
+.x.y = .a
+1
+
+.x.y = .a
+null
+
+(.a, .b) = 9
+[1,[2,[3]],{"a":[]}]
+
+(.a, .b) = 9
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+(.a, .b) = 9
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+(.a, .b) = 9
+{"x":{"a":{"b":1},"c":2}}
+
+(.a, .b) = 9
+[]
+
+(.a, .b) = 9
+{}
+
+(.a, .b) = 9
+1
+
+(.a, .b) = 9
+null
+
+.a = empty
+[1,[2,[3]],{"a":[]}]
+
+.a = empty
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a = empty
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a = empty
+{"x":{"a":{"b":1},"c":2}}
+
+.a = empty
+[]
+
+.a = empty
+{}
+
+.a = empty
+1
+
+.a = empty
+null
+
+try (.a.b = 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.a.b = 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.a.b = 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.a.b = 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.a.b = 1) catch .
+[]
+
+try (.a.b = 1) catch .
+{}
+
+try (.a.b = 1) catch .
+1
+
+try (.a.b = 1) catch .
+null
+
+try (.a.b |= 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.a.b |= 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.a.b |= 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.a.b |= 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.a.b |= 1) catch .
+[]
+
+try (.a.b |= 1) catch .
+{}
+
+try (.a.b |= 1) catch .
+1
+
+try (.a.b |= 1) catch .
+null
+
+try (.[0] = 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.[0] = 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.[0] = 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.[0] = 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.[0] = 1) catch .
+[]
+
+try (.[0] = 1) catch .
+{}
+
+try (.[0] = 1) catch .
+1
+
+try (.[0] = 1) catch .
+null
+
+try (paths |= 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (paths |= 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (paths |= 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (paths |= 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (paths |= 1) catch .
+[]
+
+try (paths |= 1) catch .
+{}
+
+try (paths |= 1) catch .
+1
+
+try (paths |= 1) catch .
+null
+
+try ((.a | tostring) |= 1) catch .
+[1,[2,[3]],{"a":[]}]
+
+try ((.a | tostring) |= 1) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try ((.a | tostring) |= 1) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try ((.a | tostring) |= 1) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try ((.a | tostring) |= 1) catch .
+[]
+
+try ((.a | tostring) |= 1) catch .
+{}
+
+try ((.a | tostring) |= 1) catch .
+1
+
+try ((.a | tostring) |= 1) catch .
+null
+
+.[1:]? |= [9]
+[1,[2,[3]],{"a":[]}]
+
+.[1:]? |= [9]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[1:]? |= [9]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[1:]? |= [9]
+{"x":{"a":{"b":1},"c":2}}
+
+.[1:]? |= [9]
+[]
+
+.[1:]? |= [9]
+{}
+
+.[1:]? |= [9]
+1
+
+.[1:]? |= [9]
+null
+
+[.[]? | tostring] | join(",")
+["a",1,null,true,false]
+
+[.[]? | tostring] | join(",")
+{"x":"a","y":"b"}
+
+[.[]? | tostring] | join(",")
+[[1]]
+
+[.[]? | tostring] | join(",")
+[{}]
+
+[.[]? | tostring] | join(",")
+[]
+
+[.[]? | tostring] | join(",")
+null
+
+[.[]? | tostring] | join(",")
+1
+
+[.[]? | tostring] | join(",")
+"s"
+
+[.[]? | tostring] | join(null)
+["a",1,null,true,false]
+
+[.[]? | tostring] | join(null)
+{"x":"a","y":"b"}
+
+[.[]? | tostring] | join(null)
+[[1]]
+
+[.[]? | tostring] | join(null)
+[{}]
+
+[.[]? | tostring] | join(null)
+[]
+
+[.[]? | tostring] | join(null)
+null
+
+[.[]? | tostring] | join(null)
+1
+
+[.[]? | tostring] | join(null)
+"s"
+
+try join("-") catch .
+["a",1,null,true,false]
+
+try join("-") catch .
+{"x":"a","y":"b"}
+
+try join("-") catch .
+[[1]]
+
+try join("-") catch .
+[{}]
+
+try join("-") catch .
+[]
+
+try join("-") catch .
+null
+
+try join("-") catch .
+1
+
+try join("-") catch .
+"s"
+
+try join(1) catch .
+["a",1,null,true,false]
+
+try join(1) catch .
+{"x":"a","y":"b"}
+
+try join(1) catch .
+[[1]]
+
+try join(1) catch .
+[{}]
+
+try join(1) catch .
+[]
+
+try join(1) catch .
+null
+
+try join(1) catch .
+1
+
+try join(1) catch .
+"s"
+
+try join([]) catch .
+["a",1,null,true,false]
+
+try join([]) catch .
+{"x":"a","y":"b"}
+
+try join([]) catch .
+[[1]]
+
+try join([]) catch .
+[{}]
+
+try join([]) catch .
+[]
+
+try join([]) catch .
+null
+
+try join([]) catch .
+1
+
+try join([]) catch .
+"s"
+
+[] | join(",") as $a | [] | join(",") | path($a)
+["a",1,null,true,false]
+
+[] | join(",") as $a | [] | join(",") | path($a)
+{"x":"a","y":"b"}
+
+[] | join(",") as $a | [] | join(",") | path($a)
+[[1]]
+
+[] | join(",") as $a | [] | join(",") | path($a)
+[{}]
+
+[] | join(",") as $a | [] | join(",") | path($a)
+[]
+
+[] | join(",") as $a | [] | join(",") | path($a)
+null
+
+[] | join(",") as $a | [] | join(",") | path($a)
+1
+
+[] | join(",") as $a | [] | join(",") | path($a)
+"s"
+
+"s" as $s | [.[]? | tostring] | join($s)
+["a",1,null,true,false]
+
+"s" as $s | [.[]? | tostring] | join($s)
+{"x":"a","y":"b"}
+
+"s" as $s | [.[]? | tostring] | join($s)
+[[1]]
+
+"s" as $s | [.[]? | tostring] | join($s)
+[{}]
+
+"s" as $s | [.[]? | tostring] | join($s)
+[]
+
+"s" as $s | [.[]? | tostring] | join($s)
+null
+
+"s" as $s | [.[]? | tostring] | join($s)
+1
+
+"s" as $s | [.[]? | tostring] | join($s)
+"s"
+
+[.[]? | tostring] | join(",", "-")
+["a",1,null,true,false]
+
+[.[]? | tostring] | join(",", "-")
+{"x":"a","y":"b"}
+
+[.[]? | tostring] | join(",", "-")
+[[1]]
+
+[.[]? | tostring] | join(",", "-")
+[{}]
+
+[.[]? | tostring] | join(",", "-")
+[]
+
+[.[]? | tostring] | join(",", "-")
+null
+
+[.[]? | tostring] | join(",", "-")
+1
+
+[.[]? | tostring] | join(",", "-")
+"s"
+
+.[]? |= (label $f | ., break $f)
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= (label $f | ., break $f)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= (label $f | ., break $f)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= (label $f | ., break $f)
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= (label $f | ., break $f)
+[]
+
+.[]? |= (label $f | ., break $f)
+{}
+
+.[]? |= (label $f | ., break $f)
+1
+
+.[]? |= (label $f | ., break $f)
+null
+
+.[]? |= first(., 2)
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= first(., 2)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= first(., 2)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= first(., 2)
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= first(., 2)
+[]
+
+.[]? |= first(., 2)
+{}
+
+.[]? |= first(., 2)
+1
+
+.[]? |= first(., 2)
+null
+
+[label $f | .[]? |= (., break $f)]
+[1,[2,[3]],{"a":[]}]
+
+[label $f | .[]? |= (., break $f)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[label $f | .[]? |= (., break $f)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[label $f | .[]? |= (., break $f)]
+{"x":{"a":{"b":1},"c":2}}
+
+[label $f | .[]? |= (., break $f)]
+[]
+
+[label $f | .[]? |= (., break $f)]
+{}
+
+[label $f | .[]? |= (., break $f)]
+1
+
+[label $f | .[]? |= (., break $f)]
+null
+
+map_values(.) | [label $f | try break $f catch .]
+[1,[2,[3]],{"a":[]}]
+
+map_values(.) | [label $f | try break $f catch .]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+map_values(.) | [label $f | try break $f catch .]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+map_values(.) | [label $f | try break $f catch .]
+{"x":{"a":{"b":1},"c":2}}
+
+map_values(.) | [label $f | try break $f catch .]
+[]
+
+map_values(.) | [label $f | try break $f catch .]
+{}
+
+map_values(.) | [label $f | try break $f catch .]
+1
+
+map_values(.) | [label $f | try break $f catch .]
+null
+
+.a |= . | [label $f | try break $f catch .]
+[1,[2,[3]],{"a":[]}]
+
+.a |= . | [label $f | try break $f catch .]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a |= . | [label $f | try break $f catch .]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a |= . | [label $f | try break $f catch .]
+{"x":{"a":{"b":1},"c":2}}
+
+.a |= . | [label $f | try break $f catch .]
+[]
+
+.a |= . | [label $f | try break $f catch .]
+{}
+
+.a |= . | [label $f | try break $f catch .]
+1
+
+.a |= . | [label $f | try break $f catch .]
+null
+
+.[]? |= input?
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= input?
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= input?
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= input?
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= input?
+[]
+
+.[]? |= input?
+{}
+
+.[]? |= input?
+1
+
+.[]? |= input?
+null
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+[1,[2,[3]],{"a":[]}]
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+{"x":{"a":{"b":1},"c":2}}
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+[]
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+{}
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+1
+
+(.. | select(type == "array")) |= .[0:1] | .. |= .
+null
+
+.[]? |= (. as [$a] ?// $a | $a)
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= (. as [$a] ?// $a | $a)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= (. as [$a] ?// $a | $a)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= (. as [$a] ?// $a | $a)
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= (. as [$a] ?// $a | $a)
+[]
+
+.[]? |= (. as [$a] ?// $a | $a)
+{}
+
+.[]? |= (. as [$a] ?// $a | $a)
+1
+
+.[]? |= (. as [$a] ?// $a | $a)
+null
+
+path(.a |= 1)?
+[1,[2,[3]],{"a":[]}]
+
+path(.a |= 1)?
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+path(.a |= 1)?
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+path(.a |= 1)?
+{"x":{"a":{"b":1},"c":2}}
+
+path(.a |= 1)?
+[]
+
+path(.a |= 1)?
+{}
+
+path(.a |= 1)?
+1
+
+path(.a |= 1)?
+null
+
+reduce .[]? as $x (.; .[0]? |= $x)
+[1,[2,[3]],{"a":[]}]
+
+reduce .[]? as $x (.; .[0]? |= $x)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+reduce .[]? as $x (.; .[0]? |= $x)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+reduce .[]? as $x (.; .[0]? |= $x)
+{"x":{"a":{"b":1},"c":2}}
+
+reduce .[]? as $x (.; .[0]? |= $x)
+[]
+
+reduce .[]? as $x (.; .[0]? |= $x)
+{}
+
+reduce .[]? as $x (.; .[0]? |= $x)
+1
+
+reduce .[]? as $x (.; .[0]? |= $x)
+null
 
 walk(if type == "object" then with_entries(.key |= ascii_upcase) else . end)
 [{"key":"a","value":1},{"k":"b","value":2},{"name":"c","Value":3}]

@@ -154,11 +154,57 @@ impl Gen {
         }
     }
 
+    /// A path expression (some aren't: those raise jq's path errors).
+    fn path_expr(&mut self) -> String {
+        const PATHS: &[&str] = &[
+            ".a",
+            ".[]?",
+            "..",
+            "(.. | numbers)",
+            "(.. | strings)",
+            ".a.b",
+            ".[0]",
+            ".[1:]",
+            "(.a, .b)",
+            "first(.[]?)",
+            "empty",
+            "(.[]? | select(. != null))",
+            ".key?",
+            ".[-1]?",
+            "getpath([\"a\", 0])?",
+            "paths",
+            "(.a | tostring)",
+            ".[\"value\"]?",
+            "(.. | select(type == \"object\"))",
+            "(if type == \"array\" then .[0] else .a end)",
+        ];
+        self.r.pick(PATHS).to_string()
+    }
+
     /// A native call.
     fn native(&mut self, depth: u32) -> String {
         let f = self.closure(if self.bounded { 1 } else { 2 }, false);
         let chain = depth > 0;
         match self.r.below(if chain { 12 } else { 9 }) {
+            // The update-assignments (natives `_modify` and `_assign`) and `join`.
+            _ if self.r.below(3) == 0 => {
+                let p = self.path_expr();
+                let g = self.closure(0, self.bounded);
+                match self.r.below(8) {
+                    0 => format!("({p}) |= {f}"),
+                    1 => format!("({p}) = {g}"),
+                    2 => format!("({p}) += 1"),
+                    3 => format!("({p}) //= {g}"),
+                    4 => format!("map_values({f})"),
+                    5 => format!(
+                        "[.[]? | tostring] | join({})",
+                        self.r
+                            .pick(&["\",\"", "\"\"", "null", "1", "$__loc__.file", ".[0]?"])
+                    ),
+                    6 => "join(\"-\")".to_string(),
+                    _ => format!("({p}) |= ({p} |= {g})?"),
+                }
+            }
             0 => format!("walk({f})"),
             1 => "paths".to_string(),
             2 => format!("paths({f})"),

@@ -220,7 +220,14 @@ pub fn builtins_bind(c: &mut Compiler, program: Block) -> Block {
         }
         let b = match binder {
             Binder::C(ci) => c.gen_cfunction(lib.cfunctions[ci]),
-            Binder::Bytecoded(bc) => gen_bytecoded(c, bc),
+            Binder::Bytecoded(bc) => {
+                let def = gen_bytecoded(c, bc);
+                if let Bytecoded::Path = bc {
+                    // Natives run `path(f)` with it.
+                    c.set_native(def, NativeId::Path.mark());
+                }
+                def
+            }
             Binder::Jq(di) => {
                 let lf = *builtin_lf.get_or_insert_with(|| {
                     c.add_locfile(Rc::new(LocFile::new("<builtin>", builtin_jq().as_bytes())))

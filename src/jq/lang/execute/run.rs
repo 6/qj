@@ -181,6 +181,25 @@ impl Jq {
         self.curr_frame = new_frame_idx;
     }
 
+    /// `frame_push` with the closure arguments given (for native sub-runs).
+    pub(super) fn frame_push_args(&mut self, prog: &Program, callee: Closure, args: &[Closure]) {
+        let func = &prog.funcs[callee.func as usize];
+        debug_assert_eq!(args.len(), func.nclosures as usize);
+        let frame = Frame {
+            func: callee.func,
+            env: callee.env,
+            retdata: 0,
+            retaddr: NO_RETADDR,
+            closures: self.stk.closures.len() as u32,
+            locals: self.stk.locals.len() as u32,
+        };
+        let new_frame_idx = self.stk.push_frame(self.curr_frame, frame);
+        self.stk.closures.extend_from_slice(args);
+        let n = self.stk.locals.len() + func.nlocals as usize;
+        self.stk.locals.resize(n, Value::Null);
+        self.curr_frame = new_frame_idx;
+    }
+
     /// `frame_pop`.
     #[inline]
     fn frame_pop(&mut self) {
@@ -880,14 +899,7 @@ impl Jq {
                     }
                     if let Some(id) = native {
                         debug_assert_eq!(self.stk_top, retdata);
-                        match self.call_native(
-                            prog,
-                            id,
-                            cl.func,
-                            input,
-                            &args[..nclosures],
-                            retaddr,
-                        ) {
+                        match self.call_native(prog, id, cl, input, &args[..nclosures], retaddr) {
                             Applied::Continue(p) => {
                                 pc = p;
                                 continue;

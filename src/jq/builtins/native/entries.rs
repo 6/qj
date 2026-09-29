@@ -6,7 +6,7 @@
 //! def with_entries(f): to_entries | map(f) | from_entries;
 //! ```
 
-use super::{empty_array, empty_object, string};
+use super::{cannot_iterate, empty_array, empty_object, string};
 use crate::jq::builtins::binops::binop_plus;
 use crate::jq::lang::execute::Jq;
 use crate::jq::lang::execute::native::{Closure, ConstRef, ConstView, Pool, Stop};
@@ -16,8 +16,8 @@ use crate::jq::value::{Error, Object, Str, Value, dump_string_trunc};
 pub(super) fn to_entries_consts(pool: &Pool<'_>) -> Option<Vec<ConstRef>> {
     Some(vec![
         empty_array(pool, 0)?,
-        string(pool, "key")?,
-        string(pool, "value")?,
+        string(pool, 0, "key")?,
+        string(pool, 0, "value")?,
     ])
 }
 
@@ -66,16 +66,6 @@ pub(super) fn to_entries(input: Value, c: ConstView<'_>) -> Result<Value, Stop> 
         _ => return Err(Error::type_error(&input, "has no keys").into()),
     }
     Ok(Value::Array(out))
-}
-
-/// `.[]`'s error on a value that isn't iterable (`EACH`).
-pub(super) fn cannot_iterate(v: &Value) -> Stop {
-    Error::msg(format!(
-        "Cannot iterate over {} ({})",
-        v.kind_name(),
-        dump_string_trunc(v, 15)
-    ))
-    .into()
 }
 
 /// `from_entries`. `c`: [`from_entries_consts`].

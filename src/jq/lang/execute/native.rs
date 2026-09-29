@@ -47,6 +47,7 @@ use super::program::Program;
 pub(crate) use super::stack::Closure;
 use super::stack::StackPtr;
 use crate::jq::builtins::native::{self, NativeId};
+use crate::jq::lang::bytecode::Opcode;
 use crate::jq::value::{Error, Value};
 
 /// How deeply natives may nest (each level is a Rust call of the interpreter loop);
@@ -188,8 +189,14 @@ pub(crate) struct Consts {
 /// A constant of a native: in a function's constant pool, or owned (for values that
 /// are only compared, like the keys `from_entries` looks up).
 pub(crate) enum ConstRef {
-    Pool { func: u32, idx: u32 },
+    Pool {
+        func: u32,
+        idx: u32,
+    },
     Own(Value),
+    /// A function (a builtin the native calls, closed over the native's own
+    /// environment: builtins are all defined in the same scope).
+    Func(u32),
 }
 
 impl Consts {
@@ -249,6 +256,11 @@ impl<'a> Pools<'a> {
         }
     }
 
+    /// The function of another marked definition, if the program has it.
+    pub fn func(&self, id: NativeId) -> Option<ConstRef> {
+        Some(ConstRef::Func(self.of_native[id as usize]?))
+    }
+
     /// The constants of another marked definition's function, if the program has it.
     pub fn native(&self, id: NativeId) -> Option<Pool<'a>> {
         let func = self.of_native[id as usize]?;
@@ -289,6 +301,18 @@ impl<'a> ConstView<'a> {
         match &self.refs[i] {
             ConstRef::Pool { func, idx } => &self.prog.constants(*func)[*idx as usize],
             ConstRef::Own(v) => v,
+            ConstRef::Func(_) => unreachable!("a function, not a constant"),
+        }
+    }
+
+    /// Function `i`, as a closure over `env` (the native's own environment).
+    pub fn func(&self, i: usize, env: &Closure) -> Closure {
+        match &self.refs[i] {
+            ConstRef::Func(func) => Closure {
+                func: *func,
+                env: env.env,
+            },
+            _ => unreachable!("a constant, not a function"),
         }
     }
 
@@ -301,11 +325,13 @@ impl<'a> ConstView<'a> {
     }
 }
 
-/// A native call: the input, closure arguments and constants.
+/// A native call: the input, closure arguments and constants, and the closure being
+/// called (its definition's).
 pub(crate) struct Call<'a> {
     pub input: Value,
     pub args: &'a [Closure],
     pub consts: ConstView<'a>,
+    pub callee: Closure,
 }
 
 impl Raised {
@@ -340,7 +366,7 @@ impl Jq {
         &mut self,
         prog: &Program,
         id: NativeId,
-        func: u32,
+        callee: Closure,
         input: Value,
         args: &[Closure],
         retaddr: u32,
@@ -358,8 +384,9 @@ impl Jq {
                 args,
                 consts: ConstView {
                     prog,
-                    refs: &prog.native_consts.by_func[func as usize],
+                    refs: &prog.native_consts.by_func[callee.func as usize],
                 },
+                callee,
             },
         );
         self.native_depth -= 1;
@@ -435,12 +462,22 @@ impl Jq {
         f: Closure,
         input: Value,
     ) -> Result<Option<(Sub, Value)>, Stop> {
+        self.sub_start_args(f, &[], input)
+    }
+
+    /// [`Jq::sub_start`] for a function with closure parameters, given `args`.
+    pub(crate) fn sub_start_args(
+        &mut self,
+        f: Closure,
+        args: &[Closure],
+        input: Value,
+    ) -> Result<Option<(Sub, Value)>, Stop> {
         let prog = self.prog.clone();
         let pos = (self.stk_top, self.curr_frame);
         self.stack_save(prog.subrun_base_pc as usize, pos);
         let base = self.fork_top;
         let retdata = self.stk_top;
-        self.frame_push(&prog, &[], f, 0, 0);
+        self.frame_push_args(&prog, f, args);
         let fr = self.stk.frame_mut(self.curr_frame);
         fr.retdata = retdata;
         fr.retaddr = prog.subrun_ret_pc;
@@ -524,6 +561,36 @@ impl Jq {
                 Ok(Some(v))
             }
             None => Ok(None),
+        }
+    }
+
+    /// The value of closure `f` on `input` when running it can't do anything else:
+    /// `f` is `.`, a constant (`LOADK k`) or a variable of an enclosing function
+    /// (`LOADV`). What jq's `$param` bindings evaluate without side effects.
+    pub(crate) fn pure_arg(&self, f: Closure, input: &Value) -> Option<Value> {
+        let prog = &*self.prog;
+        let func = &prog.funcs[f.func as usize];
+        let code = &func.bc.code;
+        const RET: u16 = Opcode::RET as u16;
+        match code.as_slice() {
+            [RET] => Some(input.clone()),
+            [op, k, RET] if *op == Opcode::LOADK as u16 => {
+                func.bc.constants.get(*k as usize).cloned()
+            }
+            [op, level, var, RET] if *op == Opcode::LOADV as u16 && *level > 0 => {
+                // The variable's frame: `level` env links up from the closure's frame,
+                // whose env is `f.env`.
+                let mut fr = f.env;
+                for _ in 1..*level {
+                    fr = self.stk.frame(fr).env;
+                }
+                let fr = self.stk.frame(fr);
+                self.stk
+                    .locals
+                    .get(fr.locals as usize + *var as usize)
+                    .cloned()
+            }
+            _ => None,
         }
     }
 
