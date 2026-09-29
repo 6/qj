@@ -45,7 +45,7 @@ Results: `benches/results_ndjson_{size}.md`
 
 ### Extended NDJSON (stdin, complex filters, slurp)
 
-Tests scenarios where qj's speedup is smaller: stdin (no mmap), complex filters (no on-demand fast path), and slurp mode (no parallelism).
+Tests scenarios where qj's speedup is smaller: stdin (no mmap), complex filters (`def`, `reduce`), and slurp mode (no parallelism).
 
 ```bash
 bash benches/download_data.sh --xsmall              # 500MB, 1 hour
