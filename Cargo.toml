@@ -39,6 +39,8 @@ flate2 = "1"
 zstd = "0.13"
 glob = "0.3"
 onig_sys = { version = "69.9.3", default-features = false }
+indexmap = "2"
+foldhash = "0.1"
 
 [build-dependencies]
 cc = "1"
