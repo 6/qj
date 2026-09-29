@@ -3,6 +3,7 @@
 //! jq's parser port fed exactly as jq's `util.c` feeds it (`reference`).
 
 mod diff;
+mod engine;
 mod generate;
 mod live;
 mod reader;

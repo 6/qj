@@ -1,5 +1,6 @@
 //! Fast input layer for the jq port (work in progress).
 
+pub mod parallel;
 pub mod reader;
 pub mod simd;
 pub mod source;

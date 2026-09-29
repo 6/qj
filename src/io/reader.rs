@@ -177,14 +177,20 @@ impl FileData {
         }
     }
 
-    /// Reads more bytes (blocking), keeping everything from `keep` on.
-    /// With `greedy`, keeps reading while more is available immediately (up
-    /// to `max` buffered bytes), so fast producers give large windows.
-    fn fill(&mut self, keep: usize, greedy: bool, max: usize) {
+    /// Reads more bytes, keeping everything from `keep` on. With `wait`,
+    /// the first read may block (the reader needs data). Other reads happen
+    /// only while more is available right away (a pipe with data waiting,
+    /// or a stream without a descriptor, like a decompressor), until `max`
+    /// bytes are buffered. So a fast producer gives large windows, and a
+    /// slow one never delays records that are complete.
+    fn fill(&mut self, keep: usize, wait: bool, max: usize) {
         let DataKind::Stream { reader, buf, fd } = &mut self.kind else {
             return;
         };
         if self.eof {
+            return;
+        }
+        if !wait && self.end - self.base >= max {
             return;
         }
         // Drop consumed bytes when they dominate the buffer.
@@ -194,7 +200,12 @@ impl FileData {
             buf.copy_within(drop..drop + live, 0);
             self.base = keep;
         }
+        let mut first = true;
         loop {
+            if !(first && wait) && fd.is_some_and(|fd| !super::source::readable_now(fd)) {
+                return;
+            }
+            first = false;
             // The buffer only grows (by doubling); bytes past the data are
             // stale or zero, which is fine as simdjson padding.
             let len = self.end - self.base;
@@ -222,13 +233,8 @@ impl FileData {
                     self.eof = true;
                 }
             }
-            let len = self.end - self.base;
-            if self.eof || !greedy || len >= max {
+            if self.eof || self.end - self.base >= max {
                 return;
-            }
-            match fd {
-                Some(fd) if super::source::readable_now(*fd) => continue,
-                _ => return,
             }
         }
     }
@@ -323,6 +329,8 @@ pub struct InputReader {
     no_line_try_until: usize,
     on_message: Box<dyn FnMut(InputMessage)>,
     stats: ReaderStats,
+    /// Incremented for every input opened (see `catch_up`).
+    generation: u64,
 }
 
 /// How the reader produced its values (for diagnostics and tests).
@@ -381,6 +389,7 @@ impl InputReader {
             no_line_try_until: 0,
             on_message: Box::new(default_message_sink),
             stats: ReaderStats::default(),
+            generation: 0,
         };
         if !r.fast {
             r.enter_slow();
@@ -482,6 +491,7 @@ impl InputReader {
         }
         let name = self.files[self.next_file].clone();
         self.next_file += 1;
+        self.generation += 1;
         self.current_line = 0;
         self.fp = FilePos::default();
         self.jq_eof = false;
@@ -541,7 +551,7 @@ impl InputReader {
             None => self.fp.pos,
         };
         if let Some(cur) = &mut self.cur {
-            cur.fill(keep, false, 0);
+            cur.fill(keep, true, 0);
         }
     }
 
@@ -997,6 +1007,211 @@ impl InputReader {
             }
         }
     }
+    // ---- windows for the parallel engine -------------------------------
+
+    /// Whether the reader is between records in a state where whole lines
+    /// can be processed without it: raw lines (not slurped), or JSON with
+    /// the fast path idle.
+    fn windowable(&self) -> bool {
+        if self.opts.slurp || self.ended {
+            return false;
+        }
+        if self.opts.raw {
+            return true;
+        }
+        self.fast && matches!(self.json, Json::Fast) && self.bom_done && self.pending_scan.is_none()
+    }
+
+    /// The complete lines of the current input from the current position,
+    /// at most `max` bytes (a longer first line is taken whole), if at least
+    /// `min` bytes are available now. Reads more of a stream only if it is
+    /// available without waiting. `None` when records must be read one at a
+    /// time (at the start of the input, between inputs, when jq's parser has
+    /// the stream, or when there's too little data).
+    pub(crate) fn window(&mut self, min: usize, max: usize) -> Option<Window> {
+        if !self.windowable() {
+            return None;
+        }
+        let keep = self.fp.pos;
+        let cur = self.cur.as_mut()?;
+        if matches!(cur.kind, DataKind::Stream { .. }) && !cur.eof {
+            cur.fill(keep, false, max.saturating_add(keep - cur.base));
+        }
+        let start = self.fp.pos;
+        let avail = cur.avail_end();
+        if avail <= start {
+            return None;
+        }
+        let limit = avail.min(start.saturating_add(max));
+        let end = match memchr::memrchr(b'\n', cur.slice(start, limit)) {
+            Some(i) => start + i + 1,
+            None => start + memchr::memchr(b'\n', cur.slice(start, avail))? + 1,
+        };
+        if end - start < min {
+            return None;
+        }
+        let (data, base) = match &cur.kind {
+            DataKind::Whole(b) => (b.clone(), 0),
+            DataKind::Stream { buf, .. } => {
+                let mut copy = Vec::with_capacity(end - start + PAD);
+                copy.extend_from_slice(&buf[start - cur.base..end - cur.base]);
+                copy.resize(end - start + PAD, 0);
+                (std::sync::Arc::new(copy) as SharedBytes, start)
+            }
+        };
+        Some(Window {
+            data,
+            base,
+            start,
+            end,
+            nl: self.fp.nl,
+            line_start: self.fp.line_start,
+            generation: self.generation,
+            raw: self.opts.raw,
+        })
+    }
+
+    /// Records up to `upto` (a line start within the last window) were
+    /// processed by the engine: move past them as the fast path would have.
+    pub(crate) fn commit(&mut self, upto: usize) {
+        self.advance(upto, true);
+    }
+
+    /// After records were read one at a time from a window's line: whether
+    /// the reader has reached `target` (a line start of window
+    /// `generation`), consuming whitespace up to it (JSON only) when it is
+    /// idle there.
+    pub(crate) fn catch_up(&mut self, generation: u64, target: usize) -> CatchUp {
+        if self.generation != generation || self.cur.is_none() || self.ended {
+            return CatchUp::Beyond;
+        }
+        let p = self.fp.pos;
+        if p > target {
+            return CatchUp::Beyond;
+        }
+        if !self.windowable() {
+            return CatchUp::Behind;
+        }
+        if p == target {
+            return CatchUp::Reached;
+        }
+        if self.opts.raw {
+            return CatchUp::Behind;
+        }
+        let cur = self.cur.as_ref().expect("checked");
+        if cur
+            .slice(p, target)
+            .iter()
+            .all(|&c| matches!(c, b' ' | b'\t' | b'\r' | b'\n'))
+        {
+            self.advance(target, true);
+            CatchUp::Reached
+        } else {
+            CatchUp::Behind
+        }
+    }
+
+    /// `input_filename` as text (for workers on other threads).
+    pub(crate) fn filename_text(&self) -> Option<String> {
+        self.filename.as_ref().map(|s| s.as_str().to_owned())
+    }
+}
+
+/// A run of complete lines for the parallel engine (see
+/// [`InputReader::window`]).
+pub(crate) struct Window {
+    /// The bytes; absolute offset `p` is at `data[p - base]`, and at least
+    /// `PAD` readable bytes follow `end` unless it is the end of a whole
+    /// input.
+    pub(crate) data: SharedBytes,
+    pub(crate) base: usize,
+    pub(crate) start: usize,
+    /// Just after a newline.
+    pub(crate) end: usize,
+    /// Newlines before `start` in this input.
+    pub(crate) nl: u64,
+    /// Start of the line containing `start`.
+    pub(crate) line_start: usize,
+    /// Which input (see [`InputReader::catch_up`]).
+    pub(crate) generation: u64,
+    /// `-R`: lines are strings.
+    pub(crate) raw: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CatchUp {
+    Reached,
+    Behind,
+    Beyond,
+}
+
+/// The value jq reads for one line of a window, and where jq's parser
+/// would emit it: `Ok(None)` for a blank line, `Err(())` when the line
+/// isn't exactly one text the fast path would take (read it with
+/// [`InputReader::next`] instead). `line` is `[a, b)` with `b` just after
+/// its newline; `buf[p - base]` is absolute offset `p`.
+pub(crate) fn window_line(
+    simd: &mut SimdParser,
+    buf: &[u8],
+    base: usize,
+    a: usize,
+    b: usize,
+    raw: bool,
+) -> Result<Option<(Value, usize)>, ()> {
+    let line = &buf[a - base..b - base];
+    if raw {
+        // jq converts each fgets chunk (4095 bytes) of a long line on its
+        // own; the value is complete when the chunk with the newline is read.
+        let text = &line[..line.len() - 1];
+        let s = if line.len() <= CHUNK {
+            Str::from_bytes(text)
+        } else {
+            let mut s = String::with_capacity(text.len());
+            for piece in text.chunks(CHUNK) {
+                unicode::push_lossy(&mut s, piece);
+            }
+            Str::from(s)
+        };
+        return Ok(Some((Value::String(s), b - 1)));
+    }
+    let mut s = 0;
+    while s < line.len() && matches!(line[s], b' ' | b'\t' | b'\r' | b'\n') {
+        s += 1;
+    }
+    if s == line.len() {
+        return Ok(None);
+    }
+    let mut t = line.len();
+    while matches!(line[t - 1], b' ' | b'\t' | b'\r' | b'\n') {
+        t -= 1;
+    }
+    match line[s] {
+        b'{' | b'[' | b'"' => match simd.parse(buf, a - base + s, a - base + t) {
+            Ok(v) => Ok(Some((v, a + t - 1))),
+            Err(_) => Err(()),
+        },
+        b']' | b'}' | b',' | b':' => Err(()),
+        _ => {
+            let q = s + line[s..]
+                .iter()
+                .position(|&c| LITERAL_STOP[c as usize])
+                .unwrap_or(line.len() - s);
+            if q != t {
+                return Err(());
+            }
+            check_literal(&line[s..q])
+                .map(|v| Some((v, a + q)))
+                .ok_or(())
+        }
+    }
+}
+
+/// `input_line_number` for a value emitted at `e` on the line starting at
+/// `line_start` and ending with the newline at `b - 1`: the newlines before
+/// the line, plus one if the `fgets` chunk holding `e` also holds that
+/// newline.
+pub(crate) fn window_line_number(nl_before: u64, line_start: usize, b: usize, e: usize) -> u64 {
+    nl_before + ((e - line_start) / CHUNK == (b - 1 - line_start) / CHUNK) as u64
 }
 
 fn default_message_sink(m: InputMessage) {
