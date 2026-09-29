@@ -1209,3 +1209,412 @@ impl Parser<'_, '_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jq::lang::locfile::LocFile;
+
+    fn sexpr(src: &str) -> String {
+        match parse_program(src) {
+            Ok(p) => p.to_sexpr(),
+            Err(errors) => panic!("{src:?} failed to parse: {errors:?}"),
+        }
+    }
+
+    fn first_error(src: &str) -> String {
+        match parse_program(src) {
+            Ok(p) => panic!("{src:?} parsed: {}", p.to_sexpr()),
+            Err(errors) => errors[0].message.clone(),
+        }
+    }
+
+    fn check(cases: &[(&str, &str)]) {
+        for (src, want) in cases {
+            assert_eq!(sexpr(src), *want, "{src}");
+        }
+    }
+
+    #[test]
+    fn precedence_and_associativity() {
+        check(&[
+            ("1 + 2 * 3", "(+ 1 (* 2 3))"),
+            ("1 - 2 - 3", "(- (- 1 2) 3)"),
+            ("1 * 2 / 3 % 4", "(% (/ (* 1 2) 3) 4)"),
+            ("1, 2 | 3, 4", "(| (, 1 2) (, 3 4))"),
+            ("1 | 2 | 3", "(| 1 (| 2 3))"),
+            ("1, 2, 3", "(, (, 1 2) 3)"),
+            (
+                ".a // .b // .c",
+                "(// (index . \"a\") (// (index . \"b\") (index . \"c\")))",
+            ),
+            (
+                ".a // .b | .c",
+                "(| (// (index . \"a\") (index . \"b\")) (index . \"c\"))",
+            ),
+            // assignment binds tighter than `//` (`.a = .b // 5` yields {"a":null})
+            (".a = .b // 5", "(// (= (index . \"a\") (index . \"b\")) 5)"),
+            (".a |= . + 1", "(|= (index . \"a\") (+ . 1))"),
+            (".a += 1 | .b", "(| (+= (index . \"a\") 1) (index . \"b\"))"),
+            (". //= 1", "(//= . 1)"),
+            ("1 == 2 and 3", "(and (== 1 2) 3)"),
+            ("1 or 2 and 3", "(or 1 (and 2 3))"),
+            ("1 // 2 or 3", "(// 1 (or 2 3))"),
+        ]);
+        // comparison and assignment operators are %nonassoc
+        assert_eq!(first_error("1 < 2 < 3"), "syntax error, unexpected '<'");
+        assert_eq!(first_error("1 == 2 == 3"), "syntax error, unexpected ==");
+        assert_eq!(first_error(".a = 1 = 2"), "syntax error, unexpected '='");
+        assert_eq!(first_error("1 < 2 == true"), "syntax error, unexpected ==");
+    }
+
+    #[test]
+    fn unary_minus_and_postfix() {
+        check(&[
+            ("-1", "(neg 1)"),
+            ("--1", "(neg (neg 1))"),
+            ("-1 + 2", "(+ (neg 1) 2)"),
+            ("1 - -1", "(- 1 (neg 1))"),
+            ("-.a.b", "(neg (index (index . \"a\") \"b\"))"),
+            ("-1?", "(neg (? 1))"),
+            (".a.b[0]", "(index (index (index . \"a\") \"b\") 0)"),
+            (".a?", "(index? . \"a\")"),
+            (".a??", "(? (index? . \"a\"))"),
+            ("(.a)?", "(? (index . \"a\"))"),
+            (".a?.b", "(index (index? . \"a\") \"b\")"),
+            (".[]?", "(each? .)"),
+            (".a[]", "(each (index . \"a\"))"),
+            (".a.[]?", "(each? (index . \"a\"))"),
+            ("..?", "(? ..)"),
+            ("..[]", "(each ..)"),
+            (".. .a", "(index .. \"a\")"),
+            (".\"foo\"", "(index . \"foo\")"),
+            (".\"foo\"?", "(index? . \"foo\")"),
+            (
+                ".a.\"b\\(1)\"",
+                "(index (index . \"a\") (str \"b\" (interp 1)))",
+            ),
+            (".@base64 \"x\"", "(index . (str @base64 \"x\"))"),
+            (".[1:2]", "(slice . 1 2)"),
+            (".[:2]", "(slice . _ 2)"),
+            (".[1:]?", "(slice? . 1 _)"),
+            (".foo[1:2]", "(slice (index . \"foo\") 1 2)"),
+            (".a.[1]", "(index (index . \"a\") 1)"),
+            (". [0]", "(index . 0)"),
+            ("1 .a", "(index 1 \"a\")"),
+            (".e5", "(index . \"e5\")"),
+            (".5", ".5"),
+            ("1.e5", "1.e5"),
+            ("$__loc__.file", "(index $__loc__ \"file\")"),
+            ("{a: 1}.a", "(index (object (\"a\" 1)) \"a\")"),
+        ]);
+        assert_eq!(
+            first_error(".a.[1:2]"),
+            "syntax error, unexpected ':', expecting '|' or ',' or ']'"
+        );
+        assert_eq!(
+            first_error("..a"),
+            "syntax error, unexpected IDENT, expecting end of file"
+        );
+        assert_eq!(
+            first_error("1.a"),
+            "syntax error, unexpected IDENT, expecting end of file"
+        );
+        assert_eq!(first_error(".[:]"), "syntax error, unexpected ']'");
+        // `?//` is one token, so `.a?//1` is not `.a? // 1`
+        assert_eq!(
+            first_error(".a?//1"),
+            "syntax error, unexpected ?//, expecting end of file"
+        );
+        assert_eq!(sexpr(".a? // 1"), "(// (index? . \"a\") 1)");
+    }
+
+    #[test]
+    fn keyword_forms() {
+        check(&[
+            ("try .a catch .b", "(try (index . \"a\") (index . \"b\"))"),
+            // a try body or handler is a postfix term: operators end it
+            ("try 1 + 1", "(+ (try 1) 1)"),
+            ("try 1 catch 2 | 3", "(| (try 1 2) 3)"),
+            ("try -1", "(try (neg 1))"),
+            ("try try 1 catch 2 catch 3", "(try (try 1 2) 3)"),
+            ("if . then 1 end", "(if . 1)"),
+            (
+                "if . then 1 elif . then 2 else 3 end",
+                "(if . 1 (if . 2 3))",
+            ),
+            ("if 1,2 then 3,4 else 5 end", "(if (, 1 2) (, 3 4) 5)"),
+            (
+                "reduce .[] as $x (0; . + $x) | . * 2",
+                "(| (reduce (each .) $x 0 (+ . $x)) (* . 2))",
+            ),
+            ("reduce 1 + 2 as $x (0; .)", "(reduce (+ 1 2) $x 0 .)"),
+            (
+                "foreach .[] as [$a, $b] (0; 1; 2)",
+                "(foreach (each .) [$a $b] 0 1 2)",
+            ),
+            ("foreach .[] as $x (0; 1)", "(foreach (each .) $x 0 1)"),
+            (". as $x | $x, 1", "(as . $x (, $x 1))"),
+            ("1, . as $x | $x", "(, 1 (as . $x $x))"),
+            (
+                ".[0] + .[1] as $x | $x",
+                "(as (+ (index . 0) (index . 1)) $x $x)",
+            ),
+            (
+                ". as [$a] ?// {b: $a} ?// $a | $a",
+                "(as . (?// [$a] {(\"b\" $a)} $a) $a)",
+            ),
+            (
+                ". as {a: $a, $b, \"c\": $c, (\"d\"): $d, $e: [$f], if: $g} | 1",
+                "(as . {(\"a\" $a) $b (\"c\" $c) ((\"d\") $d) ($e [$f]) (\"if\" $g)} 1)",
+            ),
+            (
+                "label $out | 1, break $out",
+                "(label $out (, 1 (break $out)))",
+            ),
+            ("1, label $x | 2, 3", "(, 1 (label $x (, 2 3)))"),
+            ("def f: 1; f | g", "(defs (def f 1) (| f g))"),
+            (
+                "def f($a; b): $a; f(1; 2)",
+                "(defs (def f ($a b) $a) (call f 1 2))",
+            ),
+            ("1, def f: 2; f", "(, 1 (defs (def f 2) f))"),
+            (
+                "def f: def g: 1; g; f",
+                "(defs (def f (defs (def g 1) g)) f)",
+            ),
+            ("def f: 1; def g: 2;", "(library (def f 1) (def g 2))"),
+            ("", "(library)"),
+            ("# just a comment", "(library)"),
+        ]);
+        assert_eq!(
+            first_error("try error(\"x\") + 1 catch ."),
+            "syntax error, unexpected catch, expecting end of file"
+        );
+        assert_eq!(
+            first_error("1 + def f: 2; f"),
+            "syntax error, unexpected def"
+        );
+        assert_eq!(
+            first_error("def f(): 1; 1"),
+            "syntax error, unexpected ')', expecting IDENT or BINDING"
+        );
+    }
+
+    #[test]
+    fn terms() {
+        check(&[
+            ("true", "true"),
+            ("false", "false"),
+            ("null", "null"),
+            ("true(1)", "(call true 1)"),
+            ("a::b", "a::b"),
+            ("a::b(1)", "(call a::b 1)"),
+            ("$x", "$x"),
+            ("$$$$x", "$$$$x"),
+            ("$__loc__", "$__loc__"),
+            ("$__loc__x", "$__loc__x"),
+            ("@base64", "@base64"),
+            ("@base64 \"x\\(.)\"", "(str @base64 \"x\" (interp .))"),
+            ("\"a\\(1)b\"", "(str \"a\" (interp 1) \"b\")"),
+            ("\"a\\nb\"", "(str \"a\" \"\\n\" \"b\")"),
+            ("\"\"", "(str)"),
+            ("[]", "(array)"),
+            ("[1, 2]", "(array (, 1 2))"),
+            ("{}", "(object)"),
+            (
+                "{a: 1 | 2, b, $c, \"d\", \"e\": 3, (.f): 4, $g: 5, $__loc__, if, @text \"h\": 6}",
+                "(object (\"a\" (| 1 2)) b $c (shorthand \"d\") (\"e\" 3) (((index . \"f\")) 4) ($g 5) $__loc__ if ((str @text \"h\") 6))",
+            ),
+            ("{a: (1 as $x | $x)}", "(object (\"a\" (as 1 $x $x)))"),
+            (
+                "{a: reduce . as $x (0; 1)}",
+                "(object (\"a\" (reduce . $x 0 1)))",
+            ),
+        ]);
+        assert_eq!(first_error("{a: 1, 2}"), "syntax error, unexpected LITERAL");
+        // object values are `DictExpr`s: `Expr`s joined by `|`, so `as` needs parentheses
+        assert_eq!(
+            first_error("{a: 1 as $x | $x}"),
+            "syntax error, unexpected as, expecting '}'"
+        );
+        assert_eq!(
+            first_error("$"),
+            "syntax error, unexpected end of file, expecting '$'"
+        );
+        assert_eq!(
+            first_error("@"),
+            "syntax error, unexpected INVALID_CHARACTER, expecting end of file"
+        );
+    }
+
+    #[test]
+    fn modules_and_imports() {
+        assert_eq!(
+            sexpr(
+                "module {a: 1}; import \"a\" as foo; import \"b\" as $d; include \"c\" {x: 1}; foo::f"
+            ),
+            "(module (object (\"a\" 1))) (import \"a\" foo) (import \"b\" $d) (include \"c\" (object (\"x\" 1))) foo::f"
+        );
+        let p = parse_program("import \"a\" as foo; .").unwrap();
+        assert_eq!(p.imports[0].path, "a");
+        assert_eq!(p.imports[0].kind, ImportKind::Code("foo".into()));
+        let errors = parse_program("include \"\\(1)\"; .").unwrap_err();
+        assert_eq!(errors[0].message, "Import path must be constant");
+        assert_eq!(errors[0].loc, Loc::new(8, 14));
+    }
+
+    fn main_node(p: &Program) -> &Node {
+        match &p.body {
+            ProgramBody::Main(n) => n,
+            ProgramBody::Library(_) => panic!("no main"),
+        }
+    }
+
+    #[test]
+    fn locations() {
+        let p = parse_program("  f(1) | $x | $__loc__").unwrap();
+        let n = main_node(&p);
+        assert_eq!(n.loc, Loc::new(2, 22));
+        let NodeKind::Pipe(a, rest) = &n.kind else {
+            panic!()
+        };
+        let NodeKind::Call { name_loc, .. } = &a.kind else {
+            panic!()
+        };
+        assert_eq!((a.loc, *name_loc), (Loc::new(2, 6), Loc::new(2, 3)));
+        let NodeKind::Pipe(var, loc) = &rest.kind else {
+            panic!()
+        };
+        assert_eq!(var.loc, Loc::new(9, 11));
+        assert_eq!(loc.loc, Loc::new(14, 22));
+
+        // parentheses don't widen a node's location
+        let p = parse_program("(.a)").unwrap();
+        assert_eq!(main_node(&p).loc, Loc::new(1, 3));
+
+        // $__loc__ line numbers come from the locfile
+        let src = "1 |\n\n  $__loc__";
+        let lf = LocFile::new("<top-level>", src.as_bytes());
+        let p = parse_program(src).unwrap();
+        let NodeKind::Pipe(_, l) = &main_node(&p).kind else {
+            panic!()
+        };
+        assert_eq!(lf.get_line(l.loc.start) + 1, 3);
+    }
+
+    #[test]
+    fn error_messages_render_like_jq() {
+        let src = "if . then 1";
+        let errors = parse_program(src).unwrap_err();
+        let lf = LocFile::new("<top-level>", src.as_bytes());
+        let rendered: Vec<_> = errors.iter().map(|e| e.render(&lf)).collect();
+        assert_eq!(
+            rendered,
+            [
+                "jq: error: syntax error, unexpected end of file at <top-level>, line 1, column 11:\n    if . then 1\n              ^",
+                "jq: error: Possibly unterminated 'if' statement at <top-level>, line 1, column 1:\n    if . then 1\n    ^^^^^^^^^^^",
+            ]
+        );
+    }
+
+    /// Flags number-literal keys and non-object metadata, like jq's constant checks.
+    struct LiteralHooks(Vec<String>);
+
+    impl ParseHooks for LiteralHooks {
+        fn check_object_key(&mut self, key: &Node) -> Option<String> {
+            self.0.push(key.to_sexpr());
+            match &key.kind {
+                NodeKind::Literal(Literal::Number(n)) => {
+                    Some(format!("Cannot use number ({n}) as object key"))
+                }
+                _ => None,
+            }
+        }
+        fn check_metadata(&mut self, meta: &Node) -> Option<String> {
+            match &meta.kind {
+                NodeKind::Object(_) => None,
+                _ => Some("Module metadata must be an object".into()),
+            }
+        }
+    }
+
+    fn messages(src: &str, hooks: &mut dyn ParseHooks) -> Vec<String> {
+        parse(src.as_bytes(), hooks)
+            .unwrap_err()
+            .into_iter()
+            .map(|e| e.message)
+            .collect()
+    }
+
+    #[test]
+    fn hooks_run_in_jq_order() {
+        let mut h = LiteralHooks(Vec::new());
+        // the key check runs when the pair is reduced, before the later syntax error
+        assert_eq!(
+            messages("[{(0):1} 2]", &mut h),
+            [
+                "Cannot use number (0) as object key",
+                "syntax error, unexpected LITERAL, expecting '|' or ',' or ']'"
+            ]
+        );
+        assert_eq!(
+            messages("(1 2), {(0):1}", &mut h),
+            [
+                "syntax error, unexpected LITERAL, expecting '|' or ',' or ')'",
+                "Cannot use number (0) as object key"
+            ]
+        );
+        // inner pairs are reduced first
+        assert_eq!(
+            messages("{(0): {(1): 2}}", &mut h),
+            [
+                "Cannot use number (1) as object key",
+                "Cannot use number (0) as object key"
+            ]
+        );
+        // error-recovery values reach the hooks: `if 1 then 2` recovers as its condition
+        h.0.clear();
+        assert_eq!(
+            messages("{(if 1 then 2):3}", &mut h),
+            [
+                "syntax error, unexpected ')'",
+                "Possibly unterminated 'if' statement",
+                "Cannot use number (1) as object key"
+            ]
+        );
+        assert_eq!(h.0, ["1"]);
+        assert_eq!(
+            messages("module []; .", &mut h),
+            ["Module metadata must be an object"]
+        );
+        let p = parse(b"include \"a\" {}; .", &mut h).unwrap();
+        assert_eq!(p.imports.len(), 1);
+    }
+
+    #[test]
+    fn deep_left_chains_do_not_overflow() {
+        // jq accepts these (the parser stack stays shallow); dropping the AST must not
+        // recurse once per term.
+        let plus = format!("1{}", "+1".repeat(200_000));
+        assert!(parse_program(&plus).is_ok());
+        let comma = format!("[1{}]", ",1".repeat(200_000));
+        assert!(parse_program(&comma).is_ok());
+        let fields = ".a".repeat(200_000);
+        assert!(parse_program(&fields).is_ok());
+        let opt = format!(".{}", "?".repeat(200_000));
+        assert!(parse_program(&opt).is_ok());
+    }
+
+    #[test]
+    fn stack_limit_is_bisons() {
+        // YYMAXDEPTH: the 10000th state push fails
+        let ok = format!("{}{}", "[".repeat(9995), "]".repeat(9995));
+        assert!(parse_program(&ok).is_ok());
+        let deep = format!("{}{}", "[".repeat(9996), "]".repeat(9996));
+        let errors = parse_program(&deep).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message, "memory exhausted");
+        assert_eq!(errors[0].loc, Loc::new(9996, 9997));
+    }
+}

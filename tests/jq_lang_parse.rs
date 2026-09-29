@@ -826,6 +826,24 @@ fn parse_vs_live_jq() {
     assert!(stats.inexact.is_empty());
 }
 
+/// builtin.jq is parsed at every startup; this prints the time per parse
+/// (`cargo test --release --test jq_lang_parse builtin_parse_time -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn builtin_parse_time() {
+    let src = std::fs::read(data_dir().join("builtin.jq")).unwrap();
+    let n = 2000;
+    for _ in 0..50 {
+        parse(&src, &mut NoHooks).unwrap();
+    }
+    let start = std::time::Instant::now();
+    for _ in 0..n {
+        std::hint::black_box(parse(std::hint::black_box(&src), &mut NoHooks).unwrap());
+    }
+    let per = start.elapsed() / n;
+    eprintln!("builtin.jq ({} bytes): {per:?} per parse", src.len());
+}
+
 /// Development aid: `QJ_PARSE_PROBE='prog' cargo test --test jq_lang_parse probe -- --ignored --nocapture`
 #[test]
 #[ignore]

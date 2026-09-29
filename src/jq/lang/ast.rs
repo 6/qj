@@ -504,11 +504,159 @@ impl Node {
         Node { kind, loc }
     }
 
+    /// Take the node's kind by value (`Node` implements `Drop`, so its fields can't be
+    /// moved out directly).
+    pub fn into_kind(mut self) -> NodeKind {
+        std::mem::replace(&mut self.kind, NodeKind::Identity)
+    }
+
     /// A compact s-expression rendering of the tree, for tests and debugging.
     pub fn to_sexpr(&self) -> String {
         let mut s = String::new();
         sexpr_node(&mut s, self);
         s
+    }
+}
+
+/// Moves the nodes directly owned by `kind` onto `out` (for the iterative drop).
+fn take_child_nodes(kind: NodeKind, out: &mut Vec<Node>) {
+    match kind {
+        NodeKind::FuncDef { def, rest } => {
+            out.push(def.body);
+            out.push(*rest);
+        }
+        NodeKind::As { source, body, .. } => {
+            out.push(*source);
+            out.push(*body);
+        }
+        NodeKind::Label { body, .. } => out.push(*body),
+        NodeKind::Pipe(a, c) | NodeKind::Comma(a, c) => {
+            out.push(*a);
+            out.push(*c);
+        }
+        NodeKind::Binary { lhs, rhs, .. } => {
+            out.push(*lhs);
+            out.push(*rhs);
+        }
+        NodeKind::Index { target, key, .. } => {
+            if let Some(t) = target {
+                out.push(*t);
+            }
+            out.push(*key);
+        }
+        NodeKind::Each { target, .. } | NodeKind::Optional(target) | NodeKind::Neg(target) => {
+            out.push(*target)
+        }
+        NodeKind::Slice {
+            target, from, to, ..
+        } => {
+            out.push(*target);
+            if let Some(f) = from {
+                out.push(*f);
+            }
+            if let Some(t) = to {
+                out.push(*t);
+            }
+        }
+        NodeKind::Array(Some(q)) => out.push(*q),
+        NodeKind::Reduce {
+            source,
+            init,
+            update,
+            ..
+        } => {
+            out.push(*source);
+            out.push(*init);
+            out.push(*update);
+        }
+        NodeKind::Foreach {
+            source,
+            init,
+            update,
+            extract,
+            ..
+        } => {
+            out.push(*source);
+            out.push(*init);
+            out.push(*update);
+            if let Some(e) = extract {
+                out.push(*e);
+            }
+        }
+        NodeKind::If { cond, then_, else_ } => {
+            out.push(*cond);
+            out.push(*then_);
+            if let Some(e) = else_ {
+                out.push(*e);
+            }
+        }
+        NodeKind::Try { body, handler } => {
+            out.push(*body);
+            if let Some(h) = handler {
+                out.push(*h);
+            }
+        }
+        NodeKind::Call { args, .. } => out.extend(args),
+        NodeKind::Str(lit) => {
+            for part in lit.parts {
+                if let StrPart::Interp(n) = part {
+                    out.push(n);
+                }
+            }
+        }
+        NodeKind::Object(pairs) => {
+            for p in pairs {
+                match p.kind {
+                    DictPairKind::Named { value, .. }
+                    | DictPairKind::Str { value, .. }
+                    | DictPairKind::VarKey { value, .. }
+                    | DictPairKind::Error(value) => out.push(value),
+                    DictPairKind::Computed { key, value, .. } => {
+                        out.push(key);
+                        out.push(value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Dropping is iterative: jq accepts unboundedly long left-associative chains
+/// (`1+1+...+1` with a million terms compiles, since jq folds constants during the
+/// parse), and the derived recursive drop would overflow the stack on them. Anything
+/// else that walks the tree (lowering, `Clone`, `Debug`, `to_sexpr`) must also be
+/// careful with `Binary`/`Comma` left operands and postfix `target` chains.
+impl Drop for Node {
+    fn drop(&mut self) {
+        let has_children = !matches!(
+            self.kind,
+            NodeKind::Identity
+                | NodeKind::Recurse
+                | NodeKind::Break(_)
+                | NodeKind::Literal(_)
+                | NodeKind::Format(_)
+                | NodeKind::Array(None)
+                | NodeKind::VarTake(_)
+                | NodeKind::Var(_)
+                | NodeKind::LocObject
+                | NodeKind::Error
+        );
+        if !has_children {
+            return;
+        }
+        let mut stack = Vec::new();
+        take_child_nodes(
+            std::mem::replace(&mut self.kind, NodeKind::Identity),
+            &mut stack,
+        );
+        while let Some(mut node) = stack.pop() {
+            take_child_nodes(
+                std::mem::replace(&mut node.kind, NodeKind::Identity),
+                &mut stack,
+            );
+        }
     }
 }
 
