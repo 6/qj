@@ -262,6 +262,9 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
 ```
 
 ### Environment variables
+- `QJ_CORE=port` — run on the jq 1.8.1 port (`src/jq`, `src/cli/run.rs`) instead of the old
+  evaluator. Until it becomes the default, measure it with
+  `JQ_DIFF_QJ_ENV=QJ_CORE=port JQ_DIFF_BASELINE=tests/jq_compat/diff_baseline_port.txt`.
 - `QJ_WINDOW_SIZE=N` — NDJSON streaming window size in megabytes. Default is `num_cores × 2` MB
   (floor 8 MB). Larger values use more memory but may help on machines with many cores.
 - `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
@@ -276,7 +279,12 @@ Benchmarks require exclusive CPU access for reliable results.
 
 ## Architecture
 - `src/cli/` — the command line: port of jq's `main.c` option handling (`args.rs`: options,
-  their errors and exit codes, colors, `-f`), and qj's own help/version text (`usage.rs`)
+  their errors and exit codes, colors, `-f`), and qj's own help/version text (`usage.rs`).
+  With `QJ_CORE=port`: the rest of `main.c` on the jq port (`run.rs`: compile, `process()`,
+  output, exit codes), `util.c`'s input reader (`input.rs`, behind the `Reader` trait) and
+  `jq_test.c` (`run_tests.rs`, `--run-tests`)
+- `src/jq/` — the jq 1.8.1 port: values, lexer/parser, compiler, VM, builtins (see
+  `docs/JQ_PORT_PLAN.md`)
 - `src/simdjson/` — vendored simdjson.h/cpp + C-linkage bridge + safe Rust FFI wrapper
 - `src/filter/` — jq filter lexer, parser, AST evaluator (On-Demand fast path + DOM fallback)
 - `src/value.rs` — JSON value representation (Arc-based arrays/objects)
