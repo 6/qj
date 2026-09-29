@@ -739,3 +739,33 @@ fn adhoc() {
         }
     });
 }
+
+/// Rough compile-time check (not a benchmark): `cargo test --release --test
+/// jq_compile compile_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn compile_speed() {
+    use std::time::Instant;
+    let opts = CompileOptions::new(".");
+    let t = Instant::now();
+    jq_compile_args(b".", &opts).unwrap();
+    eprintln!("first compile in the process: {:?}", t.elapsed());
+    for src in [
+        ".",
+        ".a",
+        ".a + 1",
+        "map(.+1)",
+        "select(.a == 1) | {b}",
+        "[paths]",
+        "sub(\"a\"; \"b\")",
+        "to_entries | map(select(.value > 1)) | from_entries",
+        "limit(3; .[]) | tostring | ascii_downcase",
+    ] {
+        let n = 2000;
+        let t = Instant::now();
+        for _ in 0..n {
+            jq_compile_args(src.as_bytes(), &opts).unwrap();
+        }
+        eprintln!("{:>10.1?} per compile: {src}", t.elapsed() / n);
+    }
+}

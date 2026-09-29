@@ -3,12 +3,14 @@
 //!
 //! jq parses `builtin.jq` on every compile, builds a binder for every builtin, and
 //! lets `block_bind_referenced` keep those the program references (transitively).
-//! The result here is identical, but cheaper:
+//! The result here is identical, but much cheaper:
 //!
-//! * `builtin.jq` is parsed once per process, and each definition's free calls
-//!   (`name/arity` pairs left unbound in its body) are computed once;
+//! * each `builtin.jq` definition's name, arity, source span and free calls
+//!   (`name/arity` pairs left unbound in its body) are precomputed in
+//!   [`table`] (generated from `builtin.jq` and checked by a test);
 //! * a compile first simulates `block_bind_referenced` on those signatures to find
-//!   which binders would bind something, then builds and binds only those.
+//!   which binders would bind something, then parses (once per process), lowers and
+//!   binds only those.
 //!
 //! A binder binds something exactly when an unbound call with its name and arity is
 //! in the body, and a kept binder adds its own free calls to the body, so the
@@ -17,6 +19,8 @@
 //!
 //! `builtin.jq` is vendored verbatim from jq 1.8.1 (MIT, see `LICENSE-jq`) as
 //! `src/jq/builtins/builtin.jq`, behind a license header that is stripped here.
+
+mod table;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -28,8 +32,8 @@ use crate::jq::lang::bytecode::OP_IS_CALL_PSEUDO;
 use crate::jq::lang::bytecode::Opcode::*;
 use crate::jq::lang::compile::{Block, Compiler, LocFileId};
 use crate::jq::lang::locfile::LocFile;
-use crate::jq::lang::lower::{CompileHooks, Lowerer};
-use crate::jq::lang::parser::parse_library;
+use crate::jq::lang::lower::Lowerer;
+use crate::jq::lang::parser::{NoHooks, parse_library};
 use crate::jq::value::Value;
 
 /// `src/jq/builtins/builtin.jq` as vendored (with its license header).
@@ -47,6 +51,16 @@ pub fn builtin_jq() -> &'static str {
         rest = &rest[nl + 1..];
     }
     rest
+}
+
+/// A `builtin.jq` definition, as recorded in [`table::JQ_DEFS`].
+struct JqDef {
+    name: &'static str,
+    arity: i32,
+    /// Byte range of `def ... ;` in [`builtin_jq`].
+    span: (usize, usize),
+    /// Calls its body leaves unbound (name, arity), deduplicated.
+    free: &'static [(&'static str, i32)],
 }
 
 /// One binder of jq's builtins block, in block order.
@@ -71,76 +85,89 @@ enum Bytecoded {
     Range,
 }
 
+/// `bind_bytecoded_builtins`' definitions, in order.
+const BYTECODED: [(Bytecoded, &str, i32); 5] = [
+    (Bytecoded::Empty, "empty", 0),
+    (Bytecoded::Not, "not", 0),
+    (Bytecoded::Path, "path", 1),
+    (Bytecoded::Last, "last", 1),
+    (Bytecoded::Range, "range", 2),
+];
+
 /// Everything about the builtins that doesn't depend on the program.
 struct BuiltinLib {
-    /// `builtin.jq`'s definitions.
-    defs: Vec<FuncDef>,
     /// `function_list[]`.
     cfunctions: Vec<CFunction>,
     /// The binders in jq's block order, with their name and arity.
-    binders: Vec<(Binder, String, i32)>,
-    /// For each binder: the `name/arity` calls its body leaves unbound.
-    free: Vec<Vec<(String, i32)>>,
-    /// `builtins/0`'s constant.
-    list: Vec<String>,
+    binders: Vec<(Binder, &'static str, i32)>,
 }
 
-/// Shared by all threads: `BuiltinLib` is plain owned data (AST nodes, strings, fn
-/// pointers).
+/// Shared by all threads (plain data: strings and fn pointers).
 static LIB: OnceLock<BuiltinLib> = OnceLock::new();
 
 fn lib() -> &'static BuiltinLib {
-    LIB.get_or_init(BuiltinLib::new)
+    LIB.get_or_init(|| {
+        let cfunctions = function_list();
+        // gen_cbinding prepends each C function, so the block lists them in reverse;
+        // then bind_bytecoded_builtins' definitions, builtin.jq's, and `builtins`.
+        let mut binders: Vec<(Binder, &'static str, i32)> =
+            Vec::with_capacity(cfunctions.len() + BYTECODED.len() + table::JQ_DEFS.len() + 1);
+        for (i, cf) in cfunctions.iter().enumerate().rev() {
+            binders.push((Binder::C(i), cf.name, cf.nargs as i32 - 1));
+        }
+        for (b, name, arity) in BYTECODED {
+            binders.push((Binder::Bytecoded(b), name, arity));
+        }
+        for (i, d) in table::JQ_DEFS.iter().enumerate() {
+            binders.push((Binder::Jq(i), d.name, d.arity));
+        }
+        binders.push((Binder::List, "builtins", 0));
+        BuiltinLib {
+            cfunctions,
+            binders,
+        }
+    })
 }
 
-impl BuiltinLib {
-    fn new() -> BuiltinLib {
-        let text = builtin_jq();
-        let mut c = Compiler::new();
-        let lf = c.add_locfile(Rc::new(LocFile::new("<builtin>", text.as_bytes())));
-        let program = {
-            let mut hooks = CompileHooks { c: &mut c, lf };
-            parse_library(text.as_bytes(), &mut hooks).expect("builtin.jq parses")
-        };
-        assert!(program.module.is_none() && program.imports.is_empty());
-        let ProgramBody::Library(defs) = program.body else {
+/// The free calls of binder `i`.
+fn binder_free(b: Binder) -> &'static [(&'static str, i32)] {
+    match b {
+        Binder::Jq(i) => table::JQ_DEFS[i].free,
+        // C functions bind nothing; the bytecoded ones only call their own params.
+        _ => &[],
+    }
+}
+
+/// Parsed `builtin.jq` definitions (parsed on first use, then shared).
+static PARSED: OnceLock<Vec<OnceLock<FuncDef>>> = OnceLock::new();
+
+/// `builtin.jq`'s definition `i`, parsed from its span (padded with spaces, so its
+/// locations are those of the whole file).
+fn jq_def(i: usize) -> &'static FuncDef {
+    let parsed =
+        PARSED.get_or_init(|| (0..table::JQ_DEFS.len()).map(|_| OnceLock::new()).collect());
+    parsed[i].get_or_init(|| {
+        let (start, end) = table::JQ_DEFS[i].span;
+        let mut src = vec![b' '; start];
+        src.extend_from_slice(&builtin_jq().as_bytes()[start..end]);
+        let program = parse_library(&src, &mut NoHooks).expect("builtin.jq definition parses");
+        let ProgramBody::Library(mut defs) = program.body else {
             unreachable!("parse_library returns a library")
         };
+        assert_eq!(defs.len(), 1, "builtin.jq span {start}..{end}");
+        defs.pop().unwrap()
+    })
+}
 
-        let cfunctions = function_list();
-        // gen_cbinding prepends each C function, so the block lists them in reverse.
-        let mut binders: Vec<(Binder, String, i32)> = Vec::new();
-        for (i, cf) in cfunctions.iter().enumerate().rev() {
-            binders.push((Binder::C(i), cf.name.to_string(), cf.nargs as i32 - 1));
-        }
-        for (b, name, arity) in [
-            (Bytecoded::Empty, "empty", 0),
-            (Bytecoded::Not, "not", 0),
-            (Bytecoded::Path, "path", 1),
-            (Bytecoded::Last, "last", 1),
-            (Bytecoded::Range, "range", 2),
-        ] {
-            binders.push((Binder::Bytecoded(b), name.to_string(), arity));
-        }
-        let mut free = vec![Vec::new(); binders.len()];
-        for (i, d) in defs.iter().enumerate() {
-            binders.push((Binder::Jq(i), d.name.clone(), d.params.len() as i32));
-            let block = Lowerer::new(&mut c, lf).lower_funcdef(d);
-            let mut calls = Vec::new();
-            c.unbound_calls(block, &mut calls);
-            free.push(
-                calls
-                    .into_iter()
-                    .map(|(name, arity)| (name.to_string(), arity))
-                    .collect(),
-            );
-        }
-
-        // gen_builtin_list: block_list_funcs(builtins, 1) + "builtins/0".
+/// The `builtins/0` list, in jq's order (`gen_builtin_list`:
+/// `block_list_funcs(builtins, 1)` plus `builtins/0`).
+pub fn builtin_list() -> &'static [String] {
+    static LIST: OnceLock<Vec<String>> = OnceLock::new();
+    LIST.get_or_init(|| {
         let mut seen = HashSet::new();
         let mut list = Vec::new();
-        for (_, name, arity) in &binders {
-            if name.starts_with('_') {
+        for (b, name, arity) in &lib().binders {
+            if matches!(b, Binder::List) || name.starts_with('_') {
                 continue;
             }
             let key = format!("{name}/{arity}");
@@ -149,22 +176,8 @@ impl BuiltinLib {
             }
         }
         list.push("builtins/0".to_string());
-        binders.push((Binder::List, "builtins".to_string(), 0));
-        free.push(Vec::new());
-
-        BuiltinLib {
-            defs,
-            cfunctions,
-            binders,
-            free,
-            list,
-        }
-    }
-}
-
-/// The `builtins/0` list, in jq's order.
-pub fn builtin_list() -> &'static [String] {
-    &lib().list
+        list
+    })
 }
 
 /// Port of `builtins_bind`: binds the builtins `program` references into it (by
@@ -184,15 +197,15 @@ pub fn builtins_bind(c: &mut Compiler, program: Block) -> Block {
         *unbound.entry(name).or_default() |= arity_bit(*arity);
     }
     let mut keep = vec![false; lib.binders.len()];
-    for (i, (_, name, arity)) in lib.binders.iter().enumerate().rev() {
-        let bit = arity_bit(*arity);
-        if let Some(m) = unbound.get_mut(name.as_str())
+    for (i, &(binder, name, arity)) in lib.binders.iter().enumerate().rev() {
+        let bit = arity_bit(arity);
+        if let Some(m) = unbound.get_mut(name)
             && *m & bit != 0
         {
             *m &= !bit;
             keep[i] = true;
-            for (n, a) in &lib.free[i] {
-                *unbound.entry(n.as_str()).or_default() |= arity_bit(*a);
+            for &(n, a) in binder_free(binder) {
+                *unbound.entry(n).or_default() |= arity_bit(a);
             }
         }
     }
@@ -200,21 +213,24 @@ pub fn builtins_bind(c: &mut Compiler, program: Block) -> Block {
     // Build the kept binders, in block order.
     let mut builtin_lf: Option<LocFileId> = None;
     let mut binders = Block::NOOP;
-    for (i, (binder, _, _)) in lib.binders.iter().enumerate() {
+    for (i, &(binder, _, _)) in lib.binders.iter().enumerate() {
         if !keep[i] {
             continue;
         }
-        let b = match *binder {
+        let b = match binder {
             Binder::C(ci) => c.gen_cfunction(lib.cfunctions[ci]),
             Binder::Bytecoded(bc) => gen_bytecoded(c, bc),
             Binder::Jq(di) => {
                 let lf = *builtin_lf.get_or_insert_with(|| {
                     c.add_locfile(Rc::new(LocFile::new("<builtin>", builtin_jq().as_bytes())))
                 });
-                Lowerer::new(c, lf).lower_funcdef(&lib.defs[di])
+                Lowerer::new(c, lf).lower_funcdef(jq_def(di))
             }
             Binder::List => {
-                let list: Value = lib.list.iter().map(|s| Value::from(s.as_str())).collect();
+                let list: Value = builtin_list()
+                    .iter()
+                    .map(|s| Value::from(s.as_str()))
+                    .collect();
                 let k = c.gen_const(list);
                 c.gen_function("builtins", Block::NOOP, k)
             }
@@ -299,11 +315,88 @@ fn gen_last_1(c: &mut Compiler) -> Block {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jq::lang::lower::CompileHooks;
+    use std::fmt::Write as _;
 
     #[test]
     fn builtin_jq_is_jqs_text() {
         let jq = include_str!("../../../tests/jq_lang/builtin.jq");
         assert_eq!(builtin_jq(), jq);
+    }
+
+    /// Parses all of builtin.jq the way jq does (with the compiler's hooks).
+    fn full_parse() -> Vec<FuncDef> {
+        let text = builtin_jq();
+        let mut c = Compiler::new();
+        let lf = c.add_locfile(Rc::new(LocFile::new("<builtin>", text.as_bytes())));
+        let mut hooks = CompileHooks { c: &mut c, lf };
+        let program = parse_library(text.as_bytes(), &mut hooks).expect("builtin.jq parses");
+        assert!(program.module.is_none() && program.imports.is_empty());
+        let ProgramBody::Library(defs) = program.body else {
+            unreachable!()
+        };
+        defs
+    }
+
+    /// The generated `table.rs` for the current builtin.jq.
+    fn render_table() -> String {
+        let text = builtin_jq();
+        let mut c = Compiler::new();
+        let lf = c.add_locfile(Rc::new(LocFile::new("<builtin>", text.as_bytes())));
+        let mut out = String::from(
+            "//! Generated from `builtin.jq` by `QJ_BLESS=1 cargo test --lib builtin_table`;\n\
+             //! do not edit. For each definition, in order: its name, arity, byte range in\n\
+             //! `builtin_jq()`, and the calls its body leaves unbound (deduplicated).\n\n\
+             use super::JqDef;\n\n\
+             #[rustfmt::skip]\n\
+             pub(super) static JQ_DEFS: &[JqDef] = &[\n",
+        );
+        for d in full_parse() {
+            let block = Lowerer::new(&mut c, lf).lower_funcdef(&d);
+            let mut calls = Vec::new();
+            c.unbound_calls(block, &mut calls);
+            let mut seen = HashSet::new();
+            let free: Vec<String> = calls
+                .into_iter()
+                .filter(|(n, a)| seen.insert((n.to_string(), *a)))
+                .map(|(n, a)| format!("({n:?}, {a})"))
+                .collect();
+            let _ = writeln!(
+                out,
+                "    JqDef {{ name: {:?}, arity: {}, span: ({}, {}), free: &[{}] }},",
+                d.name,
+                d.params.len(),
+                d.loc.start,
+                d.loc.end,
+                free.join(", ")
+            );
+        }
+        out.push_str("];\n");
+        out
+    }
+
+    #[test]
+    fn builtin_table_is_current() {
+        let rendered = render_table();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/jq/builtins/bind/table.rs");
+        if std::env::var("QJ_BLESS").is_ok_and(|v| v == "1") {
+            std::fs::write(path, &rendered).unwrap();
+            return;
+        }
+        let current = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            current == rendered,
+            "src/jq/builtins/bind/table.rs is stale: run QJ_BLESS=1 cargo test --lib builtin_table"
+        );
+    }
+
+    #[test]
+    fn parsed_spans_match_full_parse() {
+        let full = full_parse();
+        assert_eq!(full.len(), table::JQ_DEFS.len());
+        for (i, d) in full.iter().enumerate() {
+            assert_eq!(jq_def(i), d, "definition {i} ({})", d.name);
+        }
     }
 
     #[test]
