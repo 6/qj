@@ -116,6 +116,16 @@
 //! [`crate::jq::value::parse_sized`] then). Useful for `fromjson`/`--argjson`
 //! style callers that want speed and can fall back.
 //!
+//! ## Programs on the tape: [`tape`], [`tape_eval`]
+//!
+//! [`tape_eval::TapeProgram`] runs a simple program (paths, `.[]`, `length`,
+//! `keys`, `map`, `{...}`, `select(... == c)`) on simdjson's tape, printing
+//! what jq prints without building values ([`tape::Doc::print`] is a
+//! canonicalizing printer), and declines anything else so the caller runs the
+//! VM. [`InputReader::next_record`] and the engine's
+//! [`parallel::WorkerFactory::new_tape`] take such a program; the CLI's
+//! `tape_program` (`src/cli/run.rs`) decides when a run may use one.
+//!
 //! # How exactness is checked
 //!
 //! See `src/io/tests/`: track V's jq-recorded CLI parse cases under several
@@ -130,6 +140,8 @@ pub mod parallel;
 pub mod reader;
 pub mod simd;
 pub mod source;
+pub mod tape;
+pub mod tape_eval;
 
 #[cfg(test)]
 mod tests;

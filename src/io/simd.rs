@@ -232,6 +232,19 @@ impl SimdParser {
     /// there are enough of them (their contents don't matter); otherwise the
     /// text is copied. The text must not start with a UTF-8 BOM.
     pub fn parse(&mut self, buf: &[u8], start: usize, end: usize) -> Result<Value, Rejected> {
+        self.parse_with(buf, start, end, |p| p.value())?
+    }
+
+    /// Parses like [`SimdParser::parse`], but hands the parsed document to
+    /// `f` ([`Parsed`]), which may look at it on the tape and build its value
+    /// only if it wants to.
+    pub fn parse_with<R>(
+        &mut self,
+        buf: &[u8],
+        start: usize,
+        end: usize,
+        f: impl FnOnce(Parsed<'_>) -> R,
+    ) -> Result<R, Rejected> {
         let len = end - start;
         if len == 0 {
             return Err(Rejected(13)); // simdjson EMPTY
@@ -250,8 +263,11 @@ impl SimdParser {
             &self.scratch
         };
         let tape = self.parser.parse(text, len).map_err(Rejected)?;
-        let result = build(&tape, &text[..len], &mut self.build);
-        self.build.reset();
+        let result = f(Parsed {
+            tape,
+            src: &text[..len],
+            build: &mut self.build,
+        });
         if len > KEEP_CAPACITY {
             // Free the big buffers now, not at the next document.
             self.parser = TapeParser::new().expect("simdjson parser allocation");
@@ -259,6 +275,28 @@ impl SimdParser {
         if self.scratch.capacity() > KEEP_CAPACITY {
             self.scratch = Vec::new();
         }
+        Ok(result)
+    }
+}
+
+/// A document [`SimdParser::parse_with`] parsed: on the tape, and with its
+/// value built on demand.
+pub struct Parsed<'p> {
+    tape: Tape<'p>,
+    src: &'p [u8],
+    build: &'p mut Builder,
+}
+
+impl Parsed<'_> {
+    /// The document on the tape.
+    pub fn doc(&self) -> super::tape::Doc<'_> {
+        super::tape::Doc::new(&self.tape, self.src)
+    }
+
+    /// The document's value, as [`SimdParser::parse`] builds it.
+    pub fn value(self) -> Result<Value, Rejected> {
+        let result = build(&self.tape, self.src, self.build);
+        self.build.reset();
         result
     }
 }

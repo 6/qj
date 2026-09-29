@@ -37,3 +37,10 @@ name = "fuzz_io_reader"
 path = "fuzz_targets/fuzz_io_reader.rs"
 doc = false
 test = false
+
+# Programs evaluated on simdjson's tape (src/io/tape_eval.rs) against the VM.
+[[bin]]
+name = "fuzz_tape"
+path = "fuzz_targets/fuzz_tape.rs"
+doc = false
+test = false
