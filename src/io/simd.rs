@@ -29,6 +29,7 @@
 //! for values and error messages. This module never produces an error of its
 //! own.
 
+use crate::jq::value::number::Serials;
 use crate::jq::value::{Array, Number, Object, Str, Value, hash_key};
 use crate::simdjson::{Tape, TapeParser, padding};
 
@@ -121,6 +122,8 @@ struct Builder {
     /// current stamp are in the set.
     seen: Box<[(u32, u32)]>,
     stamp: u32,
+    /// For inline integer literals.
+    serials: Serials,
 }
 
 /// An open container while walking the tape.
@@ -141,6 +144,7 @@ impl Builder {
             keys: KeyCache::new(),
             seen: vec![(0, 0); SEEN_SLOTS].into_boxed_slice(),
             stamp: 0,
+            serials: Serials::default(),
         }
     }
 
@@ -362,11 +366,30 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
                 if !matches!(rest.first(), Some(b'-' | b'0'..=b'9')) {
                     return Err(Rejected::UNSUPPORTED);
                 }
-                let n = rest
-                    .iter()
-                    .position(|&c| !is_number_byte(c))
-                    .unwrap_or(rest.len());
-                let number = Number::from_literal(&rest[..n]).ok_or(Rejected::UNSUPPORTED)?;
+                // An `l` item is an integer without fraction or exponent, and
+                // JSON allows no `+` and no leading zeros, so its text is
+                // canonical (the integer's decimal form), except `-0`.
+                let inline = match tag {
+                    b'l' => {
+                        let v = *words.get(i + 1).ok_or(Rejected::UNSUPPORTED)? as i64;
+                        if v != 0 || rest[0] != b'-' {
+                            Number::inline_int_literal(v, &mut b.serials)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                let number = match inline {
+                    Some(n) => n,
+                    None => {
+                        let n = rest
+                            .iter()
+                            .position(|&c| !is_number_byte(c))
+                            .unwrap_or(rest.len());
+                        Number::from_literal(&rest[..n]).ok_or(Rejected::UNSUPPORTED)?
+                    }
+                };
                 i += 2;
                 si += 1;
                 Value::Number(number)
