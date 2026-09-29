@@ -66,7 +66,7 @@ On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-
 
 - **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
 - **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks. Output order always matches input order despite parallel processing. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~300 MB for a 3.4 GB file). Falls back to streaming read() for stdin/pipes.
-- **Apple Silicon tuning.** Uses only P-cores, avoiding E-cores whose slower throughput creates stragglers that bottleneck the parallel pipeline.
+- **Apple Silicon tuning.** Uses every non-efficiency core (P-cores, or Super + Performance cores on M5 Pro/Max), avoiding E-cores whose slower throughput creates stragglers that bottleneck the parallel pipeline.
 - **Zero-copy I/O.** mmap for single-document JSON. No heap allocation or memcpy for the input file.
 - **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely. Original number representation (scientific notation, trailing zeros) is preserved.
 - **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed automatically based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).

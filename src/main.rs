@@ -103,30 +103,60 @@ fn collect_seq_values(buf: &[u8], values: &mut Vec<qj::value::Value>) -> Result<
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-/// Detect P-core count on Apple Silicon via sysctlbyname(3), fall back to available_parallelism.
-/// Only runs on aarch64 macOS — Intel Macs don't have P/E core distinction.
+/// Count non-efficiency cores on Apple Silicon via sysctlbyname(3), fall back to
+/// available_parallelism. Only runs on aarch64 macOS — Intel Macs don't have core tiers.
 fn default_thread_count() -> usize {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        let mut val: i32 = 0;
-        let mut size = std::mem::size_of::<i32>();
-        let name = b"hw.perflevel0.logicalcpu\0";
-        let ret = unsafe {
-            libc::sysctlbyname(
-                name.as_ptr() as *const libc::c_char,
-                &mut val as *mut i32 as *mut libc::c_void,
-                &mut size,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if ret == 0 && val > 0 {
-            return val as usize;
+        if let Some(n) = apple_non_efficiency_cpus() {
+            return n;
         }
     }
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+/// Sum logical CPUs across every perflevel not named "Efficiency". M1–M4 expose
+/// "Performance" + "Efficiency"; M5 Pro/Max expose "Super" + "Performance" with no
+/// efficiency tier, so counting only perflevel0 would leave two thirds of the cores idle.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn apple_non_efficiency_cpus() -> Option<usize> {
+    fn sysctl_raw(name: &str, buf: &mut [u8]) -> Option<usize> {
+        let name = std::ffi::CString::new(name).ok()?;
+        let mut size = buf.len();
+        let ret = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (ret == 0).then_some(size)
+    }
+    fn sysctl_i32(name: &str) -> Option<i32> {
+        let mut buf = [0u8; 4];
+        (sysctl_raw(name, &mut buf)? == 4).then(|| i32::from_ne_bytes(buf))
+    }
+    fn sysctl_string(name: &str) -> Option<String> {
+        let mut buf = [0u8; 64];
+        let len = sysctl_raw(name, &mut buf)?;
+        let bytes = &buf[..len];
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(len);
+        Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+    }
+
+    let levels = sysctl_i32("hw.nperflevels")?;
+    let mut total = 0usize;
+    for i in 0..levels {
+        let cpus = sysctl_i32(&format!("hw.perflevel{i}.logicalcpu"))?;
+        if sysctl_string(&format!("hw.perflevel{i}.name"))? != "Efficiency" && cpus > 0 {
+            total += cpus as usize;
+        }
+    }
+    (total > 0).then_some(total)
 }
 
 #[derive(Parser)]
@@ -291,7 +321,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse_from(&clap_args);
 
-    // Configure Rayon thread pool to use P-cores only on Apple Silicon.
+    // Configure Rayon thread pool to skip efficiency cores on Apple Silicon.
     // E-cores add contention without throughput benefit for I/O-bound NDJSON work.
     rayon::ThreadPoolBuilder::new()
         .num_threads(cli.threads.unwrap_or_else(default_thread_count))
