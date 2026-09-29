@@ -434,3 +434,6 @@ pub fn f_current_line(host: &mut dyn Host, _input: Value, _args: &mut [Value]) -
 pub fn f_have_decnum(_host: &mut dyn Host, _input: Value, _args: &mut [Value]) -> CResult {
     Ok(Value::Bool(true))
 }
+
+#[cfg(test)]
+mod tests;
