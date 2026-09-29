@@ -578,7 +578,7 @@ fn strip_refcounts(s: &str) -> String {
 
 /// A trace writer shared with the test (jq prints traces and results to stdout).
 #[derive(Clone, Default)]
-struct Shared(Rc<RefCell<Vec<u8>>>);
+pub(super) struct Shared(pub(super) Rc<RefCell<Vec<u8>>>);
 
 impl std::io::Write for Shared {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {

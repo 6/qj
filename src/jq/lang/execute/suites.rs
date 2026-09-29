@@ -1,18 +1,21 @@
 //! Runs jq 1.8.1's upstream test suites (`tests/jq_compat/*.test`) through the VM on
-//! jq's own bytecode (rebuilt from `--debug-dump-disasm`), comparing stdout and the
-//! uncaught error with the jq binary. This measures the VM (and the builtins) without
-//! depending on our compiler:
+//! jq's own bytecode (rebuilt from `--debug-dump-disasm`), comparing stdout, the
+//! uncaught error and the exit code with the jq binary. This measures the VM (and the
+//! builtins) independently of our compiler. The trace variant compares the whole
+//! `--debug-trace` output (every instruction, stack and refcount) instead:
 //!
 //! ```text
 //! cargo test --release --lib upstream_suites_on_jq_bytecode -- --ignored --nocapture
+//! cargo test --release --lib upstream_traces_on_jq_bytecode -- --ignored --nocapture
 //! SUITES_VERBOSE=1 SUITES_FILTER=jq.test ...   # print failures, one suite
+//! SUITES_NO_OVERRIDES=1 ...                    # no stand-ins for unported builtins
 //! ```
 
 use std::process::{Command, Stdio};
 
 use super::disasm;
-use super::tests::OVERRIDES;
-use super::{InputSource, Jq};
+use super::tests::{OVERRIDES, Shared};
+use super::{InputSource, JQ_DEBUG_TRACE, Jq};
 use crate::jq::value::{DumpOptions, Error, ParseFlags, Parser, Value, dump_string};
 
 /// One `program / input / outputs` case (`%%FAIL` blocks are compile-time tests and
@@ -71,6 +74,7 @@ fn parse_cases(file: &'static str, content: &str) -> Vec<Case> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Outcome {
+    /// Results (and, when tracing, the trace interleaved with them).
     stdout: String,
     /// The uncaught error's message (`jq: error (at ...): <msg>` without the prefix).
     error: Option<String>,
@@ -78,9 +82,14 @@ struct Outcome {
 }
 
 /// Runs jq and returns its disassembly and outcome.
-fn run_jq(case: &Case) -> Option<(String, Outcome)> {
+fn run_jq(case: &Case, trace: bool) -> Option<(String, Outcome)> {
+    let mut args = vec!["-c", "--debug-dump-disasm"];
+    if trace {
+        args.push("--debug-trace");
+    }
+    args.push(&case.program);
     let mut child = Command::new("jq")
-        .args(["-c", "--debug-dump-disasm", &case.program])
+        .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -126,7 +135,7 @@ impl InputSource for Inputs {
 }
 
 /// Runs the VM like jq's main loop: each input value in turn, `input` reading ahead.
-fn run_vm(disasm_text: &str, input: &str, overrides: bool) -> Outcome {
+fn run_vm(disasm_text: &str, input: &str, overrides: bool, trace: bool) -> Outcome {
     let bc = disasm::load(disasm_text, if overrides { OVERRIDES } else { &[] });
     let mut jq = Jq::new(bc);
     let mut parser = Parser::new(ParseFlags::default());
@@ -136,7 +145,11 @@ fn run_vm(disasm_text: &str, input: &str, overrides: bool) -> Outcome {
     while let Some(v) = parser.next() {
         values.push_back(v);
     }
-    let mut stdout = String::new();
+    // jq prints traces and results on stdout, in order.
+    let out = Shared::default();
+    if trace {
+        jq.set_trace_writer(Some(Box::new(out.clone())));
+    }
     let mut exit = 0;
     let mut error = None;
     jq.set_input(Some(Box::new(Inputs(values))));
@@ -156,12 +169,13 @@ fn run_vm(disasm_text: &str, input: &str, overrides: bool) -> Outcome {
                 break;
             }
         };
-        jq.start(v, 0);
+        jq.start(v, if trace { JQ_DEBUG_TRACE } else { 0 });
         for r in &mut jq {
             match r {
                 Ok(v) => {
-                    stdout.push_str(&dump_string(&v, &DumpOptions::default()));
-                    stdout.push('\n');
+                    let mut o = out.0.borrow_mut();
+                    o.extend_from_slice(dump_string(&v, &DumpOptions::default()).as_bytes());
+                    o.push(b'\n');
                 }
                 Err(e) => {
                     error = Some(match e.value() {
@@ -181,6 +195,7 @@ fn run_vm(disasm_text: &str, input: &str, overrides: bool) -> Outcome {
             break;
         }
     }
+    let stdout = String::from_utf8_lossy(&out.0.borrow()).into_owned();
     Outcome {
         stdout,
         error,
@@ -188,9 +203,30 @@ fn run_vm(disasm_text: &str, input: &str, overrides: bool) -> Outcome {
     }
 }
 
-#[test]
-#[ignore]
-fn upstream_suites_on_jq_bytecode() {
+/// Where two outcomes first differ, for the report.
+fn first_difference(want: &Outcome, got: &Outcome) -> String {
+    if want.stdout != got.stdout {
+        let (w, g): (Vec<&str>, Vec<&str>) =
+            (want.stdout.lines().collect(), got.stdout.lines().collect());
+        let i = w
+            .iter()
+            .zip(&g)
+            .position(|(a, b)| a != b)
+            .unwrap_or(w.len().min(g.len()));
+        format!(
+            "stdout line {} (of {} / {}):\n    want: {:?}\n    got:  {:?}",
+            i + 1,
+            w.len(),
+            g.len(),
+            w.get(i),
+            g.get(i)
+        )
+    } else {
+        format!("want {want:?}\n    got  {got:?}")
+    }
+}
+
+fn run_suites(trace: bool) {
     let root = env!("CARGO_MANIFEST_DIR");
     let filter = std::env::var("SUITES_FILTER").ok();
     let verbose = std::env::var_os("SUITES_VERBOSE").is_some();
@@ -221,27 +257,23 @@ fn upstream_suites_on_jq_bytecode() {
                 s.spawn(move || {
                     let mut out = Vec::new();
                     for case in chunk.iter() {
-                        let Some((dis, want)) = run_jq(case) else {
-                            out.push((
-                                case.file,
-                                false,
-                                format!("{}:{}: jq failed", case.file, case.line),
-                            ));
+                        let head = format!(
+                            "{}:{}: {}\n  input: {}",
+                            case.file, case.line, case.program, case.input
+                        );
+                        let Some((dis, want)) = run_jq(case, trace) else {
+                            out.push((case.file, false, format!("{head}\n  jq failed")));
                             continue;
                         };
-                        let got = std::panic::catch_unwind(|| run_vm(&dis, &case.input, overrides));
+                        let got = std::panic::catch_unwind(|| {
+                            run_vm(&dis, &case.input, overrides, trace)
+                        });
                         let (ok, detail) = match got {
                             Ok(got) => (
                                 got == want,
-                                format!(
-                                    "{}:{}: {}\n  input: {}\n  want: {:?}\n  got:  {:?}",
-                                    case.file, case.line, case.program, case.input, want, got
-                                ),
+                                format!("{head}\n  {}", first_difference(&want, &got)),
                             ),
-                            Err(_) => (
-                                false,
-                                format!("{}:{}: {} PANICKED", case.file, case.line, case.program),
-                            ),
+                            Err(_) => (false, format!("{head}\n  PANICKED")),
                         };
                         out.push((case.file, ok, detail));
                     }
@@ -274,4 +306,16 @@ fn upstream_suites_on_jq_bytecode() {
         total += t;
     }
     eprintln!("{:>14}: {pass}/{total}", "total");
+}
+
+#[test]
+#[ignore]
+fn upstream_suites_on_jq_bytecode() {
+    run_suites(false);
+}
+
+#[test]
+#[ignore]
+fn upstream_traces_on_jq_bytecode() {
+    run_suites(true);
 }
