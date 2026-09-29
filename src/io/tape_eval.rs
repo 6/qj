@@ -1,14 +1,15 @@
 //! Running simple programs on simdjson's tape, without building jq values.
 //!
-//! A program made only of paths (`.a.b`, `."a"`, `.["a"]`), iteration
-//! (`.[]`), pipes, `length`, `keys`, `keys_unsorted`, array collection
-//! (`[...]`, `map(...)`), object construction with constant keys (`{a, b:
-//! .c.d}`) and `select` on a path's truthiness or its equality with a constant
-//! (`select(.type == "PushEvent")`) has outputs that are fully determined by
-//! its input, and can be computed on the tape ([`super::tape`]). Those outputs
-//! are what the jq VM would produce on the value the builder makes of the
-//! input: every step follows the builtin or opcode it stands for (`jv_get` on
-//! objects, `EACH`, `f_length`, `f_keys`, `jv_equal`, ...), and duplicate keys
+//! A program made only of paths (`.a.b`, `."a"`, `.["a"]`, and `.a?`),
+//! iteration (`.[]`, `.[]?`), pipes, `length`, `keys`, `keys_unsorted`,
+//! array collection (`[...]`, `map(...)`), object construction with constant
+//! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its equality
+//! with a constant (`select(.type == "PushEvent")`) has outputs that are
+//! fully determined by its input, and can be computed on the tape
+//! ([`super::tape`]). Those outputs are what the jq VM would produce on the
+//! value the builder makes of the input: every step follows the builtin or
+//! opcode it stands for (`jv_get` on objects, `EACH`, `INDEX_OPT`,
+//! `EACH_OPT`, `f_length`, `f_keys`, `jv_equal`, ...), and duplicate keys
 //! follow jq's rule.
 //!
 //! Anything else is [`Decline`]d: an error in jq (`.a` on a number, `length`
@@ -48,8 +49,14 @@ enum Expr {
     Identity,
     /// `T | .[key]` for a constant string key.
     Index(Box<Expr>, String),
+    /// `T | .[key]?`: jq's `INDEX_OPT`, which backtracks where `INDEX`
+    /// raises an error (`T`'s own errors aren't caught).
+    IndexOpt(Box<Expr>, String),
     /// `T | .[]`
     Each(Box<Expr>),
+    /// `T | .[]?`: `EACH_OPT`, which backtracks on what `EACH` can't
+    /// iterate.
+    EachOpt(Box<Expr>),
     /// `A | B`
     Pipe(Box<Expr>, Box<Expr>),
     /// `length`
@@ -140,19 +147,27 @@ fn convert(n: &ast::Node) -> Option<Expr> {
         NodeKind::Index {
             target,
             key,
-            optional: false,
+            optional,
         } => {
             let key = const_string(key)?;
-            let target = match target {
+            let target = Box::new(match target {
                 None => Expr::Identity,
                 Some(t) => convert(t)?,
-            };
-            Expr::Index(Box::new(target), key)
+            });
+            if *optional {
+                Expr::IndexOpt(target, key)
+            } else {
+                Expr::Index(target, key)
+            }
         }
-        NodeKind::Each {
-            target,
-            optional: false,
-        } => Expr::Each(Box::new(convert(target)?)),
+        NodeKind::Each { target, optional } => {
+            let target = Box::new(convert(target)?);
+            if *optional {
+                Expr::EachOpt(target)
+            } else {
+                Expr::Each(target)
+            }
+        }
         NodeKind::Pipe(a, b) => Expr::Pipe(Box::new(convert(a)?), Box::new(convert(b)?)),
         NodeKind::Call { name, args, .. } => match (name.as_str(), args.as_slice()) {
             ("length", []) => Expr::Length,
@@ -236,7 +251,7 @@ fn single(e: &Expr) -> bool {
         Expr::Index(t, _) => single(t),
         Expr::Pipe(a, b) => single(a) && single(b),
         Expr::Object(entries) => entries.iter().all(|(_, e)| single(e)),
-        Expr::Each(_) | Expr::Select(..) => false,
+        Expr::IndexOpt(..) | Expr::Each(_) | Expr::EachOpt(_) | Expr::Select(..) => false,
     }
 }
 
@@ -322,6 +337,12 @@ impl Eval<'_, '_> {
                     self.run(t, input, &mut |v| emit(self.index(v, key)?))
                 }
             }
+            // (What the index or the iteration raises is caught; what `T`
+            // or the rest of the program raises isn't.)
+            Expr::IndexOpt(t, key) => self.run(t, input, &mut |v| match self.index(v, key) {
+                Ok(x) => emit(x),
+                Err(Decline) => Ok(()),
+            }),
             Expr::Each(t) => {
                 if single(t) {
                     let v = self.single(t, input)?;
@@ -330,6 +351,13 @@ impl Eval<'_, '_> {
                     self.run(t, input, &mut |v| self.each(v, emit))
                 }
             }
+            Expr::EachOpt(t) => self.run(t, input, &mut |v| {
+                if self.iterable(&v) {
+                    self.each(v, emit)
+                } else {
+                    Ok(())
+                }
+            }),
             Expr::Pipe(a, b) => self.run(a, input, &mut |v| self.run(b, v, emit)),
             Expr::Length => emit(self.length(input)?),
             Expr::Keys { sorted } => emit(self.keys(input, *sorted)?),
@@ -394,6 +422,16 @@ impl Eval<'_, '_> {
                 .find(|(k, _)| *k == key)
                 .map_or(TVal::Null, |(_, v)| v)),
             TVal::Number(_) | TVal::Array(_) => Err(Decline),
+        }
+    }
+
+    /// Whether `EACH` iterates `v` (an array or an object) rather than
+    /// raising an error.
+    fn iterable(&self, v: &TVal<'_>) -> bool {
+        match v {
+            TVal::Node(n) => matches!(self.doc.kind(*n), Kind::Array | Kind::Object),
+            TVal::Array(_) | TVal::Object(_) => true,
+            TVal::Null | TVal::Number(_) => false,
         }
     }
 

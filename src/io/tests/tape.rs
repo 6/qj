@@ -256,6 +256,22 @@ const PROGRAMS: &[&str] = &[
     "map(select(.a))",
     "[.[] | select(. == 1)]",
     "select(length == 2)",
+    ".a?",
+    ".a.b?",
+    ".a?.b",
+    ".[]?",
+    ".a[]?",
+    ".[].a?",
+    ".[][]?",
+    "[.[]?]",
+    "[.[].a?]",
+    "[.a[]?.b]",
+    "map(.a?)",
+    ".a[]? | .b",
+    "[.[] | .[]?]",
+    "[.[]? | length]",
+    ".[]? | keys",
+    "{a} | .a[]?",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -481,8 +497,11 @@ fn only_simple_programs_qualify() {
         assert!(TapeProgram::new(p.as_bytes()).is_some(), "{p}");
     }
     for p in [
-        ".a?",
-        ".[]?",
+        "(.a)?",
+        "try .a",
+        ".a[]?.b?[0]",
+        "{a: .b?}",
+        "select(.a?)",
         ".[0]",
         ".a, .b",
         "def f: .; f",

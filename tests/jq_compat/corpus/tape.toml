@@ -1,11 +1,11 @@
 # Programs qj evaluates on simdjson's tape, without building values
 # (src/io/tape_eval.rs): paths, `.[]`, pipes, `length`, `keys`,
-# `keys_unsorted`, `[...]`, `map`, `{...}` with constant keys, and `select`
-# on truthiness or equality with a constant. Their output must be jq's for
-# every output option (the tape printer re-implements jq's layout), on
-# single documents and on NDJSON (the parallel engine's workers and the
-# calling thread run them), and when an input declines the shortcut (an error
-# in jq, which the VM must then report exactly).
+# `keys_unsorted`, `[...]`, `map`, `{...}` with constant keys, `select`
+# on truthiness or equality with a constant, and `.a?`, `.[]?`. Their output
+# must be jq's for every output option (the tape printer re-implements jq's
+# layout), on single documents and on NDJSON (the parallel engine's workers
+# and the calling thread run them), and when an input declines the shortcut
+# (an error in jq, which the VM must then report exactly).
 #
 # Data (tests/jq_compat/corpus/data/):
 # - tape.json: one pretty-printed document with duplicate keys, -0 and other
@@ -58,6 +58,18 @@ programs = [
   ".missing",
   ".missing.deeper",
   ".arr[].b[]",
+  ".a?",
+  ".s.x?",
+  ".arr[].b?",
+  ".arr[].a.x?",
+  ".arr[].b[]?",
+  ".[]?",
+  ".s[]?",
+  "[.[][]?]",
+  "[.arr[].a?]",
+  ".arr | map(.b[]?)",
+  ".a?.b",
+  ".a.b[]? | .x",
 ]
 
 [[sweep]]
@@ -82,6 +94,14 @@ programs = [
   "select(.a != -0)",
   "select(.b)",
   ".b | length",
+  ".a?",
+  ".a.b?",
+  ".[]?",
+  ".a[]?",
+  "[.[]?]",
+  "[.[] | .a?]",
+  ".a[]? | .a?",
+  "map(.b?)",
 ]
 
 [[sweep]]

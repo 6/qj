@@ -80,6 +80,12 @@ const PROGRAMS: &[&str] = &[
     ".arr[] | select(.a)",
     "select(.a != -0)",
     ".s",
+    ".a?",
+    ".arr[].b?",
+    ".arr[].b[]?",
+    "[.[]?]",
+    "[.[][]?]",
+    ".s[]?",
 ];
 
 const OPTIONS: &[&[&str]] = &[
