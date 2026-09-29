@@ -1046,12 +1046,13 @@ impl TapeParser {
             return Err(code);
         }
         // SAFETY: on success the tape starts with a root word whose payload
-        // is the index of the closing root word, and the structural array
-        // has `n_structurals` entries. Both live in the parser, which the
+        // is the tape's length (the index just past the closing root word:
+        // simdjson's `visit_document_end`), and the structural array has
+        // `n_structurals` entries. Both live in the parser, which the
         // returned value borrows.
         unsafe {
             let root = *tape;
-            let words = (root & 0x00FF_FFFF_FFFF_FFFF) as usize + 1;
+            let words = (root & 0x00FF_FFFF_FFFF_FFFF) as usize;
             Ok(Tape {
                 words: std::slice::from_raw_parts(tape, words),
                 structurals: std::slice::from_raw_parts(structurals, n_structurals),

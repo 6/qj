@@ -361,3 +361,27 @@ fn iterate_many_malformed_ndjson_no_crash() {
     let _ = iterate_many_count(&buf, data.len(), 1_000_000);
     let _ = iterate_many_extract_field(&buf, data.len(), 1_000_000, "a");
 }
+
+/// The tape runs from the opening root word through the closing one:
+/// simdjson's root payload is the tape's length, not the closing word's index
+/// (`TapeParser::parse` used to include one word past the end).
+#[test]
+fn tape_ends_with_the_closing_root_word() {
+    let json = br#"{"a":[1,2.5,"x"],"b":null}"#;
+    let buf = pad_buffer(json);
+    let mut parser = qj::simdjson::TapeParser::new().unwrap();
+    let tape = parser.parse(&buf, json.len()).unwrap();
+    let tag = |w: u64| (w >> 56) as u8;
+    let tags: Vec<u8> = tape.words.iter().map(|&w| tag(w)).collect();
+    // r { "a" [ l <1> d <2.5> "x" ] "b" n } r (the words after l and d
+    // hold their numbers)
+    assert_eq!(tags.len(), 14);
+    assert_eq!(tags[..5], *b"r{\"[l");
+    assert_eq!(tags[6], b'd');
+    assert_eq!(tags[8..], *b"\"]\"n}r");
+    assert_eq!(
+        tape.words[13] & 0x00FF_FFFF_FFFF_FFFF,
+        0,
+        "points back at the root"
+    );
+}
