@@ -48,9 +48,13 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 
-use super::reader::{CatchUp, Cut, InputReader, window_line, window_line_number};
+use super::reader::{
+    CatchUp, Cut, InputReader, Record, TapeSink, window_line_number, window_line_record,
+};
 use super::simd::SimdParser;
 use super::source::SharedBytes;
+use super::tape::Doc;
+use super::tape_eval::Decline;
 use crate::jq::value::print::dump_to_vec;
 use crate::jq::value::{DumpOptions, Error, Value};
 
@@ -90,6 +94,64 @@ pub trait RecordWorker {
 pub trait WorkerFactory: Sync {
     type Worker: RecordWorker;
     fn new_worker(&self) -> Self::Worker;
+
+    /// A [`RecordTape`] for a worker thread, if the program can run on
+    /// records as simdjson parses them (see [`crate::io::tape_eval`]).
+    fn new_tape(&self) -> Option<Box<dyn RecordTape>> {
+        None
+    }
+}
+
+/// Runs the program on a record's text as simdjson parsed it, instead of
+/// on its value. It runs while a job's lines are parsed, before the job is
+/// known to hold records, so it must have no effect but its output.
+pub trait RecordTape {
+    /// Appends the record's stdout to `out`, with its marks (see
+    /// [`RecordWorker::take_marks`]; offsets in `out`), and returns its
+    /// status (as [`RecordWorker::process`] would); or declines, having
+    /// written nothing, so that the record's value is processed instead.
+    fn run(
+        &mut self,
+        doc: &Doc<'_>,
+        out: &mut Vec<u8>,
+        marks: &mut Vec<(usize, usize)>,
+    ) -> Result<i32, Decline>;
+}
+
+/// Where the calling thread's [`RecordTape`] writes a record's output
+/// (bytes and marks) for [`step`] to hand to the sink.
+type TapeBuf = std::rc::Rc<std::cell::RefCell<(Vec<u8>, Vec<(usize, usize)>)>>;
+
+/// The calling thread's [`RecordTape`], as the reader's [`TapeSink`].
+struct ReaderTape {
+    tape: Box<dyn RecordTape>,
+    buf: TapeBuf,
+}
+
+impl TapeSink for ReaderTape {
+    fn run(&mut self, doc: &Doc<'_>) -> Result<i32, Decline> {
+        let (out, marks) = &mut *self.buf.borrow_mut();
+        let (n, m) = (out.len(), marks.len());
+        let r = self.tape.run(doc, out, marks);
+        if r.is_err() {
+            out.truncate(n);
+            marks.truncate(m);
+        }
+        r
+    }
+}
+
+/// A [`RecordTape`] writing into a job's phase-1 buffers.
+struct TapeLines<'a, 't> {
+    tape: &'a mut (dyn RecordTape + 't),
+    out: &'a mut Vec<u8>,
+    marks: &'a mut Vec<(usize, usize)>,
+}
+
+impl TapeSink for TapeLines<'_, '_> {
+    fn run(&mut self, doc: &Doc<'_>) -> Result<i32, Decline> {
+        self.tape.run(doc, self.out, self.marks)
+    }
 }
 
 /// Receives every record's results, and the input's parse errors, in input
@@ -216,8 +278,6 @@ struct Job {
     base: usize,
     start: usize,
     end: usize,
-    /// Newlines before `start` in this input.
-    nl: u64,
     /// Start of the line containing `start`.
     line_start: usize,
     raw: bool,
@@ -242,8 +302,9 @@ struct JobResult {
 }
 
 enum FromWorker {
-    /// Phase 1 done: whether every line was taken.
-    Parsed { id: u64, complete: bool },
+    /// Phase 1 done: whether every line was taken, and how many newlines
+    /// the job holds (the calling thread doesn't count them).
+    Parsed { id: u64, complete: bool, lines: u64 },
     /// Phase 2 done.
     Done { id: u64, result: JobResult },
     /// The program panicked on this job.
@@ -262,12 +323,14 @@ struct Board {
 
 #[derive(Default)]
 struct BoardState {
-    decisions: HashMap<u64, bool>,
+    /// `Some(n)`: go, the job starting after `n` newlines of its input
+    /// (for `input_line_number`); `None`: cancelled.
+    decisions: HashMap<u64, Option<u64>>,
     closed: bool,
 }
 
 impl Board {
-    fn decide(&self, id: u64, go: bool) {
+    fn decide(&self, id: u64, go: Option<u64>) {
         self.state.lock().expect("board").decisions.insert(id, go);
         self.cv.notify_all();
     }
@@ -281,15 +344,15 @@ impl Board {
         self.state.lock().expect("board").closed
     }
 
-    /// Waits for job `id`'s decision (`false` once the board is closed).
-    fn wait(&self, id: u64) -> bool {
+    /// Waits for job `id`'s decision (cancelled once the board is closed).
+    fn wait(&self, id: u64) -> Option<u64> {
         let mut st = self.state.lock().expect("board");
         loop {
             if let Some(go) = st.decisions.remove(&id) {
                 return go;
             }
             if st.closed {
-                return false;
+                return None;
             }
             st = self.cv.wait(st).expect("board");
         }
@@ -322,10 +385,31 @@ pub fn run_with<F: WorkerFactory, S: RecordSink>(
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut stats = EngineStats::default();
+    // Records the calling thread reads go through the factory's tape
+    // program too (it writes their outputs into `tape`).
+    let tape: Option<TapeBuf> = factory.new_tape().map(|t| {
+        let buf = TapeBuf::default();
+        reader.set_tape_sink(Some(Box::new(ReaderTape {
+            tape: t,
+            buf: buf.clone(),
+        })));
+        buf
+    });
+    struct Unset<'a>(&'a mut InputReader, bool);
+    impl Drop for Unset<'_> {
+        fn drop(&mut self) {
+            if self.1 {
+                self.0.set_tape_sink(None);
+            }
+        }
+    }
+    let has_tape = tape.is_some();
+    let guard = Unset(reader, has_tape);
+    let reader = &mut *guard.0;
     if opts.threads == 0 {
         while reader.failures() == 0 {
             stats.sequential += 1;
-            if step(reader, &mut main, sink, &mut out, &mut err).is_break() {
+            if step(reader, &mut main, sink, &mut out, &mut err, tape.as_ref()).is_break() {
                 break;
             }
         }
@@ -383,6 +467,7 @@ pub fn run_with<F: WorkerFactory, S: RecordSink>(
             panic: None,
             spawn: &mut spawn,
             started: false,
+            tape: tape.as_ref(),
         };
         ctx.run();
         panic_payload = ctx.panic.take();
@@ -404,6 +489,7 @@ fn worker_thread<F: WorkerFactory>(
 ) {
     let mut worker = None;
     let mut simd = SimdParser::new();
+    let mut tape = factory.new_tape();
     loop {
         let job = match jobs.lock() {
             Ok(rx) => rx.recv(),
@@ -414,40 +500,110 @@ fn worker_thread<F: WorkerFactory>(
             continue;
         }
         let id = job.id;
-        // Phase 1: parse (bounded work, no user code).
-        let parsed = panic::catch_unwind(AssertUnwindSafe(|| parse_job(&mut simd, &job)));
-        let (values, failed_at) = match parsed {
+        // Phase 1: parse (bounded work, no user code; a tape program only
+        // makes output).
+        let parsed = panic::catch_unwind(AssertUnwindSafe(|| {
+            parse_job(&mut simd, &job, tape.as_deref_mut())
+        }));
+        let parsed = match parsed {
             Ok(p) => p,
             Err(payload) => {
                 simd = SimdParser::new();
+                tape = factory.new_tape();
                 if msgs.send(FromWorker::Panicked { id, payload }).is_err() {
                     return;
                 }
                 continue;
             }
         };
-        let complete = failed_at.is_none();
-        if msgs.send(FromWorker::Parsed { id, complete }).is_err() {
+        let complete = parsed.failed_at.is_none();
+        let lines = parsed.lines;
+        if msgs
+            .send(FromWorker::Parsed {
+                id,
+                complete,
+                lines,
+            })
+            .is_err()
+        {
             return;
         }
-        if !board.wait(id) {
+        let Some(start_nl) = board.wait(id) else {
             continue; // cancelled
-        }
+        };
         // Phase 2: the program, on values that are known to be records.
-        let w = worker.get_or_insert_with(|| factory.new_worker());
         let filename = job.filename.as_deref();
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
+            let ParsedJob {
+                items,
+                failed_at,
+                out: tape_out,
+                marks: tape_marks,
+                ..
+            } = parsed;
+            if items.iter().all(|i| matches!(i, Item::Done { .. })) {
+                // All written in phase 1.
+                let recs = items
+                    .into_iter()
+                    .map(|i| match i {
+                        Item::Done {
+                            out_end,
+                            marks_end,
+                            status,
+                        } => Rec {
+                            out_end,
+                            err_end: 0,
+                            marks_end,
+                            status,
+                        },
+                        Item::Value(..) => unreachable!(),
+                    })
+                    .collect();
+                return JobResult {
+                    out: tape_out,
+                    err: Vec::new(),
+                    marks: tape_marks,
+                    recs,
+                    failed_at,
+                };
+            }
+            let w = worker.get_or_insert_with(|| factory.new_worker());
             let mut r = JobResult {
                 out: Vec::new(),
                 err: Vec::new(),
                 marks: Vec::new(),
-                recs: Vec::with_capacity(values.len()),
+                recs: Vec::with_capacity(items.len()),
                 failed_at,
             };
-            for (value, line) in values {
-                let meta = RecordMeta { filename, line };
-                let status = w.process(value, &meta, &mut r.out, &mut r.err);
-                w.take_marks(&mut r.marks);
+            let (mut tape_at, mut tape_marks_at) = (0, 0);
+            for item in items {
+                let status = match item {
+                    Item::Value(value, line) => {
+                        let meta = RecordMeta {
+                            filename,
+                            line: start_nl + line,
+                        };
+                        let status = w.process(value, &meta, &mut r.out, &mut r.err);
+                        w.take_marks(&mut r.marks);
+                        status
+                    }
+                    Item::Done {
+                        out_end,
+                        marks_end,
+                        status,
+                    } => {
+                        // Moved from phase 1's buffer, marks shifted along.
+                        let at = r.out.len();
+                        r.out.extend_from_slice(&tape_out[tape_at..out_end]);
+                        r.marks.extend(
+                            tape_marks[tape_marks_at..marks_end]
+                                .iter()
+                                .map(|&(off, len)| (off - tape_at + at, len)),
+                        );
+                        (tape_at, tape_marks_at) = (out_end, marks_end);
+                        status
+                    }
+                };
                 r.recs.push(Rec {
                     out_end: r.out.len(),
                     err_end: r.err.len(),
@@ -470,29 +626,90 @@ fn worker_thread<F: WorkerFactory>(
     }
 }
 
-/// Phase 1: the values (with their `input_line_number`) of a job's lines,
-/// up to the first line the fast path wouldn't take.
-fn parse_job(simd: &mut SimdParser, job: &Job) -> (Vec<(Value, u64)>, Option<usize>) {
+/// A record of a job after phase 1.
+enum Item {
+    /// Its value and `input_line_number` (counted from the job's start:
+    /// phase 2 adds the newlines before it), for phase 2.
+    Value(Value, u64),
+    /// Written by the job's [`RecordTape`]: where its output and marks end
+    /// in [`ParsedJob::out`] and [`ParsedJob::marks`], and its status.
+    Done {
+        out_end: usize,
+        marks_end: usize,
+        status: i32,
+    },
+}
+
+/// What phase 1 made of a job.
+struct ParsedJob {
+    items: Vec<Item>,
+    /// The line the worker didn't take (the rest of the job is unread).
+    failed_at: Option<usize>,
+    /// Output of the records a [`RecordTape`] wrote.
+    out: Vec<u8>,
+    marks: Vec<(usize, usize)>,
+    /// Newlines in the job (in the lines it took).
+    lines: u64,
+}
+
+/// Phase 1: the values (with their `input_line_number` from the job's
+/// start) of a job's lines, or their output if `tape` takes them, up to the
+/// first line the fast path wouldn't take.
+fn parse_job<'t>(
+    simd: &mut SimdParser,
+    job: &Job,
+    mut tape: Option<&mut (dyn RecordTape + 't)>,
+) -> ParsedJob {
     let buf = job.data.padded();
-    let mut values = Vec::new();
+    let mut p = ParsedJob {
+        items: Vec::new(),
+        failed_at: None,
+        out: Vec::new(),
+        marks: Vec::new(),
+        lines: 0,
+    };
     let mut a = job.start;
-    let mut nl = job.nl;
+    // (Counted from the job's start.)
+    let mut nl = 0;
     let mut ls = job.line_start;
     while a < job.end {
         let b = a
             + memchr::memchr(b'\n', &buf[a - job.base..job.end - job.base])
                 .expect("jobs end at a newline")
             + 1;
-        match window_line(simd, buf, job.base, a, b, job.raw) {
+        let line = match &mut tape {
+            Some(t) => {
+                let mut sink = TapeLines {
+                    tape: &mut **t,
+                    out: &mut p.out,
+                    marks: &mut p.marks,
+                };
+                window_line_record(simd, buf, job.base, a, b, job.raw, Some(&mut sink))
+            }
+            None => window_line_record(simd, buf, job.base, a, b, job.raw, None),
+        };
+        match line {
             Ok(None) => {}
-            Ok(Some((value, e))) => values.push((value, window_line_number(nl, ls, b, e))),
-            Err(()) => return (values, Some(a)),
+            Ok(Some((Record::Value(value), e))) => {
+                p.items
+                    .push(Item::Value(value, window_line_number(nl, ls, b, e)));
+            }
+            Ok(Some((Record::Done(status), _))) => p.items.push(Item::Done {
+                out_end: p.out.len(),
+                marks_end: p.marks.len(),
+                status,
+            }),
+            Err(()) => {
+                p.failed_at = Some(a);
+                return p;
+            }
         }
         nl += 1;
         a = b;
         ls = b;
     }
-    (values, None)
+    p.lines = nl;
+    p
 }
 
 /// One record read by the reader itself, processed on the calling thread.
@@ -502,9 +719,27 @@ fn step<W: RecordWorker, S: RecordSink>(
     sink: &mut S,
     out: &mut Vec<u8>,
     err: &mut Vec<u8>,
+    tape: Option<&TapeBuf>,
 ) -> ControlFlow<()> {
-    match reader.next() {
-        Some(Ok(value)) => {
+    let next = match tape {
+        Some(_) => reader.next_record(),
+        None => reader.next().map(|r| r.map(Record::Value)),
+    };
+    match next {
+        Some(Ok(Record::Done(status))) => {
+            // The reader's sink wrote the outputs into `tape`.
+            let buf = tape.expect("a tape sink");
+            let (bytes, marks) = &mut *buf.borrow_mut();
+            let flow = if marks.is_empty() {
+                sink.record(bytes, &[], status)
+            } else {
+                sink.record_marked(bytes, &[], marks, status)
+            };
+            bytes.clear();
+            marks.clear();
+            flow
+        }
+        Some(Ok(Record::Value(value))) => {
             let filename = reader.filename_text();
             let meta = RecordMeta {
                 filename: filename.as_deref(),
@@ -534,8 +769,12 @@ struct Slot {
     generation: u64,
     /// Phase 1 reported: whether every line was taken.
     complete: Option<bool>,
-    /// Confirmed and told to run the program.
+    /// Phase 1 reported: the job's newlines.
+    lines: Option<u64>,
+    /// Confirmed and told to run the program (and the newlines before the
+    /// job, which confirming it determines).
     go: bool,
+    start_nl: Option<u64>,
     result: Option<JobResult>,
 }
 
@@ -562,6 +801,8 @@ struct Ctx<'a, W: RecordWorker, S: RecordSink> {
     /// Starts the worker threads (the first call).
     spawn: &'a mut dyn FnMut(),
     started: bool,
+    /// Where the reader's tape sink writes (see [`step`]).
+    tape: Option<&'a TapeBuf>,
 }
 
 impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
@@ -595,22 +836,31 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         }
         while !self.queue.is_empty() {
             let s = self.queue.pop_front().expect("non-empty");
-            self.board.decide(s.id, false);
+            self.board.decide(s.id, None);
         }
     }
 
     fn sequential(&mut self) -> ControlFlow<()> {
         self.stats.sequential += 1;
-        step(self.reader, self.main, self.sink, self.out, self.err)
+        step(
+            self.reader,
+            self.main,
+            self.sink,
+            self.out,
+            self.err,
+            self.tape,
+        )
     }
 
     /// The reader is idle at the front job's start: confirm it, and hand
     /// over its results once they're in.
     fn front_reached(&mut self) -> ControlFlow<()> {
+        let nl = self.reader.newlines_read();
         let front = self.queue.front_mut().expect("non-empty");
         if !front.go {
             front.go = true;
-            self.board.decide(front.id, true);
+            front.start_nl = Some(nl);
+            self.board.decide(front.id, Some(nl));
             self.next_go = front.id + 1;
             self.confirm_chain();
         }
@@ -658,7 +908,13 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         }
         // Everything before the line the worker didn't take was consumed
         // like the fast path would; the reader reads on from there.
-        self.reader.commit(r.failed_at.unwrap_or(slot.end));
+        match r.failed_at {
+            // (The worker counted the job's newlines.)
+            None => self
+                .reader
+                .commit_job(slot.end, slot.lines.expect("parsed")),
+            Some(at) => self.reader.commit(at),
+        }
         if r.failed_at.is_some() {
             // Read that line now: a job cut from here would stop at it again.
             return self.sequential();
@@ -669,7 +925,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
     fn cancel_front(&mut self) {
         let s = self.queue.pop_front().expect("non-empty");
         self.in_flight -= s.end - s.start;
-        self.board.decide(s.id, false);
+        self.board.decide(s.id, None);
         self.stats.discarded_jobs += 1;
     }
 
@@ -690,9 +946,12 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
             if !(prev.go && prev.complete == Some(true)) {
                 return;
             }
+            // It starts where the previous job ends.
+            let nl = prev.start_nl.expect("confirmed") + prev.lines.expect("parsed");
             let s = &mut self.queue[i];
             s.go = true;
-            self.board.decide(s.id, true);
+            s.start_nl = Some(nl);
+            self.board.decide(s.id, Some(nl));
             self.next_go = s.id + 1;
         }
     }
@@ -708,9 +967,14 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
 
     fn absorb(&mut self, m: FromWorker) {
         match m {
-            FromWorker::Parsed { id, complete } => {
+            FromWorker::Parsed {
+                id,
+                complete,
+                lines,
+            } => {
                 if let Some(s) = self.slot(id) {
                     s.complete = Some(complete);
+                    s.lines = Some(lines);
                     self.confirm_chain();
                 }
             }
@@ -775,7 +1039,6 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 base: w.base,
                 start: w.start,
                 end: w.end,
-                nl: w.nl,
                 line_start: w.line_start,
                 raw: w.raw,
                 filename: self.reader.filename_text().map(Arc::from),
@@ -789,7 +1052,9 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 end: w.end,
                 generation: w.generation,
                 complete: None,
+                lines: None,
                 go: false,
+                start_nl: None,
                 result: None,
             });
             self.in_flight += w.end - w.start;

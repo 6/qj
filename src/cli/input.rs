@@ -324,6 +324,15 @@ pub trait Reader {
     fn current_line(&self) -> u64;
     /// `jq_util_input_get_position`, for error messages.
     fn position(&self) -> String;
+    /// [`crate::io::InputReader::next_record`]: like [`Reader::next`], but
+    /// texts the tape sink takes are processed already. Readers without one
+    /// give values.
+    fn next_record(&mut self) -> Option<Result<crate::io::reader::Record, Error>> {
+        self.next().map(|r| r.map(crate::io::reader::Record::Value))
+    }
+    /// [`crate::io::InputReader::set_tape_sink`]; a no-op for readers that
+    /// have none.
+    fn set_tape_sink(&mut self, _sink: Box<dyn crate::io::reader::TapeSink>) {}
 }
 
 /// The reader for main.c's inputs (`-` is standard input): `src/io`'s
@@ -408,6 +417,12 @@ impl Reader for crate::io::InputReader {
     }
     fn position(&self) -> String {
         crate::io::InputReader::position(self)
+    }
+    fn next_record(&mut self) -> Option<Result<crate::io::reader::Record, Error>> {
+        crate::io::InputReader::next_record(self)
+    }
+    fn set_tape_sink(&mut self, sink: Box<dyn crate::io::reader::TapeSink>) {
+        crate::io::InputReader::set_tape_sink(self, Some(sink));
     }
 }
 

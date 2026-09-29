@@ -1,0 +1,113 @@
+# Programs qj evaluates on simdjson's tape, without building values
+# (src/io/tape_eval.rs): paths, `.[]`, pipes, `length`, `keys`,
+# `keys_unsorted`, `[...]`, `map`, `{...}` with constant keys, and `select`
+# on truthiness or equality with a constant. Their output must be jq's for
+# every output option (the tape printer re-implements jq's layout), on
+# single documents and on NDJSON (the parallel engine's workers and the
+# calling thread run them), and when an input declines the shortcut (an error
+# in jq, which the VM must then report exactly).
+#
+# Data (tests/jq_compat/corpus/data/):
+# - tape.json: one pretty-printed document with duplicate keys, -0 and other
+#   number spellings, big integers, escapes, control characters in keys;
+# - tape_multi.json: documents one per line, one spanning two lines, arrays,
+#   a string, empty containers (some programs error on some of them);
+# - adv3.ndjson: see ndjson.toml.
+
+[[sweep]]
+name = "tape-options"
+note = "Every output option on a pretty-printed document"
+files = { "tape.json" = { path = "data/tape.json" } }
+variants = { c = ["-c", "{program}", "tape.json"], pretty = ["{program}", "tape.json"], raw = ["-r", "{program}", "tape.json"], join = ["-j", "{program}", "tape.json"], ascii = ["-ac", "{program}", "tape.json"], asciiraw = ["-ar", "{program}", "tape.json"], sorted = ["-S", "{program}", "tape.json"], sortedc = ["-Sc", "{program}", "tape.json"], tab = ["--tab", "{program}", "tape.json"], indent0 = ["--indent", "0", "{program}", "tape.json"], indent7 = ["--indent", "7", "{program}", "tape.json"], exit = ["-e", "-c", "{program}", "tape.json"], unbuf = ["--unbuffered", "-c", "{program}", "tape.json"], color = ["-C", "-c", "{program}", "tape.json"], seq = ["--seq", "-c", "{program}", "tape.json"] }
+programs = [
+  ".",
+  ".a",
+  ".a.b",
+  ".a.x",
+  ".b",
+  ".b.c",
+  ".k1",
+  ".s",
+  '."a b"',
+  '.["\u0001key"]',
+  ".arr[]",
+  ".arr[].a",
+  ".arr[] | .b",
+  ".[]",
+  "[.[]]",
+  "length",
+  ".a | length",
+  ".s | length",
+  ".c | length",
+  "keys",
+  "keys_unsorted",
+  ".arr[] | keys",
+  "map(length)",
+  ".arr | map(.a)",
+  ".arr | map({a, b})",
+  "{a, s}",
+  '{x: .a.b, "y z": .d.d.d, e: [.c[]]}',
+  ".arr[] | select(.a == 1)",
+  '.arr[] | select(.a == "x") | .b',
+  ".arr[] | select(.a != null)",
+  ".arr[] | select(.a)",
+  ".arr[] | select(.a == 1.0) | .b",
+  ".arr | map(select(.b))",
+  "select(.b == null) | .k1",
+  ".a.b | length",
+  ".missing",
+  ".missing.deeper",
+  ".arr[].b[]",
+]
+
+[[sweep]]
+name = "tape-multi"
+note = "Several documents per file, some that make the programs error"
+files = { "tape_multi.json" = { path = "data/tape_multi.json" }, "adv3.ndjson" = { path = "data/adv3.ndjson" } }
+variants = { c = ["-c", "{program}", "tape_multi.json"], pretty = ["{program}", "tape_multi.json"], twice = ["-c", "{program}", "tape_multi.json", "tape_multi.json"], exit = ["-e", "-c", "{program}", "tape_multi.json"], raw = ["-r", "{program}", "tape_multi.json"], adv3 = ["-c", "{program}", "adv3.ndjson"], adv3raw = ["-r", "{program}", "adv3.ndjson"] }
+programs = [
+  ".",
+  ".a",
+  ".a.b",
+  ".[]",
+  ".a[]",
+  ".a[] | .a",
+  "length",
+  "keys",
+  "keys_unsorted",
+  "map(.a)",
+  "[.[] | length]",
+  "{a, b}",
+  "select(.a == 1)",
+  "select(.a != -0)",
+  "select(.b)",
+  ".b | length",
+]
+
+[[sweep]]
+name = "tape-stdin"
+note = "The same through stdin"
+stdin = { path = "data/tape_multi.json" }
+variants = { c = ["-c", "{program}"], pretty = ["{program}"] }
+programs = [".", ".a", ".[]", "length", "keys", "{a, b}", "select(.a == 1)"]
+
+[[case]]
+name = "tape-deep"
+note = "Nesting past jq's print depth"
+args = ["-c", ".a", "deep.json"]
+files = { "deep.json" = { repeat = [['{"a":', 300], ["[1,-0,1.50]", 1], ["}", 300]] } }
+
+[[case]]
+name = "tape-deep-pretty"
+args = [".a.a", "deep.json"]
+files = { "deep.json" = { repeat = [['{"a":', 300], ["[1,-0,1.50]", 1], ["}", 300]] } }
+
+[[case]]
+name = "tape-deep-array"
+args = ["-c", "[.[]]", "deep.json"]
+files = { "deep.json" = { repeat = [["[", 260], ["-0", 1], ["]", 260]] } }
+
+[[case]]
+name = "tape-deep-length"
+args = ["-c", "length", "deep.json"]
+files = { "deep.json" = { repeat = [["[", 1000], ["]", 1000]] } }

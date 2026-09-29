@@ -34,7 +34,8 @@ The cases come from three places:
     duplicate keys, identity of parsed values in path expressions)
   - a generated matrix of builtins × inputs
   - command-line cases: options and their errors, exit codes, input and output modes,
-    and adversarial NDJSON
+    adversarial NDJSON, and the programs qj evaluates on simdjson's tape without building
+    values (`corpus/tape.toml`, under every output option)
 - **A ratchet**, `tests/jq_compat/diff_baseline.txt`, which fails the run when any case
   gets worse.
 
@@ -43,14 +44,14 @@ Results on macOS (arm64) against jq 1.8.1:
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 17,073 | 17,062 |
-| **Total** | **19,976** | **19,965** |
+| qj's corpus | 17,773 | 17,762 |
+| **Total** | **20,676** | **20,665** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
 them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
 required is that qj not finish either. Across modes, the counts are 11,244 compact, 2,290
-pretty, 2,290 file, 1,455 NDJSON, 19 `%%FAIL`, and 2,678 command-line cases. The
+pretty, 2,290 file, 1,455 NDJSON, 19 `%%FAIL`, and 3,378 command-line cases. The
 command-line cases include some that merge stdout and stderr into one file or pipe,
 checking that output and error messages interleave exactly as jq's stdio buffering
 interleaves them, and some that start the tool with standard descriptors closed

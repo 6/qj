@@ -37,6 +37,10 @@ use std::rc::Rc;
 
 use super::args::{self, Action, ArgError, ArgValue, Options, print_flags};
 use super::input::{InputOptions, Reader};
+use crate::io::parallel::RecordTape;
+use crate::io::reader::{Record, TapeSink};
+use crate::io::tape::{Doc, Layout, Scratch};
+use crate::io::tape_eval::{Decline, Output, TapeProgram};
 use crate::jq::lang::execute::{InputSource, Jq};
 use crate::jq::lang::linker::JqAttrs;
 use crate::jq::lang::{CompileOptions, jq_compile_args};
@@ -636,10 +640,33 @@ struct RecordOut<'a> {
 /// `st_blksize` is at least 512 in practice) need no mark.
 const RAW_MARK_MIN: usize = 512;
 
+/// A result `process()` prints: a value, or the output of a program run on
+/// the tape ([`TapeResult`]), which prints exactly as its value would.
+trait Printable {
+    /// The contents, if it is a string.
+    fn raw_str(&self) -> Option<&str>;
+    /// Whether it is `null` or `false`.
+    fn null_or_false(&self) -> bool;
+    /// `jv_dumpf` with these options (never colored for a [`TapeResult`]).
+    fn dump(&self, opts: &DumpOptions, out: &mut Vec<u8>);
+}
+
+impl Printable for Value {
+    fn raw_str(&self) -> Option<&str> {
+        self.as_str()
+    }
+    fn null_or_false(&self) -> bool {
+        matches!(self, Value::Null | Value::Bool(false))
+    }
+    fn dump(&self, opts: &DumpOptions, out: &mut Vec<u8>) {
+        dump_to_vec(self, opts, out);
+    }
+}
+
 /// One result as main.c's `process()` prints it, with the status it sets.
 /// `None` for a string containing NUL with `--raw-output0` (nothing is
 /// written; `process()` raises an error instead).
-fn write_result(result: &Value, p: &Process, out: &mut impl ResultOut) -> Option<i32> {
+fn write_result(result: &impl Printable, p: &Process, out: &mut impl ResultOut) -> Option<i32> {
     let end = |b: &mut Vec<u8>| {
         if !p.raw_no_lf {
             b.push(b'\n');
@@ -648,15 +675,15 @@ fn write_result(result: &Value, p: &Process, out: &mut impl ResultOut) -> Option
             b.push(0);
         }
     };
-    let ret = match result {
-        Value::String(s) if p.raw_output => {
+    let ret = match result.raw_str() {
+        Some(s) if p.raw_output => {
             if p.ascii_output {
                 let ascii = DumpOptions {
                     ascii: true,
                     ..DumpOptions::default()
                 };
                 out.put(|b| {
-                    dump_to_vec(result, &ascii, b);
+                    result.dump(&ascii, b);
                     end(b);
                 });
             } else if p.raw_output0 && memchr::memchr(0, s.as_bytes()).is_some() {
@@ -674,16 +701,148 @@ fn write_result(result: &Value, p: &Process, out: &mut impl ResultOut) -> Option
                 if p.seq {
                     b.push(0x1e);
                 }
-                dump_to_vec(result, &p.dump, b);
+                result.dump(&p.dump, b);
                 end(b);
             });
-            match result {
-                Value::Null | Value::Bool(false) => JQ_OK_NULL_KIND,
-                _ => JQ_OK,
+            if result.null_or_false() {
+                JQ_OK_NULL_KIND
+            } else {
+                JQ_OK
             }
         }
     };
     Some(ret)
+}
+
+// ---------------------------------------------------------------------------
+// Programs run on the tape (src/io/tape_eval.rs)
+// ---------------------------------------------------------------------------
+
+/// An output of a program run on the tape.
+struct TapeResult<'a, 'p> {
+    out: Output<'a, 'p>,
+    scratch: &'a RefCell<Scratch>,
+}
+
+impl Printable for TapeResult<'_, '_> {
+    fn raw_str(&self) -> Option<&str> {
+        self.out.as_str()
+    }
+    fn null_or_false(&self) -> bool {
+        self.out.is_null_or_false()
+    }
+    fn dump(&self, opts: &DumpOptions, out: &mut Vec<u8>) {
+        let layout = Layout::new(opts).expect("tape programs never print colors");
+        self.out.dump(&layout, &mut self.scratch.borrow_mut(), out);
+    }
+}
+
+/// A program that runs on texts as simdjson parses them (see
+/// [`tape_program`]), with main.c's output options.
+struct TapeRun {
+    prog: TapeProgram,
+    p: Process,
+    scratch: RefCell<Scratch>,
+}
+
+impl TapeRun {
+    fn new(prog: TapeProgram, p: Process) -> TapeRun {
+        TapeRun {
+            prog,
+            p,
+            scratch: RefCell::new(Scratch::default()),
+        }
+    }
+
+    /// `process()` for a text the program takes: every output written to
+    /// `out` (and `after` called after each, as `process()` does), then the
+    /// status. Nothing is written when it declines.
+    fn process<O: ResultOut>(
+        &self,
+        doc: &Doc<'_>,
+        out: &mut O,
+        mut after: impl FnMut(&mut O),
+    ) -> Result<i32, Decline> {
+        let mut results = Vec::new();
+        self.prog
+            .eval(doc, &mut self.scratch.borrow_mut(), &mut results)?;
+        let mut ret = JQ_OK_NO_OUTPUT;
+        for val in &results {
+            let r = TapeResult {
+                out: Output { doc, val },
+                scratch: &self.scratch,
+            };
+            // (No --raw-output0 here, so this always writes.)
+            if let Some(status) = write_result(&r, &self.p, out) {
+                ret = status;
+                after(out);
+            }
+        }
+        Ok(ret)
+    }
+}
+
+/// The sequential loop's tape sink: outputs to stdout.
+struct StdoutTape(TapeRun);
+
+impl TapeSink for StdoutTape {
+    fn run(&mut self, doc: &Doc<'_>) -> Result<i32, Decline> {
+        let unbuffered = self.0.p.unbuffered;
+        with_stdout(|out| self.0.process(doc, out, |out| out.after_output(unbuffered)))
+    }
+}
+
+/// The parallel engine's tape program: outputs into a record's buffer.
+struct RecordOutTape(TapeRun);
+
+impl RecordTape for RecordOutTape {
+    fn run(
+        &mut self,
+        doc: &Doc<'_>,
+        out: &mut Vec<u8>,
+        marks: &mut Vec<(usize, usize)>,
+    ) -> Result<i32, Decline> {
+        self.0.process(doc, &mut RecordOut { out, marks }, |_| {})
+    }
+}
+
+/// The program as a [`TapeProgram`], when the run allows one: input parsed
+/// as JSON texts (no `-n`, `-s`, `-R`, `--seq`, `--stream`), no debug
+/// options, no colors or `--raw-output0`, and a program that is only jq's
+/// builtins. That last part is checked on the compiled program: jq includes
+/// `~/.jq` implicitly, whose definitions could shadow a builtin, so the
+/// program must compile to the same bytecode without it. `QJ_NO_TAPE=1`
+/// turns this off (for A/B checks).
+fn tape_program(
+    opts: &Options<Value>,
+    program: &[u8],
+    bc: &crate::jq::lang::bytecode::Bytecode,
+    copts: &CompileOptions,
+    p: &Process,
+) -> Option<TapeProgram> {
+    if std::env::var_os("QJ_NO_TAPE").is_some()
+        || opts.null_input
+        || opts.slurp
+        || opts.raw_input
+        || opts.seq
+        || opts.parser_flags() != 0
+        || opts.jq_flags != 0
+        || opts.dump_disasm
+        || p.raw_output0
+        || Layout::new(&p.dump).is_none()
+    {
+        return None;
+    }
+    let prog = TapeProgram::new(program)?;
+    let mut bare = CompileOptions {
+        args: copts.args.clone(),
+        env: None,
+        attrs: JqAttrs::new("."),
+    };
+    bare.attrs.home = None;
+    let bare_bc = jq_compile_args(program, &bare).ok()?;
+    let disasm = crate::jq::lang::bytecode::dump_disassembly;
+    (disasm(0, &bare_bc) == disasm(0, bc)).then_some(prog)
 }
 
 /// The error `process()` raises for a string with a NUL under `--raw-output0`.
@@ -896,6 +1055,7 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         }
     };
     let parallel = parallel_plan(opts, &program, &bc, &copts);
+    let compiled = bc.clone();
     let mut jq = Jq::new(bc);
     jq.set_jq_attrs(&copts.attrs);
     // main.c hands these values to jq_set_attr and keeps no other reference
@@ -933,11 +1093,17 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         unbuffered: opts.unbuffered_output,
         jq_flags: opts.jq_flags,
     };
+    let tape = tape_program(opts, &program, &compiled, &copts, &p);
+    drop(compiled);
     if let Some(plan) = parallel {
-        return run_parallel(plan, files, input_opts, p, jq);
+        return run_parallel(plan, files, input_opts, p, jq, tape.is_some());
     }
     let input: SharedInput = super::input::open_inputs(files, input_opts);
     jq.set_input(Some(Box::new(InputCb(input.clone()))));
+    if let Some(prog) = tape {
+        let sink = StdoutTape(TapeRun::new(prog, p.clone()));
+        input.borrow_mut().set_tape_sink(Box::new(sink));
+    }
 
     // debug_cb: ["DEBUG:",v] with the output flags minus pretty-printing.
     let debug_opts = dump_options(dumpopts & !print_flags::PRETTY, &colors);
@@ -964,10 +1130,18 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
             if input.borrow().failures() != 0 {
                 break;
             }
-            let next = input.borrow_mut().next();
+            let next = input.borrow_mut().next_record();
             match next {
                 None => break,
-                Some(Ok(value)) => {
+                Some(Ok(Record::Done(status))) => {
+                    // A tape program processed the input (and printed its
+                    // outputs) while it was read.
+                    ret = status;
+                    if ret <= 0 && ret != JQ_OK_NO_OUTPUT {
+                        last_result = i32::from(ret != JQ_OK_NULL_KIND);
+                    }
+                }
+                Some(Ok(Record::Value(value))) => {
                     ret = process(&mut jq, value, &p, &input);
                     if ret <= 0 && ret != JQ_OK_NO_OUTPUT {
                         last_result = i32::from(ret != JQ_OK_NULL_KIND);
@@ -1114,6 +1288,8 @@ impl InputSource for RecordPosition {
 struct PortFactory {
     plan: ParallelPlan,
     p: Process,
+    /// Whether the program runs on the tape ([`tape_program`] said so).
+    tape: bool,
 }
 
 struct PortWorker {
@@ -1126,6 +1302,16 @@ struct PortWorker {
 
 impl crate::io::parallel::WorkerFactory for PortFactory {
     type Worker = PortWorker;
+
+    /// Each thread analyzes the program itself (`TapeProgram` is cheap, and
+    /// its comparisons make numbers, which are `Rc`).
+    fn new_tape(&self) -> Option<Box<dyn RecordTape>> {
+        if !self.tape {
+            return None;
+        }
+        let prog = TapeProgram::new(&self.plan.program)?;
+        Some(Box::new(RecordOutTape(TapeRun::new(prog, self.p.clone()))))
+    }
 
     /// The program compiled as `run_program` compiles it (it compiled there,
     /// so it compiles here).
@@ -1278,6 +1464,7 @@ fn run_parallel(
     input_opts: InputOptions,
     p: Process,
     mut jq: Jq,
+    tape: bool,
 ) -> (i32, i32) {
     let mut reader = super::input::open_reader(files, input_opts);
     // The program compiled on this thread processes the records read here.
@@ -1306,7 +1493,7 @@ fn run_parallel(
     {
         engine.window_bytes = mb << 20;
     }
-    let factory = PortFactory { plan, p };
+    let factory = PortFactory { plan, p, tape };
     let stats = crate::io::parallel::run_with(&mut reader, &factory, main, &mut sink, &engine);
     if std::env::var_os("QJ_ENGINE_STATS").is_some() {
         write_stderr(

@@ -42,6 +42,8 @@ use std::io::{self, Read};
 
 use super::simd::{Rejected, SimdParser};
 use super::source::{FsOpener, InputMessage, Opened, Opener, SharedBytes, os_bytes};
+use super::tape::Doc;
+use super::tape_eval::Decline;
 use crate::jq::value::{Array, Error, Number, ParseFlags, Parser, Str, Value, unicode};
 use crate::simdjson::tape_error;
 
@@ -241,7 +243,7 @@ impl FileData {
 }
 
 /// Position bookkeeping within the current input.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FilePos {
     /// Absolute parse position (fast path), or the start of the chunk last
     /// fed to jq's parser.
@@ -277,6 +279,8 @@ enum Json {
 
 enum Fast {
     Value(Value),
+    /// A [`TapeSink`] handled the text (with this status).
+    Done(i32),
     /// Hand the stream to jq's parser at the current position.
     Slow,
     /// Read more of the current (stream) input, then retry.
@@ -336,6 +340,29 @@ pub struct InputReader {
     stats: ReaderStats,
     /// Incremented for every input opened (see `catch_up`).
     generation: u64,
+    /// Runs the program on texts the fast path parses, instead of building
+    /// their values (see [`InputReader::next_record`]).
+    tape: Option<Box<dyn TapeSink>>,
+    /// Whether the current call may use `tape`.
+    tape_on: bool,
+}
+
+/// What [`InputReader::next_record`] read: a value, or a text whose outputs
+/// a [`TapeSink`] wrote.
+pub enum Record {
+    Value(Value),
+    /// The [`TapeSink`]'s status for the text (main.c's `process()`
+    /// result).
+    Done(i32),
+}
+
+/// Runs a program on texts as simdjson parsed them (see
+/// [`crate::io::tape_eval`]), for [`InputReader::next_record`].
+pub trait TapeSink {
+    /// Runs the program on `doc` and writes its outputs, returning main.c's
+    /// status for them; or declines, having written nothing, so that the
+    /// text's value is returned instead.
+    fn run(&mut self, doc: &Doc<'_>) -> Result<i32, Decline>;
 }
 
 /// How the reader produced its values (for diagnostics and tests).
@@ -397,6 +424,8 @@ impl InputReader {
             on_message: Box::new(default_message_sink),
             stats: ReaderStats::default(),
             generation: 0,
+            tape: None,
+            tape_on: false,
         };
         if !r.fast {
             r.enter_slow();
@@ -463,6 +492,27 @@ impl InputReader {
         }
     }
 
+    /// Makes [`InputReader::next_record`] hand the texts its fast path
+    /// parses to `sink` instead of building their values (`None` stops).
+    pub fn set_tape_sink(&mut self, sink: Option<Box<dyn TapeSink>>) {
+        self.tape = sink;
+    }
+
+    /// [`InputReader::next`], except that a text the fast path parses goes
+    /// to the [`TapeSink`] if there is one: its outputs are written then,
+    /// and the result is [`Record::Done`] with its status, unless the sink
+    /// declines (then it's the text's value). Everything else about the
+    /// input (positions, errors, what jq's parser handles) is unchanged.
+    pub fn next_record(&mut self) -> Option<Result<Record, Error>> {
+        if self.opts.raw || self.slurped.is_some() || self.tape.is_none() {
+            return self.next().map(|r| r.map(Record::Value));
+        }
+        self.tape_on = true;
+        let r = self.next_json();
+        self.tape_on = false;
+        r
+    }
+
     /// `jq_util_input_next_input`: the next input value, a parse error, or
     /// `None` when all input has been read. With `-s` the single slurped
     /// value comes at the end (parse errors are still returned as they
@@ -474,7 +524,7 @@ impl InputReader {
         }
         if self.slurped.is_some() {
             loop {
-                match self.next_json() {
+                match self.next_json_value() {
                     Some(Ok(v)) => {
                         if let Some(Value::Array(a)) = &mut self.slurped {
                             a.push(v);
@@ -496,7 +546,17 @@ impl InputReader {
                 }
             }
         }
-        self.next_json()
+        self.next_json_value()
+    }
+
+    /// [`InputReader::next_json`] without the tape sink.
+    fn next_json_value(&mut self) -> Option<Result<Value, Error>> {
+        debug_assert!(!self.tape_on);
+        match self.next_json()? {
+            Ok(Record::Value(v)) => Some(Ok(v)),
+            Ok(Record::Done(_)) => unreachable!("the tape sink is off"),
+            Err(e) => Some(Err(e)),
+        }
     }
 
     // ---- files -------------------------------------------------------
@@ -633,13 +693,13 @@ impl InputReader {
         };
     }
 
-    fn next_json(&mut self) -> Option<Result<Value, Error>> {
+    fn next_json(&mut self) -> Option<Result<Record, Error>> {
         loop {
             if self.ended {
                 return None;
             }
             if !matches!(self.json, Json::Fast) {
-                return self.next_slow();
+                return self.next_slow().map(|r| r.map(Record::Value));
             }
             if self.cur.is_none() && !self.advance_file() {
                 // All inputs done; jq's parser is idle, so its final
@@ -650,7 +710,11 @@ impl InputReader {
             match self.fast_step() {
                 Fast::Value(v) => {
                     self.stats.fast_values += 1;
-                    return Some(Ok(v));
+                    return Some(Ok(Record::Value(v)));
+                }
+                Fast::Done(status) => {
+                    self.stats.fast_values += 1;
+                    return Some(Ok(Record::Done(status)));
                 }
                 Fast::Slow => {
                     self.stats.handovers += 1;
@@ -868,12 +932,17 @@ impl InputReader {
                 t -= 1;
             }
             if cur.at(t - 1) == close {
-                match self.simd.parse(cur.buf(), p - cur.base, t - cur.base) {
-                    Ok(v) => {
+                let tape = if self.tape_on {
+                    self.tape.as_deref_mut()
+                } else {
+                    None
+                };
+                match parse_text(&mut self.simd, tape, cur.buf(), p - cur.base, t - cur.base) {
+                    Ok(f) => {
                         self.pcol = self.pcol.wrapping_add((t - p) as i32);
                         self.fp.pos = t;
                         self.current_line = self.emission_line(t - 1);
-                        return Fast::Value(v);
+                        return f;
                     }
                     Err(Rejected(code)) if !is_extent_error(code) => return Fast::Slow,
                     Err(_) => {}
@@ -889,13 +958,19 @@ impl InputReader {
                 while t > p && matches!(cur.at(t - 1), b' ' | b'\t' | b'\r' | b'\n') {
                     t -= 1;
                 }
+                let tape = if self.tape_on {
+                    self.tape.as_deref_mut()
+                } else {
+                    None
+                };
                 if t > line_end
                     && cur.at(t - 1) == close
-                    && let Ok(v) = self.simd.parse(cur.buf(), p - cur.base, t - cur.base)
+                    && let Ok(f) =
+                        parse_text(&mut self.simd, tape, cur.buf(), p - cur.base, t - cur.base)
                 {
                     self.advance(t, true);
                     self.current_line = self.emission_line(t - 1);
-                    return Fast::Value(v);
+                    return f;
                 }
             }
         }
@@ -944,11 +1019,22 @@ impl InputReader {
     /// The text `[p, e]` (a container or string) through simdjson.
     fn fast_text(&mut self, p: usize, e: usize) -> Fast {
         let cur = self.cur.as_ref().expect("an open input");
-        match self.simd.parse(cur.buf(), p - cur.base, e + 1 - cur.base) {
-            Ok(v) => {
+        let tape = if self.tape_on {
+            self.tape.as_deref_mut()
+        } else {
+            None
+        };
+        match parse_text(
+            &mut self.simd,
+            tape,
+            cur.buf(),
+            p - cur.base,
+            e + 1 - cur.base,
+        ) {
+            Ok(f) => {
                 self.advance(e + 1, true);
                 self.current_line = self.emission_line(e);
-                Fast::Value(v)
+                f
             }
             Err(_) => Fast::Slow,
         }
@@ -1076,9 +1162,15 @@ impl InputReader {
         Some(Cut {
             generation: self.generation,
             pos: self.fp.pos,
-            nl: self.fp.nl,
             line_start: self.fp.line_start,
         })
+    }
+
+    /// Newlines before the reader's position in the current input (its
+    /// `input_line_number` bookkeeping; for the engine, when it is idle at
+    /// a job's start).
+    pub(crate) fn newlines_read(&self) -> u64 {
+        self.fp.nl
     }
 
     /// The complete lines of the current input from `at` (at or after the
@@ -1133,7 +1225,8 @@ impl InputReader {
         if end - start < min && !(small_rest && cur.eof && end == avail) {
             return None;
         }
-        let lines = memchr::memchr_iter(b'\n', cur.slice(start, end)).count() as u64;
+        // (The job's worker counts its newlines: this thread only looks at
+        // the bytes around job boundaries.)
         let (data, base) = match &cur.kind {
             DataKind::Whole(b) => (b.clone(), 0),
             DataKind::Stream { buf, .. } => {
@@ -1148,7 +1241,6 @@ impl InputReader {
             base,
             start,
             end,
-            nl: at.nl,
             line_start: at.line_start,
             generation: at.generation,
             raw: self.opts.raw,
@@ -1156,7 +1248,6 @@ impl InputReader {
         let next = Cut {
             generation: at.generation,
             pos: end,
-            nl: at.nl + lines,
             line_start: end,
         };
         Some((window, next))
@@ -1174,6 +1265,34 @@ impl InputReader {
     /// processed by the engine: move past them as the fast path would have.
     pub(crate) fn commit(&mut self, upto: usize) {
         self.advance(upto, true);
+    }
+
+    /// [`InputReader::commit`] of a whole job, which ends just after a
+    /// newline at `end` and holds `lines` newlines from the reader's
+    /// position on (its worker counted them): no second scan of its bytes.
+    pub(crate) fn commit_job(&mut self, end: usize, lines: u64) {
+        let from = self.fp.pos;
+        if end <= from || lines == 0 {
+            return self.advance(end, true);
+        }
+        #[cfg(debug_assertions)]
+        let expected = {
+            let (fp, pline, pcol) = (self.fp, self.pline, self.pcol);
+            self.advance(end, true);
+            let e = (self.fp, self.pline, self.pcol);
+            (self.fp, self.pline, self.pcol) = (fp, pline, pcol);
+            e
+        };
+        self.fp.pos = end;
+        self.fp.nl += lines;
+        self.fp.line_start = end;
+        self.pline = self.pline.wrapping_add(lines as i32);
+        self.pcol = 0;
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            (self.fp, self.pline, self.pcol) == expected,
+            "commit_job disagrees with advance"
+        );
     }
 
     /// After records were read one at a time from a window's line: whether
@@ -1237,8 +1356,6 @@ pub(crate) struct Window {
     pub(crate) start: usize,
     /// Just after a newline.
     pub(crate) end: usize,
-    /// Newlines before `start` in this input.
-    pub(crate) nl: u64,
     /// Start of the line containing `start`.
     pub(crate) line_start: usize,
     /// Which input (see [`InputReader::catch_up`]).
@@ -1253,8 +1370,6 @@ pub(crate) struct Window {
 pub(crate) struct Cut {
     pub(crate) generation: u64,
     pub(crate) pos: usize,
-    /// Newlines before `pos`.
-    pub(crate) nl: u64,
     /// Start of the line containing `pos`.
     pub(crate) line_start: usize,
 }
@@ -1269,6 +1384,65 @@ pub(crate) enum CatchUp {
     Beyond,
     /// The reader moved on to another input (or ended).
     Left,
+}
+
+/// `buf[s..e]` parsed by simdjson: handled by `tape` if it takes it, else
+/// its value.
+fn parse_text<'t>(
+    simd: &mut SimdParser,
+    tape: Option<&mut (dyn TapeSink + 't)>,
+    buf: &[u8],
+    s: usize,
+    e: usize,
+) -> Result<Fast, Rejected> {
+    match tape {
+        None => simd.parse(buf, s, e).map(Fast::Value),
+        Some(sink) => simd.parse_with(buf, s, e, |p| {
+            let r = sink.run(&p.doc());
+            match r {
+                Ok(status) => Ok(Fast::Done(status)),
+                Err(Decline) => p.value().map(Fast::Value),
+            }
+        })?,
+    }
+}
+
+/// [`window_line`], with a text handed to `tape` if there is one (see
+/// [`InputReader::next_record`]).
+pub(crate) fn window_line_record<'t>(
+    simd: &mut SimdParser,
+    buf: &[u8],
+    base: usize,
+    a: usize,
+    b: usize,
+    raw: bool,
+    tape: Option<&mut (dyn TapeSink + 't)>,
+) -> Result<Option<(Record, usize)>, ()> {
+    let line = &buf[a - base..b - base];
+    if raw || tape.is_none() {
+        return window_line(simd, buf, base, a, b, raw)
+            .map(|r| r.map(|(v, e)| (Record::Value(v), e)));
+    }
+    let mut s = 0;
+    while s < line.len() && matches!(line[s], b' ' | b'\t' | b'\r' | b'\n') {
+        s += 1;
+    }
+    if s == line.len() {
+        return Ok(None);
+    }
+    let mut t = line.len();
+    while matches!(line[t - 1], b' ' | b'\t' | b'\r' | b'\n') {
+        t -= 1;
+    }
+    match line[s] {
+        b'{' | b'[' | b'"' => match parse_text(simd, tape, buf, a - base + s, a - base + t) {
+            Ok(Fast::Value(v)) => Ok(Some((Record::Value(v), a + t - 1))),
+            Ok(Fast::Done(status)) => Ok(Some((Record::Done(status), a + t - 1))),
+            Ok(_) => unreachable!("parse_text gives a value or a status"),
+            Err(_) => Err(()),
+        },
+        _ => window_line(simd, buf, base, a, b, raw).map(|r| r.map(|(v, e)| (Record::Value(v), e))),
+    }
 }
 
 /// The value jq reads for one line of a window, and where jq's parser
