@@ -288,10 +288,23 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
   instead of the jq 1.8.1 port, for comparison. Temporary: the old core is being deleted.
   `QJ_CORE=port`, the port's opt-in before it became the default, is a no-op.
 
+Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
+- `QJ_NO_MMAP=1` — stream regular files (and stdin redirected from a file) instead of
+  memory-mapping them.
+- `QJ_WINDOW_SIZE=N` — at most N MB of input in flight in the parallel record engine (default:
+  threads × 8 MB, clamped to 16–128 MB). The old core reads it as its NDJSON window.
+- `QJ_NO_SIMD_INPUT=1` — parse all input with the jq parser port instead of the simdjson fast
+  path (A/B checks).
+- `QJ_INPUT=util` — read input with the CLI's plain `util.c` port instead of `src/io`'s reader
+  (A/B checks).
+- `QJ_ENGINE_STATS=1` — after a parallel run, print the engine's counters to stderr.
+- `--threads N` — worker threads for the engine (default: all non-efficiency cores); 0 or 1
+  runs sequentially. Records always run sequentially for -n, -s, -R, --seq, --stream,
+  --debug-trace, and programs using input/inputs, now, halt/halt_error, debug/stderr,
+  localtime/strflocaltime/mktime/strptime, _strindices, modulemeta, labels, $__loc__, or
+  modules (see `SEQUENTIAL_BUILTINS` and `parallel_plan` in `src/cli/run.rs`).
+
 Read by the old core only (`QJ_CORE=old`):
-- `QJ_WINDOW_SIZE=N` — NDJSON streaming window size in megabytes. Default is `num_cores × 2` MB
-  (floor 8 MB). Larger values use more memory but may help on machines with many cores.
-- `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
 - `QJ_NO_FAST_PATH=1` — Disable NDJSON fast paths (for A/B benchmarking).
 - `QJ_JQ_COMPAT=1` — obsolete. It made the old core imitate jq's precision (f64 arithmetic
   beyond 2^53, extreme exponents, `have_decnum`); the port behaves like jq by default and

@@ -240,6 +240,31 @@ interface scaffold before spawning it.
   regressions against the old core. Started: SW (make the port the default, update old tests,
   docs), IO (wire the simdjson reader and parallel engine into the port), FZ (sustained
   differential fuzzing against jq).
+- 2026-09-29: **SW merged** (`8331ec0`): **the port is qj's default core.** jq_diff scores
+  19,577/19,584 strict (100% in every mode but `cli`, whose 7 misses are exempt help/version
+  text). The audit's probes are all clean: upstream byte-exact 838/838 in compact and pretty
+  mode, and the category probe 338/338. `QJ_CORE=old` runs the legacy core until it's deleted.
+- **Performance status after the switch** (noisy, other agents running). Correct everywhere,
+  with no quadratic cliffs: `reduce` into a 50k-key object takes 0.6s (was >20s), and
+  `INDEX(.id)` 0.6s (was 17.9s). But the port currently runs at 1–2x jq's speed, where the
+  old fast paths gave 10–37x on NDJSON. Two reasons:
+  1. The port reads input with V's plain parser: no simdjson, no parallelism. IO is wiring
+     those in.
+  2. jq-defined builtins (`with_entries`, `to_entries`, `walk`, `paths`,
+     `ascii_downcase/upcase`, `join`) run on the faithful VM, at jq-like speed.
+  Next, after IO and FZ, with exclusive machine access:
+  - (a) VM hot paths (C2's list);
+  - (b) native versions of hot jq-defined builtins, proven equivalent by jq_diff and fuzzing,
+    including errors and path semantics;
+  - (c) raw NDJSON fast paths reintroduced only where canonical output and validity are
+    proven;
+  - (d) delete the old core, and rewrite the iai-callgrind regression bench for the new core.
+- 2026-09-29: **IO merged** (`e76d7b5`): simdjson tape → values with exact fallback, a
+  byte-exact util.c reader, mmap/streaming, and an ordered parallel engine on the default core.
+  NDJSON throughput is back to old-core levels on 18 threads (noisy sanity runs). Single-doc
+  JSON is still ~4x slower than the old passthroughs, and that's the target of the performance
+  phase. Programs using `now` now run sequentially (`4a098fb`). Started: CL (delete the old
+  core). FZ is still running.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
