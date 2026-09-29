@@ -741,6 +741,25 @@ fn array_conversions() {
 }
 
 #[test]
+fn delpaths_many_object_keys() {
+    // `jq -nc '[range(20) | {key: "k\(.)", value: .}] | from_entries
+    //   | delpaths([range(0;20;2) | ["k\(.)"]] + [["zz"]]) | keys_unsorted'`
+    let obj: Object = (0..20)
+        .map(|i| (Str::from(format!("k{i}")), Value::from(i)))
+        .collect();
+    let mut paths: Vec<Value> = (0..20)
+        .step_by(2)
+        .map(|i| Value::from(vec![Value::from(format!("k{i}"))]))
+        .collect();
+    paths.push(jv("[\"zz\"]"));
+    let r = Value::Object(obj).delpaths(&Value::from(paths)).unwrap();
+    assert_eq!(
+        r.keys_unsorted().unwrap().to_json(),
+        "[\"k1\",\"k3\",\"k5\",\"k7\",\"k9\",\"k11\",\"k13\",\"k15\",\"k17\",\"k19\"]"
+    );
+}
+
+#[test]
 fn refcounted_dump_like_debug_trace() {
     // `jq -n --debug-trace '["ab",[1],{"x":"y"},[],{}] | .[0]'` prints
     // `["ab" (1),[1] (1),{"x":"y" (1)} (1),[],{}] (2)` for the constant held

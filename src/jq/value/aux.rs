@@ -457,11 +457,13 @@ fn dels(t: Value, keys: Vec<Value>) -> Result<Value, Error> {
             Ok(Value::Array(new_array))
         }
         Value::Object(mut o) => {
+            // jq deletes key by key and stops at the first non-string key;
+            // on error the object is discarded, so validating first and then
+            // deleting gives the same result.
+            let mut strs: Vec<&str> = Vec::with_capacity(keys.len());
             for k in &keys {
                 match k {
-                    Value::String(key) => {
-                        o.remove(key.as_str());
-                    }
+                    Value::String(key) => strs.push(key.as_str()),
                     _ => {
                         return Err(Error::msg(format!(
                             "Cannot delete {} field of object",
@@ -469,6 +471,16 @@ fn dels(t: Value, keys: Vec<Value>) -> Result<Value, Error> {
                         )));
                     }
                 }
+            }
+            if strs.len() <= 8 {
+                for key in strs {
+                    o.remove(key);
+                }
+            } else {
+                // Many keys: one order-preserving pass instead of a shifting
+                // removal per key (jq's tombstones make each delete O(1)).
+                let set: std::collections::HashSet<&str> = strs.into_iter().collect();
+                o.retain(|k, _| !set.contains(k.as_str()));
             }
             Ok(Value::Object(o))
         }
