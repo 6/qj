@@ -786,7 +786,12 @@ impl InputReader {
                     Fast::NeedData
                 };
             }
-            if cur.at(p) != 0xEF {
+            if cur.at(p) == 0 {
+                // jq's parser may never see this byte (a chunk without a
+                // newline ends at its first NUL), so whether a BOM comes
+                // first is for jq's parser to decide, on exactly jq's chunks.
+                return Fast::Slow;
+            } else if cur.at(p) != 0xEF {
                 self.bom_done = true;
             } else if cur.end - p >= 3 {
                 if cur.slice(p, p + 3) != b"\xEF\xBB\xBF" {

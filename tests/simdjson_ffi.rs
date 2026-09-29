@@ -1,363 +1,176 @@
-use qj::simdjson::{
-    JsonType, Parser, iterate_many_count, iterate_many_extract_field, pad_buffer, padding,
-    read_padded,
-};
-use std::io::Write;
+//! The simdjson bridge's FFI boundary: `padding`, `pad_buffer` and
+//! `TapeParser` (simdjson's DOM parser, whose tape src/io turns into jq
+//! values; `src/io/tests/simd.rs` checks those values against jq's parser).
 
-#[test]
-fn extract_string_field() {
-    let json = br#"{"greeting": "hello world"}"#;
+use qj::simdjson::{Tape, TapeParser, pad_buffer, padding, tape_error};
+
+const PAYLOAD: u64 = 0x00FF_FFFF_FFFF_FFFF;
+
+fn tag(word: u64) -> u8 {
+    (word >> 56) as u8
+}
+
+/// The type tag of every tape word (a number's second word holds its bits,
+/// so its "tag" is arbitrary).
+fn tags(tape: &Tape<'_>) -> Vec<u8> {
+    tape.words.iter().map(|&w| tag(w)).collect()
+}
+
+/// simdjson's error code for `json`, which must be rejected.
+fn parse_error(json: &[u8]) -> i32 {
     let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.find_field_str("greeting").unwrap(), "hello world");
+    match TapeParser::new().unwrap().parse(&buf, json.len()) {
+        Ok(_) => panic!("simdjson accepted {:?}", String::from_utf8_lossy(json)),
+        Err(code) => code,
+    }
 }
 
 #[test]
-fn extract_int_field() {
-    let json = br#"{"count": 999999}"#;
+fn pad_buffer_appends_zeroed_padding() {
+    assert!(padding() > 0);
+    let buf = pad_buffer(b"[1]");
+    assert_eq!(buf.len(), 3 + padding());
+    assert_eq!(&buf[..3], b"[1]");
+    assert!(buf[3..].iter().all(|&b| b == 0));
+}
+
+/// The tape runs from the opening root word through the closing one:
+/// simdjson's root payload is the tape's length, not the closing word's index
+/// (`TapeParser::parse` used to include one word past the end).
+#[test]
+fn tape_ends_with_the_closing_root_word() {
+    let json = br#"{"a":[1,2.5,"x"],"b":null}"#;
     let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.find_field_int64("count").unwrap(), 999999);
+    let mut parser = TapeParser::new().unwrap();
+    let tape = parser.parse(&buf, json.len()).unwrap();
+    let tags = tags(&tape);
+    // r { "a" [ l <1> d <2.5> "x" ] "b" n } r (the words after l and d
+    // hold their numbers)
+    assert_eq!(tags.len(), 14);
+    assert_eq!(tags[..5], *b"r{\"[l");
+    assert_eq!(tags[6], b'd');
+    assert_eq!(tags[8..], *b"\"]\"n}r");
+    assert_eq!(tape.words[13] & PAYLOAD, 0, "points back at the root");
 }
 
 #[test]
-fn extract_negative_int() {
-    let json = br#"{"temp": -42}"#;
-    let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.find_field_int64("temp").unwrap(), -42);
-}
-
-#[test]
-fn extract_double_field() {
-    let json = br#"{"rate": 0.001}"#;
-    let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    let val = doc.find_field_double("rate").unwrap();
-    assert!((val - 0.001).abs() < 1e-15);
-}
-
-#[test]
-fn parser_reuse_across_documents() {
-    let mut parser = Parser::new().unwrap();
-
-    for i in 0..100 {
-        let json = format!(r#"{{"n": {i}}}"#);
+fn scalars_and_numbers() {
+    let mut parser = TapeParser::new().unwrap();
+    for (json, want) in [
+        ("null", b'n'),
+        ("true", b't'),
+        ("false", b'f'),
+        (" \"s\"", b'"'),
+    ] {
         let buf = pad_buffer(json.as_bytes());
-        let mut doc = parser.parse(&buf, json.len()).unwrap();
-        assert_eq!(doc.find_field_int64("n").unwrap(), i);
+        let tape = parser.parse(&buf, json.len()).unwrap();
+        assert_eq!(tags(&tape), [b'r', want, b'r'], "{json}");
     }
-}
-
-#[test]
-fn invalid_json_error() {
-    let json = b"{{{{";
-    let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let result = parser.parse(&buf, json.len());
-    if let Ok(mut doc) = result {
-        // On-Demand is lazy — accessing content should fail on invalid JSON.
-        assert!(doc.doc_type().is_err() || doc.find_field_str("x").is_err());
-    }
-}
-
-#[test]
-fn empty_object() {
-    let json = b"{}";
-    let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.doc_type().unwrap(), JsonType::Object);
-}
-
-#[test]
-fn doc_type_array() {
-    let json = b"[1, 2, 3]";
-    let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.doc_type().unwrap(), JsonType::Array);
-}
-
-#[test]
-fn ndjson_count() {
-    let lines: Vec<String> = (0..50).map(|i| format!(r#"{{"id": {i}}}"#)).collect();
-    let ndjson = lines.join("\n") + "\n";
-    let buf = pad_buffer(ndjson.as_bytes());
-    let count = iterate_many_count(&buf, ndjson.len(), 1_000_000).unwrap();
-    assert_eq!(count, 50);
-}
-
-#[test]
-fn ndjson_extract_field() {
-    let ndjson = r#"{"name":"a"}
-{"name":"bb"}
-{"name":"ccc"}
-"#;
-    let buf = pad_buffer(ndjson.as_bytes());
-    let total = iterate_many_extract_field(&buf, ndjson.len(), 1_000_000, "name").unwrap();
-    // "a"(1) + "bb"(2) + "ccc"(3) = 6
-    assert_eq!(total, 6);
-}
-
-#[test]
-fn read_padded_with_file() {
-    let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    let json = br#"{"file": true}"#;
-    tmp.write_all(json).unwrap();
-    tmp.flush().unwrap();
-
-    let buf = read_padded(tmp.path()).unwrap();
-    assert!(buf.len() >= json.len() + padding());
-    assert_eq!(&buf[..json.len()], json);
-    // Padding bytes should be zero.
-    assert!(buf[json.len()..].iter().all(|&b| b == 0));
-
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.doc_type().unwrap(), JsonType::Object);
-}
-
-#[test]
-fn unicode_string() {
-    let json = r#"{"emoji": "hello 🌍"}"#;
-    let buf = pad_buffer(json.as_bytes());
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.find_field_str("emoji").unwrap(), "hello 🌍");
-}
-
-#[test]
-fn escaped_string() {
-    let json = r#"{"msg": "line1\nline2\ttab"}"#;
-    let buf = pad_buffer(json.as_bytes());
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.find_field_str("msg").unwrap(), "line1\nline2\ttab");
-}
-
-#[test]
-fn large_int() {
-    let json = br#"{"big": 9223372036854775807}"#;
-    let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert_eq!(doc.find_field_int64("big").unwrap(), i64::MAX);
-}
-
-#[test]
-fn missing_field_returns_error() {
-    let json = br#"{"a": 1}"#;
-    let buf = pad_buffer(json);
-    let mut parser = Parser::new().unwrap();
-    let mut doc = parser.parse(&buf, json.len()).unwrap();
-    assert!(doc.find_field_str("nonexistent").is_err());
-}
-
-// --- Batch field extraction (dom_find_fields_raw) ---
-
-#[test]
-fn batch_extract_basic() {
-    use qj::simdjson::dom_find_fields_raw;
-    let json = br#"{"type":"PushEvent","id":1,"actor":{"login":"alice"}}"#;
-    let buf = pad_buffer(json);
-    let chains: &[&[&str]] = &[&["type"], &["id"], &["actor", "login"]];
-    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
-    assert_eq!(results.len(), 3);
-    assert_eq!(results[0], b"\"PushEvent\"");
-    assert_eq!(results[1], b"1");
-    assert_eq!(results[2], b"\"alice\"");
-}
-
-#[test]
-fn batch_extract_missing_field() {
-    use qj::simdjson::dom_find_fields_raw;
-    let json = br#"{"type":"PushEvent"}"#;
-    let buf = pad_buffer(json);
-    let chains: &[&[&str]] = &[&["type"], &["missing"]];
-    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0], b"\"PushEvent\"");
-    assert_eq!(results[1], b"null");
-}
-
-#[test]
-fn batch_extract_empty_chains() {
-    use qj::simdjson::dom_find_fields_raw;
-    let json = br#"{"a":1}"#;
-    let buf = pad_buffer(json);
-    let chains: &[&[&str]] = &[];
-    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
-    assert!(results.is_empty());
-}
-
-#[test]
-fn batch_extract_complex_values() {
-    use qj::simdjson::dom_find_fields_raw;
-    let json = br#"{"arr":[1,2,3],"obj":{"nested":true},"str":"hello","num":42.5,"bool":false,"nil":null}"#;
-    let buf = pad_buffer(json);
-    let chains: &[&[&str]] = &[&["arr"], &["obj"], &["str"], &["num"], &["bool"], &["nil"]];
-    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
-    assert_eq!(results.len(), 6);
-    assert_eq!(results[0], b"[1,2,3]");
-    assert_eq!(results[1], b"{\"nested\":true}");
-    assert_eq!(results[2], b"\"hello\"");
-    assert_eq!(results[3], b"42.5");
-    assert_eq!(results[4], b"false");
-    assert_eq!(results[5], b"null");
-}
-
-#[test]
-fn batch_extract_deep_nesting() {
-    use qj::simdjson::dom_find_fields_raw;
-    let json = br#"{"a":{"b":{"c":{"d":"deep"}}}}"#;
-    let buf = pad_buffer(json);
-    let chains: &[&[&str]] = &[&["a", "b", "c", "d"], &["a", "b"]];
-    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0], b"\"deep\"");
-    assert_eq!(results[1], b"{\"c\":{\"d\":\"deep\"}}");
-}
-
-#[test]
-fn batch_extract_single_chain() {
-    use qj::simdjson::dom_find_fields_raw;
-    let json = br#"{"name":"alice"}"#;
-    let buf = pad_buffer(json);
-    let chains: &[&[&str]] = &[&["name"]];
-    let results = dom_find_fields_raw(&buf, json.len(), chains).unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0], b"\"alice\"");
-}
-
-// --- Reusable DOM parser (DomParser) ---
-
-#[test]
-fn dom_parser_reuse_find_field_raw() {
-    use qj::simdjson::DomParser;
-    let mut dp = DomParser::new().unwrap();
-    for i in 0..100 {
-        let json = format!(r#"{{"n": {i}}}"#);
+    // Numbers take two words: the tag, then the value's bits.
+    for (json, want, bits) in [
+        ("-5", b'l', (-5i64) as u64),
+        ("9223372036854775807", b'l', i64::MAX as u64),
+        ("18446744073709551615", b'u', u64::MAX),
+        ("2.5", b'd', 2.5f64.to_bits()),
+        ("1e2", b'd', 100f64.to_bits()),
+        // An integer zero: jq's -0 comes from the literal text.
+        ("-0", b'l', 0),
+    ] {
         let buf = pad_buffer(json.as_bytes());
-        let out = dp.find_field_raw(&buf, json.len(), &["n"]).unwrap();
-        assert_eq!(std::str::from_utf8(&out).unwrap(), i.to_string());
+        let tape = parser.parse(&buf, json.len()).unwrap();
+        assert_eq!(tape.words.len(), 4, "{json}");
+        assert_eq!(tag(tape.words[1]), want, "{json}");
+        assert_eq!(tape.words[2], bits, "{json}");
+        // src/io reads the literal from the text at its structural index.
+        assert_eq!(tape.structurals, [0], "{json}");
     }
 }
 
 #[test]
-fn dom_parser_reuse_find_fields_raw() {
-    use qj::simdjson::DomParser;
-    let mut dp = DomParser::new().unwrap();
-    let json = br#"{"type":"PushEvent","id":1,"actor":{"login":"alice"}}"#;
+fn strings_are_unescaped_in_the_string_buffer() {
+    let json = br#"{"k\u00e9y":"a\"b\\c\n\u00e9\ud83d\ude00","":""}"#;
     let buf = pad_buffer(json);
-    let chains: &[&[&str]] = &[&["type"], &["id"], &["actor", "login"]];
+    let mut parser = TapeParser::new().unwrap();
+    let tape = parser.parse(&buf, json.len()).unwrap();
+    let strings: Vec<&[u8]> = tape
+        .words
+        .iter()
+        .filter(|&&w| tag(w) == b'"')
+        // SAFETY: the payload of a string word is its string's offset.
+        .map(|&w| unsafe { tape.string((w & PAYLOAD) as usize) })
+        .collect();
+    let want: [&[u8]; 4] = ["kéy".as_bytes(), "a\"b\\c\né😀".as_bytes(), b"", b""];
+    assert_eq!(strings, want);
+}
 
-    // Call twice to confirm reuse works
-    for _ in 0..2 {
-        let results = dp.find_fields_raw(&buf, json.len(), chains).unwrap();
-        assert_eq!(results.len(), 3);
-        assert_eq!(results[0], b"\"PushEvent\"");
-        assert_eq!(results[1], b"1");
-        assert_eq!(results[2], b"\"alice\"");
+#[test]
+fn structurals_index_the_text() {
+    let json = br#" {"a" : [1, true]} "#;
+    let buf = pad_buffer(json);
+    let mut parser = TapeParser::new().unwrap();
+    let tape = parser.parse(&buf, json.len()).unwrap();
+    let chars: Vec<u8> = tape.structurals.iter().map(|&p| json[p as usize]).collect();
+    assert_eq!(chars, b"{\":[1,t]}");
+}
+
+#[test]
+fn errors_are_simdjson_codes() {
+    // Not exactly one text: the reader then looks for the text's end.
+    assert_eq!(parse_error(b"[1] [2]"), tape_error::TAPE_ERROR);
+    assert_eq!(parse_error(b"{\"a\":1}x"), tape_error::TAPE_ERROR);
+    assert_eq!(parse_error(b"[1,2"), tape_error::TAPE_ERROR);
+    assert_eq!(parse_error(b"{\"a\":"), tape_error::TAPE_ERROR);
+    assert_eq!(parse_error(b"\"abc"), tape_error::UNCLOSED_STRING);
+    assert_eq!(parse_error(b"[\"abc"), tape_error::UNCLOSED_STRING);
+    let deep = format!("{}{}", "[".repeat(1100), "]".repeat(1100));
+    assert_eq!(parse_error(deep.as_bytes()), tape_error::DEPTH_ERROR);
+    let ok = format!("{}{}", "[".repeat(1000), "]".repeat(1000));
+    let buf = pad_buffer(ok.as_bytes());
+    assert!(TapeParser::new().unwrap().parse(&buf, ok.len()).is_ok());
+    // Other rejections (jq's parser takes over for all of them).
+    for json in [
+        &b""[..],
+        b"   ",
+        b"[\"\xff\"]",
+        b"\"\\ud800\"",
+        b"[1,]",
+        b"01",
+        b"nan",
+        b"[1e400]",
+        b"18446744073709551616",
+    ] {
+        parse_error(json);
     }
 }
 
 #[test]
-fn dom_parser_reuse_field_length() {
-    use qj::simdjson::DomParser;
-    let mut dp = DomParser::new().unwrap();
-    let json = br#"{"items":[1,2,3]}"#;
-    let buf = pad_buffer(json);
-    let out = dp
-        .field_length(&buf, json.len(), &["items"])
-        .unwrap()
-        .unwrap();
-    assert_eq!(std::str::from_utf8(&out).unwrap(), "3");
-
-    // Reuse with different input
-    let json2 = br#"{"data":{"a":1,"b":2,"c":3,"d":4}}"#;
-    let buf2 = pad_buffer(json2);
-    let out2 = dp
-        .field_length(&buf2, json2.len(), &["data"])
-        .unwrap()
-        .unwrap();
-    assert_eq!(std::str::from_utf8(&out2).unwrap(), "4");
-}
-
-#[test]
-fn dom_parser_reuse_field_keys() {
-    use qj::simdjson::DomParser;
-    let mut dp = DomParser::new().unwrap();
-    let json = br#"{"data":{"b":2,"a":1}}"#;
-    let buf = pad_buffer(json);
-    let out = dp
-        .field_keys(&buf, json.len(), &["data"], true)
-        .unwrap()
-        .unwrap();
-    assert_eq!(std::str::from_utf8(&out).unwrap(), r#"["a","b"]"#);
-
-    // Reuse with different input
-    let json2 = br#"{"items":["x","y"]}"#;
-    let buf2 = pad_buffer(json2);
-    let out2 = dp
-        .field_keys(&buf2, json2.len(), &["items"], true)
-        .unwrap()
-        .unwrap();
-    assert_eq!(std::str::from_utf8(&out2).unwrap(), "[0,1]");
-}
-
-#[test]
-fn dom_parser_reuse_across_varied_sizes() {
-    use qj::simdjson::DomParser;
-    let mut dp = DomParser::new().unwrap();
-
-    // Small document
-    let small = br#"{"x":1}"#;
-    let buf_small = pad_buffer(small);
-    let out = dp.find_field_raw(&buf_small, small.len(), &["x"]).unwrap();
-    assert_eq!(&out, b"1");
-
-    // Large document (many fields)
-    let mut fields = Vec::new();
-    for i in 0..100 {
-        fields.push(format!(r#""f{i}":{i}"#));
+fn one_parser_reuses_its_buffers_across_sizes() {
+    let mut parser = TapeParser::new().unwrap();
+    let small = br#"{"x":1}"#.to_vec();
+    let big = format!("[{}0]", "1,".repeat(100_000)).into_bytes();
+    for json in [&small, &big, &small, &big, &small] {
+        let buf = pad_buffer(json);
+        let tape = parser.parse(&buf, json.len()).unwrap();
+        assert_eq!(tag(tape.words[0]), b'r');
+        assert_eq!((tape.words[0] & PAYLOAD) as usize, tape.words.len());
+        assert_eq!(tape.words[tape.words.len() - 1], u64::from(b'r') << 56);
     }
-    let large = format!("{{{}}}", fields.join(","));
-    let buf_large = pad_buffer(large.as_bytes());
-    let out = dp
-        .find_field_raw(&buf_large, large.len(), &["f50"])
-        .unwrap();
-    assert_eq!(&out, b"50");
-
-    // Back to small document
-    let out = dp.find_field_raw(&buf_small, small.len(), &["x"]).unwrap();
-    assert_eq!(&out, b"1");
+    assert!(parser.capacity() >= big.len());
 }
 
 #[test]
-fn dom_parser_reuse_missing_field() {
-    use qj::simdjson::DomParser;
-    let mut dp = DomParser::new().unwrap();
-    let json = br#"{"name":"alice"}"#;
-    let buf = pad_buffer(json);
-    let out = dp.find_field_raw(&buf, json.len(), &["missing"]).unwrap();
-    assert_eq!(&out, b"null");
+fn padding_contents_do_not_matter() {
+    // The text can be followed by anything, such as the rest of the input.
+    let mut buf = b"[1,2]".to_vec();
+    buf.extend(std::iter::repeat_n(b'x', padding()));
+    let mut parser = TapeParser::new().unwrap();
+    let tape = parser.parse(&buf, 5).unwrap();
+    assert_eq!(tags(&tape)[..3], *b"r[l");
+    assert_eq!(tape.words.len(), 8);
 }
 
-/// Regression test for fuzz-found crash: malformed NDJSON `{z}:` caused a
-/// SIGSEGV inside simdjson's on-demand iterate_many when find_field was called
-/// on an object with matching braces but invalid interior content.
-/// Fixed by switching iterate_many_extract_field to use the DOM parser which
-/// fully validates JSON before field access.
 #[test]
-fn iterate_many_malformed_ndjson_no_crash() {
-    let data: &[u8] = &[123, 122, 125, 58]; // {z}:
-    let buf = pad_buffer(data);
-    // Both must return without crashing — returning an error is fine.
-    let _ = iterate_many_count(&buf, data.len(), 1_000_000);
-    let _ = iterate_many_extract_field(&buf, data.len(), 1_000_000, "a");
+#[should_panic(expected = "SIMDJSON_PADDING")]
+fn parse_requires_padding() {
+    let _ = TapeParser::new().unwrap().parse(b"[1]", 3);
 }

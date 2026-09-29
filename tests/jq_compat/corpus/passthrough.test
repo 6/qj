@@ -1,8 +1,8 @@
-# Shapes qj evaluates without a full parse (PassthroughPath in src/filter/mod.rs:
-# identity, length/keys/type/has on a field chain, map(.f), map({f, g}),
+# Shapes the old core evaluated without a full parse (its PassthroughPath, since
+# removed: identity, length/keys/type/has on a field chain, map(.f), map({f, g}),
 # map(builtin), with or without a prefix) crossed with adversarial documents:
 # duplicate keys, escapes, number spellings, non-object elements, NaN,
-# 1e1000. The file mode is the one that reaches the passthroughs.
+# 1e1000. The file mode is the one that reached the passthroughs.
 #
 # Format: jq's .test format (see tests/jq_compat/jq.test), without expected
 # output lines: each case is a program line followed by one input line, and

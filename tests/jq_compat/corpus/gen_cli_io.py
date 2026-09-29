@@ -302,6 +302,28 @@ RUN_TESTS_CASES = [
     ("run-tests-onig-test", ["--run-tests", "onig.test"], None),
 ]
 
+# BOM checks after NUL-led inputs. jq's parser sees none of an input that
+# starts with a NUL and has no newline (fgets, then strlen), so a BOM in the
+# next input is still at the start of its text.
+NUL_BOM_FILES = {
+    "nul-only": raw(b"\x00"),
+    "nul-lead": raw(b"\x00c\x00"),
+    "nul-lead-nl": raw(b"\x00c\n"),
+    "bom": raw(b'\xef\xbb\xbf{"a":1}\n'),
+    "bad-bom": raw(b"\xef\x01c\x00"),
+}
+
+# (name, args, stdin or None); files are NUL_BOM_FILES.
+NUL_BOM_CASES = [
+    ("nul-file-then-bom", ["-c", ".", "nul-only", "bom"], None),
+    ("nul-led-file-then-bom", ["-c", ".", "nul-lead", "bom"], None),
+    ("nul-led-file-then-bad-bom", ["-c", ".", "nul-lead", "bad-bom"], None),
+    ("nul-led-line-then-bom", ["-c", ".", "nul-lead-nl", "bom"], None),
+    ("nul-led-file-then-bom-slurp", ["-s", "-c", ".", "nul-lead", "bom"], None),
+    ("nul-led-file-then-bom-inputs", ["-n", "-c", "[inputs]", "nul-lead", "bom"], None),
+    ("nul-led-stdin-then-bom", ["-c", ".", "-", "bom"], raw(b"\x00c")),
+]
+
 
 def toml_str(s):
     out = ['"']
@@ -369,6 +391,12 @@ def main():
         if stdin is not None:
             lines.append("stdin = %s" % content(stdin))
         lines += ["files = { %s }" % tests, ""]
+    nul_bom = ", ".join('"%s" = %s' % (n, content(c)) for n, c in NUL_BOM_FILES.items())
+    for name, args, stdin in NUL_BOM_CASES:
+        lines += ["[[case]]", 'name = "%s"' % name, "args = %s" % arr(args)]
+        if stdin is not None:
+            lines.append("stdin = %s" % content(stdin))
+        lines += ["files = { %s }" % nul_bom, ""]
     for name, c in INPUTS.items():
         for mode, (flags, programs) in MODES.items():
             lines += [

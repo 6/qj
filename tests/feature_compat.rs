@@ -623,10 +623,16 @@ fn run_all(verbose: bool) {
     println!("Results written to {}", compat_path.display());
 }
 
+/// Both tests rewrite docs/COMPATIBILITY.md, and `feature_compat` as a filter
+/// selects both: run them one at a time, or one reads the file while the other
+/// is rewriting it and drops the hand-written header.
+static DOC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Run with: cargo test --release feature_compat -- --nocapture --ignored
 #[test]
 #[ignore]
 fn feature_compat() {
+    let _doc = DOC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     run_all(false);
 }
 
@@ -634,5 +640,6 @@ fn feature_compat() {
 #[test]
 #[ignore]
 fn feature_compat_verbose() {
+    let _doc = DOC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     run_all(true);
 }

@@ -9,7 +9,6 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.qj]
 path = ".."
@@ -17,72 +16,22 @@ path = ".."
 [workspace]
 members = ["."]
 
+# The FFI boundary: simdjson's DOM parser (TapeParser) on arbitrary bytes.
 [[bin]]
 name = "fuzz_parse"
 path = "fuzz_targets/fuzz_parse.rs"
 doc = false
 test = false
 
+# simdjson's tape to jq values, against jq's parser port.
 [[bin]]
 name = "fuzz_dom"
 path = "fuzz_targets/fuzz_dom.rs"
 doc = false
 test = false
 
-[[bin]]
-name = "fuzz_ndjson"
-path = "fuzz_targets/fuzz_ndjson.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_filter_parse"
-path = "fuzz_targets/fuzz_filter_parse.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_eval"
-path = "fuzz_targets/fuzz_eval.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_ndjson_diff"
-path = "fuzz_targets/fuzz_ndjson_diff.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_output"
-path = "fuzz_targets/fuzz_output.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_double_format"
-path = "fuzz_targets/fuzz_double_format.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_bridge_map"
-path = "fuzz_targets/fuzz_bridge_map.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_flat_eval_diff"
-path = "fuzz_targets/fuzz_flat_eval_diff.rs"
-doc = false
-test = false
-
-[[bin]]
-name = "fuzz_streaming"
-path = "fuzz_targets/fuzz_streaming.rs"
-doc = false
-test = false
-
+# The input layer (src/io): fast path, streaming and the parallel engine
+# against jq's input loop.
 [[bin]]
 name = "fuzz_io_reader"
 path = "fuzz_targets/fuzz_io_reader.rs"

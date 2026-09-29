@@ -2,7 +2,7 @@
 
 `qj` is a fast, [`jq`](https://github.com/jqlang/jq)-compatible JSON processor powered by [simdjson](https://github.com/simdjson/simdjson).
 
-Benchmarked on M4 MacBook Pro:
+Benchmarked on M4 MacBook Pro, with qj's previous core (being re-measured on the jq port):
 
 - **NDJSON (3.4GB):** `qj -c 'select(.type=="PushEvent")'` is 190ms vs `jq` 36.4s (**191x faster**)
 - **JSON (49MB):** `qj -c '.statuses | map({user, text})'` is 58ms vs `jq` 695ms (**12x faster**)
@@ -11,11 +11,11 @@ Benchmarked on M4 MacBook Pro:
 
 **Drop-in replacement.** qj runs a port of jq 1.8.1's own implementation, so it matches jq byte for byte: the same stdout, exit codes, and error messages. A differential harness runs 19,584 cases against jq 1.8.1, including jq's own test suites in each input and output mode (2,903 cases, all byte-exact). qj matches 19,577 of them; the other 7 are qj's own help and version text. ([details](docs/COMPATIBILITY.md))
 
-**NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and on-demand field extraction. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
+**NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, and automatic parallelism across cores. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters (being re-measured: these numbers came from the previous core's NDJSON fast paths). Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
-**Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
+**Large JSON files.** qj is 2-12x faster than jq on a single file (being re-measured). Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
 
-**Memory usage.** qj trades memory for speed, using a ~300 MB sliding window for a 3.4 GB file vs jq's ~5 MB.
+**Memory usage.** qj trades memory for speed, using a ~300 MB sliding window for a 3.4 GB file vs jq's ~5 MB (being re-measured).
 
 ## Quick start
 
@@ -45,6 +45,8 @@ qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 
 Benchmarked on M4 MacBook Pro with [hyperfine](https://github.com/sharkdp/hyperfine) and compared against jq as well as two popular reimplementations ([jaq](https://github.com/01mf02/jaq) & [gojq](https://github.com/itchyny/gojq)).
 
+These numbers were measured with qj's previous core, whose NDJSON fast paths and single-file passthroughs answered common filters straight from simdjson, before qj became a port of jq. They're being re-measured on the port.
+
 **NDJSON** (3.4 GB GitHub Archive, 1.2M records):
 
 | Workload | qj (parallel) | qj (1 thread) | jq | jaq | gojq |
@@ -58,18 +60,18 @@ Benchmarked on M4 MacBook Pro with [hyperfine](https://github.com/sharkdp/hyperf
 | Scenario | vs jq | Why? | Faster alternative |
 |----------|------:|-----|-----|
 | Stdin (`cat file \| qj`) | ~9-17x | No mmap | Pass filename directly (~10x faster than stdin) |
-| Slurp mode (`-s`) | ~2-3x | No parallelism or on-demand fast paths | Prefer Unix pipelines (~4x faster), e.g. `qj '.field' \| sort \| uniq -c` |
+| Slurp mode (`-s`) | ~2-3x | No parallelism | Prefer Unix pipelines (~4x faster), e.g. `qj '.field' \| sort \| uniq -c` |
 
 On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq. See [benches/](benches/) for full results.
 
 ## How it works
 
-- **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
-- **Parallel NDJSON.** Rayon work-stealing thread pool, ~1 MB chunks. Output order always matches input order despite parallel processing. Files are mmap'd with progressive munmap: the entire file is mapped for maximum kernel read-ahead, then each 128 MB window is unmapped after processing to bound RSS (~300 MB for a 3.4 GB file). Falls back to streaming read() for stdin/pipes.
+- **A port of jq itself.** qj's core is jq 1.8.1's implementation ported to Rust: the value and number model, the parser (driven by jq's own bison tables), the compiler and bytecode VM, the C builtins, jq's `builtin.jq` (run verbatim), and `main.c`/`util.c`. qj behaves like jq because it runs jq's code, and a differential harness checks every change against the jq binary.
+- **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake. jq values are built straight from simdjson's tape, with number literals kept exactly as jq keeps them. Anything simdjson rejects (`nan`, invalid UTF-8, huge numbers, malformed text) goes through the ported jq parser, so values and error messages are always jq's.
+- **mmap and streaming input.** Files are memory-mapped: no heap copy of the input. Stdin and pipes are streamed, and each record is processed as soon as its line is complete, so `tail -f logs.jsonl | qj ...` keeps up.
+- **Ordered parallel NDJSON.** Independent records are processed on worker threads, each running its own compiled copy of the program, and their output is written in input order. Programs that carry state from one input to the next (`input`, `halt`, `$__loc__`, ...) run on one thread.
 - **Apple Silicon tuning.** Uses every non-efficiency core (P-cores, or Super + Performance cores on M5 Pro/Max), avoiding E-cores whose slower throughput creates stragglers that bottleneck the parallel pipeline.
-- **Zero-copy I/O.** mmap for single-document JSON. No heap allocation or memcpy for the input file.
-- **On-demand extraction.** Common NDJSON patterns (`.field`, `select`, `{...}` reshaping) extract raw bytes directly from simdjson's On-Demand API, bypassing Rust value tree construction entirely.
-- **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed automatically based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).
+- **Transparent decompression.** `.gz` (gzip) and `.zst`/`.zstd` (zstd) files are decompressed as they're read, based on extension. Glob patterns in file arguments are expanded (quote them to bypass shell expansion: `'data/*.json.gz'`).
 
 ## Compatibility and limitations
 
@@ -80,7 +82,8 @@ Numbers behave exactly as in jq 1.8.1, which uses decNumber. Number literals kee
 Limitations vs jq:
 
 - Help, version, and build-configuration text are qj's own, and messages name `qj` where jq's name `jq` (`qj: error: ...`).
-- Single-document JSON >4 GB falls back to serde_json (simdjson's limit). Still faster than jq but ~3-6x slower than simdjson's fast path. **NDJSON (JSONL) is unaffected** since each line is parsed independently.
+- Single-document JSON >4 GB is beyond simdjson's limit, so it's parsed by qj's port of jq's parser: same result, but slower. **NDJSON (JSONL) is unaffected** since each line is parsed independently.
+- qj builds for macOS and Linux. More in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ## Credits / Inspiration
 

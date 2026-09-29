@@ -12,13 +12,17 @@ The vendored simdjson single-header amalgamated files live in the top-level `sim
 
 ## Bridge files (this directory)
 
-- **`bridge.cpp`** — Our C-linkage FFI bridge wrapping simdjson's On-Demand API in `extern "C"` functions callable from Rust. This file is part of qj.
+qj uses one part of simdjson: its DOM parser. `src/io/simd.rs` builds jq values straight from the parser's tape, and falls back to jq's parser port for anything simdjson rejects.
 
-- **`bridge.rs`** — Safe Rust wrapper over the FFI functions. This file is part of qj.
+- **`bridge.cpp`** — `extern "C"` functions: `jx_simdjson_padding` and a reusable DOM parser (`jx_tape_parser_new`/`_free`/`_capacity`, and `jx_tape_parse`, which hands back the tape, the string buffer and the structural indexes). This file is part of qj.
+- **`ffi.rs`** — the matching Rust declarations.
+- **`bridge.rs`** — the safe Rust wrapper: `TapeParser`, `Tape`, `tape_error`, `padding`, `pad_buffer`.
+
+`tests/simdjson_ffi.rs` tests the boundary, and `fuzz/fuzz_targets/fuzz_parse.rs` fuzzes it.
 
 ## Updating simdjson
 
-To update to a newer simdjson release, replace `simdjson/simdjson.h` and `simdjson/simdjson.cpp` (in the project root) with the corresponding files from the new release's `singleheader/` directory. Then verify the bridge still compiles (`cargo build`).
+To update to a newer simdjson release, replace `simdjson/simdjson.h` and `simdjson/simdjson.cpp` (in the project root) with the corresponding files from the new release's `singleheader/` directory. Then verify the bridge still compiles (`cargo build`) and run `cargo test --test simdjson_ffi` (the tape layout and error codes are simdjson internals).
 
 ## License
 
