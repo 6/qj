@@ -81,6 +81,9 @@ MODES = {
     "raw-null": (["-c", "-R", "-n"], ["[inputs]"]),
     "seq-stream": (["-c", "--seq", "--stream"], ["."]),
     "seq-slurp": (["-c", "--seq", "-s"], ["."]),
+    "stream-slurp": (["-c", "--stream", "-s"], ["."]),
+    "stream-null": (["-c", "--stream-errors", "-n"], ["[inputs]"]),
+    "raw-seq": (["-c", "-R", "--seq"], ["."]),
 }
 # Modes also run with the input on stdin.
 STDIN_MODES = ["c", "seq", "stream-errors", "slurp", "null", "raw", "raw-slurp"]

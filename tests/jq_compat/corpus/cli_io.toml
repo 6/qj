@@ -717,6 +717,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "long4094"] }
 files = { "long4094" = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] } }
 
 [[sweep]]
+name = "file.long4094.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "long4094"] }
+files = { "long4094" = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long4094.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "long4094"] }
+files = { "long4094" = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long4094.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "long4094"] }
+files = { "long4094" = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] } }
+
+[[sweep]]
 name = "stdin.long4094.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -828,6 +846,24 @@ files = { "long4095" = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] } }
 name = "file.long4095.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "long4095"] }
+files = { "long4095" = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long4095.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "long4095"] }
+files = { "long4095" = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long4095.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "long4095"] }
+files = { "long4095" = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long4095.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "long4095"] }
 files = { "long4095" = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] } }
 
 [[sweep]]
@@ -945,6 +981,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "long4096"] }
 files = { "long4096" = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] } }
 
 [[sweep]]
+name = "file.long4096.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "long4096"] }
+files = { "long4096" = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long4096.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "long4096"] }
+files = { "long4096" = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long4096.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "long4096"] }
+files = { "long4096" = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] } }
+
+[[sweep]]
 name = "stdin.long4096.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -1056,6 +1110,24 @@ files = { "long8191" = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] } }
 name = "file.long8191.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "long8191"] }
+files = { "long8191" = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long8191.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "long8191"] }
+files = { "long8191" = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long8191.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "long8191"] }
+files = { "long8191" = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] } }
+
+[[sweep]]
+name = "file.long8191.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "long8191"] }
 files = { "long8191" = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] } }
 
 [[sweep]]
@@ -1173,6 +1245,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "long4095-nonl"] }
 files = { "long4095-nonl" = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] } }
 
 [[sweep]]
+name = "file.long4095-nonl.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "long4095-nonl"] }
+files = { "long4095-nonl" = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] } }
+
+[[sweep]]
+name = "file.long4095-nonl.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "long4095-nonl"] }
+files = { "long4095-nonl" = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] } }
+
+[[sweep]]
+name = "file.long4095-nonl.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "long4095-nonl"] }
+files = { "long4095-nonl" = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] } }
+
+[[sweep]]
 name = "stdin.long4095-nonl.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -1284,6 +1374,24 @@ files = { "long4096-nonl" = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] } }
 name = "file.long4096-nonl.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "long4096-nonl"] }
+files = { "long4096-nonl" = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] } }
+
+[[sweep]]
+name = "file.long4096-nonl.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "long4096-nonl"] }
+files = { "long4096-nonl" = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] } }
+
+[[sweep]]
+name = "file.long4096-nonl.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "long4096-nonl"] }
+files = { "long4096-nonl" = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] } }
+
+[[sweep]]
+name = "file.long4096-nonl.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "long4096-nonl"] }
 files = { "long4096-nonl" = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] } }
 
 [[sweep]]
@@ -1401,6 +1509,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "straddle"] }
 files = { "straddle" = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] } }
 
 [[sweep]]
+name = "file.straddle.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "straddle"] }
+files = { "straddle" = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] } }
+
+[[sweep]]
+name = "file.straddle.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "straddle"] }
+files = { "straddle" = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] } }
+
+[[sweep]]
+name = "file.straddle.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "straddle"] }
+files = { "straddle" = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] } }
+
+[[sweep]]
 name = "stdin.straddle.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -1512,6 +1638,24 @@ files = { "straddle-raw" = { repeat = [["a", 4094], ["€\n", 1]] } }
 name = "file.straddle-raw.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "straddle-raw"] }
+files = { "straddle-raw" = { repeat = [["a", 4094], ["€\n", 1]] } }
+
+[[sweep]]
+name = "file.straddle-raw.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "straddle-raw"] }
+files = { "straddle-raw" = { repeat = [["a", 4094], ["€\n", 1]] } }
+
+[[sweep]]
+name = "file.straddle-raw.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "straddle-raw"] }
+files = { "straddle-raw" = { repeat = [["a", 4094], ["€\n", 1]] } }
+
+[[sweep]]
+name = "file.straddle-raw.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "straddle-raw"] }
 files = { "straddle-raw" = { repeat = [["a", 4094], ["€\n", 1]] } }
 
 [[sweep]]
@@ -1629,6 +1773,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "array-4095"] }
 files = { "array-4095" = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] } }
 
 [[sweep]]
+name = "file.array-4095.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "array-4095"] }
+files = { "array-4095" = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] } }
+
+[[sweep]]
+name = "file.array-4095.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "array-4095"] }
+files = { "array-4095" = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] } }
+
+[[sweep]]
+name = "file.array-4095.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "array-4095"] }
+files = { "array-4095" = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] } }
+
+[[sweep]]
 name = "stdin.array-4095.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -1740,6 +1902,24 @@ files = { "nul-nonl" = { b64 = "MSAyADMgNA==" } }
 name = "file.nul-nonl.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "nul-nonl"] }
+files = { "nul-nonl" = { b64 = "MSAyADMgNA==" } }
+
+[[sweep]]
+name = "file.nul-nonl.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "nul-nonl"] }
+files = { "nul-nonl" = { b64 = "MSAyADMgNA==" } }
+
+[[sweep]]
+name = "file.nul-nonl.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "nul-nonl"] }
+files = { "nul-nonl" = { b64 = "MSAyADMgNA==" } }
+
+[[sweep]]
+name = "file.nul-nonl.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "nul-nonl"] }
 files = { "nul-nonl" = { b64 = "MSAyADMgNA==" } }
 
 [[sweep]]
@@ -1857,6 +2037,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "nul-nl"] }
 files = { "nul-nl" = { b64 = "MSAyADMgNAo1Cg==" } }
 
 [[sweep]]
+name = "file.nul-nl.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "nul-nl"] }
+files = { "nul-nl" = { b64 = "MSAyADMgNAo1Cg==" } }
+
+[[sweep]]
+name = "file.nul-nl.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "nul-nl"] }
+files = { "nul-nl" = { b64 = "MSAyADMgNAo1Cg==" } }
+
+[[sweep]]
+name = "file.nul-nl.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "nul-nl"] }
+files = { "nul-nl" = { b64 = "MSAyADMgNAo1Cg==" } }
+
+[[sweep]]
 name = "stdin.nul-nl.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -1968,6 +2166,24 @@ files = { "nul-end" = { b64 = "WzEsMl0A" } }
 name = "file.nul-end.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "nul-end"] }
+files = { "nul-end" = { b64 = "WzEsMl0A" } }
+
+[[sweep]]
+name = "file.nul-end.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "nul-end"] }
+files = { "nul-end" = { b64 = "WzEsMl0A" } }
+
+[[sweep]]
+name = "file.nul-end.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "nul-end"] }
+files = { "nul-end" = { b64 = "WzEsMl0A" } }
+
+[[sweep]]
+name = "file.nul-end.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "nul-end"] }
 files = { "nul-end" = { b64 = "WzEsMl0A" } }
 
 [[sweep]]
@@ -2085,6 +2301,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "nul-raw"] }
 files = { "nul-raw" = { b64 = "YQBiCmMAZA==" } }
 
 [[sweep]]
+name = "file.nul-raw.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "nul-raw"] }
+files = { "nul-raw" = { b64 = "YQBiCmMAZA==" } }
+
+[[sweep]]
+name = "file.nul-raw.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "nul-raw"] }
+files = { "nul-raw" = { b64 = "YQBiCmMAZA==" } }
+
+[[sweep]]
+name = "file.nul-raw.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "nul-raw"] }
+files = { "nul-raw" = { b64 = "YQBiCmMAZA==" } }
+
+[[sweep]]
 name = "stdin.nul-raw.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -2196,6 +2430,24 @@ files = { "bom" = { b64 = "77u/eyJhIjoxfQoyCg==" } }
 name = "file.bom.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "bom"] }
+files = { "bom" = { b64 = "77u/eyJhIjoxfQoyCg==" } }
+
+[[sweep]]
+name = "file.bom.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "bom"] }
+files = { "bom" = { b64 = "77u/eyJhIjoxfQoyCg==" } }
+
+[[sweep]]
+name = "file.bom.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "bom"] }
+files = { "bom" = { b64 = "77u/eyJhIjoxfQoyCg==" } }
+
+[[sweep]]
+name = "file.bom.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "bom"] }
 files = { "bom" = { b64 = "77u/eyJhIjoxfQoyCg==" } }
 
 [[sweep]]
@@ -2313,6 +2565,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "bad-bom"] }
 files = { "bad-bom" = { b64 = "77t7ImEiOjF9Cg==" } }
 
 [[sweep]]
+name = "file.bad-bom.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "bad-bom"] }
+files = { "bad-bom" = { b64 = "77t7ImEiOjF9Cg==" } }
+
+[[sweep]]
+name = "file.bad-bom.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "bad-bom"] }
+files = { "bad-bom" = { b64 = "77t7ImEiOjF9Cg==" } }
+
+[[sweep]]
+name = "file.bad-bom.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "bad-bom"] }
+files = { "bad-bom" = { b64 = "77t7ImEiOjF9Cg==" } }
+
+[[sweep]]
 name = "stdin.bad-bom.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -2424,6 +2694,24 @@ files = { "bad-utf8" = { b64 = "Iv/+Igoi4oIiCg==" } }
 name = "file.bad-utf8.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "bad-utf8"] }
+files = { "bad-utf8" = { b64 = "Iv/+Igoi4oIiCg==" } }
+
+[[sweep]]
+name = "file.bad-utf8.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "bad-utf8"] }
+files = { "bad-utf8" = { b64 = "Iv/+Igoi4oIiCg==" } }
+
+[[sweep]]
+name = "file.bad-utf8.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "bad-utf8"] }
+files = { "bad-utf8" = { b64 = "Iv/+Igoi4oIiCg==" } }
+
+[[sweep]]
+name = "file.bad-utf8.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "bad-utf8"] }
 files = { "bad-utf8" = { b64 = "Iv/+Igoi4oIiCg==" } }
 
 [[sweep]]
@@ -2541,6 +2829,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "bad-utf8-raw"] }
 files = { "bad-utf8-raw" = { b64 = "YWL/Y2QK4oIK" } }
 
 [[sweep]]
+name = "file.bad-utf8-raw.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "bad-utf8-raw"] }
+files = { "bad-utf8-raw" = { b64 = "YWL/Y2QK4oIK" } }
+
+[[sweep]]
+name = "file.bad-utf8-raw.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "bad-utf8-raw"] }
+files = { "bad-utf8-raw" = { b64 = "YWL/Y2QK4oIK" } }
+
+[[sweep]]
+name = "file.bad-utf8-raw.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "bad-utf8-raw"] }
+files = { "bad-utf8-raw" = { b64 = "YWL/Y2QK4oIK" } }
+
+[[sweep]]
 name = "stdin.bad-utf8-raw.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -2652,6 +2958,24 @@ files = { "num-eof" = "123" }
 name = "file.num-eof.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "num-eof"] }
+files = { "num-eof" = "123" }
+
+[[sweep]]
+name = "file.num-eof.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "num-eof"] }
+files = { "num-eof" = "123" }
+
+[[sweep]]
+name = "file.num-eof.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "num-eof"] }
+files = { "num-eof" = "123" }
+
+[[sweep]]
+name = "file.num-eof.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "num-eof"] }
 files = { "num-eof" = "123" }
 
 [[sweep]]
@@ -2769,6 +3093,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "num-eof-ws"] }
 files = { "num-eof-ws" = "123 " }
 
 [[sweep]]
+name = "file.num-eof-ws.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "num-eof-ws"] }
+files = { "num-eof-ws" = "123 " }
+
+[[sweep]]
+name = "file.num-eof-ws.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "num-eof-ws"] }
+files = { "num-eof-ws" = "123 " }
+
+[[sweep]]
+name = "file.num-eof-ws.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "num-eof-ws"] }
+files = { "num-eof-ws" = "123 " }
+
+[[sweep]]
 name = "stdin.num-eof-ws.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -2880,6 +3222,24 @@ files = { "empty" = "" }
 name = "file.empty.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "empty"] }
+files = { "empty" = "" }
+
+[[sweep]]
+name = "file.empty.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "empty"] }
+files = { "empty" = "" }
+
+[[sweep]]
+name = "file.empty.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "empty"] }
+files = { "empty" = "" }
+
+[[sweep]]
+name = "file.empty.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "empty"] }
 files = { "empty" = "" }
 
 [[sweep]]
@@ -2997,6 +3357,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "ws-only"] }
 files = { "ws-only" = "  \n\n " }
 
 [[sweep]]
+name = "file.ws-only.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "ws-only"] }
+files = { "ws-only" = "  \n\n " }
+
+[[sweep]]
+name = "file.ws-only.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "ws-only"] }
+files = { "ws-only" = "  \n\n " }
+
+[[sweep]]
+name = "file.ws-only.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "ws-only"] }
+files = { "ws-only" = "  \n\n " }
+
+[[sweep]]
 name = "stdin.ws-only.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -3108,6 +3486,24 @@ files = { "crlf" = "a\r\nb\r\n" }
 name = "file.crlf.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "crlf"] }
+files = { "crlf" = "a\r\nb\r\n" }
+
+[[sweep]]
+name = "file.crlf.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "crlf"] }
+files = { "crlf" = "a\r\nb\r\n" }
+
+[[sweep]]
+name = "file.crlf.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "crlf"] }
+files = { "crlf" = "a\r\nb\r\n" }
+
+[[sweep]]
+name = "file.crlf.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "crlf"] }
 files = { "crlf" = "a\r\nb\r\n" }
 
 [[sweep]]
@@ -3225,6 +3621,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "multi-line-value"] }
 files = { "multi-line-value" = "1\n2\n{\"a\":\n3\n}\n4\n" }
 
 [[sweep]]
+name = "file.multi-line-value.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "multi-line-value"] }
+files = { "multi-line-value" = "1\n2\n{\"a\":\n3\n}\n4\n" }
+
+[[sweep]]
+name = "file.multi-line-value.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "multi-line-value"] }
+files = { "multi-line-value" = "1\n2\n{\"a\":\n3\n}\n4\n" }
+
+[[sweep]]
+name = "file.multi-line-value.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "multi-line-value"] }
+files = { "multi-line-value" = "1\n2\n{\"a\":\n3\n}\n4\n" }
+
+[[sweep]]
 name = "stdin.multi-line-value.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -3336,6 +3750,24 @@ files = { "error-mid-line" = "1 2 } 3 4\n5\n" }
 name = "file.error-mid-line.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "error-mid-line"] }
+files = { "error-mid-line" = "1 2 } 3 4\n5\n" }
+
+[[sweep]]
+name = "file.error-mid-line.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "error-mid-line"] }
+files = { "error-mid-line" = "1 2 } 3 4\n5\n" }
+
+[[sweep]]
+name = "file.error-mid-line.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "error-mid-line"] }
+files = { "error-mid-line" = "1 2 } 3 4\n5\n" }
+
+[[sweep]]
+name = "file.error-mid-line.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "error-mid-line"] }
 files = { "error-mid-line" = "1 2 } 3 4\n5\n" }
 
 [[sweep]]
@@ -3453,6 +3885,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "error-then-lines"] }
 files = { "error-then-lines" = "[1,\n}\n[2]\n\"x\n3\n" }
 
 [[sweep]]
+name = "file.error-then-lines.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "error-then-lines"] }
+files = { "error-then-lines" = "[1,\n}\n[2]\n\"x\n3\n" }
+
+[[sweep]]
+name = "file.error-then-lines.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "error-then-lines"] }
+files = { "error-then-lines" = "[1,\n}\n[2]\n\"x\n3\n" }
+
+[[sweep]]
+name = "file.error-then-lines.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "error-then-lines"] }
+files = { "error-then-lines" = "[1,\n}\n[2]\n\"x\n3\n" }
+
+[[sweep]]
 name = "stdin.error-then-lines.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -3564,6 +4014,24 @@ files = { "unterminated" = "{\"a\":[1,2" }
 name = "file.unterminated.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "unterminated"] }
+files = { "unterminated" = "{\"a\":[1,2" }
+
+[[sweep]]
+name = "file.unterminated.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "unterminated"] }
+files = { "unterminated" = "{\"a\":[1,2" }
+
+[[sweep]]
+name = "file.unterminated.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "unterminated"] }
+files = { "unterminated" = "{\"a\":[1,2" }
+
+[[sweep]]
+name = "file.unterminated.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "unterminated"] }
 files = { "unterminated" = "{\"a\":[1,2" }
 
 [[sweep]]
@@ -3681,6 +4149,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "seq"] }
 files = { "seq" = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" } }
 
 [[sweep]]
+name = "file.seq.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "seq"] }
+files = { "seq" = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" } }
+
+[[sweep]]
+name = "file.seq.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "seq"] }
+files = { "seq" = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" } }
+
+[[sweep]]
+name = "file.seq.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "seq"] }
+files = { "seq" = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" } }
+
+[[sweep]]
 name = "stdin.seq.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -3792,6 +4278,24 @@ files = { "seq-bad" = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" } }
 name = "file.seq-bad.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "seq-bad"] }
+files = { "seq-bad" = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" } }
+
+[[sweep]]
+name = "file.seq-bad.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "seq-bad"] }
+files = { "seq-bad" = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" } }
+
+[[sweep]]
+name = "file.seq-bad.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "seq-bad"] }
+files = { "seq-bad" = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" } }
+
+[[sweep]]
+name = "file.seq-bad.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "seq-bad"] }
 files = { "seq-bad" = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" } }
 
 [[sweep]]
@@ -3909,6 +4413,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "seq-bad-object"] }
 files = { "seq-bad-object" = { b64 = "HjEKHlsyfQoeMwo=" } }
 
 [[sweep]]
+name = "file.seq-bad-object.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "seq-bad-object"] }
+files = { "seq-bad-object" = { b64 = "HjEKHlsyfQoeMwo=" } }
+
+[[sweep]]
+name = "file.seq-bad-object.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "seq-bad-object"] }
+files = { "seq-bad-object" = { b64 = "HjEKHlsyfQoeMwo=" } }
+
+[[sweep]]
+name = "file.seq-bad-object.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "seq-bad-object"] }
+files = { "seq-bad-object" = { b64 = "HjEKHlsyfQoeMwo=" } }
+
+[[sweep]]
 name = "stdin.seq-bad-object.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -4020,6 +4542,24 @@ files = { "seq-trunc" = { b64 = "HjEyMw==" } }
 name = "file.seq-trunc.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "seq-trunc"] }
+files = { "seq-trunc" = { b64 = "HjEyMw==" } }
+
+[[sweep]]
+name = "file.seq-trunc.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "seq-trunc"] }
+files = { "seq-trunc" = { b64 = "HjEyMw==" } }
+
+[[sweep]]
+name = "file.seq-trunc.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "seq-trunc"] }
+files = { "seq-trunc" = { b64 = "HjEyMw==" } }
+
+[[sweep]]
+name = "file.seq-trunc.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "seq-trunc"] }
 files = { "seq-trunc" = { b64 = "HjEyMw==" } }
 
 [[sweep]]
@@ -4137,6 +4677,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "seq-no-rs"] }
 files = { "seq-no-rs" = "1 2\n" }
 
 [[sweep]]
+name = "file.seq-no-rs.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "seq-no-rs"] }
+files = { "seq-no-rs" = "1 2\n" }
+
+[[sweep]]
+name = "file.seq-no-rs.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "seq-no-rs"] }
+files = { "seq-no-rs" = "1 2\n" }
+
+[[sweep]]
+name = "file.seq-no-rs.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "seq-no-rs"] }
+files = { "seq-no-rs" = "1 2\n" }
+
+[[sweep]]
 name = "stdin.seq-no-rs.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -4248,6 +4806,24 @@ files = { "seq-long" = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x
 name = "file.seq-long.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "seq-long"] }
+files = { "seq-long" = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x", 1], ["y", 5000], ["\n\u001e5\n", 1]] } }
+
+[[sweep]]
+name = "file.seq-long.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "seq-long"] }
+files = { "seq-long" = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x", 1], ["y", 5000], ["\n\u001e5\n", 1]] } }
+
+[[sweep]]
+name = "file.seq-long.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "seq-long"] }
+files = { "seq-long" = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x", 1], ["y", 5000], ["\n\u001e5\n", 1]] } }
+
+[[sweep]]
+name = "file.seq-long.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "seq-long"] }
 files = { "seq-long" = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x", 1], ["y", 5000], ["\n\u001e5\n", 1]] } }
 
 [[sweep]]
@@ -4365,6 +4941,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "stream-bad"] }
 files = { "stream-bad" = "[1,{\"a\":2},[3]\n" }
 
 [[sweep]]
+name = "file.stream-bad.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "stream-bad"] }
+files = { "stream-bad" = "[1,{\"a\":2},[3]\n" }
+
+[[sweep]]
+name = "file.stream-bad.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "stream-bad"] }
+files = { "stream-bad" = "[1,{\"a\":2},[3]\n" }
+
+[[sweep]]
+name = "file.stream-bad.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "stream-bad"] }
+files = { "stream-bad" = "[1,{\"a\":2},[3]\n" }
+
+[[sweep]]
 name = "stdin.stream-bad.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -4476,6 +5070,24 @@ files = { "stream-ok" = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n" }
 name = "file.stream-ok.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "stream-ok"] }
+files = { "stream-ok" = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n" }
+
+[[sweep]]
+name = "file.stream-ok.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "stream-ok"] }
+files = { "stream-ok" = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n" }
+
+[[sweep]]
+name = "file.stream-ok.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "stream-ok"] }
+files = { "stream-ok" = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n" }
+
+[[sweep]]
+name = "file.stream-ok.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "stream-ok"] }
 files = { "stream-ok" = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n" }
 
 [[sweep]]
@@ -4593,6 +5205,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "stream-long-error"] }
 files = { "stream-long-error" = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n", 1]] } }
 
 [[sweep]]
+name = "file.stream-long-error.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "stream-long-error"] }
+files = { "stream-long-error" = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n", 1]] } }
+
+[[sweep]]
+name = "file.stream-long-error.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "stream-long-error"] }
+files = { "stream-long-error" = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n", 1]] } }
+
+[[sweep]]
+name = "file.stream-long-error.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "stream-long-error"] }
+files = { "stream-long-error" = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n", 1]] } }
+
+[[sweep]]
 name = "stdin.stream-long-error.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -4707,6 +5337,24 @@ variants = { f = ["-c", "--seq", "-s", "{program}", "deep"] }
 files = { "deep" = { repeat = [["[", 300], ["]", 300], ["\n", 1]] } }
 
 [[sweep]]
+name = "file.deep.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "deep"] }
+files = { "deep" = { repeat = [["[", 300], ["]", 300], ["\n", 1]] } }
+
+[[sweep]]
+name = "file.deep.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "deep"] }
+files = { "deep" = { repeat = [["[", 300], ["]", 300], ["\n", 1]] } }
+
+[[sweep]]
+name = "file.deep.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "deep"] }
+files = { "deep" = { repeat = [["[", 300], ["]", 300], ["\n", 1]] } }
+
+[[sweep]]
 name = "stdin.deep.c"
 programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
 variants = { s = ["-c", "{program}"] }
@@ -4818,6 +5466,24 @@ files = { "strings" = "\"a\" \"b\\u0000c\" \"d\"\n" }
 name = "file.strings.seq-slurp"
 programs = ["."]
 variants = { f = ["-c", "--seq", "-s", "{program}", "strings"] }
+files = { "strings" = "\"a\" \"b\\u0000c\" \"d\"\n" }
+
+[[sweep]]
+name = "file.strings.stream-slurp"
+programs = ["."]
+variants = { f = ["-c", "--stream", "-s", "{program}", "strings"] }
+files = { "strings" = "\"a\" \"b\\u0000c\" \"d\"\n" }
+
+[[sweep]]
+name = "file.strings.stream-null"
+programs = ["[inputs]"]
+variants = { f = ["-c", "--stream-errors", "-n", "{program}", "strings"] }
+files = { "strings" = "\"a\" \"b\\u0000c\" \"d\"\n" }
+
+[[sweep]]
+name = "file.strings.raw-seq"
+programs = ["."]
+variants = { f = ["-c", "-R", "--seq", "{program}", "strings"] }
 files = { "strings" = "\"a\" \"b\\u0000c\" \"d\"\n" }
 
 [[sweep]]
