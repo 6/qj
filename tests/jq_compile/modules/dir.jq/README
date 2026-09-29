@@ -1,0 +1,1 @@
+A directory named like a module: jq finds it, then fails to load it.

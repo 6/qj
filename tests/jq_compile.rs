@@ -10,18 +10,25 @@
 //!   cases, named arguments, `$ENV`, modules), and generated deep programs. Our
 //!   compiler must print exactly the same.
 //! * `disasm_vs_live_jq` (ignored): the same against the jq binary; `QJ_BLESS=1`
-//!   rewrites `disasm.jsonl`, `QJ_FILTER=text` selects programs.
+//!   rewrites `disasm.jsonl`, `QJ_FILTER=text` selects programs, and
+//!   `QJ_EXTRA=file.jsonl` compares the programs of another file instead, such as
+//!   random ones from `tests/jq_compile/gen_programs.py`.
+//! * `binding_and_scoping`: edge cases with jq's output inline.
+//! * `deepest_programs_compile_on_a_small_stack`: programs at jq's nesting limits.
 //! * `adhoc` (ignored): `QJ_PROGRAM='...'` shows ours and jq's output.
 //!
 //!   ```text
 //!   cargo test --release --test jq_compile -- --ignored --nocapture
 //!   QJ_BLESS=1 cargo test --release --test jq_compile disasm_vs_live_jq -- --ignored --nocapture
+//!   python3 tests/jq_compile/gen_programs.py 20000 1 > /tmp/rand.jsonl
+//!   QJ_EXTRA=/tmp/rand.jsonl cargo test --release --test jq_compile disasm_vs_live_jq -- --ignored --nocapture
 //!   QJ_PROGRAM='def f: .; f' cargo test --release --test jq_compile adhoc -- --ignored --nocapture
 //!   ```
 //!
 //! jq runs in `tests/jq_compat` with a fixed environment (see [`ENV`]) and
-//! `-L modules`; paths under `tests/jq_compat` are recorded as `$ROOT`. Outputs
-//! longer than [`MAX_RECORDED`] bytes are recorded as a hash.
+//! `-L modules`; paths under `tests/jq_compat` are recorded as `$ROOT` (and this
+//! track's module fixtures, under `tests/jq_compile`, as `$C1`). Outputs longer than
+//! [`MAX_RECORDED`] bytes are recorded as a hash.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -104,8 +111,10 @@ impl Program {
     }
 
     /// The environment jq runs with.
+    /// The environment jq runs with (`"home": "<unset>"` leaves `HOME` out).
     fn env(&self) -> Vec<(String, String)> {
         ENV.iter()
+            .filter(|(k, _)| !(*k == "HOME" && self.home.as_deref() == Some("<unset>")))
             .map(|(k, v)| match (*k, &self.home) {
                 ("HOME", Some(h)) => (k.to_string(), compat_root().join(h).display().to_string()),
                 _ => (k.to_string(), v.to_string()),
@@ -314,6 +323,21 @@ fn generated_programs() -> Vec<(String, Vec<u8>)> {
         "max:paren-dotplus[3331]".into(),
         "(.+".repeat(3331) + "." + &")".repeat(3331),
     ));
+    // Functions longer than 65535 code units, and which of them jq reports.
+    let long = ".a".repeat(21845);
+    out.push(("toolong:sub".into(), format!("def f: {long}; f")));
+    out.push((
+        "toolong:two-subs".into(),
+        format!("def f: {long}; def g: {long}; f, g"),
+    ));
+    out.push((
+        "toolong:top-and-sub".into(),
+        format!("def f: {long}; f, {long}"),
+    ));
+    out.push((
+        "toolong:sub-and-unbound".into(),
+        format!("def f: {long}; def g: $nope; f, g"),
+    ));
     out.into_iter()
         .map(|(n, s)| (format!("gen:{n}"), s.into_bytes()))
         .collect()
@@ -378,8 +402,12 @@ fn compat_root() -> PathBuf {
     PathBuf::from(root.as_str().unwrap())
 }
 
+/// Machine-independent output: `realpath(tests/jq_compat)` is `$ROOT`, and
+/// `realpath(tests/jq_compile)` (this track's module fixtures) is `$C1`.
 fn normalize(s: &str) -> String {
+    let c1 = jq_realpath(Value::from(data_dir().to_str().unwrap()));
     s.replace(compat_root().to_str().unwrap(), "$ROOT")
+        .replace(c1.as_str().unwrap(), "$C1")
 }
 
 /// What main.c passes to `jq_compile_args` for `p`'s arguments (without
@@ -424,7 +452,10 @@ fn options(p: &Program) -> CompileOptions {
             lib_dirs: Value::from(vec![modules]),
             jq_origin: Value::from(dirname(jq_binary().to_str().unwrap()).as_str()),
             prog_origin: jq_realpath(Value::from(compat_dir().to_str().unwrap())),
-            home: Some(penv[0].1.clone()),
+            home: penv
+                .iter()
+                .find(|(k, _)| k == "HOME")
+                .map(|(_, v)| v.clone()),
         },
     }
 }
@@ -683,8 +714,19 @@ fn disasm_vs_live_jq_impl() {
             return;
         }
     }
+    // QJ_EXTRA=file.jsonl compares the programs of that file instead (e.g. generated
+    // ones), without recording them.
+    let extra = std::env::var("QJ_EXTRA").ok();
     let filter = std::env::var("QJ_FILTER").ok();
-    let programs: Vec<Program> = collect_programs()
+    let all = match &extra {
+        Some(path) => {
+            let mut v = Vec::new();
+            jsonl_programs(Path::new(path), &mut v);
+            v
+        }
+        None => collect_programs(),
+    };
+    let programs: Vec<Program> = all
         .into_iter()
         .filter(|p| {
             filter.as_ref().is_none_or(|f| {
@@ -784,7 +826,7 @@ fn disasm_vs_live_jq_impl() {
             )
         );
     }
-    if std::env::var("QJ_BLESS").is_ok_and(|v| v == "1") && filter.is_none() {
+    if std::env::var("QJ_BLESS").is_ok_and(|v| v == "1") && filter.is_none() && extra.is_none() {
         let path = data_dir().join("disasm.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(
@@ -799,6 +841,115 @@ fn disasm_vs_live_jq_impl() {
         eprintln!("wrote {}", path.display());
     }
     assert!(fails.is_empty(), "{} programs differ from jq", fails.len());
+}
+
+/// `$ORIGIN` and jq's default search list (no `-L`), which the corpus can't reach:
+/// runs jq through a symlink in `target/tmp/jq_origin/bin`, so `$ORIGIN/../lib/jq`
+/// is `target/tmp/jq_origin/lib/jq`, with `$HOME` holding a `~/.jq` file (the
+/// implicit include) or a `~/.jq` directory (the first search entry).
+///
+/// jq resolves the search entry `.` against the current directory, so our compiles
+/// here briefly change the process's (no other test resolves modules through `.`).
+#[test]
+#[ignore]
+fn origin_and_default_search_vs_live_jq() {
+    use std::os::unix::ffi::OsStrExt;
+    let jq = jq_binary();
+    match Command::new(&jq).arg("--version").output() {
+        Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "jq-1.8.1" => {}
+        _ => {
+            eprintln!("origin_and_default_search_vs_live_jq: skipped, need jq 1.8.1 (set JQ)");
+            return;
+        }
+    }
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("jq_origin");
+    let _ = std::fs::remove_dir_all(&base);
+    for d in ["bin", "lib/jq", "home_file", "home_dir/.jq", "cwd"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    let real_jq = std::fs::canonicalize(&jq).unwrap();
+    std::os::unix::fs::symlink(&real_jq, base.join("bin/jq")).unwrap();
+    let files = [
+        ("lib/jq/o.jq", "def o: $__loc__;"),
+        ("lib/p.jq", "def p: $__loc__;"),
+        ("lib/jq/q.jq", "def q: \"lib/jq\";"),
+        ("lib/q.jq", "def q: \"lib\";"),
+        ("home_file/.jq", "def h: $__loc__; def o: \"home\";"),
+        ("home_dir/.jq/m.jq", "def m: $__loc__;"),
+        ("home_dir/.jq/o.jq", "def o: \"home_dir\";"),
+        ("cwd/c.jq", "def c: $__loc__;"),
+    ];
+    for (f, text) in files {
+        std::fs::write(base.join(f), text).unwrap();
+    }
+    let base_real = std::fs::canonicalize(&base).unwrap();
+    let norm = |s: &str| s.replace(base_real.to_str().unwrap(), "$BASE");
+    let programs = [
+        "import \"o\" as o; o::o",
+        "import \"p\" as p; p::p",
+        "import \"q\" as q; q::q",
+        "import \"c\" as c; c::c",
+        "import \"m\" as m; m::m",
+        "h, o",
+        "import \"nonexistent\" as n; .",
+        "import \"o\" as o {search: \"$ORIGIN/../lib/jq\"}; o::o",
+        "import \"o\" as o {search: [\"~/nope\", \"$ORIGIN/../lib/jq\"]}; o::o",
+    ];
+    let mut fails = 0;
+    for home in ["home_file", "home_dir"] {
+        let home_path = base.join(home);
+        for src in programs {
+            let out = Command::new(base.join("bin/jq"))
+                .args(["--debug-dump-disasm", "--", src])
+                .current_dir(base.join("cwd"))
+                .env_clear()
+                .env("HOME", &home_path)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let want = Outcome {
+                exit: out.status.code().unwrap(),
+                stdout: norm(&String::from_utf8_lossy(&out.stdout)),
+                stderr: norm(&String::from_utf8_lossy(&out.stderr)),
+            };
+            let opts = CompileOptions {
+                args: Object::new(),
+                env: Some(Value::Null),
+                attrs: JqAttrs {
+                    lib_dirs: qj::jq::lang::linker::default_lib_dirs(),
+                    jq_origin: Value::string_from_bytes(base.join("bin").as_os_str().as_bytes()),
+                    prog_origin: jq_realpath(Value::string_from_bytes(
+                        base.join("cwd").as_os_str().as_bytes(),
+                    )),
+                    home: Some(home_path.to_str().unwrap().to_string()),
+                },
+            };
+            // Relative paths in the search chain ("." here) resolve against the cwd.
+            let got = {
+                let cwd = std::env::current_dir().unwrap();
+                std::env::set_current_dir(base.join("cwd")).unwrap();
+                let r = jq_compile_args(src.as_bytes(), &opts);
+                std::env::set_current_dir(cwd).unwrap();
+                match r {
+                    Ok(bc) => Outcome {
+                        exit: 0,
+                        stdout: norm(&format!("{}\n", dump_disassembly(0, &bc))),
+                        stderr: String::new(),
+                    },
+                    Err(e) => Outcome {
+                        exit: 3,
+                        stdout: String::new(),
+                        stderr: norm(&e.render()),
+                    },
+                }
+            };
+            if got != want {
+                fails += 1;
+                eprintln!("HOME={home} {src}\n--- jq\n{want:?}\n--- ours\n{got:?}");
+            }
+        }
+    }
+    assert_eq!(fails, 0);
 }
 
 #[test]
@@ -875,5 +1026,314 @@ fn stack_usage() {
             "{origin}: exit {exit} in {:?} with a {kb} KiB stack",
             t.elapsed()
         );
+    }
+}
+/// Binding and scoping edge cases, with jq 1.8.1's output inline (recorded with
+/// `jq --debug-dump-disasm -L modules [ARGS] -- PROGRAM`, as [`live_jq`] runs it):
+/// the disassembly, or the compile errors (exit code 3).
+#[test]
+fn binding_and_scoping() {
+    #[rustfmt::skip]
+    let cases: &[(&str, &[&str], i32, &str)] = &[
+        // A definition binds the calls after it: g calls the first f (f:0), the main program the second (f:2).
+        ("def f: 1; def g: f; def f: 2; g, f", &[], 0, r#"0000 TOP
+0001 FORK 0009
+0003 CALL_JQ g:1
+0007 JUMP 0013
+0009 CALL_JQ f:2
+0013 RET
+f:0:
+  0000 LOADK 1
+  0002 RET
+g:1:
+  0000 TAIL_CALL_JQ f:0^1
+  0004 RET
+f:2:
+  0000 LOADK 2
+  0002 RET
+
+"#),
+        // Functions are bound by name and arity: f/0 and f/1 coexist.
+        ("def f(x): x; def f: 3; f, f(1)", &[], 0, r#"0000 TOP
+0001 FORK 0009
+0003 CALL_JQ f:1
+0007 JUMP 0015
+0009 CALL_JQ f:0 @lambda:2
+0015 RET
+f:0:
+  [params: x]
+  0000 CALL_JQ x:0
+  0004 RET
+f:1:
+  0000 LOADK 3
+  0002 RET
+@lambda:2:
+  0000 LOADK 1
+  0002 RET
+
+"#),
+        // `def f: def g: ...;`: g is a subfunction of f.
+        ("def f: def g: 3; g; f", &[], 0, r#"0000 TOP
+0001 CALL_JQ f:0
+0005 RET
+f:0:
+  0000 CALL_JQ g:0
+  0004 RET
+  g:0:
+    0000 LOADK 3
+    0002 RET
+
+"#),
+        // Recursion: fac calls itself one level up (fac:0^1).
+        ("def fac: if . <= 1 then 1 else . * (. - 1 | fac) end; fac", &[], 0, r#"0000 TOP
+0001 CALL_JQ fac:0
+0005 RET
+fac:0:
+  0000 DUP
+  0001 SUBEXP_BEGIN
+  0002 PUSHK_UNDER 1
+  0004 DUP
+  0005 CALL_BUILTIN _lesseq
+  0008 SUBEXP_END
+  0009 POP
+  0010 JUMP_F 0017
+  0012 POP
+  0013 LOADK 1
+  0015 JUMP 0034
+  0017 POP
+  0018 SUBEXP_BEGIN
+  0019 PUSHK_UNDER 1
+  0021 DUP
+  0022 CALL_BUILTIN _minus
+  0025 CALL_JQ fac:0^1
+  0029 SUBEXP_END
+  0030 DUP
+  0031 CALL_BUILTIN _multiply
+  0034 RET
+
+"#),
+        // A closure capturing its enclosing function's parameter (g:0^1), as a tail call.
+        ("def f(g): def h: g; h; f(.)", &[], 0, r#"0000 TOP
+0001 CALL_JQ f:0 @lambda:1
+0007 RET
+f:0:
+  [params: g]
+  0000 CALL_JQ h:0
+  0004 RET
+  h:0:
+    0000 TAIL_CALL_JQ g:0^1
+    0004 RET
+@lambda:1:
+  0000 RET
+
+"#),
+        // `$a` parameters are desugared to `a as $a`, and captured by inner functions ($a:0^1).
+        ("def f($a): def g: $a; g; f(1)", &[], 0, r#"0000 TOP
+0001 CALL_JQ f:0 @lambda:1
+0007 RET
+f:0:
+  [params: a]
+  0000 DUP
+  0001 SUBEXP_BEGIN
+  0002 CALL_JQ a:0
+  0006 SUBEXP_END
+  0007 POP
+  0008 STOREV $a:0
+  0011 CALL_JQ g:0
+  0015 RET
+  g:0:
+    0000 LOADV $a:0^1
+    0003 RET
+@lambda:1:
+  0000 LOADK 1
+  0002 RET
+
+"#),
+        // An inner variable shadows an outer one of the same name.
+        (". as $x | . as $x | $x", &[], 0, r#"0000 TOP
+0001 DUP
+0002 DUP
+0003 POP
+0004 STOREV $x:0
+0007 DUP
+0008 DUP
+0009 POP
+0010 STOREV $x:1
+0013 LOADV $x:1
+0016 RET
+
+"#),
+        // Array patterns bind later elements first, so `$a` is the second element.
+        ("[1,2] as [$a, $a] | $a", &[], 0, r#"0000 TOP
+0001 DUP
+0002 PUSHK_UNDER [1,2]
+0004 POP
+0005 DUP
+0006 PUSHK_UNDER 1
+0008 INDEX
+0009 STOREV $a:0
+0012 DUP
+0013 PUSHK_UNDER 0
+0015 INDEX
+0016 STOREV $a:1
+0019 POP
+0020 LOADV $a:0
+0023 RET
+
+"#),
+        // Variables in frame order; `$__loc__` is folded into a constant.
+        ("1 as $x | 2 as $y | [$x, $y, $__loc__]", &[], 0, r#"0000 TOP
+0001 DUP
+0002 PUSHK_UNDER 1
+0004 POP
+0005 STOREV $x:0
+0008 DUP
+0009 PUSHK_UNDER 2
+0011 POP
+0012 STOREV $y:1
+0015 DUP
+0016 LOADK []
+0018 STOREV $collect:2
+0021 FORK 0043
+0023 FORK 0037
+0025 FORK 0032
+0027 LOADV $x:0
+0030 JUMP 0035
+0032 LOADV $y:1
+0035 JUMP 0039
+0037 LOADK {"file":"<top-level>","line":1}
+0039 APPEND $collect:2
+0042 BACKTRACK
+0043 LOADVN $collect:2
+0046 RET
+
+"#),
+        // `$ENV` becomes a constant of the environment.
+        ("$ENV.HOME", &[], 0, r#"0000 TOP
+0001 PUSHK_UNDER "HOME"
+0003 LOADK {"HOME":"/nonexistent-qj-home","QJ_TEST":"1"}
+0005 INDEX
+0006 RET
+
+"#),
+        // Named arguments become constants (`--arg x 1`).
+        ("$x, $ARGS.named", &["--arg", "x", "1"], 0, r#"0000 TOP
+0001 FORK 0007
+0003 LOADK "1"
+0005 JUMP 0012
+0007 PUSHK_UNDER "named"
+0009 LOADK {"positional":[],"named":{"x":"1"}}
+0011 INDEX
+0012 RET
+
+"#),
+        // A parameter shadows a named argument of the same name.
+        ("def f($x): $x; f(2), $x", &["--arg", "x", "1"], 0, r#"0000 TOP
+0001 FORK 0011
+0003 CALL_JQ f:0 @lambda:1
+0009 JUMP 0013
+0011 LOADK "1"
+0013 RET
+f:0:
+  [params: x]
+  0000 DUP
+  0001 SUBEXP_BEGIN
+  0002 CALL_JQ x:0
+  0006 SUBEXP_END
+  0007 POP
+  0008 STOREV $x:0
+  0011 LOADV $x:0
+  0014 RET
+@lambda:1:
+  0000 LOADK 2
+  0002 RET
+
+"#),
+        // `label`/`break`: the label is the variable `$*label-out`.
+        ("label $out | 1, break $out", &[], 0, r#"0000 TOP
+0001 DUP
+0002 GENLABEL
+0003 STOREV $*label-out:0
+0006 POP
+0007 TRY_BEGIN 0024
+0009 FORK 0015
+0011 LOADK 1
+0013 JUMP 0021
+0015 LOADV $*label-out:0
+0018 CALL_BUILTIN error
+0021 TRY_END
+0022 JUMP 0047
+0024 DUP
+0025 SUBEXP_BEGIN
+0026 SUBEXP_BEGIN
+0027 LOADV $*label-out:0
+0030 SUBEXP_END
+0031 DUP
+0032 CALL_BUILTIN _equal
+0035 SUBEXP_END
+0036 POP
+0037 JUMP_F 0043
+0039 POP
+0040 BACKTRACK
+0041 JUMP 0047
+0043 POP
+0044 CALL_BUILTIN error
+0047 RET
+
+"#),
+        // An unreferenced definition is dropped, errors and all.
+        ("def f: $x; 1", &[], 0, r#"0000 TOP
+0001 LOADK 1
+0003 RET
+
+"#),
+        // Only the main program's error: f is dropped before compiling.
+        ("def f: $x; $y", &[], 3, r#"jq: error: $y is not defined at <top-level>, line 1, column 12:
+    def f: $x; $y
+               ^^
+jq: 1 compile error
+"#),
+        // A module import binds `foo::a`.
+        ("import \"a\" as foo; foo::a", &[], 0, r#"0000 TOP
+0001 CALL_JQ a:0
+0005 RET
+a:0:
+  0000 LOADK "a"
+  0002 RET
+
+"#),
+        // A data import is a global (`STORE_GLOBAL`), bound as `$d` and `$d::d`.
+        ("import \"data\" as $d; $d::d[0].this", &[], 0, r#"0000 STORE_GLOBAL [{"this":"is a test","that":"is too"}]
+0004 TOP
+0005 PUSHK_UNDER "this"
+0007 PUSHK_UNDER 0
+0009 LOADV $d:0
+0012 INDEX
+0013 INDEX
+0014 RET
+
+"#),
+        // In a module, a later definition shadows an earlier one.
+        ("include \"shadow1\"; e", &[], 0, r#"0000 TOP
+0001 CALL_JQ e:0
+0005 RET
+e:0:
+  0000 LOADK 2
+  0002 RET
+
+"#),
+        // A missing module; jq's message ends with an extra newline.
+        ("import \"nonexistent\" as x; .", &[], 3, r#"jq: error: module not found: nonexistent
+
+jq: 1 compile error
+"#),
+    ];
+    for &(src, args, exit, expected) in cases {
+        let mut p = Program::new("inline".into(), src.as_bytes().to_vec());
+        p.args = args.iter().map(|s| s.to_string()).collect();
+        let got = ours(&p);
+        let text = if exit == 0 { &got.stdout } else { &got.stderr };
+        assert_eq!(got.exit, exit, "{src}");
+        assert_eq!(text, expected, "{src}");
     }
 }
