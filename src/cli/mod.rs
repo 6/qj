@@ -5,8 +5,9 @@
 //!   follows it (output flags, colors, the default program, `-f` files).
 //! - [`usage`]: qj's own help, version and build-configuration text, which
 //!   `docs/JQ_PORT_PLAN.md` exempts from comparison with jq.
-//! - [`run`]: the rest of `main.c` on the ported core (`QJ_CORE=port`):
-//!   compilation, the `process()` loop, output and exit codes.
+//! - [`run`]: the rest of `main.c` on the ported core, which is what the `qj`
+//!   binary runs (the old core stays behind `QJ_CORE=old` until it is
+//!   deleted): compilation, the `process()` loop, output and exit codes.
 //! - [`input`]: `util.c`'s input reader (fgets chunks into jq's parser).
 
 pub mod args;
