@@ -1063,10 +1063,16 @@ impl InputReader {
     /// The complete lines of the current input from `at` (at or after the
     /// reader's position; the reader needn't be idle there, this is
     /// speculative): at most `max` bytes (a longer first line whole), if at
-    /// least `min` are available now. Reads more of a stream only if it is
-    /// available without waiting. Returns the lines and where the next cut
-    /// starts.
-    pub(crate) fn cut(&mut self, at: Cut, min: usize, max: usize) -> Option<(Window, Cut)> {
+    /// least `min` are available now (or, with `small_rest`, all the rest
+    /// of a complete input). Reads more of a stream only if it is available
+    /// without waiting. Returns the lines and where the next cut starts.
+    pub(crate) fn cut(
+        &mut self,
+        at: Cut,
+        min: usize,
+        max: usize,
+        small_rest: bool,
+    ) -> Option<(Window, Cut)> {
         if self.generation != at.generation
             || self.opts.slurp
             || self.ended
@@ -1099,8 +1105,9 @@ impl InputReader {
                 end = start + min + i + 1;
             }
         }
-        // (Once the input is complete, a small rest won't grow by waiting.)
-        if end - start < min && !(cur.eof && end == avail) {
+        // With `small_rest`, the rest of a complete input is taken however
+        // small (it won't grow by waiting).
+        if end - start < min && !(small_rest && cur.eof && end == avail) {
             return None;
         }
         let lines = memchr::memchr_iter(b'\n', cur.slice(start, end)).count() as u64;

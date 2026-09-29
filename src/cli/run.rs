@@ -729,7 +729,7 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         jq_flags: opts.jq_flags,
     };
     if let Some(plan) = parallel {
-        return run_parallel(plan, files, input_opts, p);
+        return run_parallel(plan, files, input_opts, p, jq);
     }
     let input: SharedInput = super::input::open_inputs(files, input_opts);
     jq.set_input(Some(Box::new(InputCb(input.clone()))));
@@ -1036,8 +1036,17 @@ fn run_parallel(
     files: Vec<Vec<u8>>,
     input_opts: InputOptions,
     p: Process,
+    mut jq: Jq,
 ) -> (i32, i32) {
     let mut reader = super::input::open_reader(files, input_opts);
+    // The program compiled on this thread processes the records read here.
+    let position = Rc::new(RefCell::new((None, 0)));
+    jq.set_input(Some(Box::new(RecordPosition(position.clone()))));
+    let main = PortWorker {
+        jq,
+        position,
+        p: p.clone(),
+    };
     let mut sink = MainLoop {
         unbuffered: p.unbuffered,
         ret: JQ_OK_NO_OUTPUT,
@@ -1048,7 +1057,7 @@ fn run_parallel(
         ..crate::io::parallel::EngineOptions::default()
     };
     let factory = PortFactory { plan, p };
-    let stats = crate::io::parallel::run(&mut reader, &factory, &mut sink, &engine);
+    let stats = crate::io::parallel::run_with(&mut reader, &factory, main, &mut sink, &engine);
     if std::env::var_os("QJ_ENGINE_STATS").is_some() {
         write_stderr(
             format!(

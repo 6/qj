@@ -116,9 +116,9 @@ pub struct EngineOptions {
 }
 
 impl Default for EngineOptions {
-    /// `threads` from rayon's global pool (so `--threads N` applies).
+    /// [`default_threads`] (not rayon's pool: asking rayon would start it).
     fn default() -> Self {
-        let threads = rayon::current_num_threads();
+        let threads = default_threads();
         EngineOptions {
             threads,
             window_bytes: (threads * (8 << 20)).clamp(16 << 20, 128 << 20),
@@ -286,7 +286,18 @@ pub fn run<F: WorkerFactory, S: RecordSink>(
     sink: &mut S,
     opts: &EngineOptions,
 ) -> EngineStats {
-    let mut main = factory.new_worker();
+    run_with(reader, factory, factory.new_worker(), sink, opts)
+}
+
+/// Like [`run`], with the calling thread's worker given (for a caller that
+/// has already set up a program on this thread).
+pub fn run_with<F: WorkerFactory, S: RecordSink>(
+    reader: &mut InputReader,
+    factory: &F,
+    mut main: F::Worker,
+    sink: &mut S,
+    opts: &EngineOptions,
+) -> EngineStats {
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut stats = EngineStats::default();
@@ -315,17 +326,23 @@ pub fn run<F: WorkerFactory, S: RecordSink>(
     std::thread::scope(|scope| {
         let job_tx = job_tx; // owned here: dropped (closing the channel) on unwind
         let _release = Release(&board);
-        for i in 0..opts.threads {
-            let job_rx = &job_rx;
-            let board = &board;
-            let msg_tx = msg_tx.clone();
-            std::thread::Builder::new()
-                .name(format!("qj-worker-{i}"))
-                .stack_size(opts.stack_size)
-                .spawn_scoped(scope, move || worker_thread(factory, job_rx, board, msg_tx))
-                .expect("spawn worker thread");
-        }
-        drop(msg_tx);
+        // Workers start with the first job: small inputs never need them.
+        let mut msg_tx = Some(msg_tx);
+        let job_rx = &job_rx;
+        let board_ref = &board;
+        let mut spawn = move || {
+            let Some(tx) = msg_tx.take() else {
+                return;
+            };
+            for i in 0..opts.threads {
+                let tx = tx.clone();
+                std::thread::Builder::new()
+                    .name(format!("qj-worker-{i}"))
+                    .stack_size(opts.stack_size)
+                    .spawn_scoped(scope, move || worker_thread(factory, job_rx, board_ref, tx))
+                    .expect("spawn worker thread");
+            }
+        };
         let mut ctx = Ctx {
             reader,
             main: &mut main,
@@ -343,6 +360,8 @@ pub fn run<F: WorkerFactory, S: RecordSink>(
             next_id: 0,
             next_go: 0,
             panic: None,
+            spawn: &mut spawn,
+            started: false,
         };
         ctx.run();
         panic_payload = ctx.panic.take();
@@ -510,6 +529,9 @@ struct Ctx<'a, W: RecordWorker, S: RecordSink> {
     /// Jobs before this id are confirmed (or gone); from it on, not yet.
     next_go: u64,
     panic: Option<Box<dyn std::any::Any + Send>>,
+    /// Starts the worker threads (the first call).
+    spawn: &'a mut dyn FnMut(),
+    started: bool,
 }
 
 impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
@@ -693,10 +715,18 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 .max(1);
             let job_bytes =
                 (ahead / (self.opts.threads * 4)).clamp(floor, self.opts.max_job_bytes.max(floor));
-            let Some((w, next)) = self.reader.cut(cursor, self.opts.min_window, job_bytes) else {
+            // (A complete input's small rest is worth a job once workers run.)
+            let Some((w, next)) =
+                self.reader
+                    .cut(cursor, self.opts.min_window, job_bytes, self.started)
+            else {
                 self.cursor = None;
                 return;
             };
+            if !self.started {
+                self.started = true;
+                (self.spawn)();
+            }
             let id = self.next_id;
             self.next_id += 1;
             let job = Job {
