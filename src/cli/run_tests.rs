@@ -354,6 +354,7 @@ fn run_jq_tests(
                             print(&line);
                             pass = false;
                         }
+                        assert_reparses(&expected);
                     }
                     _ => {
                         let mut line =
@@ -396,6 +397,25 @@ fn run_jq_tests(
         check_msg = false;
     }
     finish(tests, passed, invalid, tests_to_skip, skip)
+}
+
+/// The assertion jq_test.c makes after comparing an expected value with a result
+/// (`#ifdef USE_DECNUM`, and jq 1.8.1 is built with decNumber).
+#[cfg(target_vendor = "apple")]
+const ASSERT_REPARSED: &str = "Assertion failed: (jv_equal(jv_copy(expected), jv_copy(reparsed))), function run_jq_tests, file jq_test.c, line 204.";
+#[cfg(not(target_vendor = "apple"))]
+const ASSERT_REPARSED: &str = "jq: src/jq_test.c:204: run_jq_tests: Assertion `jv_equal(jv_copy(expected), jv_copy(reparsed))' failed.";
+
+/// jq_test.c dumps the expected value (with random print flags, none of which change
+/// what the text parses back to), parses the text again, and asserts that the result
+/// equals the expected value. It doesn't for a NaN, which prints as `null`, so an
+/// expected `nan` (or `[nan]`, ...) makes jq die of SIGABRT once the test has a result;
+/// the port dies the same way.
+fn assert_reparses(expected: &Value) {
+    let text = dump_string(expected, &DumpOptions::default());
+    if !parse_sized(text.as_bytes()).is_ok_and(|reparsed| expected.equal(&reparsed)) {
+        crate::jq::platform::Error::Abort(ASSERT_REPARSED.to_owned()).abort_process();
+    }
 }
 
 /// The end of `run_jq_tests`: the summary, and jq's exits.

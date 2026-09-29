@@ -32,3 +32,30 @@ note = "match and capture object keys used to be shared strings: \"offset\" (2) 
 [[case]]
 name = "trace-match-keys-in-paths"
 args = ["-nc", "--debug-trace", '"ab" | [match("(?<x>.)"; "g")] | [paths] | .[0]']
+
+# ---------------------------------------------------------------------------
+# --run-tests: jq_test.c dumps each expected value, parses it back and asserts
+# the two are equal (#ifdef USE_DECNUM). An expected NaN prints as null, so
+# the assertion fails and jq dies of SIGABRT, after the test's report lines.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "run-tests-expected-nan-aborts"
+args = ["--run-tests"]
+stdin = "null\n0\nnan\n"
+
+[[case]]
+name = "run-tests-expected-nan-in-array-aborts"
+args = ["--run-tests"]
+stdin = ".\n[]\n[nan]\n\n1\nnull\n1\n"
+
+[[case]]
+name = "run-tests-expected-nan-in-object-aborts"
+args = ["--run-tests", "t.test"]
+files = { "t.test" = "1,2\nnull\n1\n{\"a\":nan}\n" }
+
+[[case]]
+name = "run-tests-expected-nan-without-result"
+args = ["--run-tests"]
+stdin = "empty\nnull\nnan\n"
+note = "no result to compare with: no assertion, jq reports insufficient results"
