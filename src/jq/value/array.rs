@@ -15,6 +15,7 @@
 //!   elements beyond the view's end reappear:
 //!   `[range(4)+1] | .[0:2] | .[3] = 9` gives `[1,2,3,9]`.
 
+use std::cell::Cell;
 use std::fmt;
 use std::rc::Rc;
 
@@ -41,8 +42,40 @@ struct Storage {
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        drop_values_iteratively(&mut self.items);
+        if self.items.is_empty() {
+            return;
+        }
+        // Drop the elements here (not in the drop glue after this returns)
+        // so that the nesting is counted.
+        if !drop_nested(|| self.items.clear()) {
+            drop_values_iteratively(&mut self.items);
+        }
     }
+}
+
+thread_local! {
+    /// How many container drops are in progress on this thread.
+    static DROP_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Container drops that may recurse natively before switching to
+/// [`drop_values_iteratively`]. Ordinary data never gets close, so drops
+/// stay as cheap as the default drop glue.
+const MAX_DROP_RECURSION: u32 = 256;
+
+/// Runs `drop_contents` one nesting level deeper, or returns false (without
+/// running it) when the recursion budget is used up, in which case the
+/// caller must drop iteratively.
+#[inline]
+pub(crate) fn drop_nested(drop_contents: impl FnOnce()) -> bool {
+    let depth = DROP_DEPTH.with(Cell::get);
+    if depth >= MAX_DROP_RECURSION {
+        return false;
+    }
+    DROP_DEPTH.with(|d| d.set(depth + 1));
+    drop_contents();
+    DROP_DEPTH.with(|d| d.set(depth));
+    true
 }
 
 /// Whether dropping `v` would free a container (and so recurse).
@@ -489,5 +522,43 @@ mod tests {
             nums(&a.indexes(&arr(&[2.0, 3.0]))),
             Vec::<Option<f64>>::new()
         );
+    }
+
+    #[test]
+    fn deep_drops_stay_off_the_stack() {
+        use crate::jq::value::{Object, Str};
+        // Much deeper than jq's parser allows, dropped on a small thread.
+        let t = std::thread::Builder::new()
+            .stack_size(512 << 10)
+            .spawn(|| {
+                for shape in 0..3 {
+                    let mut v = Value::from(1.0);
+                    for i in 0..100_000 {
+                        let wrap_object = match shape {
+                            0 => false,
+                            1 => true,
+                            _ => i % 2 == 0,
+                        };
+                        v = if wrap_object {
+                            let mut o = Object::new();
+                            o.insert(Str::from("a"), v);
+                            o.insert(Str::from("b"), Value::from(vec![Value::Null]));
+                            Value::Object(o)
+                        } else {
+                            Value::from(vec![v, Value::from("x")])
+                        };
+                    }
+                    drop(v);
+                    // The recursion budget is restored after every drop.
+                    assert_eq!(DROP_DEPTH.with(Cell::get), 0);
+                }
+                // Shared subtrees are only released once.
+                let leaf = Value::from(vec![Value::from(2.0)]);
+                let a = Value::from(vec![leaf.clone(), leaf.clone()]);
+                drop(a);
+                assert_eq!(leaf.refcount(), 1);
+            })
+            .unwrap();
+        t.join().unwrap();
     }
 }
