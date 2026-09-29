@@ -9661,6 +9661,9 @@ pass corpus/cli.toml:utf8-surrogate-bytes:cli 2bb16ca39ddb
 pass corpus/cli.toml:value-spans-files:cli 47c313c8b88d
 pass corpus/cli.toml:value-then-garbage:cli bebe05faafdb
 pass corpus/cli.toml:whitespace-only-stdin:cli 8f47ec831809
+pass corpus/cli_io.toml:abort-after-inputs:cli 863e8c3a8983
+pass corpus/cli_io.toml:abort-flushes-stdout-dates:cli c63671665e90
+pass corpus/cli_io.toml:abort-flushes-stdout:cli 18791e7feefc
 pass corpus/cli_io.toml:across-files-array:cli b6b4def8e3c6
 pass corpus/cli_io.toml:across-files:cli dc298b625752
 pass corpus/cli_io.toml:arg-build-configuration:cli 5cfd42174f24

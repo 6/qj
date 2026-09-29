@@ -474,6 +474,19 @@ args = ["--rawfile", "r", "a1", "--slurpfile", "s", "lines3", "-n", "-c", "$ARGS
 files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }
 
 [[case]]
+name = "abort-flushes-stdout"
+args = ["-n", "range(3), (1 | _strindices(\"a\"))"]
+
+[[case]]
+name = "abort-flushes-stdout-dates"
+args = ["-n", "\"x\", (1e30 | strflocaltime(\"%c\"))"]
+
+[[case]]
+name = "abort-after-inputs"
+args = ["-c", "if . == 3 then _strindices(1) else . end"]
+stdin = "1 2 3 4"
+
+[[case]]
 name = "modulemeta-syntax-error"
 args = ["-L", "mods", "-n", "\"bad\" | modulemeta"]
 files = { "a1" = "1", "a2" = "2", "a3" = "[1,\n2", "a4" = ",3]\n", "lines3" = "1\n2\n3\n", "bad" = "1 }\n2\n", "exact4096" = { repeat = [["1 ", 2047], ["12", 1]] }, "exact4096-ws" = { repeat = [["1 ", 2048]] }, "raw4096" = { repeat = [["x", 4095]] }, "bad-utf8" = { b64 = "YWL/Y2QK4oIK" }, "bom" = { b64 = "77u/eyJhIjoxfQo=" }, "prog-bad-utf8.jq" = { b64 = "Iv8iICsgKC5hIHwgdG9zdHJpbmcpCg==" }, "prog-nul.jq" = { b64 = "LmEAIGdhcmJhZ2U=" }, "prog-error.jq" = ".a |\n|\n", "obj" = "{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":\"x\\u00e9\"}\n", "mods/bad.jq" = "def f: .a b;\n", "mods/good.jq" = "def g: 1;\n" }

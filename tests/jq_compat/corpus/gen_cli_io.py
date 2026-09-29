@@ -218,6 +218,11 @@ CASES = [
     ("argjson-literals", ["--argjson", "x", "[1.000, 1e2, 100000000000000000001, nan]", "-n", "-c", "$x"], None, None),
     ("args-then-jsonargs", ["-n", "-c", "$ARGS", "--args", "a", "--jsonargs", "1", "--args", "b"], None, None),
     ("rawfile-and-slurpfile-named", ["--rawfile", "r", "a1", "--slurpfile", "s", "lines3", "-n", "-c", "$ARGS"], None, None),
+    # A builtin's failed assert() aborts jq: on macOS abort() flushes stdout
+    # (the earlier results appear), with glibc it doesn't.
+    ("abort-flushes-stdout", ["-n", 'range(3), (1 | _strindices("a"))'], None, None),
+    ("abort-flushes-stdout-dates", ["-n", '"x", (1e30 | strflocaltime("%c"))'], None, None),
+    ("abort-after-inputs", ["-c", 'if . == 3 then _strindices(1) else . end'], "1 2 3 4", None),
     # modules: errors reported while running (default_err_cb) and compiling
     ("modulemeta-syntax-error", ["-L", "mods", "-n", '"bad" | modulemeta'], None, None),
     ("modulemeta-good", ["-L", "mods", "-n", "-c", '"good" | modulemeta'], None, None),
