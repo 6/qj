@@ -214,16 +214,21 @@ fn base_env(work: &Path) -> Vec<(String, String)> {
     ]
 }
 
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Copy a directory tree, rewriting only files whose content differs, so a
+/// concurrent run in the same checkout never sees a missing file.
+fn sync_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     let mut entries: Vec<_> = std::fs::read_dir(from)?.collect::<Result<_, _>>()?;
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let dest = to.join(e.file_name());
         if e.file_type()?.is_dir() {
-            copy_dir(&e.path(), &dest)?;
+            sync_dir(&e.path(), &dest)?;
         } else {
-            std::fs::copy(e.path(), dest)?;
+            let content = std::fs::read(e.path())?;
+            if std::fs::read(&dest).ok().as_deref() != Some(content.as_slice()) {
+                std::fs::write(dest, content)?;
+            }
         }
     }
     Ok(())
@@ -565,9 +570,8 @@ fn jq_diff() {
 
     // Work directory: cwd for every case, HOME, test modules, input files.
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("jq_diff");
-    let modules = work.join("modules");
-    let _ = std::fs::remove_dir_all(&modules);
-    copy_dir(&root().join("tests/jq_compat/modules"), &modules).expect("copy modules");
+    let modules_src = root().join("tests/jq_compat/modules");
+    sync_dir(&modules_src, &work.join("modules")).expect("copy modules");
     std::fs::create_dir_all(work.join("home")).expect("create home");
 
     let all_jobs = cases::collect(root(), &cfg.modes).unwrap_or_else(|e| panic!("jq_diff: {e}"));
@@ -585,7 +589,7 @@ fn jq_diff() {
         .into_iter()
         .chain(cfg.extra_env.iter().cloned())
         .collect();
-    hash_dir(&mut fixtures, &modules, "modules");
+    hash_dir(&mut fixtures, &modules_src, "modules");
     let header = cache::Header {
         schema: cache::SCHEMA,
         jq_version: version.clone(),
