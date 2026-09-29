@@ -865,6 +865,50 @@ fn upstream_date_cases() {
     );
 }
 
+/// `strftime`/`strptime` use the locale from the environment, as jq's
+/// `setlocale(LC_ALL, "")` does. The locale is read once per process, so this re-runs
+/// the test binary with `LC_ALL` set and checks the result in the child.
+#[test]
+fn locale_comes_from_the_environment() {
+    if locale("de_DE.UTF-8").is_none() {
+        eprintln!("skipping: de_DE.UTF-8 not installed");
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "jq::platform::time::tests::env_locale_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("LC_ALL", "de_DE.UTF-8")
+        .env("QJ_TEST_ENV_LOCALE_CHILD", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "child failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+#[ignore = "run by locale_comes_from_the_environment"]
+fn env_locale_child() {
+    if std::env::var_os("QJ_TEST_ENV_LOCALE_CHILD").is_none() {
+        return;
+    }
+    assert_eq!(
+        strftime(TimeInput::Number(0.0), Some("%A %B")).as_deref(),
+        Ok("Donnerstag Januar")
+    );
+    assert_eq!(
+        strptime(Some("Donnerstag 1970"), Some("%A %Y")).map(|p| p.tm[0]),
+        Ok(1970.0)
+    );
+}
+
 #[test]
 fn now_is_the_current_time() {
     let expected = std::time::SystemTime::now()
