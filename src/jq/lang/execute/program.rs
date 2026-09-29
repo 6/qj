@@ -49,8 +49,9 @@ impl Program {
             cfunctions: root.globals.cfunctions.clone(),
             _root: root.clone(),
         };
-        // (function, (parent id, index among the parent's subfunctions))
-        let mut work: Vec<(Rc<Bytecode>, Option<(u32, usize)>)> = vec![(root, None)];
+        // A function and where its id goes: (parent id, index among its subfunctions).
+        type Pending = (Rc<Bytecode>, Option<(u32, usize)>);
+        let mut work: Vec<Pending> = vec![(root, None)];
         while let Some((bc, parent)) = work.pop() {
             let id = prog.funcs.len() as u32;
             if let Some((p, i)) = parent {
