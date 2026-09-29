@@ -4,4 +4,5 @@
 //! conformance targets. Ported code is derived from jq (MIT, see `LICENSE-jq`).
 
 pub mod lang;
+pub mod platform;
 pub mod value;

@@ -112,6 +112,7 @@ code 3 are required.
 | `src/jq/value/` | Track V | values, numbers, strings, arrays, objects, cmp/sort, aux ops, printer, JSON parser |
 | `src/jq/lang/lexer.rs`, `parser.rs`, `ast.rs`, `locfile.rs` | Track P | lexer + parser → AST, syntax errors |
 | `src/jq/lang/` (everything else) | Track C | lowering (parser.y actions + compile.c), bytecode, VM, linker |
+| `src/jq/platform/` | Track X | value-free platform primitives: Oniguruma regex, libc time, libm set |
 | `src/jq/builtins/` | Tracks C + B | builtin registry, C builtins, `builtin.jq` |
 | `tests/jq_diff*`, `tests/jq_compat/` | Track H | differential harness, vendored suites, corpus |
 | `src/main.rs`, `src/input.rs`, `src/parallel/`, `src/simdjson/` | Tracks CLI + IO (wave 3) | CLI, fast I/O |
@@ -138,6 +139,14 @@ interface scaffold before spawning it.
 - **P: language front-end.** Port `lexer.l` and `parser.y` to an AST that mirrors
   `parser.y`'s productions, with locations. Accept/reject must match jq exactly. Port
   locfile-style error formatting.
+- **X: platform primitives.** These don't use `Value`, so they can start now.
+  - `_match_impl`'s engine on Oniguruma (the `onig` crate) with jq's flag mapping, codepoint
+    offsets, and named captures.
+  - `strptime`/`strftime`/`strflocaltime`/`mktime`/`gmtime`/`localtime`/`now` via libc,
+    exactly as `builtin.c` uses them, with verbatim error messages.
+  - jq's libm function table (`libm.h`), matching which functions exist on macOS and Linux.
+
+  Wave 2's B2 then just adapts these to `Value`.
 
 ### Wave 2: evaluator (parallel, after wave 1 is merged)
 
@@ -150,9 +159,8 @@ interface scaffold before spawning it.
   tonumber, keys/has/contains/getpath/setpath/delpaths, string functions,
   `format` (`@text` … `@base32d`), sort/group/unique/min/max impls, error/env/halt/
   input/debug/stderr/input_filename/input_line_number/get_*/modulemeta hooks.
-- **B2: C builtins, platform.** libm functions via FFI (the exact set jq enables on the
-  platform), dates via libc (`strptime`/`strftime`/`timegm`/`mktime` exactly as `builtin.c`
-  uses them), and `_match_impl` via Oniguruma (the `onig` crate) with jq's flag mapping.
+- **B2: C builtins, platform.** Wrap Track X's primitives as C builtins (`_match_impl`,
+  dates, libm), plus any leftover `builtin.c` functions not covered by B1.
 
 ### Wave 3: integration (parallel)
 
