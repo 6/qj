@@ -78,6 +78,19 @@ CI runs jq_diff on Linux too, but only reports there until a Linux baseline is c
 - **jq's own nondeterminism.** When jq's output doesn't depend only on its input, there's
   nothing to match. For example, jq's `lgamma_r` returns an uninitialized sign for 0, -0,
   NaN and ±infinity, so the corpus leaves out those inputs. `now` reads the clock.
+- **jq's crashes and hangs.** Where jq 1.8.1 crashes or never finishes, the result depends
+  on memory layout or the stack limit rather than on jq's semantics, so qj doesn't try to
+  reproduce it. The cases the fuzzer found:
+
+  | Program | jq 1.8.1 | qj |
+  |---|---|---|
+  | `[1] \| delpaths([[nan]])` | hangs | `[]` |
+  | `[1,2] \| try delpaths([[{}]]) catch .` | SIGTRAP (double free) | jq's error message |
+  | values nested about a million deep, e.g. `reduce range(1000000) as $i (null; [.]) \| length` | SIGSEGV (stack overflow) | `1` |
+  | a module that imports itself, directly or through others | SIGSEGV | aborts with a stack-overflow message |
+
+  jq's deliberate aborts, which come from `assert()` and are deterministic, are
+  reproduced, including on macOS stdio flushing the output produced before the abort.
 
 ## Numbers
 
