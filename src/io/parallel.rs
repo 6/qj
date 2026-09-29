@@ -449,7 +449,7 @@ fn worker_thread<F: WorkerFactory>(
 /// Phase 1: the values (with their `input_line_number`) of a job's lines,
 /// up to the first line the fast path wouldn't take.
 fn parse_job(simd: &mut SimdParser, job: &Job) -> (Vec<(Value, u64)>, Option<usize>) {
-    let buf = (*job.data).as_ref();
+    let buf = job.data.padded();
     let mut values = Vec::new();
     let mut a = job.start;
     let mut nl = job.nl;

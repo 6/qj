@@ -114,9 +114,8 @@ impl FileData {
     fn new(opened: Opened) -> FileData {
         match opened {
             Opened::Whole(bytes) => {
-                let len = (*bytes).as_ref().len();
-                let last_line_start =
-                    memchr::memrchr(b'\n', (*bytes).as_ref()).map_or(0, |i| i + 1);
+                let len = bytes.data().len();
+                let last_line_start = memchr::memrchr(b'\n', bytes.data()).map_or(0, |i| i + 1);
                 FileData {
                     kind: DataKind::Whole(bytes),
                     base: 0,
@@ -141,12 +140,13 @@ impl FileData {
         }
     }
 
-    /// The buffered bytes, starting at absolute offset `self.base`, plus (for
-    /// streams) `PAD` bytes of padding.
+    /// The buffered bytes, starting at absolute offset `self.base`, plus
+    /// padding when there is some (`PAD` bytes for streams, a page for
+    /// memory maps).
     #[inline]
     fn buf(&self) -> &[u8] {
         match &self.kind {
-            DataKind::Whole(b) => (**b).as_ref(),
+            DataKind::Whole(b) => b.padded(),
             DataKind::Stream { buf, .. } => buf,
         }
     }

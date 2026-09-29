@@ -245,6 +245,35 @@ fn vm_sanity() {
     }
 }
 
+/// Where the time goes for one big document read from a file (the default
+/// opener: memory-mapped), for the fast path and jq's parser port:
+/// `QJ_SANITY_FILE=big.json cargo test --release --test io_throughput big_file_sanity -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn big_file_sanity() {
+    let Some(path) = std::env::var_os("QJ_SANITY_FILE") else {
+        eprintln!("set QJ_SANITY_FILE to a JSON file");
+        return;
+    };
+    for fast in [true, false, true] {
+        let t = Instant::now();
+        let mut r = InputReader::new(vec![path.clone()], ReaderOptions::default());
+        r.set_fast_path(fast);
+        let mut values = Vec::new();
+        while let Some(v) = r.next() {
+            values.push(v.unwrap());
+        }
+        let read = t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        drop(values);
+        let dropped = t.elapsed().as_secs_f64();
+        eprintln!(
+            "fast path {fast:5}: read {read:.3} s, drop {dropped:.3} s ({:?})",
+            r.stats()
+        );
+    }
+}
+
 struct Count(usize);
 
 impl RecordSink for Count {

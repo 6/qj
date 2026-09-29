@@ -135,4 +135,4 @@ pub mod source;
 mod tests;
 
 pub use reader::{InputReader, ReaderOptions, ReaderStats, SharedReader, input_names};
-pub use source::{FsOpener, InputMessage, MemoryOpener, Opened, Opener};
+pub use source::{FsOpener, InputBytes, InputMessage, MemoryOpener, Opened, Opener};

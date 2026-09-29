@@ -135,6 +135,13 @@ impl SimdParser {
         let tape = self.parser.parse(text, len).map_err(Rejected)?;
         let result = build(&tape, &text[..len], &mut self.stack, &mut self.keys);
         self.stack.clear();
+        if len > KEEP_CAPACITY {
+            // Free the big buffers now, not at the next document.
+            self.parser = TapeParser::new().expect("simdjson parser allocation");
+        }
+        if self.scratch.capacity() > KEEP_CAPACITY {
+            self.scratch = Vec::new();
+        }
         result
     }
 }

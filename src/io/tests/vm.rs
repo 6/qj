@@ -327,7 +327,7 @@ fn run_shared(program: &str, null_input: bool, paths: &[OsString]) -> (Vec<u8>, 
     let mut jq = Jq::new(bc);
     jq.set_input(Some(Box::new(shared.clone())));
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let mut process = |jq: &mut Jq, v: Value, out: &mut Vec<u8>, err: &mut Vec<u8>| -> i32 {
+    let process = |jq: &mut Jq, v: Value, out: &mut Vec<u8>, err: &mut Vec<u8>| -> i32 {
         let mut ret = JQ_OK_NO_OUTPUT;
         jq.start(v, 0);
         for r in jq.by_ref() {

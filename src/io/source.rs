@@ -11,8 +11,26 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::sync::Arc;
 
+/// An input's bytes, possibly followed by readable padding (which lets
+/// simdjson parse texts that end at the end of the input without a copy).
+pub trait InputBytes: Send + Sync {
+    /// The data.
+    fn data(&self) -> &[u8];
+    /// The data followed by whatever padding is readable after it (the
+    /// padding's contents don't matter).
+    fn padded(&self) -> &[u8] {
+        self.data()
+    }
+}
+
+impl InputBytes for Vec<u8> {
+    fn data(&self) -> &[u8] {
+        self
+    }
+}
+
 /// Bytes shared between the reader and parallel workers.
-pub type SharedBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
+pub type SharedBytes = Arc<dyn InputBytes>;
 
 /// An opened input.
 pub enum Opened {
@@ -219,9 +237,12 @@ pub(crate) fn open_borrowed_fd(fd: i32) -> io::Result<Opened> {
     })
 }
 
-/// A read-only private memory map of (part of) a file.
+/// A read-only private memory map of (part of) a file, followed by at
+/// least one page of readable zeros: simdjson's padding, so that a text
+/// ending at the end of the file is parsed in place.
 pub struct Mmap {
     map: *mut libc::c_void,
+    /// The whole reservation, padding included.
     map_len: usize,
     /// Offset of the data within the mapping (the map starts page-aligned).
     skip: usize,
@@ -233,31 +254,53 @@ unsafe impl Send for Mmap {}
 unsafe impl Sync for Mmap {}
 
 impl Mmap {
-    /// Maps `len` bytes of `fd` starting at `offset`. `None` if mmap fails.
+    /// Maps `len` (> 0) bytes of `fd` starting at `offset`, plus padding.
+    /// `None` if mmap fails.
     #[cfg(unix)]
     fn map(fd: i32, offset: usize, len: usize) -> Option<Mmap> {
         // SAFETY: sysconf is always safe to call.
         let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
         let start = offset / page * page;
         let skip = offset - start;
-        let map_len = skip + len;
-        // SAFETY: a fresh read-only private mapping of an open fd; checked
-        // for MAP_FAILED below.
+        let file_len = skip + len;
+        // The file's pages (the last one zero-filled past the end of the
+        // file), then a page of anonymous zeros: mapping the file itself
+        // further would fault (SIGBUS) past its last page.
+        let map_len = file_len.div_ceil(page).checked_add(1)?.checked_mul(page)?;
+        // SAFETY: a fresh anonymous read-only reservation; checked for
+        // MAP_FAILED below.
         let map = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 map_len,
                 libc::PROT_READ,
-                libc::MAP_PRIVATE,
-                fd,
-                start as libc::off_t,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
             )
         };
         if map == libc::MAP_FAILED {
             return None;
         }
+        // SAFETY: replaces the start of our own reservation with a
+        // read-only private mapping of an open fd.
+        let file = unsafe {
+            libc::mmap(
+                map,
+                file_len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE | libc::MAP_FIXED,
+                fd,
+                start as libc::off_t,
+            )
+        };
+        if file == libc::MAP_FAILED {
+            // SAFETY: unmapping our own reservation.
+            unsafe { libc::munmap(map, map_len) };
+            return None;
+        }
         // SAFETY: advice on our own mapping.
-        unsafe { libc::madvise(map, map_len, libc::MADV_SEQUENTIAL) };
+        unsafe { libc::madvise(map, file_len, libc::MADV_SEQUENTIAL) };
         Some(Mmap {
             map,
             map_len,
@@ -267,11 +310,20 @@ impl Mmap {
     }
 }
 
-impl AsRef<[u8]> for Mmap {
-    fn as_ref(&self) -> &[u8] {
-        // SAFETY: the mapping covers skip + len readable bytes for the
-        // lifetime of self.
-        unsafe { std::slice::from_raw_parts((self.map as *const u8).add(self.skip), self.len) }
+impl InputBytes for Mmap {
+    fn data(&self) -> &[u8] {
+        &self.padded()[..self.len]
+    }
+
+    fn padded(&self) -> &[u8] {
+        // SAFETY: the mapping has map_len readable bytes for the lifetime of
+        // self, and skip < map_len.
+        unsafe {
+            std::slice::from_raw_parts(
+                (self.map as *const u8).add(self.skip),
+                self.map_len - self.skip,
+            )
+        }
     }
 }
 

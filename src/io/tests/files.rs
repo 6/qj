@@ -123,18 +123,47 @@ fn stdin_redirected_from_a_file_is_mapped_from_its_offset() {
     let Opened::Whole(bytes) = open_borrowed_fd(f.as_raw_fd()).unwrap() else {
         panic!("a regular file should be mapped");
     };
-    assert_eq!((*bytes).as_ref(), b"2\n3\n");
+    assert_eq!(bytes.data(), b"2\n3\n");
     // The offset moved to the end, as if read: `-` a second time is empty.
     let Opened::Whole(again) = open_borrowed_fd(f.as_raw_fd()).unwrap() else {
         panic!("a regular file should be mapped");
     };
-    assert!((*again).as_ref().is_empty());
+    assert!(again.data().is_empty());
     // A pipe is streamed.
     let (rx, _tx) = std::io::pipe().unwrap();
     assert!(matches!(
         open_borrowed_fd(rx.as_raw_fd()).unwrap(),
         Opened::Stream { fd: Some(_), .. }
     ));
+}
+
+#[test]
+fn maps_are_followed_by_readable_padding() {
+    // SAFETY: sysconf is always safe to call.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    // Sizes around page boundaries, mapped from offsets inside a page and
+    // on one.
+    for size in [1, page - 1, page, page + 1, 3 * page] {
+        for offset in [0, 1, page - 1, page] {
+            if offset >= size {
+                continue;
+            }
+            let content: Vec<u8> = (0..size).map(|i| b'a' + (i % 26) as u8).collect();
+            let mut f = tempfile::tempfile().unwrap();
+            f.write_all(&content).unwrap();
+            f.seek(SeekFrom::Start(offset as u64)).unwrap();
+            let Opened::Whole(bytes) = open_borrowed_fd(f.as_raw_fd()).unwrap() else {
+                panic!("a regular file should be mapped");
+            };
+            let len = size - offset;
+            assert_eq!(bytes.data(), &content[offset..]);
+            let padded = bytes.padded();
+            assert_eq!(&padded[..len], bytes.data());
+            // At least a page more, all of it readable (zeros).
+            assert!(padded.len() >= len + page, "{size} {offset}");
+            assert!(padded[len..].iter().all(|&b| b == 0), "{size} {offset}");
+        }
+    }
 }
 
 struct Collect(Vec<u8>, Vec<i32>);
