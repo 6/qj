@@ -35,7 +35,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
 
-use super::args::{self, Action, ArgError, ArgValue, Options, ProgramArgument, print_flags};
+use super::args::{self, Action, ArgError, ArgValue, Options, print_flags};
 use super::input::{InputOptions, Reader};
 use crate::jq::lang::execute::{InputSource, Jq};
 use crate::jq::lang::linker::JqAttrs;
@@ -293,43 +293,41 @@ pub fn load_file_data(data: &[u8], raw: bool) -> Result<Value, Error> {
     })
 }
 
-/// A named or positional argument as a value: `jv_string` for text.
-fn arg_value(v: &ArgValue<Value>) -> Value {
-    match v {
-        ArgValue::Text(bytes) => Value::string_from_bytes(bytes),
-        ArgValue::Json(v) => v.clone(),
-    }
-}
-
 /// `ARGS` and `program_arguments` as main.c builds them for
-/// `jq_compile_args`.
-fn program_arguments(opts: &Options<Value>) -> Object {
-    let mut vars = Object::new();
-    for var in opts.program_arguments() {
-        match var {
-            ProgramArgument::Named(name, value) => {
-                vars.insert(Str::from_bytes(name), arg_value(value));
-            }
-            ProgramArgument::Args => {
-                let positional: Vec<Value> = opts.positional.iter().map(arg_value).collect();
-                let mut named = Object::new();
-                for (name, value) in &opts.named {
-                    named.insert(Str::from_bytes(name), arg_value(value));
-                }
-                let mut a = Object::new();
-                a.insert(Str::from("positional"), Value::from(positional));
-                a.insert(Str::from("named"), Value::Object(named));
-                vars.insert(Str::from("ARGS"), Value::Object(a));
-            }
-            ProgramArgument::BuildConfiguration => {
-                vars.insert(
-                    Str::from("JQ_BUILD_CONFIGURATION"),
-                    Value::from(super::usage::BUILD_CONFIGURATION),
-                );
-            }
+/// `jq_compile_args`, with main.c's sharing, which `--debug-trace` shows in
+/// refcounts. Each named value is a single value, held by `ARGS.named` (the
+/// object `--arg` and friends built) and by the compile's arguments (main.c's
+/// `jv_object_set(program_arguments, "ARGS", ...)` unshares that object into a
+/// copy, then adds `ARGS` and `JQ_BUILD_CONFIGURATION`). The values move out of
+/// `opts`, which would otherwise hold another reference. Returns the arguments
+/// and `ARGS` itself, which main.c keeps in a variable until it exits.
+fn program_arguments(opts: &mut Options<Value>) -> (Object, Value) {
+    fn take(v: &mut ArgValue<Value>) -> Value {
+        match v {
+            ArgValue::Text(bytes) => Value::string_from_bytes(bytes),
+            ArgValue::Json(v) => std::mem::replace(v, Value::Null),
         }
     }
-    vars
+    let mut named = Object::new();
+    for (name, value) in &mut opts.named {
+        named.insert(Str::from_bytes(name), take(value));
+    }
+    let positional: Vec<Value> = opts.positional.iter_mut().map(take).collect();
+    let mut a = Object::new();
+    a.insert(Str::from("positional"), Value::from(positional));
+    a.insert(Str::from("named"), Value::Object(named.clone()));
+    let args = Value::Object(a);
+    // `named` is shared with ARGS.named: inserting copies it (a named `ARGS`
+    // keeps its position and gets the real one).
+    let mut vars = named;
+    vars.insert(Str::from("ARGS"), args.clone());
+    if !vars.contains_key("JQ_BUILD_CONFIGURATION") {
+        vars.insert(
+            Str::from("JQ_BUILD_CONFIGURATION"),
+            Value::from(super::usage::BUILD_CONFIGURATION),
+        );
+    }
+    (vars, args)
 }
 
 /// `-f`: `jv_load_file(program, 1)`, which `jq_compile_args` reads as a C
@@ -569,7 +567,7 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
     let stdout_is_tty = isatty(1);
     with_stdout(|s| s.line_buffered = stdout_is_tty);
 
-    let opts = match args::with_environment_locale(|| args::parse(argv, &mut PortArgs)) {
+    let mut opts = match args::with_environment_locale(|| args::parse(argv, &mut PortArgs)) {
         Ok(Action::Run(opts)) => opts,
         Ok(Action::Help) => {
             // usage(0, 0): qj's own text.
@@ -611,7 +609,7 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
             return e.exit_code();
         }
     };
-    let ret = run_program(&opts, stdout_is_tty);
+    let ret = run_program(&mut opts, stdout_is_tty);
     exit_status(&opts, ret)
 }
 
@@ -637,7 +635,7 @@ fn exit_status(opts: &Options<Value>, (ret, last_result): (i32, i32)) -> i32 {
 
 /// Everything from the output flags to closing stdout. Returns `ret` and
 /// `last_result` for [`exit_status`].
-fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
+fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     let no_color = std::env::var_os("NO_COLOR");
     let dumpopts = opts.dumpopts(stdout_is_tty, no_color.as_deref().map(OsStrExt::as_bytes));
     let colors = match std::env::var_os("JQ_COLORS") {
@@ -677,8 +675,10 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         program.to_vec()
     };
 
-    let copts = CompileOptions {
-        args: program_arguments(opts),
+    // main.c's `ARGS` variable lives until the end of the run.
+    let (args, _main_args) = program_arguments(opts);
+    let mut copts = CompileOptions {
+        args,
         env: None,
         attrs,
     };
@@ -697,6 +697,11 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     let parallel = parallel_plan(opts, &program, &bc, &copts);
     let mut jq = Jq::new(bc);
     jq.set_jq_attrs(&copts.attrs);
+    // main.c hands these values to jq_set_attr and keeps no other reference
+    // (get_prog_origin's refcount shows in --debug-trace).
+    copts.attrs.lib_dirs = Value::Null;
+    copts.attrs.jq_origin = Value::Null;
+    copts.attrs.prog_origin = Value::Null;
     jq.set_attr("VERSION_DIR", Value::from("1.8.1"));
     jq.set_trace_writer(Some(Box::new(TraceOut)));
 
@@ -717,6 +722,8 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         raw: opts.raw_input,
         slurp: opts.slurp,
         flags: ParseFlags::from_bits(opts.parser_flags()),
+        // --debug-trace shows refcounts, and the simdjson path shares keys.
+        parser_only: opts.jq_flags & args::debug_flags::TRACE != 0,
     };
     let p = Process {
         dump: dump_options(dumpopts, &colors),

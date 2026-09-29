@@ -134,19 +134,33 @@ fn named_arguments_and_args() {
     .iter()
     .map(|s| b(s))
     .collect();
-    let o = match args::parse(&argv, &mut PortArgs) {
+    let mut o = match args::parse(&argv, &mut PortArgs) {
         Ok(Action::Run(o)) => o,
         _ => unreachable!(),
     };
-    let vars = Value::Object(program_arguments(&o));
+    let (vars, main_args) = program_arguments(&mut o);
     assert_eq!(
-        vars.to_json(),
+        Value::Object(vars.clone()).to_json(),
         format!(
             "{{\"x\":\"1\",\"y\":{{\"a\":2}},\"ARGS\":{{\"positional\":[\"a\"],\
              \"named\":{{\"x\":\"1\",\"y\":{{\"a\":2}}}}}},\"JQ_BUILD_CONFIGURATION\":{}}}",
             Value::from(crate::cli::usage::BUILD_CONFIGURATION).to_json()
         )
     );
+    // main.c's sharing, which --debug-trace shows (tests/jq_fuzz found qj's
+    // differing): ARGS is held by its variable and the arguments, and each named
+    // value by ARGS.named and the arguments, not by the options too.
+    assert_eq!(main_args.refcount(), 2);
+    assert!(vars.get("ARGS").unwrap().identical(&main_args));
+    let named = main_args.as_object().unwrap().get("named").unwrap();
+    for key in ["x", "y"] {
+        let v = vars.get(key).unwrap();
+        assert!(
+            v.identical(named.as_object().unwrap().get(key).unwrap()),
+            "{key}"
+        );
+        assert_eq!(v.refcount(), 2, "{key}");
+    }
 }
 
 #[test]

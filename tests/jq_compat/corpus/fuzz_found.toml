@@ -33,6 +33,53 @@ note = "match and capture object keys used to be shared strings: \"offset\" (2) 
 name = "trace-match-keys-in-paths"
 args = ["-nc", "--debug-trace", '"ab" | [match("(?<x>.)"; "g")] | [paths] | .[0]']
 
+# main.c's references to the program's arguments: its ARGS and
+# program_arguments variables live until exit, ARGS.named is the object the
+# named options built (so each named value is one value, also in the compile's
+# copy), and the attributes (get_prog_origin) are handed to jq_set_attr.
+
+[[case]]
+name = "trace-args-refcount"
+args = ["-nc", "--debug-trace", "$ARGS"]
+note = "qj showed $ARGS with refcount 3, jq 4"
+
+[[case]]
+name = "trace-named-arg-refcount"
+args = ["-nc", "--debug-trace", "--arg", "x", "v", "[$x, $ARGS]"]
+
+[[case]]
+name = "trace-json-and-file-args-refcount"
+args = ["-nc", "--debug-trace", "--argjson", "x", "[1]", "--slurpfile", "s", "f.json", "--rawfile", "r", "f.json", "[$x, $s, $r, $ARGS]", "--args", "a", "b"]
+files = { "f.json" = "[2]" }
+note = "qj's options held another reference to each JSON value: [1] (5) instead of (4)"
+
+[[case]]
+name = "trace-jsonargs-refcount"
+args = ["-nc", "--debug-trace", "--jsonargs", "$ARGS.positional[0], $ARGS", "[1]", "{}"]
+
+[[case]]
+name = "trace-named-ARGS-refcount"
+args = ["-nc", "--debug-trace", "--arg", "ARGS", "z", "--arg", "y", "w", "$ARGS, $ARGS.named"]
+
+[[case]]
+name = "trace-prog-origin-refcount"
+args = ["--debug-trace", "get_prog_origin"]
+stdin = "null"
+
+# The simdjson input path shares object keys between records; under
+# --debug-trace qj reads with jq's parser port, which allocates them as jq does.
+
+[[case]]
+name = "trace-input-keys-stdin"
+args = ["-c", "--debug-trace", "keys"]
+stdin = '{"a":1,"b":2} {"a":3}'
+note = "qj showed [\"a\" (2),\"b\" (2)] where jq has (1)"
+
+[[case]]
+name = "trace-input-keys-file"
+args = ["-c", "--debug-trace=all", "to_entries", "f.json"]
+files = { "f.json" = "{\"a\":\"a\"}\n{\"a\":\"b\",\"c\":1}\n" }
+
 # ---------------------------------------------------------------------------
 # --run-tests: jq_test.c dumps each expected value, parses it back and asserts
 # the two are equal (#ifdef USE_DECNUM). An expected NaN prints as null, so
