@@ -323,7 +323,12 @@ impl Jq {
         let backtracking = !self.initial_execution;
         self.initial_execution = false;
         debug_assert!(self.error.is_none());
-        match self.run(&prog, pc, backtracking, 0) {
+        let exit = if self.debug_trace != 0 {
+            self.run::<true>(&prog, pc, backtracking, 0)
+        } else {
+            self.run::<false>(&prog, pc, backtracking, 0)
+        };
+        match exit {
             Exit::Yield(v) => Some(Ok(v)),
             Exit::Done => self.error.take().map(|e| Err(Error::new(e.msg))),
             Exit::Halted => None,
@@ -333,8 +338,13 @@ impl Jq {
 
     /// The interpreter loop of `jq_next`, from `pc` (backtracking into it if
     /// `backtracking`). Natives run it re-entrantly for their sub-runs (`native.rs`),
-    /// whose base fork point is `base` (0 at the top level).
-    pub(super) fn run(
+    /// whose base fork point is `base` (0 at the top level). `TRACE` is whether
+    /// `--debug-trace` is on (`debug_trace != 0`); natives never run then.
+    ///
+    /// jq checks `jq_halted` before every instruction; only `CALL_BUILTIN` (`halt`,
+    /// `halt_error`) and natives (whose closures may halt) can halt the program, so the
+    /// check is after those.
+    pub(super) fn run<const TRACE: bool>(
         &mut self,
         prog: &Program,
         mut pc: usize,
@@ -357,17 +367,24 @@ impl Jq {
             }};
         }
 
-        loop {
-            if self.halted {
-                if self.debug_trace != 0 {
+        // `jq_halted` at the top of the loop.
+        macro_rules! halted {
+            () => {{
+                if TRACE {
                     self.trace_write(b"\t<halted>\n");
                 }
                 return Exit::Halted;
-            }
+            }};
+        }
+        if self.halted {
+            halted!();
+        }
+
+        loop {
             let mut opcode = code[pc];
             let mut raising = false;
 
-            if self.debug_trace != 0 {
+            if TRACE {
                 self.trace_instruction(prog, pc, backtracking);
             }
 
@@ -390,8 +407,7 @@ impl Jq {
                 op::LOADK => {
                     let v = self.constant(prog, code[pc]);
                     pc += 1;
-                    drop(self.pop());
-                    self.push(v);
+                    self.stk_top = self.stk.replace_value(self.stk_top, v);
                 }
 
                 op::GENLABEL => {
@@ -401,9 +417,7 @@ impl Jq {
                 }
 
                 op::DUP => {
-                    let v = self.pop();
-                    self.push(v.clone());
-                    self.push(v);
+                    self.stk_top = self.stk.dup_value(self.stk_top);
                 }
 
                 op::DUPN => {
@@ -421,31 +435,24 @@ impl Jq {
                 }
 
                 op::SUBEXP_BEGIN => {
-                    let v = self.pop();
-                    self.push(v.clone());
-                    self.push(v);
+                    self.stk_top = self.stk.dup_value(self.stk_top);
                     self.subexp_nest += 1;
                 }
 
                 op::SUBEXP_END => {
                     debug_assert!(self.subexp_nest > 0);
                     self.subexp_nest -= 1;
-                    let a = self.pop();
-                    let b = self.pop();
-                    self.push(a);
-                    self.push(b);
+                    self.stk_top = self.stk.swap_values(self.stk_top);
                 }
 
                 op::PUSHK_UNDER => {
                     let v = self.constant(prog, code[pc]);
                     pc += 1;
-                    let v2 = self.pop();
-                    self.push(v);
-                    self.push(v2);
+                    self.stk_top = self.stk.push_under(self.stk_top, v);
                 }
 
                 op::POP => {
-                    drop(self.pop());
+                    self.stk_top = self.stk.drop_value(self.stk_top);
                 }
 
                 op::APPEND => {
@@ -520,12 +527,11 @@ impl Jq {
                     let v = code[pc + 1];
                     pc += 2;
                     let var = self.local_var(prog, v, level);
-                    if self.debug_trace != 0 {
+                    if TRACE {
                         self.trace_var_refcount(v, var);
                     }
-                    drop(self.pop());
                     let val = self.stk.locals[var].clone();
-                    self.push(val);
+                    self.stk_top = self.stk.replace_value(self.stk_top, val);
                 }
 
                 // Does a load but replaces the variable with null.
@@ -534,12 +540,11 @@ impl Jq {
                     let v = code[pc + 1];
                     pc += 2;
                     let var = self.local_var(prog, v, level);
-                    if self.debug_trace != 0 {
+                    if TRACE {
                         self.trace_var_refcount(v, var);
                     }
-                    drop(self.popn());
                     let val = std::mem::take(&mut self.stk.locals[var]);
-                    self.push(val);
+                    self.stk_top = self.stk.replace_value_n(self.stk_top, val);
                 }
 
                 op::STOREVN | op::STOREV => {
@@ -552,7 +557,7 @@ impl Jq {
                     pc += 2;
                     let var = self.local_var(prog, v, level);
                     let val = self.pop();
-                    if self.debug_trace != 0 {
+                    if TRACE {
                         self.trace_store(v, &val);
                     }
                     self.stk.locals[var] = val;
@@ -574,7 +579,7 @@ impl Jq {
                     let v = code[pc + 2];
                     pc += 3;
                     let var = self.local_var(prog, v, level);
-                    if self.debug_trace != 0 {
+                    if TRACE {
                         self.trace_store(v, &val);
                     }
                     self.stk.locals[var] = val;
@@ -842,13 +847,34 @@ impl Jq {
                     pc += 2;
                     debug_assert_eq!(nargs, function.nargs);
                     let input = self.pop();
-                    let mut args = [Value::Null, Value::Null, Value::Null];
-                    for a in args.iter_mut().take(nargs - 1) {
-                        *a = self.pop();
-                    }
-                    let top = (function.f)(self, input, &mut args[..nargs - 1]);
+                    // The arguments, sized by arity (nothing extra to drop afterwards).
+                    let top = match nargs {
+                        1 => (function.f)(self, input, &mut []),
+                        2 => {
+                            let mut args = [self.pop()];
+                            (function.f)(self, input, &mut args)
+                        }
+                        3 => {
+                            let a = self.pop();
+                            let b = self.pop();
+                            let mut args = [a, b];
+                            (function.f)(self, input, &mut args)
+                        }
+                        _ => {
+                            let mut args = [Value::Null, Value::Null, Value::Null];
+                            for a in args.iter_mut().take(nargs - 1) {
+                                *a = self.pop();
+                            }
+                            (function.f)(self, input, &mut args[..nargs - 1])
+                        }
+                    };
                     match top {
-                        Ok(v) => self.push(v),
+                        Ok(v) => {
+                            self.push(v);
+                            if self.halted {
+                                halted!();
+                            }
+                        }
                         Err(e) => {
                             self.set_error(e.into_value());
                             backtrack!();
@@ -905,7 +931,7 @@ impl Jq {
                                 continue;
                             }
                             Applied::Backtrack => backtrack!(),
-                            Applied::Halted => continue,
+                            Applied::Halted => halted!(),
                             Applied::Fallback(v) => input = v,
                         }
                     }
@@ -957,7 +983,7 @@ impl Jq {
                 op::BT_NATIVE_RESUME => match self.resume_native(prog, raising) {
                     Applied::Continue(p) => pc = p,
                     Applied::Backtrack => backtrack!(),
-                    Applied::Halted => {}
+                    Applied::Halted => halted!(),
                     Applied::Fallback(_) => unreachable!(),
                 },
 
@@ -971,9 +997,9 @@ impl Jq {
     }
 
     /// `jv_array_get(jv_copy(frame_current(jq)->bc->constants), idx)`.
-    #[inline]
+    #[inline(always)]
     fn constant(&self, prog: &Program, idx: u16) -> Value {
-        let func = self.stk.frame(self.curr_frame).func;
-        prog.funcs[func as usize].bc.constants[idx as usize].clone()
+        prog.constant(|| self.stk.frame(self.curr_frame).func, idx)
+            .clone()
     }
 }

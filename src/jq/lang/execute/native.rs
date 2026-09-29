@@ -501,7 +501,7 @@ impl Jq {
         backtracking: bool,
         base: StackPtr,
     ) -> Result<Option<(Sub, Value)>, Stop> {
-        match self.run(prog, pc, backtracking, base) {
+        match self.run::<false>(prog, pc, backtracking, base) {
             Exit::SubRet(v) => Ok(Some((Sub { base }, v))),
             Exit::Base => match self.error.take() {
                 Some(e) => Err(Stop::Raise(e)),
@@ -540,7 +540,7 @@ impl Jq {
         debug_assert!(self.error.is_some());
         let prog = self.prog.clone();
         let pc = self.stack_restore().expect("sub-run base fork point");
-        match self.run(&prog, pc, true, s.base) {
+        match self.run::<false>(&prog, pc, true, s.base) {
             Exit::Base => {}
             Exit::Halted => {}
             _ => unreachable!("an unwinding sub-run produced a value (?// catches breaks)"),

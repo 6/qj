@@ -71,6 +71,13 @@ pub(super) struct Program {
     /// The constants natives return, as jq's definitions would (see
     /// [`Consts`]).
     pub native_consts: Consts,
+    /// Every function's constants, in function order, when there are at most 65536:
+    /// `code`'s constant immediates (`LOADK`, `PUSHK_UNDER`, `ERRORK`, `STORE_GLOBAL`)
+    /// are then rewritten to index this table, so an instruction needn't look up its
+    /// frame's function (the trace prints from the original `Bytecode::code`). Pointers
+    /// into the constant pools, not copies: `--debug-trace` prints refcounts, and the
+    /// pools live and stay unchanged as long as the program (`funcs[i].bc`).
+    consts: Option<Vec<*const Value>>,
     /// Keeps the tree alive: `dump_operation` follows `parent` (weak) pointers.
     pub _root: Rc<Bytecode>,
 }
@@ -89,6 +96,7 @@ impl Program {
             native_resume_pc: 0,
             has_destructure_alt: false,
             native_consts: Consts::default(),
+            consts: None,
             _root: root.clone(),
         };
         // A function and where its id goes: (parent id, index among its subfunctions).
@@ -121,7 +129,55 @@ impl Program {
         prog.native_resume_pc = prog.code.len() as u32;
         prog.code.push(pseudo::NATIVE_RESUME);
         Consts::resolve(&mut prog);
+        prog.flatten_constants();
         prog
+    }
+
+    /// Builds [`Program::consts`] and rewrites the constant immediates to index it.
+    fn flatten_constants(&mut self) {
+        let total: usize = self.funcs.iter().map(|f| f.bc.constants.len()).sum();
+        if total > u16::MAX as usize + 1 {
+            return;
+        }
+        let mut consts = Vec::with_capacity(total);
+        for f in &self.funcs {
+            let first = consts.len();
+            consts.extend(f.bc.constants.iter().map(|v| v as *const Value));
+            let (start, end) = (f.base as usize, f.base as usize + f.bc.code.len());
+            let mut pc = start;
+            while pc < end {
+                let op = self.code[pc];
+                let is_const = [
+                    Opcode::LOADK,
+                    Opcode::PUSHK_UNDER,
+                    Opcode::ERRORK,
+                    Opcode::STORE_GLOBAL,
+                ]
+                .iter()
+                .any(|o| *o as u16 == op);
+                if is_const {
+                    self.code[pc + 1] = (first + self.code[pc + 1] as usize) as u16;
+                }
+                let len = bytecode_operation_length(&self.code[pc..end]);
+                if len == 0 {
+                    break;
+                }
+                pc += len;
+            }
+        }
+        self.consts = Some(consts);
+    }
+
+    /// The constant a (rewritten) constant immediate names, for an instruction of
+    /// function `func` (`jv_array_get(frame_current(jq)->bc->constants, idx)`).
+    #[inline(always)]
+    pub fn constant(&self, func: impl FnOnce() -> u32, idx: u16) -> &Value {
+        match &self.consts {
+            // SAFETY: the pointers are into `self.funcs[..].bc.constants`, which are
+            // never changed and live as long as `self` (see `consts`).
+            Some(c) => unsafe { &*c[idx as usize] },
+            None => &self.funcs[func() as usize].bc.constants[idx as usize],
+        }
     }
 
     /// The constant pool of function `func` (what its `LOADK`s copy from).
