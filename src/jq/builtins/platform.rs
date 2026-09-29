@@ -22,13 +22,17 @@
 //! jq 1.8.1 fails a C `assert()` in two places reachable from here:
 //! `1e30 | strflocaltime("%c")` (`localtime` fails and `jv2tm` calls `jv_array_get` on
 //! the error) and, on macOS, `"100" | strptime("%j")` (Apple's `strptime` sets a day of
-//! the year that disagrees with jq's own). jq then prints the assertion to stderr and
-//! dies with `SIGABRT` (exit status 134 in a shell); `try` can't catch it, and output
-//! still sitting in jq's stdout buffer is lost. The primitives report these as
-//! [`platform::Error::Abort`], and the builtins reproduce the crash with
-//! [`platform::Error::abort_process`]: it writes the same assertion line to stderr and
-//! aborts the process, so it doesn't return and nothing after it runs (no unwinding, no
-//! buffer flushing).
+//! the year that disagrees with jq's own). jq prints the assertion to stderr and dies of
+//! `SIGABRT` (exit status 134 in a shell); `try` can't catch it. The primitives report
+//! these as [`platform::Error::Abort`], and the builtins reproduce the crash with
+//! [`platform::Error::abort_process`], which writes the same line to stderr and calls
+//! `abort()`: it doesn't return, and nothing unwinds.
+//!
+//! What happens to results jq printed before the crash but hadn't flushed yet depends on
+//! the C library: Apple's `abort()` flushes stdio, so they still reach stdout
+//! (`jq -n '1, (1e30 | strflocaltime("%c"))' > f` leaves `1` in `f`), while glibc's
+//! doesn't (since 2.27), so they're lost. `abort()` never flushes Rust-side buffers, so
+//! matching that is up to whatever buffers qj's stdout (the CLI).
 
 use super::{CFn, CFunction, CResult, Host};
 use crate::jq::platform;
@@ -174,7 +178,21 @@ pub fn f_match(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResul
     )
 }
 
-/// A match object, keys in [`Match::KEYS`] order.
+thread_local! {
+    /// The keys of match and capture objects. jq allocates each one anew for every
+    /// object; sharing them isn't observable.
+    static MATCH_KEYS: [Str; 5] = ["offset", "length", "string", "captures", "name"].map(Str::from);
+}
+
+/// `jv_string(key)` for a key of a match or capture object.
+fn match_key(key: &'static str) -> Str {
+    MATCH_KEYS
+        .with(|keys| keys.iter().find(|k| k.as_str() == key).cloned())
+        .unwrap_or_else(|| Str::from(key))
+}
+
+/// A match object, keys in [`Match::KEYS`] order: `offset` and `length` in codepoints,
+/// the matched `string`, and the `captures`.
 fn match_value(m: Match) -> Value {
     let Match {
         offset,
@@ -182,19 +200,23 @@ fn match_value(m: Match) -> Value {
         string,
         captures,
     } = m;
-    let mut captures_value = Array::new();
-    for c in captures {
-        captures_value.push(capture_value(c));
-    }
-    let mut fields = [
-        Value::number(offset as f64),
-        Value::number(length as f64),
-        Value::from(string),
-        Value::Array(captures_value),
-    ];
+    let (mut string, mut captures) = (Some(string), Some(captures));
     let mut obj = Object::with_capacity(Match::KEYS.len());
-    for (key, value) in Match::KEYS.iter().zip(fields.iter_mut()) {
-        obj.insert(Str::from(*key), std::mem::take(value));
+    for key in Match::KEYS {
+        let value = match key {
+            "offset" => Value::number(offset as f64),
+            "length" => Value::number(length as f64),
+            "string" => Value::from(string.take().unwrap_or_default()),
+            "captures" => {
+                let mut values = Array::new();
+                for c in captures.take().unwrap_or_default() {
+                    values.push(capture_value(c));
+                }
+                Value::Array(values)
+            }
+            _ => unreachable!("unknown match key {key}"),
+        };
+        obj.insert(match_key(key), value);
     }
     Value::Object(obj)
 }
@@ -220,7 +242,7 @@ fn capture_value(c: Capture) -> Value {
             "name" => name.take().map_or(Value::Null, Value::from),
             _ => unreachable!("unknown capture key {key}"),
         };
-        obj.insert(Str::from(key), value);
+        obj.insert(match_key(key), value);
     }
     Value::Object(obj)
 }
