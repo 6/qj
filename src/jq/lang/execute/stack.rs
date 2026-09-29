@@ -52,14 +52,18 @@ pub(super) struct Frame {
 }
 
 /// `struct forkpoint`: a saved machine state to resume from when backtracking.
+///
+/// The saved `value_at_path` is kept in [`Stack::saved_paths`] when it isn't `null`
+/// (only inside path expressions), which keeps every block small.
 pub(super) struct ForkPoint {
     pub saved_data_stack: StackPtr,
     pub saved_curr_frame: StackPtr,
-    pub path_len: usize,
+    pub path_len: u32,
     pub subexp_nest: i32,
-    pub value_at_path: Value,
     /// Global pc of the instruction that made the fork point.
     pub return_address: u32,
+    /// Whether the saved `value_at_path` is on [`Stack::saved_paths`] (else `null`).
+    pub saved_path: bool,
 }
 
 enum Block {
@@ -85,6 +89,9 @@ pub(super) struct Stack {
     pub closures: Vec<Closure>,
     /// Local variables of every live frame (`union frame_entry` locals).
     pub locals: Vec<Value>,
+    /// The `value_at_path`s fork points saved that aren't `null`, in fork point order
+    /// (fork points are popped last in, first out).
+    pub saved_paths: Vec<Value>,
 }
 
 impl Stack {
@@ -115,9 +122,11 @@ impl Stack {
     /// `stack_reset`: frees the region (keeping its capacity for the next run).
     pub fn reset(&mut self) {
         debug_assert!(self.slots.is_empty(), "stack freed while not empty");
+        debug_assert!(self.saved_paths.is_empty());
         self.slots.clear();
         self.closures.clear();
         self.locals.clear();
+        self.saved_paths.clear();
     }
 
     #[inline(always)]
@@ -384,7 +393,7 @@ mod tests {
         // Keep blocks small: every pushed value, frame and fork point is one slot.
         assert!(std::mem::size_of::<Value>() <= 24);
         assert!(
-            std::mem::size_of::<Slot>() <= 64,
+            std::mem::size_of::<Slot>() <= 40,
             "{}",
             std::mem::size_of::<Slot>()
         );
@@ -403,8 +412,8 @@ mod tests {
                 saved_curr_frame: 0,
                 path_len: 0,
                 subexp_nest: 0,
-                value_at_path: Value::Null,
                 return_address: 0,
+                saved_path: false,
             },
         );
         assert!(!s.pop_will_free(b));

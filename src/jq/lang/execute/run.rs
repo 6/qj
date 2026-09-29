@@ -176,8 +176,9 @@ impl Jq {
             self.stk.closures.push(cl);
         }
         // jq initializes locals to jv_invalid(); they are always stored before use.
-        let n = self.stk.locals.len() + func.nlocals as usize;
-        self.stk.locals.resize(n, Value::Null);
+        for _ in 0..func.nlocals {
+            self.stk.locals.push(Value::Null);
+        }
         self.curr_frame = new_frame_idx;
     }
 
@@ -213,16 +214,20 @@ impl Jq {
     /// current data stack and frame, then moves to the stack position `sp`.
     pub(super) fn stack_save(&mut self, retaddr: usize, sp: (StackPtr, StackPtr)) {
         let path_len = match &self.path {
-            Value::Array(a) => a.len(),
+            Value::Array(a) => a.len() as u32,
             _ => 0,
         };
+        let saved_path = !self.value_at_path.is_null();
+        if saved_path {
+            self.stk.saved_paths.push(self.value_at_path.clone());
+        }
         let fork = ForkPoint {
             saved_data_stack: self.stk_top,
             saved_curr_frame: self.curr_frame,
             path_len,
             subexp_nest: self.subexp_nest,
-            value_at_path: self.value_at_path.clone(),
             return_address: retaddr as u32,
+            saved_path,
         };
         self.fork_top = self.stk.push_fork(self.fork_top, fork);
         self.stk_top = sp.0;
@@ -257,7 +262,11 @@ impl Jq {
             };
             self.path = Value::Array(a.into_slice(0, fork.path_len as i64));
         }
-        self.value_at_path = fork.value_at_path;
+        self.value_at_path = if fork.saved_path {
+            self.stk.saved_paths.pop().expect("saved value_at_path")
+        } else {
+            Value::Null
+        };
         self.subexp_nest = fork.subexp_nest;
         self.fork_top = next;
         Some(fork.return_address as usize)
