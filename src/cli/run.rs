@@ -36,7 +36,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
 
 use super::args::{self, Action, ArgError, ArgValue, Options, ProgramArgument, print_flags};
-use super::input::{InputOptions, UtilInput};
+use super::input::{InputOptions, Reader};
 use crate::jq::lang::execute::{InputSource, Jq};
 use crate::jq::lang::linker::JqAttrs;
 use crate::jq::lang::{CompileOptions, jq_compile_args};
@@ -367,7 +367,7 @@ struct Process {
 }
 
 /// The input state, shared by the main loop and the `input` builtin.
-type SharedInput = Rc<RefCell<UtilInput>>;
+type SharedInput = Rc<RefCell<dyn Reader>>;
 
 /// `jq_util_input_next_input_cb` and the `jq_util_input_get_current_*`
 /// functions.
@@ -663,14 +663,14 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     } else {
         args::expand_file_globs(&opts.files)
     };
-    let input: SharedInput = Rc::new(RefCell::new(UtilInput::new(
+    let input: SharedInput = super::input::open_inputs(
         files,
         InputOptions {
             raw: opts.raw_input,
             slurp: opts.slurp,
             flags: ParseFlags::from_bits(opts.parser_flags()),
         },
-    )));
+    );
     jq.set_input(Some(Box::new(InputCb(input.clone()))));
 
     // debug_cb: ["DEBUG:",v] with the output flags minus pretty-printing.

@@ -23,16 +23,19 @@
 //!   by a 4095-byte boundary becomes two U+FFFD, and lines join across files.
 //!
 //! This is the CLI's input seam: `src/io`'s reader (the same interface, plus
-//! a simdjson fast path) replaces it when it lands. [`UtilInput`]'s methods
-//! are named after that reader's.
+//! a simdjson fast path) replaces it when it lands, by implementing
+//! [`Reader`] and being returned from [`open_inputs`]. [`UtilInput`]'s
+//! methods are named after that reader's.
 //!
 //! qj extension: a file whose name ends in `.gz`/`.gzip` or `.zst`/`.zstd`
 //! and that starts with that format's magic bytes is decompressed as it is
 //! read. Anything else is read as is, like jq.
 
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
+use std::rc::Rc;
 
 use crate::jq::value::{Array, Error, ParseFlags, Parser, Str, Value};
 
@@ -257,6 +260,46 @@ fn open_file(name: &[u8]) -> io::Result<Box<dyn Read>> {
 enum Current {
     Stdin,
     File(Stream),
+}
+
+/// The input reader main.c's loop and the `input` builtin share (util.c's
+/// `jq_util_input_*` API). This is the seam for replacing [`UtilInput`]:
+/// implement it and return the new reader from [`open_inputs`].
+pub trait Reader {
+    /// `jq_util_input_next_input`: the next value, a parse error, or `None`
+    /// at the end.
+    fn next(&mut self) -> Option<Result<Value, Error>>;
+    /// `jq_util_input_errors`.
+    fn failures(&self) -> usize;
+    /// `input_filename` (`null` before any input was opened).
+    fn current_filename(&self) -> Value;
+    /// `input_line_number`.
+    fn current_line(&self) -> u64;
+    /// `jq_util_input_get_position`, for error messages.
+    fn position(&self) -> String;
+}
+
+/// The reader for main.c's inputs (`-` is standard input).
+pub fn open_inputs(files: Vec<Vec<u8>>, opts: InputOptions) -> Rc<RefCell<dyn Reader>> {
+    Rc::new(RefCell::new(UtilInput::new(files, opts)))
+}
+
+impl Reader for UtilInput {
+    fn next(&mut self) -> Option<Result<Value, Error>> {
+        UtilInput::next(self)
+    }
+    fn failures(&self) -> usize {
+        UtilInput::failures(self)
+    }
+    fn current_filename(&self) -> Value {
+        UtilInput::current_filename(self)
+    }
+    fn current_line(&self) -> u64 {
+        UtilInput::current_line(self)
+    }
+    fn position(&self) -> String {
+        UtilInput::position(self)
+    }
 }
 
 /// `struct jq_util_input_state`: jq's inputs and the parser they feed.
