@@ -919,8 +919,16 @@ pub fn parse<H: ArgHost>(argv: &[Vec<u8>], host: &mut H) -> Result<Action<H::Val
                 let args = argv[i + 1..].to_vec();
                 return Ok(Action::RunTests { options: o, args });
             }
-            // qj extensions: only where jq would report an unknown option.
-            else if isoption(t, 0, "threads", is_short) {
+            // qj extensions: only where jq would report an unknown option,
+            // and not at all with QJ_JQ_COMPAT=1, where jq's "Unknown option"
+            // is the right answer.
+            else if crate::compat::exactly_jq() {
+                return Err(if is_short {
+                    ArgError::UnknownShortOption(current[0])
+                } else {
+                    ArgError::UnknownLongOption(current.to_vec())
+                });
+            } else if isoption(t, 0, "threads", is_short) {
                 if i + 1 >= argc {
                     return Err(ArgError::ThreadsMissing);
                 }
@@ -993,7 +1001,13 @@ fn named_value<H: ArgHost>(
 /// doesn't exist as a path, contains `*`, `?` or `[`, is a valid pattern and
 /// matches something. Anything else is kept as is, so where jq would fail to
 /// open a file, qj fails the same way.
+///
+/// With `QJ_JQ_COMPAT=1` nothing is expanded: every argument is a file name,
+/// as in jq.
 pub fn expand_file_globs(files: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    if crate::compat::exactly_jq() {
+        return files.to_vec();
+    }
     let mut out = Vec::with_capacity(files.len());
     for f in files {
         match glob_matches(f) {

@@ -34,7 +34,8 @@ The cases come from three places:
     duplicate keys, identity of parsed values in path expressions)
   - a generated matrix of builtins × inputs
   - command-line cases: options and their errors, exit codes, input and output modes,
-    and adversarial NDJSON
+    adversarial NDJSON, and the programs qj evaluates on simdjson's tape without building
+    values (`corpus/tape.toml`, under every output option)
 - **A ratchet**, `tests/jq_compat/diff_baseline.txt`, which fails the run when any case
   gets worse.
 
@@ -43,14 +44,18 @@ Results on macOS (arm64) against jq 1.8.1:
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 17,713 | 17,706 |
-| **Total** | **20,616** | **20,609** |
+| qj's corpus | 17,773 | 17,762 |
+| **Total** | **20,676** | **20,665** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
-[Exemptions](#exemptions). Across modes, the counts are 11,244 compact, 2,290 pretty,
-2,290 file, 1,455 NDJSON, 19 `%%FAIL`, and 3,318 command-line cases. The command-line cases
-include some that merge stdout and stderr into one file or pipe, checking that output and
-error messages interleave exactly as jq's stdio buffering interleaves them.
+[Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
+them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
+required is that qj not finish either. Across modes, the counts are 11,244 compact, 2,290
+pretty, 2,290 file, 1,455 NDJSON, 19 `%%FAIL`, and 3,378 command-line cases. The
+command-line cases include some that merge stdout and stderr into one file or pipe,
+checking that output and error messages interleave exactly as jq's stdio buffering
+interleaves them, and some that start the tool with standard descriptors closed
+(`corpus/cli_closed_fds.toml`).
 
 The older runners also pass with the default binary. They're either lenient (they compare
 outputs as JSON, with numbers as f64) or narrower, and jq_diff covers what they check:
@@ -79,6 +84,91 @@ CI runs jq_diff on Linux too, but only reports there until a Linux baseline is c
 - **jq's own nondeterminism.** When jq's output doesn't depend only on its input, there's
   nothing to match. For example, jq's `lgamma_r` returns an uninitialized sign for 0, -0,
   NaN and ±infinity, so the corpus leaves out those inputs. `now` reads the clock.
+- **jq's crashes and hangs.** Where jq 1.8.1 crashes or never finishes, the result
+  depends on the stack limit or the heap layout rather than on jq's semantics, so by
+  default qj returns a sane answer instead. `QJ_JQ_COMPAT=1` reproduces jq's behaviour;
+  see [Being exactly jq](#being-exactly-jq).
+
+  | Program | jq 1.8.1 | qj, default | qj, `QJ_JQ_COMPAT=1` |
+  |---|---|---|---|
+  | `[1] \| delpaths([[nan]])` | hangs, growing ~1.2 GB/s | `[]` | hangs, growing |
+  | a value nested deeper than the C stack allows, e.g. `reduce range(200000) as $i (null; [.]) \| length` | SIGSEGV | `1` | SIGSEGV at the same depth |
+  | a module that imports itself, directly or through others | SIGSEGV | `qj: error: ... imports itself (import cycle)`, exit 3 | SIGSEGV |
+  | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
+  | `[1,2] \| try delpaths([[{}]]) catch .` | prints the error, then SIGSEGV | prints the error, exit 0 | prints the error, exit 0 |
+
+  The last one is not reproduced in either mode, because there is nothing to reproduce.
+  jq frees the key twice in `jv_dels`' slice-delete error path, and whether that kills it
+  is decided by the heap, not by the program: `[1,2]` with an empty `{}` dies, while
+  `[1]`, `[1,2,3]`, `[1,2,3,4]`, `[range(2)]`, `{"start":"x"}` as the key, and even
+  wrapping the same expression in an array (`[[1,2] | try delpaths([[{}]]) catch .]`) all
+  exit 0 — 20 runs each, no variation. Crashing at the site would invent failures where
+  jq succeeds.
+
+  jq's deliberate aborts, which come from `assert()` and are deterministic, are
+  reproduced in **both** modes, including macOS stdio flushing the output produced before
+  the abort.
+
+## Being exactly jq
+
+`QJ_JQ_COMPAT=1` makes qj a drop-in jq 1.8.1, bugs included. It
+
+- reproduces the crashes and hangs in the table above, and
+- turns off qj's own additions: glob expansion (jq opens the pattern as a file name and
+  fails), `.gz`/`.zst` decompression (jq reads the bytes and fails to parse them), and
+  `--threads`, `--jsonl` and `--debug-timing` (jq's `Unknown option`, exit 2).
+
+Parallel processing stays on: it isn't observable. qj's help and version text and the
+`qj:` name in messages stay qj's own, as the exemptions above say. Everything else is
+unchanged — compat mode is not a different evaluator, and the default is already
+jq-exact for every program that doesn't reach one of jq's own bugs.
+
+The variable is read once at start-up, and counts as set unless it is empty or `0`.
+
+`tests/jq_compat/corpus/compat_mode.toml` checks every one of these against the jq
+binary, and `tests/compat_mode.rs` checks that the default keeps the extensions.
+
+### How exact the stack-overflow emulation is
+
+jq's `jv_free` recurses once per level of nesting, so how deep a value it can free is
+set by `ulimit -s`. Bisecting jq 1.8.1 on macOS/arm64 with
+`reduce range($n) as $i (null;[.]) | length`:
+
+| `ulimit -s` | deepest `n` jq survives | qj, `QJ_JQ_COMPAT=1` |
+|---|--:|--:|
+| 1024 KB | 16,233 | 16,232 |
+| 4096 KB | 65,385 | 65,384 |
+| 8176 KB (macOS default) | **130,664** | **130,664** |
+| 16384 KB | 261,993 | 261,992 |
+
+That is 64 bytes a frame, and `(stack_bytes - 9664) / 64` frames in total. qj measures
+the nesting depth where its own value layer stops recursing and raises `SIGSEGV` at the
+same depth, discarding its buffered output as jq discards its own. Three reasons the two
+can't agree to the last frame, all of them jq's:
+
+- no single constant fits all four limits: 8176 KB is the one that isn't a whole number
+  of 64 KB blocks, and jq loses one more frame there. qj matches the default limit
+  exactly and is one frame short at the others, so it never survives where jq dies.
+- jq's threshold depends on which operation frees the value: 130,664 through a builtin
+  such as `length`, 130,667 from `main.c`'s output path, 130,661 through `tojson`. qj
+  follows the first.
+- argv and the environment sit on top of jq's stack, so its threshold moves with them,
+  about one frame per 64 bytes: 130,664 in an ordinary shell, 130,762 under `env -i`.
+  qj's threshold doesn't move.
+
+So the two agree exactly at the default stack limit in a normal environment, and to
+within about 0.1% otherwise. `src/compat.rs` has the constants and the unit tests.
+
+Comparison is the other deep recursion that can overflow jq's stack: `jv_equal` uses
+128 bytes a frame, and jq survives 8,115 levels at 1024 KB, 32,691 at 4096 KB and 65,330
+at 8176 KB. qj does **not** emulate that one — its comparison walks iteratively and
+stops at the first difference, so there is no faithful place for the check. A program
+that makes jq overflow while comparing still crashes qj when the values are freed, but
+only past the free threshold, so depths between the two (65,331 to 130,664 at the
+default limit) differ.
+
+Printing is not a third case: jq's printer stops at `MAX_PRINT_DEPTH` (256) and writes
+`<skipped: too deep>`, which qj already does.
 
 ## Numbers
 
@@ -94,14 +184,16 @@ jq 1.8.1 is built with decNumber, and qj follows its number model exactly:
   `0.30000000000000004`, and `1 * 1e20` is `1e+20`.
 - `have_decnum` and `have_literal_numbers` are `true`.
 
-**`QJ_JQ_COMPAT` is obsolete.** qj used to compute with i64 and f64, and needed
-`QJ_JQ_COMPAT=1` to imitate jq's precision. jq's behavior is now the only one: the old
-evaluator that read the variable (and `QJ_CORE=old`, which selected it) has been removed,
-and qj ignores both.
+**`QJ_JQ_COMPAT` no longer has anything to do with numbers.** qj used to compute with
+i64 and f64 and needed the variable to imitate jq's precision; jq's number model is now
+the only one qj has, in every mode. The variable was then a no-op for a while, and now
+means "be exactly jq" — see [Being exactly jq](#being-exactly-jq). `QJ_CORE=old`, which
+selected the old evaluator, is gone and ignored.
 
 ## qj's additions
 
-qj adds a few things jq doesn't have, so they aren't part of the comparison:
+qj adds a few things jq doesn't have, so they aren't part of the comparison. Each is off
+under `QJ_JQ_COMPAT=1`, where the whole command line behaves as jq's does:
 
 - `--threads N` and `--jsonl`
 - transparent decompression of `.gz` and `.zst` inputs, chosen by file extension

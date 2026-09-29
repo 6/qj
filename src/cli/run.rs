@@ -65,7 +65,12 @@ const JQ_ERROR_UNKNOWN: i32 = 5;
 
 /// Runs qj on the new core with this process's arguments and exits.
 pub fn main() -> ! {
-    let argv = args::argv_bytes();
+    main_with(args::argv_bytes())
+}
+
+/// [`main`] with the command line given, `argv[0]` first (the `qj` binary
+/// takes it from the C `main`, see `src/main.rs`).
+pub fn main_with(argv: Vec<Vec<u8>>) -> ! {
     let code = run(&argv);
     std::process::exit(code)
 }

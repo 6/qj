@@ -78,6 +78,14 @@ harness = false
 name = "eval_regression"
 harness = false
 
+# src/main.rs is `#![no_main]` and defines `main` as a C function (see its
+# docs), so it would replace libtest's entry point: a test harness for this
+# target would just run qj. Its unit tests live in the library.
+[[bin]]
+name = "qj"
+path = "src/main.rs"
+test = false
+
 [[bin]]
 name = "bench_tools"
 path = "benches/bench_tools.rs"

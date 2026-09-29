@@ -271,6 +271,14 @@ fn default_search(attrs: &JqAttrs, value: Option<&Value>) -> Value {
 struct LibState {
     names: Vec<String>,
     defs: Vec<Block>,
+    /// Modules whose imports are still being processed, innermost last.
+    ///
+    /// jq has no such list: `load_library` adds a module to `names` only
+    /// *after* its own imports are loaded, so a module that imports itself,
+    /// directly or through others, recurses until jq's stack overflows and it
+    /// dies of `SIGSEGV`. qj reports the cycle instead, and reproduces the
+    /// crash under `QJ_JQ_COMPAT=1`.
+    loading: Vec<String>,
 }
 
 /// `jq_parse`: parses (reporting syntax errors) and lowers a program.
@@ -422,6 +430,18 @@ fn load_library(
     lib_state: &mut LibState,
 ) -> (usize, Block) {
     let mut nerrors = 0;
+    // A module already being loaded is importing itself, directly or through
+    // others; jq recurses here until its stack overflows.
+    if !is_data && lib_state.loading.contains(&lib_path) {
+        if crate::compat::exactly_jq() {
+            crate::compat::die_of_stack_overflow();
+        }
+        c.report(format!(
+            "jq: error: {} imports itself (import cycle)\n",
+            cstr(&lib_path)
+        ));
+        return (1, Block::NOOP);
+    }
     // `jv_load_file(path, 0)` parses JSON only for (non-raw) data imports.
     let data = load_file(cstr(&lib_path), !is_data || raw);
     let program = match data {
@@ -456,6 +476,7 @@ fn load_library(
                 }
                 Ok(mut program) => {
                     let lib_origin = Value::from(dirname(&lib_path));
+                    lib_state.loading.push(lib_path.clone());
                     nerrors += process_dependencies(
                         c,
                         attrs,
@@ -464,6 +485,7 @@ fn load_library(
                         &mut program,
                         lib_state,
                     );
+                    lib_state.loading.pop();
                     c.block_bind_self(program, OP_IS_CALL_PSEUDO)
                 }
             }

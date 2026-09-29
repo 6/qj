@@ -1,7 +1,7 @@
 //! Running one tool invocation with a timeout, output caps and a memory cap.
 
 use std::io::{Read, Write};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,6 +48,10 @@ pub struct Spec<'a> {
     /// tool allocate without bound.
     pub max_rss: u64,
     pub merge: Merge,
+    /// Standard descriptors to close in the child before it execs, so the
+    /// tool starts with them closed (`qj -n 1 >&-`). Rust's runtime used to
+    /// reopen those on /dev/null; C tools see them closed.
+    pub close_fds: &'a [i32],
 }
 
 /// Whether stderr goes where stdout goes, so that the order in which a tool
@@ -187,6 +191,19 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
             cmd.stdout(w.try_clone().map_err(io_err)?).stderr(w);
             merged_pipe = Some(r);
         }
+    }
+    if !spec.close_fds.is_empty() {
+        let fds: Vec<i32> = spec.close_fds.to_vec();
+        // SAFETY: runs in the forked child between the dup2s and exec;
+        // close(2) is async-signal-safe and touches no memory we share.
+        unsafe {
+            cmd.pre_exec(move || {
+                for &fd in &fds {
+                    libc::close(fd);
+                }
+                Ok(())
+            })
+        };
     }
     let mut child = cmd
         .spawn()
@@ -352,6 +369,7 @@ mod tests {
             max_output: cap,
             max_rss: 1 << 30,
             merge: Merge::No,
+            close_fds: &[],
         })
         .unwrap()
     }
@@ -368,6 +386,7 @@ mod tests {
             max_output: cap,
             max_rss: 1 << 30,
             merge,
+            close_fds: &[],
         })
         .unwrap()
     }
@@ -443,6 +462,7 @@ mod tests {
             max_output: 1 << 16,
             max_rss: 100 << 20,
             merge: Merge::No,
+            close_fds: &[],
         })
         .unwrap();
         assert_eq!(o.status, Status::MemoryLimit);
@@ -466,6 +486,7 @@ mod tests {
             max_output: 1 << 16,
             max_rss: 1 << 30,
             merge: Merge::No,
+            close_fds: &[],
         })
         .unwrap();
         // Command orders variables by name; both tools see the same order.
