@@ -293,9 +293,23 @@ struct Printer<'o> {
     spaces: usize,
     pretty: bool,
     tab: bool,
+    /// `JV_PRINT_REFCOUNT`
+    refcounts: bool,
 }
 
 impl Printer<'_> {
+    /// `put_refcnt`: ` (<refcount>)`. jq prints `jv_get_refcnt(x) - 1`
+    /// because `jv_dump_term` owns an extra copy of `x`; this printer
+    /// borrows, so the plain count is the same number.
+    #[inline]
+    fn put_refcnt(&self, x: &Value, out: &mut Vec<u8>) {
+        if self.refcounts {
+            out.extend_from_slice(b" (");
+            out.extend_from_slice(itoa::Buffer::new().format(x.refcount()).as_bytes());
+            out.push(b')');
+        }
+    }
+
     fn indent(&self, n: usize, out: &mut Vec<u8>) {
         if self.tab {
             out.resize(out.len() + n, b'\t');
@@ -318,7 +332,10 @@ impl Printer<'_> {
                 Value::Bool(false) => sink.buf().extend_from_slice(b"false"),
                 Value::Bool(true) => sink.buf().extend_from_slice(b"true"),
                 Value::Number(n) => self.number(n, indent, sink)?,
-                Value::String(s) => write_json_string(s.as_str(), self.opts.ascii, sink.buf()),
+                Value::String(s) => {
+                    write_json_string(s.as_str(), self.opts.ascii, sink.buf());
+                    self.put_refcnt(x, sink.buf());
+                }
                 Value::Array(a) => {
                     if a.is_empty() {
                         sink.buf().extend_from_slice(b"[]");
@@ -351,6 +368,7 @@ impl Printer<'_> {
                             out.extend_from_slice(c);
                         }
                         out.push(b']');
+                        self.put_refcnt(x, out);
                     }
                 }
                 Value::Object(o) => {
@@ -378,6 +396,7 @@ impl Printer<'_> {
                             out.extend_from_slice(c);
                         }
                         out.push(b'}');
+                        self.put_refcnt(x, out);
                     }
                 }
             }
@@ -463,6 +482,7 @@ fn printer(opts: &DumpOptions) -> Printer<'_> {
         spaces,
         pretty,
         tab,
+        refcounts: false,
     }
 }
 
@@ -480,6 +500,21 @@ pub fn dump<W: Write>(v: &Value, opts: &DumpOptions, w: &mut W) -> io::Result<()
         w,
     };
     printer(opts).term(v, 0, &mut sink)?;
+    sink.w.write_all(&sink.buf)
+}
+
+/// `jv_dump(v, flags | JV_PRINT_REFCOUNT)`, as `--debug-trace` prints stack
+/// values: like [`dump`], with ` (<n>)` after every string and every
+/// non-empty array or object, `n` being its [`Value::refcount`]. That is the
+/// number jq prints when the caller holds the references jq's VM would.
+pub fn dump_refcounted<W: Write>(v: &Value, opts: &DumpOptions, w: &mut W) -> io::Result<()> {
+    let mut sink = WriterSink {
+        buf: Vec::with_capacity(256),
+        w,
+    };
+    let mut p = printer(opts);
+    p.refcounts = true;
+    p.term(v, 0, &mut sink)?;
     sink.w.write_all(&sink.buf)
 }
 

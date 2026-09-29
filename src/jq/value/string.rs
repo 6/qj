@@ -61,6 +61,16 @@ impl Str {
         self.0.chars().count()
     }
 
+    /// The contents as C sees them through `jv_string_value`: up to the
+    /// first NUL. Use this wherever jq formats a string with `%s` (error
+    /// messages) or passes it to a C string function.
+    pub fn as_c_str(&self) -> &str {
+        match memchr::memchr(0, self.as_bytes()) {
+            Some(i) => &self.0[..i],
+            None => &self.0,
+        }
+    }
+
     /// Mutable access, copying the contents first if they are shared
     /// (jq's refcount-1 in-place mutation).
     #[inline]
@@ -71,6 +81,11 @@ impl Str {
     /// Whether this is the only reference to the underlying buffer.
     pub fn is_unique(&self) -> bool {
         Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) == 0
+    }
+
+    /// The number of references to the buffer (`jv_get_refcnt`).
+    pub fn refcount(&self) -> usize {
+        Rc::strong_count(&self.0)
     }
 
     /// Pointer identity (as used by `jv_equal`'s fast path and `jv_identical`).

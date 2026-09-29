@@ -223,5 +223,13 @@ interface scaffold before spawning it.
   `bytecode.rs`.
 - Pending policy: the usage hint and other mid-line program names should say `qj`, with
   the harness normalizing them the same way as the prefix. This lands with the wave 3 CLI.
+- 2026-09-29: **B1 binops merged** early (`cbb5a49`) for constant folding. **B2 merged**
+  (`245b459`). C2 (VM) started, merging C1's `bytecode.rs` as it lands.
+- Wave 3 CLI requirements from B2:
+  1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
+     (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
+     aborting on macOS only, via an additive `Host` hook.
+  2. `%Z` for pre-1900 local times depends on the order of earlier libc time calls in the
+     process, so run programs that use localtime/strflocaltime/mktime sequentially.
 - Harness hygiene: jq's `lgamma_r` sign is random at 0, -0, NaN and ±inf (uninitialized in
   jq), so exclude those inputs from the corpus.

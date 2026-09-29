@@ -811,8 +811,53 @@ impl Parser {
         if n > 0 {
             self.token.extend_from_slice(&buf[..n]);
             self.column += n as i32;
+            self.last_ch_was_ws = false;
         }
         pos + n
+    }
+
+    /// Consumes a run of literal characters (`scan` only appends them to
+    /// the token: a literal character never completes a value). In `--seq`
+    /// mode RS is left to `scan`.
+    #[inline]
+    fn fast_literal_run(&mut self, pos: usize) -> usize {
+        let buf = &self.buf[pos..];
+        let seq = self.flags.seq;
+        let n = buf
+            .iter()
+            .position(|&c| classify(c) != ChClass::Literal || (seq && c == RS))
+            .unwrap_or(buf.len());
+        if n > 0 {
+            self.token.extend_from_slice(&buf[..n]);
+            self.column += n as i32;
+            self.last_ch_was_ws = false;
+        }
+        pos + n
+    }
+
+    /// After `scan` handled a whitespace character without producing a
+    /// value, the whitespace that follows cannot produce one either (the
+    /// token is flushed and any finished value was already returned), so it
+    /// only moves the position.
+    #[inline]
+    fn skip_whitespace_run(&mut self, pos: usize) -> usize {
+        let buf = &self.buf;
+        let mut p = pos;
+        while p < buf.len() {
+            match buf[p] {
+                b'\n' => {
+                    self.line += 1;
+                    self.column = 0;
+                }
+                b' ' | b'\t' | b'\r' => self.column += 1,
+                _ => break,
+            }
+            p += 1;
+        }
+        if p > pos {
+            self.last_ch_was_ws = true;
+        }
+        p
     }
 
     /// `jv_parser_next`: the next value, `Some(Err)` for a parse error, or
@@ -843,11 +888,21 @@ impl Parser {
         let mut msg: ScanResult = Ok(false);
         let fast_strings = !self.flags.seq;
         while matches!(msg, Ok(false)) && self.buf_pos < self.buf.len() {
-            if fast_strings && self.st == State::String {
-                self.buf_pos = self.fast_string_run(self.buf_pos);
-                if self.buf_pos >= self.buf.len() {
-                    break;
+            match self.st {
+                State::String if fast_strings => {
+                    self.buf_pos = self.fast_string_run(self.buf_pos);
+                    if self.buf_pos >= self.buf.len() {
+                        break;
+                    }
                 }
+                State::Normal => {
+                    let c = self.buf[self.buf_pos];
+                    if classify(c) == ChClass::Literal && !(self.flags.seq && c == RS) {
+                        self.buf_pos = self.fast_literal_run(self.buf_pos);
+                        continue;
+                    }
+                }
+                _ => {}
             }
             ch = self.buf[self.buf_pos];
             self.buf_pos += 1;
@@ -864,6 +919,12 @@ impl Parser {
                 continue; // need to resync, wait for RS
             }
             msg = self.scan(ch, &mut value);
+            if matches!(msg, Ok(false))
+                && self.st == State::Normal
+                && classify(ch) == ChClass::Whitespace
+            {
+                self.buf_pos = self.skip_whitespace_run(self.buf_pos);
+            }
         }
         match msg {
             Ok(true) => value.map(Ok),

@@ -28,9 +28,15 @@ pub enum Error {
     /// (`jv_invalid_with_msg(jv_string(msg))`). `try` can catch it.
     Msg(String),
     /// jq 1.8.1 fails a C `assert()` at this point and aborts the whole process: `try`
-    /// cannot catch it, the process dies with SIGABRT (a shell reports exit status 134),
-    /// and stdio output that jq had buffered but not yet flushed is lost. The string is
-    /// the line the platform's assert handler writes to stderr, without the newline.
+    /// cannot catch it, and the process dies with SIGABRT (a shell reports exit status
+    /// 134). The string is the line the platform's assert handler writes to stderr,
+    /// without the newline.
+    ///
+    /// What happens to output jq had buffered but not yet written depends on the libc:
+    /// Apple's `abort()` flushes stdio, so on macOS every earlier result still appears
+    /// (`jq -n 'range(5), (1e30|strflocaltime("%c"))' | cat` prints 0 to 4, then exits
+    /// 134), while glibc's `abort()` (since 2.27) doesn't flush, so there the unflushed
+    /// part of stdout is lost.
     ///
     /// Whether the port reproduces the crash is the caller's decision; see
     /// [`Error::abort_process`].
@@ -51,8 +57,18 @@ impl Error {
 
     /// Reproduce jq's crash for an [`Error::Abort`]: write the assertion line to stderr
     /// and abort the process. For [`Error::Msg`] this does the same with the message.
+    ///
+    /// On Apple targets this flushes `std::io::stdout()` first, as Apple's `abort()`
+    /// flushes stdio; elsewhere it doesn't, like glibc's. Rust's abort never flushes
+    /// anything, so a caller that buffers output itself (a `BufWriter`) must flush it
+    /// before calling this to match jq on macOS, and must not to match jq on glibc.
     pub fn abort_process(&self) -> ! {
         eprintln!("{}", self.message());
+        #[cfg(target_vendor = "apple")]
+        {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
         std::process::abort()
     }
 }
