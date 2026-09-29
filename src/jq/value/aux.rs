@@ -88,7 +88,7 @@ impl Value {
     pub fn get(&self, k: &Value) -> Result<Value, Error> {
         match (self, k) {
             (Value::Object(o), Value::String(key)) => {
-                Ok(o.get(key.as_str()).cloned().unwrap_or(Value::Null))
+                Ok(o.get_str(key).cloned().unwrap_or(Value::Null))
             }
             (Value::Array(a), Value::Number(n)) => {
                 if n.is_nan() {

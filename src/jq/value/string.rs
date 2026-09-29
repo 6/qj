@@ -27,6 +27,9 @@ use super::{Array, Value};
 #[repr(C)]
 struct Header {
     strong: Cell<usize>,
+    /// [`hash_key`] of the contents once computed (0 until then; the hash
+    /// is never 0).
+    hash: Cell<u64>,
     len: usize,
     cap: usize,
 }
@@ -61,6 +64,7 @@ impl Str {
         unsafe {
             p.as_ptr().write(Header {
                 strong: Cell::new(1),
+                hash: Cell::new(0),
                 len: 0,
                 cap,
             });
@@ -225,7 +229,9 @@ impl Str {
         // `bytes.len()` more bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.data().add(len), bytes.len());
-            (*self.0.as_ptr()).len = len + bytes.len();
+            let h = &mut *self.0.as_ptr();
+            h.len = len + bytes.len();
+            h.hash.set(0);
         }
     }
 
@@ -266,6 +272,40 @@ impl Str {
     pub fn into_string(self) -> String {
         self.as_str().to_owned()
     }
+
+    /// [`hash_key`] of the contents, cached in the string (objects index
+    /// their keys by it).
+    #[inline]
+    pub(crate) fn key_hash(&self) -> u64 {
+        let h = self.header().hash.get();
+        if h != 0 {
+            return h;
+        }
+        let h = hash_key(self.as_bytes());
+        self.header().hash.set(h);
+        h
+    }
+
+    /// Records `h`, which must be [`hash_key`] of the contents, as the
+    /// cached hash (for callers that hashed the bytes already).
+    #[inline]
+    pub(crate) fn set_key_hash(&self, h: u64) {
+        debug_assert_eq!(h, hash_key(self.as_bytes()));
+        self.header().hash.set(h);
+    }
+}
+
+/// The hash of an object key's bytes (see [`Str::key_hash`]); never 0.
+/// The seed is random per process.
+#[inline]
+pub(crate) fn hash_key(bytes: &[u8]) -> u64 {
+    use std::hash::BuildHasher;
+    use std::sync::OnceLock;
+    static SEED: OnceLock<u64> = OnceLock::new();
+    let seed =
+        *SEED.get_or_init(|| foldhash::fast::RandomState::default().hash_one(0x51_7c_c1_b7u64));
+    let h = foldhash::fast::FixedState::with_seed(seed).hash_one(bytes);
+    if h == 0 { 1 } else { h }
 }
 
 impl Clone for Str {
