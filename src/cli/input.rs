@@ -333,7 +333,7 @@ pub fn open_inputs(files: Vec<Vec<u8>>, opts: InputOptions) -> Rc<RefCell<dyn Re
 }
 
 /// `src/io`'s reader over main.c's inputs, opening them like [`UtilInput`]
-/// does (see [`CliOpener`]).
+/// does (see `CliOpener`).
 pub fn open_reader(files: Vec<Vec<u8>>, opts: InputOptions) -> crate::io::InputReader {
     use std::os::unix::ffi::OsStringExt;
     let names = files

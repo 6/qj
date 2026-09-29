@@ -2,6 +2,12 @@
 //! byte for byte, made fast with simdjson, memory mapping and parallel
 //! processing of line-delimited records.
 //!
+//! The port's CLI uses it in `src/cli/input.rs` (`open_inputs`/`open_reader`
+//! return an [`InputReader`] behind the CLI's `Reader` trait, opened with a
+//! `CliOpener`) and `src/cli/run.rs` (`parallel_plan` decides whether a
+//! program's records are independent, and `run_parallel` runs `main.c`'s
+//! loop on [`parallel::run_with`], one compiled `Jq` per thread).
+//!
 //! # Public API (for the CLI)
 //!
 //! ## Reading inputs: [`InputReader`]
