@@ -265,6 +265,20 @@ interface scaffold before spawning it.
   JSON is still ~4x slower than the old passthroughs, and that's the target of the performance
   phase. Programs using `now` now run sequentially (`4a098fb`). Started: CL (delete the old
   core). FZ is still running.
+- 2026-09-29: **FZ merged** (`0aef9d1`): about 430k differential fuzz cases, every
+  divergence fixed at its source. The final 100k-case campaign was clean (the last 91,417
+  consecutive cases). jq_diff: 19,745/19,752 strict; the 7 misses are exempt help/version text.
+- 2026-09-29: **User decisions.**
+  1. `QJ_JQ_COMPAT=1` becomes "be exactly jq": it reproduces jq's crashes and hangs and turns
+     off globbing, decompression and qj-only flags. The default keeps sane behavior plus the
+     extras.
+  2. Verify Linux by pushing a non-main branch for CI, but only after the macOS performance
+     regressions against the old core are fixed.
+  Tracks: PF (data path: value layer, simd → Value, printer, memory, NDJSON extraction),
+  PF-B (VM hot paths plus faster, provably identical jq-defined builtins: walk 36x,
+  tostream 4.8x, paths 2.4–3.9x, ascii_downcase 3.7x, from_entries 3x, with_entries 1.9x
+  slower than the old core), CM (compat mode, plus a closed-stdout bug: `qj -n 1 >&-` exits 0
+  where jq reports "writing output failed" and exits 2).
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
