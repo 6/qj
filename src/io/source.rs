@@ -40,6 +40,42 @@ pub trait Opener {
     fn open(&mut self, name: &OsStr) -> io::Result<Opened>;
 }
 
+/// Serves named inputs from memory (for tests, fuzzing and embedding).
+/// Unknown names fail to open with `ENOENT`.
+#[derive(Default)]
+pub struct MemoryOpener {
+    files: Vec<(OsString, Result<SharedBytes, i32>)>,
+}
+
+impl MemoryOpener {
+    pub fn new() -> MemoryOpener {
+        MemoryOpener::default()
+    }
+
+    /// Adds an input (`"-"` for standard input).
+    pub fn add(&mut self, name: impl Into<OsString>, data: impl Into<Vec<u8>>) -> &mut Self {
+        self.files
+            .push((name.into(), Ok(Arc::new(data.into()) as SharedBytes)));
+        self
+    }
+
+    /// Adds an input that fails to open with `errno`.
+    pub fn add_error(&mut self, name: impl Into<OsString>, errno: i32) -> &mut Self {
+        self.files.push((name.into(), Err(errno)));
+        self
+    }
+}
+
+impl Opener for MemoryOpener {
+    fn open(&mut self, name: &OsStr) -> io::Result<Opened> {
+        match self.files.iter().find(|(n, _)| n == name) {
+            Some((_, Ok(data))) => Ok(Opened::Whole(data.clone())),
+            Some((_, Err(errno))) => Err(io::Error::from_raw_os_error(*errno)),
+            None => Err(io::Error::from_raw_os_error(2)), // ENOENT
+        }
+    }
+}
+
 /// The default opener: the file system and standard input.
 ///
 /// * `-` is standard input; when it is a regular file (`< file`) it is
