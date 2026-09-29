@@ -307,6 +307,22 @@ mod tests {
         }
     }
 
+    /// Nested closures give deeply nested subfunctions (each argument is a lambda
+    /// inside the enclosing one); they resolve through `level` frame links.
+    #[test]
+    fn nested_closures() {
+        let depth = 150;
+        let program = format!(
+            "def f(x): x + 1; . as $a | {}$a{}",
+            "f(".repeat(depth),
+            ")".repeat(depth)
+        );
+        assert_eq!(outputs(&program, "0"), format!("{depth}\n"));
+        let program = format!("[{}.{}]", "(.[] | ".repeat(40), ")".repeat(40));
+        let input = format!("{}1{}", "[".repeat(40), "]".repeat(40));
+        assert_eq!(outputs(&program, &input), "[1]\n");
+    }
+
     #[test]
     fn halting_and_callbacks() {
         let out = run(

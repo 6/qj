@@ -39,7 +39,9 @@ pub(super) struct Program {
 }
 
 impl Program {
-    /// Flattens the tree rooted at `root` (the top-level program).
+    /// Flattens the tree rooted at `root` (the top-level program), numbering functions
+    /// in depth-first preorder. Iterative: jq's parser accepts function nesting several
+    /// thousand levels deep.
     pub fn new(root: Rc<Bytecode>) -> Program {
         let mut prog = Program {
             code: Vec::new(),
@@ -47,24 +49,26 @@ impl Program {
             cfunctions: root.globals.cfunctions.clone(),
             _root: root.clone(),
         };
-        prog.add(&root);
-        prog
-    }
-
-    fn add(&mut self, bc: &Rc<Bytecode>) -> u32 {
-        let id = self.funcs.len() as u32;
-        self.funcs.push(Func {
-            base: self.code.len() as u32,
-            nclosures: bc.nclosures as u32,
-            nlocals: bc.nlocals as u32,
-            subfunctions: Vec::with_capacity(bc.subfunctions.len()),
-            bc: bc.clone(),
-        });
-        self.code.extend_from_slice(&bc.code);
-        for sub in &bc.subfunctions {
-            let sub_id = self.add(sub);
-            self.funcs[id as usize].subfunctions.push(sub_id);
+        // A function and where its id goes: (parent id, index among its subfunctions).
+        type Pending = (Rc<Bytecode>, Option<(u32, usize)>);
+        let mut work: Vec<Pending> = vec![(root, None)];
+        while let Some((bc, parent)) = work.pop() {
+            let id = prog.funcs.len() as u32;
+            if let Some((p, i)) = parent {
+                prog.funcs[p as usize].subfunctions[i] = id;
+            }
+            prog.funcs.push(Func {
+                base: prog.code.len() as u32,
+                nclosures: bc.nclosures as u32,
+                nlocals: bc.nlocals as u32,
+                subfunctions: vec![0; bc.subfunctions.len()],
+                bc: bc.clone(),
+            });
+            prog.code.extend_from_slice(&bc.code);
+            for (i, sub) in bc.subfunctions.iter().enumerate().rev() {
+                work.push((sub.clone(), Some((id, i))));
+            }
         }
-        id
+        prog
     }
 }
