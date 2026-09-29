@@ -69,6 +69,18 @@ pub trait Host {
     fn current_filename(&self) -> Option<Value>;
     /// `jq_util_input_get_current_line`.
     fn current_line(&self) -> Value;
+    /// execute.c `_jq_path_append(jq, v, p, value_at_path)`, for `f_getpath`: inside a
+    /// path expression (`path(...)`, `paths`, `|=`, ...), when `v` is the value at the
+    /// path being tracked, extend that path by `p` (an array of keys) and make
+    /// `value_at_path` the tracked value. Returns `value_at_path`, which is what
+    /// `getpath` returns. f_getpath is
+    /// `host.path_append(input, path, input.getpath(&path))` (passing both by value).
+    ///
+    /// The default is the behavior outside path expressions: return `value_at_path`.
+    fn path_append(&mut self, v: Value, p: Value, value_at_path: CResult) -> CResult {
+        let _ = (v, p);
+        value_at_path
+    }
 }
 
 /// jq's `function_list[]`, in jq's order: `libm.h` first, then the rest.
@@ -157,11 +169,6 @@ static FUNCTION_LIST_TAIL: &[CFunction] = &[
     CFunction { name: "have_decnum", nargs: 1, f: general::f_have_decnum },
     CFunction { name: "have_literal_numbers", nargs: 1, f: general::f_have_decnum },
 ];
-
-/// Error for a builtin whose port hasn't landed yet (scaffolding only).
-pub(crate) fn not_ported(name: &str) -> Error {
-    Error::msg(format!("{name} is not ported yet"))
-}
 
 #[cfg(test)]
 mod tests {
