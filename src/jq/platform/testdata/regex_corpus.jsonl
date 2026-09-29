@@ -1,0 +1,650 @@
+{"src": "onig.test", "input": "abc", "re": "( )*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "onig.test", "input": "abc", "re": "( )*", "flags": "gn", "test": false, "out": "[]"}
+{"src": "onig.test", "input": "ab", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "āáàä", "re": "a", "flags": "gi", "test": false, "out": "[]"}
+{"src": "onig.test", "input": "foo bar", "re": "(bar)", "flags": null, "test": false, "out": "[{\"offset\":4,\"length\":3,\"string\":\"bar\",\"captures\":[{\"offset\":4,\"length\":3,\"string\":\"bar\",\"name\":null}]}]"}
+{"src": "onig.test", "input": "ā bar with a combining codepoint U+0304", "re": "bar", "flags": null, "test": false, "out": "[{\"offset\":3,\"length\":3,\"string\":\"bar\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a bār", "re": "bār", "flags": null, "test": false, "out": "[{\"offset\":2,\"length\":4,\"string\":\"bār\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "ā two-codepoint grapheme", "re": ".+?\\b", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ā\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "foo bar foo foo  foo", "re": "foo (?<bar123>bar)? foo", "flags": "ig", "test": false, "out": "[{\"offset\":0,\"length\":11,\"string\":\"foo bar foo\",\"captures\":[{\"offset\":4,\"length\":3,\"string\":\"bar\",\"name\":\"bar123\"}]},{\"offset\":12,\"length\":8,\"string\":\"foo  foo\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"bar123\"}]}]"}
+{"src": "onig.test", "input": "a", "re": "(?<x>a)?b?", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "b", "re": "(?<x>a)?b?", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"b\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "c", "re": "(?<x>a)?b?", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "a", "re": "(?<x>a?)?b?", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "b", "re": "(?<x>a?)?b?", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"b\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "c", "re": "(?<x>a?)?b?", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "abc", "re": "( )*", "flags": "gn", "test": true, "out": "false"}
+{"src": "onig.test", "input": "ā", "re": "ā", "flags": null, "test": true, "out": "true"}
+{"src": "onig.test", "input": "xyzzy-14", "re": "(?<a>[a-z]+)-(?<n>[0-9]+)", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":8,\"string\":\"xyzzy-14\",\"captures\":[{\"offset\":0,\"length\":5,\"string\":\"xyzzy\",\"name\":\"a\"},{\"offset\":6,\"length\":2,\"string\":\"14\",\"name\":\"n\"}]}]"}
+{"src": "onig.test", "input": "a,b, c, d, e,f", "re": ", ", "flags": "", "test": false, "out": "[{\"offset\":3,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": ", a,b, c, d, e,f, ", "re": ", ", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": "abcdef", "re": "^(?<head>.)", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"head\"}]}]"}
+{"src": "onig.test", "input": "a,b, c, d, e,f", "re": ", ", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":6,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":9,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": ", a,b, c, d, e,f, ", "re": ", ", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":5,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":8,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":11,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":16,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a1b2", "re": "(?<d>\\d)", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"1\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"1\",\"name\":\"d\"}]},{\"offset\":3,\"length\":1,\"string\":\"2\",\"captures\":[{\"offset\":3,\"length\":1,\"string\":\"2\",\"name\":\"d\"}]}]"}
+{"src": "onig.test", "input": "aaaaa", "re": "a", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":3,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":4,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "", "re": "(.*)", "flags": "xg", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "onig.test", "input": "", "re": "", "flags": "gg", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a", "re": "^", "flags": "gg", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a", "re": "", "flags": "gg", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a", "re": "$", "flags": "gg", "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "qux", "re": "(?=u)", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "aaa", "re": "^.*a", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"aaa\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "aaa", "re": "^.*?a", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a", "re": "a", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a,b, c, d, e,f", "re": ", *", "flags": "", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\",\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a,b, c, d, e,f", "re": ", *", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\",\",\"captures\":[]},{\"offset\":3,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":6,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":9,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":12,\"length\":1,\"string\":\",\",\"captures\":[]}]"}
+{"src": "onig.test", "input": ", a,b, c, d, e,f, ", "re": ", *", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": ", a,b, c, d, e,f, ", "re": ", *", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":3,\"length\":1,\"string\":\",\",\"captures\":[]},{\"offset\":5,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":8,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":11,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":14,\"length\":1,\"string\":\",\",\"captures\":[]},{\"offset\":16,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a,b, c, d, e,f", "re": ", +", "flags": "", "test": false, "out": "[{\"offset\":3,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": "a,b, c, d, e,f", "re": ", +", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":6,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":9,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": ", a,b, c, d, e,f, ", "re": ", +", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": ", a,b, c, d, e,f, ", "re": ", +", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":5,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":8,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":11,\"length\":2,\"string\":\", \",\"captures\":[]},{\"offset\":16,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "onig.test", "input": "", "re": "b+", "flags": "gi", "test": false, "out": "[]"}
+{"src": "onig.test", "input": "bBb", "re": "b+", "flags": "gi", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"bBb\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "abcABBBCabbbc", "re": "b+", "flags": "gi", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]},{\"offset\":4,\"length\":3,\"string\":\"BBB\",\"captures\":[]},{\"offset\":9,\"length\":3,\"string\":\"bbb\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "Abcabc", "re": "(?<x>.)[^a]*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"Abc\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"A\",\"name\":\"x\"}]},{\"offset\":3,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":3,\"length\":1,\"string\":\"a\",\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "A1 B2 CD", "re": "(?<x>.)(?<y>[0-9])", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"A1\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"A\",\"name\":\"x\"},{\"offset\":1,\"length\":1,\"string\":\"1\",\"name\":\"y\"}]},{\"offset\":3,\"length\":2,\"string\":\"B2\",\"captures\":[{\"offset\":3,\"length\":1,\"string\":\"B\",\"name\":\"x\"},{\"offset\":4,\"length\":1,\"string\":\"2\",\"name\":\"y\"}]}]"}
+{"src": "onig.test", "input": "ABC DEF", "re": "\\b(?<x>.)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"A\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"A\",\"name\":\"x\"}]},{\"offset\":3,\"length\":1,\"string\":\" \",\"captures\":[{\"offset\":3,\"length\":1,\"string\":\" \",\"name\":\"x\"}]},{\"offset\":4,\"length\":1,\"string\":\"D\",\"captures\":[{\"offset\":4,\"length\":1,\"string\":\"D\",\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "123foo456bar", "re": "[^a-z]*(?<x>[a-z]*)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":6,\"string\":\"123foo\",\"captures\":[{\"offset\":3,\"length\":3,\"string\":\"foo\",\"name\":\"x\"}]},{\"offset\":6,\"length\":6,\"string\":\"456bar\",\"captures\":[{\"offset\":9,\"length\":3,\"string\":\"bar\",\"name\":\"x\"}]},{\"offset\":12,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":12,\"string\":\"\",\"length\":0,\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "’", "re": "(?<x>.)", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"’\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"’\",\"name\":\"x\"}]}]"}
+{"src": "onig.test", "input": "a", "re": "a", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "aB", "re": "(?<a>.)", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"a\"}]}]"}
+{"src": "onig.test", "input": "aB", "re": "(?<a>.)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"a\"}]},{\"offset\":1,\"length\":1,\"string\":\"B\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"B\",\"name\":\"a\"}]}]"}
+{"src": "onig.test", "input": "ab", "re": "c", "flags": "g", "test": false, "out": "[]"}
+{"src": "onig.test", "input": "abAABBabA", "re": "a+", "flags": "ig", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":2,\"length\":2,\"string\":\"AA\",\"captures\":[]},{\"offset\":6,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":8,\"length\":1,\"string\":\"A\",\"captures\":[]}]"}
+{"src": "onig.test", "input": "abAABBabA", "re": "b+", "flags": "ig", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]},{\"offset\":4,\"length\":2,\"string\":\"BB\",\"captures\":[]},{\"offset\":7,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "__b", "re": "^_+", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"__\",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "_a", "re": "^_+", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"_\",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "foo", "re": "foo", "flags": null, "test": true, "out": "true"}
+{"src": "manonig.test", "input": "xabcd", "re": "a b c # spaces are ignored", "flags": "ix", "test": true, "out": "true"}
+{"src": "manonig.test", "input": "ABC", "re": "a b c # spaces are ignored", "flags": "ix", "test": true, "out": "true"}
+{"src": "manonig.test", "input": "abc abc", "re": "(abc)+", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"name\":null}]},{\"offset\":4,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":4,\"length\":3,\"string\":\"abc\",\"name\":null}]}]"}
+{"src": "manonig.test", "input": "foo bar foo", "re": "foo", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"foo\",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "foo bar FOO", "re": "foo", "flags": "ig", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"foo\",\"captures\":[]},{\"offset\":8,\"length\":3,\"string\":\"FOO\",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "abc", "re": ".", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"c\",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "abcdefabc", "re": "c", "flags": "g", "test": false, "out": "[{\"offset\":2,\"length\":1,\"string\":\"c\",\"captures\":[]},{\"offset\":8,\"length\":1,\"string\":\"c\",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "abaabbaaabbb", "re": "(a+)(b+)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":null}]},{\"offset\":2,\"length\":4,\"string\":\"aabb\",\"captures\":[{\"offset\":2,\"length\":2,\"string\":\"aa\",\"name\":null},{\"offset\":4,\"length\":2,\"string\":\"bb\",\"name\":null}]},{\"offset\":6,\"length\":6,\"string\":\"aaabbb\",\"captures\":[{\"offset\":6,\"length\":3,\"string\":\"aaa\",\"name\":null},{\"offset\":9,\"length\":3,\"string\":\"bbb\",\"name\":null}]}]"}
+{"src": "manonig.test", "input": "ab,cd, ef", "re": ", *", "flags": "g", "test": false, "out": "[{\"offset\":2,\"length\":1,\"string\":\",\",\"captures\":[]},{\"offset\":5,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "ab,cd,   ef, gh", "re": ", *", "flags": "g", "test": false, "out": "[{\"offset\":2,\"length\":1,\"string\":\",\",\"captures\":[]},{\"offset\":5,\"length\":4,\"string\":\",   \",\"captures\":[]},{\"offset\":11,\"length\":2,\"string\":\", \",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "ab,cd ef,  gh", "re": ",? *", "flags": "ng", "test": false, "out": "[{\"offset\":2,\"length\":1,\"string\":\",\",\"captures\":[]},{\"offset\":5,\"length\":1,\"string\":\" \",\"captures\":[]},{\"offset\":8,\"length\":3,\"string\":\",  \",\"captures\":[]}]"}
+{"src": "manonig.test", "input": "123abc456def", "re": "[^a-z]*(?<x>[a-z]+)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":6,\"string\":\"123abc\",\"captures\":[{\"offset\":3,\"length\":3,\"string\":\"abc\",\"name\":\"x\"}]},{\"offset\":6,\"length\":6,\"string\":\"456def\",\"captures\":[{\"offset\":9,\"length\":3,\"string\":\"def\",\"name\":\"x\"}]}]"}
+{"src": "manonig.test", "input": "p", "re": "p", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"p\",\"captures\":[]}]"}
+{"src": "curated", "input": "", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[]"}
+{"src": "curated", "input": "", "re": "(?=é)|.", "flags": "g", "test": true, "out": "false"}
+{"src": "curated", "input": "", "re": "\\b", "flags": "g", "test": false, "out": "[]"}
+{"src": "curated", "input": "", "re": "\\b", "flags": "g", "test": true, "out": "false"}
+{"src": "curated", "input": "", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "a", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "a", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "a", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "a", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"c\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "abc", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":null}]},{\"offset\":2,\"length\":1,\"string\":\"c\",\"captures\":[{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "é", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":0,\"length\":1,\"string\":\"�\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "é", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"é\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"é\",\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "é", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "é", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "éé", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":0,\"length\":1,\"string\":\"�\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":0,\"length\":2,\"string\":\"�\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "éé", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"é\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"é\",\"name\":null}]},{\"offset\":1,\"length\":1,\"string\":\"é\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"é\",\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "éé", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "éé", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éé", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "éé", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "aéb", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":0,\"length\":2,\"string\":\"�\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "aéb", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":1,\"string\":\"é\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"é\",\"name\":null}]},{\"offset\":2,\"length\":1,\"string\":\"b\",\"captures\":[{\"offset\":2,\"length\":1,\"string\":\"b\",\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "aéb", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "aéb", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aéb", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aéb", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "日本語", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"日\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"本\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"語\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "日本語", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"日\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"日\",\"name\":null}]},{\"offset\":1,\"length\":1,\"string\":\"本\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"本\",\"name\":null}]},{\"offset\":2,\"length\":1,\"string\":\"語\",\"captures\":[{\"offset\":2,\"length\":1,\"string\":\"語\",\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "日本語", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "日本語", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "日本語", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "日本語", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"x\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "😀x😀", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"😀\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"x\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"😀\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "😀x😀", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"😀\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"😀\",\"name\":null}]},{\"offset\":1,\"length\":1,\"string\":\"x\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"x\",\"name\":null}]},{\"offset\":2,\"length\":1,\"string\":\"😀\",\"captures\":[{\"offset\":2,\"length\":1,\"string\":\"😀\",\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "😀x😀", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "😀x😀", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀x😀", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀x😀", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"\\u0000\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "\\b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "\\b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null}]},{\"offset\":1,\"length\":1,\"string\":\"\\u0000\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"\\u0000\",\"name\":null}]},{\"offset\":2,\"length\":1,\"string\":\"b\",\"captures\":[{\"offset\":2,\"length\":1,\"string\":\"b\",\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":3,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "\n\n", "re": "", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "(?=)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "\n\n", "re": "(?=)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "x*", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "\n\n", "re": "x*", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "(a)|", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "\n\n", "re": "(a)|", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "\n\n", "re": "|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[]"}
+{"src": "curated", "input": "\n\n", "re": "(?=é)|.", "flags": "g", "test": true, "out": "false"}
+{"src": "curated", "input": "\n\n", "re": "\\b", "flags": "g", "test": false, "out": "[]"}
+{"src": "curated", "input": "\n\n", "re": "\\b", "flags": "g", "test": true, "out": "false"}
+{"src": "curated", "input": "\n\n", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "\n\n", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "^", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "\n\n", "re": "^", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "(?<n>)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":\"n\"}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "\n\n", "re": "(?<n>)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "(.)?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "\n\n", "re": "(.)?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "()", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "\n\n", "re": "()", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "\n\n", "re": "", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "\n\n", "re": "", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "qux", "re": "(?=u)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "foo", "re": "(?=(o+))", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":2,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "foo", "re": "(?=(o+))", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "foo", "re": "f(?=(oo))", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"f\",\"captures\":[{\"offset\":1,\"length\":2,\"string\":\"oo\",\"name\":null}]}]"}
+{"src": "curated", "input": "foo", "re": "f(?=(oo))", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "foo", "re": "(?<=(f))o", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"o\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"f\",\"name\":null}]}]"}
+{"src": "curated", "input": "foo", "re": "(?<=(f))o", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "xyzzy-14", "re": "(?<x>[a-z]+)-(?<n>[0-9]+)", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":8,\"string\":\"xyzzy-14\",\"captures\":[{\"offset\":0,\"length\":5,\"string\":\"xyzzy\",\"name\":\"x\"},{\"offset\":6,\"length\":2,\"string\":\"14\",\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "xyzzy-14", "re": "(?<x>[a-z]+)-(?<n>[0-9]+)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "foo bar foo", "re": "foo", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"foo\",\"captures\":[]},{\"offset\":8,\"length\":3,\"string\":\"foo\",\"captures\":[]}]"}
+{"src": "curated", "input": "foo bar foo", "re": "foo", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "foo bar FOO", "re": "foo", "flags": "gi", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"foo\",\"captures\":[]},{\"offset\":8,\"length\":3,\"string\":\"FOO\",\"captures\":[]}]"}
+{"src": "curated", "input": "foo bar FOO", "re": "foo", "flags": "gi", "test": true, "out": "true"}
+{"src": "curated", "input": "foo bar FOO", "re": "foo", "flags": "ig", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?<a>a)|(?<b>b)|(?<a>c)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"a\"},{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"b\"},{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"a\"}]},{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"a\"},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":\"b\"},{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"a\"}]},{\"offset\":2,\"length\":1,\"string\":\"c\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"a\"},{\"offset\":-1,\"string\":null,\"length\":0,\"name\":\"b\"},{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":\"a\"}]}]"}
+{"src": "curated", "input": "abc", "re": "(?<a>a)|(?<b>b)|(?<a>c)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "a*?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a*?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "a*", "flags": "gl", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"aaa\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a*", "flags": "gl", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "a*", "flags": "gn", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"aaa\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a*", "flags": "gn", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "a|aa|aaa", "flags": "gl", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"aaa\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a|aa|aaa", "flags": "gl", "test": true, "out": "true"}
+{"src": "curated", "input": "ab\ncd", "re": "^cd", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "^cd", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "ab\ncd", "re": "^cd", "flags": "s", "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "^cd", "flags": "s", "test": true, "out": "false"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": "s", "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": "s", "test": true, "out": "false"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": "p", "test": false, "out": "[{\"offset\":1,\"length\":3,\"string\":\"b\\nc\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": "p", "test": true, "out": "true"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": "m", "test": false, "out": "[{\"offset\":1,\"length\":3,\"string\":\"b\\nc\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab\ncd", "re": "b.c", "flags": "m", "test": true, "out": "true"}
+{"src": "curated", "input": "ab\ncd", "re": "b$", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "b$", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "ab\ncd", "re": "b$", "flags": "s", "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "b$", "flags": "s", "test": true, "out": "false"}
+{"src": "curated", "input": "ab\ncd", "re": "b\\Z", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "b\\Z", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "abc", "re": " a b c ", "flags": "x", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": " a b c ", "flags": "x", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "a # comment\nbc", "flags": "x", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "a # comment\nbc", "flags": "x", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "ABC", "flags": "i", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "ABC", "flags": "i", "test": true, "out": "true"}
+{"src": "curated", "input": "ÀÉ", "re": "àé", "flags": "i", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ÀÉ\",\"captures\":[]}]"}
+{"src": "curated", "input": "ÀÉ", "re": "àé", "flags": "i", "test": true, "out": "true"}
+{"src": "curated", "input": "ss", "re": "ß", "flags": "i", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ss\",\"captures\":[]}]"}
+{"src": "curated", "input": "ss", "re": "ß", "flags": "i", "test": true, "out": "true"}
+{"src": "curated", "input": "ß", "re": "ss", "flags": "i", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"ß\",\"captures\":[]}]"}
+{"src": "curated", "input": "ß", "re": "ss", "flags": "i", "test": true, "out": "true"}
+{"src": "curated", "input": "test", "re": "t", "flags": "", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"t\",\"captures\":[]}]"}
+{"src": "curated", "input": "test", "re": "t", "flags": "", "test": true, "out": "true"}
+{"src": "curated", "input": "test", "re": "t", "flags": "gg", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"t\",\"captures\":[]},{\"offset\":3,\"length\":1,\"string\":\"t\",\"captures\":[]}]"}
+{"src": "curated", "input": "test", "re": "t", "flags": "gg", "test": true, "out": "true"}
+{"src": "curated", "input": "test", "re": "t", "flags": "q", "test": false, "err": "q is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": "q", "test": true, "err": "q is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": "gq", "test": false, "err": "gq is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": "gq", "test": true, "err": "gq is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": "G", "test": false, "err": "G is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": "G", "test": true, "err": "G is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": "é", "test": false, "err": "é is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": "é", "test": true, "err": "é is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": " ", "test": false, "err": "  is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "t", "flags": " ", "test": true, "err": "  is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "(", "flags": null, "test": false, "err": "Regex failure: end pattern with unmatched parenthesis"}
+{"src": "curated", "input": "test", "re": "(", "flags": null, "test": true, "err": "Regex failure: end pattern with unmatched parenthesis"}
+{"src": "curated", "input": "test", "re": "(", "flags": "q", "test": false, "err": "q is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": "(", "flags": "q", "test": true, "err": "q is not a valid modifier string"}
+{"src": "curated", "input": "test", "re": ")", "flags": null, "test": false, "err": "Regex failure: unmatched close parenthesis"}
+{"src": "curated", "input": "test", "re": ")", "flags": null, "test": true, "err": "Regex failure: unmatched close parenthesis"}
+{"src": "curated", "input": "test", "re": "[", "flags": null, "test": false, "err": "Regex failure: premature end of char-class"}
+{"src": "curated", "input": "test", "re": "[", "flags": null, "test": true, "err": "Regex failure: premature end of char-class"}
+{"src": "curated", "input": "test", "re": "[a", "flags": null, "test": false, "err": "Regex failure: premature end of char-class"}
+{"src": "curated", "input": "test", "re": "[a", "flags": null, "test": true, "err": "Regex failure: premature end of char-class"}
+{"src": "curated", "input": "test", "re": "a{2,1}", "flags": null, "test": false, "err": "Regex failure: upper is smaller than lower in repeat range"}
+{"src": "curated", "input": "test", "re": "a{2,1}", "flags": null, "test": true, "err": "Regex failure: upper is smaller than lower in repeat range"}
+{"src": "curated", "input": "test", "re": "*", "flags": null, "test": false, "err": "Regex failure: target of repeat operator is not specified"}
+{"src": "curated", "input": "test", "re": "*", "flags": null, "test": true, "err": "Regex failure: target of repeat operator is not specified"}
+{"src": "curated", "input": "test", "re": "a**", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "test", "re": "a**", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "test", "re": "a++", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "test", "re": "a++", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "test", "re": "(?<n>a)\\k<m>", "flags": null, "test": false, "err": "Regex failure: undefined name <m> reference"}
+{"src": "curated", "input": "test", "re": "(?<n>a)\\k<m>", "flags": null, "test": true, "err": "Regex failure: undefined name <m> reference"}
+{"src": "curated", "input": "test", "re": "\\k<nosuchname>", "flags": null, "test": false, "err": "Regex failure: undefined name <nosuchname> reference"}
+{"src": "curated", "input": "test", "re": "\\k<nosuchname>", "flags": null, "test": true, "err": "Regex failure: undefined name <nosuchname> reference"}
+{"src": "curated", "input": "test", "re": "(?<n>a)(?<n>b)", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "test", "re": "(?<n>a)(?<n>b)", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "test", "re": "(?<1a>x)", "flags": null, "test": false, "err": "Regex failure: invalid group name <1a>"}
+{"src": "curated", "input": "test", "re": "(?<1a>x)", "flags": null, "test": true, "err": "Regex failure: invalid group name <1a>"}
+{"src": "curated", "input": "test", "re": "(?<>x)", "flags": null, "test": false, "err": "Regex failure: group name is empty"}
+{"src": "curated", "input": "test", "re": "(?<>x)", "flags": null, "test": true, "err": "Regex failure: group name is empty"}
+{"src": "curated", "input": "test", "re": "(?<a-b>x)", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "test", "re": "(?<a-b>x)", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "test", "re": "\\p{NoSuchProperty}", "flags": null, "test": false, "err": "Regex failure: invalid character property name {NoSuchProperty}"}
+{"src": "curated", "input": "test", "re": "\\p{NoSuchProperty}", "flags": null, "test": true, "err": "Regex failure: invalid character property name {NoSuchProperty}"}
+{"src": "curated", "input": "test", "re": "\\", "flags": null, "test": false, "err": "Regex failure: end pattern at escape"}
+{"src": "curated", "input": "test", "re": "\\", "flags": null, "test": true, "err": "Regex failure: end pattern at escape"}
+{"src": "curated", "input": "test", "re": "(?", "flags": null, "test": false, "err": "Regex failure: end pattern in group"}
+{"src": "curated", "input": "test", "re": "(?", "flags": null, "test": true, "err": "Regex failure: end pattern in group"}
+{"src": "curated", "input": "test", "re": "(?z)", "flags": null, "test": false, "err": "Regex failure: undefined group option"}
+{"src": "curated", "input": "test", "re": "(?z)", "flags": null, "test": true, "err": "Regex failure: undefined group option"}
+{"src": "curated", "input": "test", "re": "\\1", "flags": null, "test": false, "err": "Regex failure: invalid backref number/name"}
+{"src": "curated", "input": "test", "re": "\\1", "flags": null, "test": true, "err": "Regex failure: invalid backref number/name"}
+{"src": "curated", "input": "test", "re": "(a)\\2", "flags": null, "test": false, "err": "Regex failure: invalid backref number/name"}
+{"src": "curated", "input": "test", "re": "(a)\\2", "flags": null, "test": true, "err": "Regex failure: invalid backref number/name"}
+{"src": "curated", "input": "test", "re": "[b-a]", "flags": null, "test": false, "err": "Regex failure: empty range in char class"}
+{"src": "curated", "input": "test", "re": "[b-a]", "flags": null, "test": true, "err": "Regex failure: empty range in char class"}
+{"src": "curated", "input": "test", "re": "x{99999999}", "flags": null, "test": false, "err": "Regex failure: too big number for repeat range"}
+{"src": "curated", "input": "test", "re": "x{99999999}", "flags": null, "test": true, "err": "Regex failure: too big number for repeat range"}
+{"src": "curated", "input": "test", "re": "(?<aVeryLongGroupNameThatExceedsTheLimit>x)\\k<aVeryLongGroupNameThatExceedsTheLimitToo>", "flags": null, "test": false, "err": "Regex failure: undefined name <aVeryLongGroupNameThatExcee...> reference"}
+{"src": "curated", "input": "test", "re": "(?<aVeryLongGroupNameThatExceedsTheLimit>x)\\k<aVeryLongGroupNameThatExceedsTheLimitToo>", "flags": null, "test": true, "err": "Regex failure: undefined name <aVeryLongGroupNameThatExcee...> reference"}
+{"src": "curated", "input": "test", "re": "\\k<ééééééééééééééééééééé>", "flags": null, "test": false, "err": "Regex failure: undefined name <ééééééééééééé�...> reference"}
+{"src": "curated", "input": "test", "re": "\\k<ééééééééééééééééééééé>", "flags": null, "test": true, "err": "Regex failure: undefined name <ééééééééééééé�...> reference"}
+{"src": "curated", "input": "test", "re": "\\k<ééééééééééééé>", "flags": null, "test": false, "err": "Regex failure: undefined name <ééééééééééééé> reference"}
+{"src": "curated", "input": "test", "re": "\\k<ééééééééééééé>", "flags": null, "test": true, "err": "Regex failure: undefined name <ééééééééééééé> reference"}
+{"src": "curated", "input": "test", "re": "\\k<aéééééééééééééé>", "flags": null, "test": false, "err": "Regex failure: undefined name <aééééééééééééé...> reference"}
+{"src": "curated", "input": "test", "re": "\\k<aéééééééééééééé>", "flags": null, "test": true, "err": "Regex failure: undefined name <aééééééééééééé...> reference"}
+{"src": "curated", "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab", "re": "(a|a)*c", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab", "re": "(a|a)*c", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "abcabc", "re": "(?<x>a)(b)(?<y>c)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"x\"},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":null},{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":\"y\"}]},{\"offset\":3,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":3,\"length\":1,\"string\":\"a\",\"name\":\"x\"},{\"offset\":4,\"length\":1,\"string\":\"b\",\"name\":null},{\"offset\":5,\"length\":1,\"string\":\"c\",\"name\":\"y\"}]}]"}
+{"src": "curated", "input": "abcabc", "re": "(?<x>a)(b)(?<y>c)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(a)(x)?(c)?", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null},{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null},{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(a)(x)?(c)?", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(a)(x?)(b)", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null},{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(a)(x?)(b)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?:a)(b)", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(?:a)(b)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "(?<x>a)(b)", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"x\"},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":null}]}]"}
+{"src": "curated", "input": "ab", "re": "(?<x>a)(b)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "aXbXc", "re": "X", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"X\",\"captures\":[]},{\"offset\":3,\"length\":1,\"string\":\"X\",\"captures\":[]}]"}
+{"src": "curated", "input": "aXbXc", "re": "X", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀😀", "re": "😀", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"😀\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"😀\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀😀", "re": "😀", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "😀a😀", "re": "a", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "curated", "input": "😀a😀", "re": "a", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "é", "re": ".", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"é\",\"captures\":[]}]"}
+{"src": "curated", "input": "é", "re": ".", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éa", "re": "(?=é)|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":0,\"length\":1,\"string\":\"�\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "curated", "input": "éa", "re": "(?=é)|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "é日😀", "re": "\\X", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"é\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"日\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"😀\",\"captures\":[]}]"}
+{"src": "curated", "input": "é日😀", "re": "\\X", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "\u0000", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"\\u0000\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "\u0000", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0000b", "re": "a.b", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"a\\u0000b\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0000b", "re": "a.b", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "\\Aabc\\z", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "\\Aabc\\z", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?i)ABC", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "(?i)ABC", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?-i)ABC", "flags": "i", "test": false, "out": "[]"}
+{"src": "curated", "input": "abc", "re": "(?-i)ABC", "flags": "i", "test": true, "out": "false"}
+{"src": "curated", "input": "abc", "re": "a(?#comment)bc", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "a(?#comment)bc", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "(?>a+)a", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "aaa", "re": "(?>a+)a", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "abab", "re": "(ab)\\1", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":4,\"string\":\"abab\",\"captures\":[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"name\":null}]}]"}
+{"src": "curated", "input": "abab", "re": "(ab)\\1", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abab", "re": "(?<p>ab)\\k<p>", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":4,\"string\":\"abab\",\"captures\":[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"name\":\"p\"}]}]"}
+{"src": "curated", "input": "abab", "re": "(?<p>ab)\\k<p>", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "price: $42", "re": "\\$(\\d+)", "flags": null, "test": false, "out": "[{\"offset\":7,\"length\":3,\"string\":\"$42\",\"captures\":[{\"offset\":8,\"length\":2,\"string\":\"42\",\"name\":null}]}]"}
+{"src": "curated", "input": "price: $42", "re": "\\$(\\d+)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "x", "re": "\\w\\d\\s\\W\\D\\S\\h\\H", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "x", "re": "\\w\\d\\s\\W\\D\\S\\h\\H", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "١٢٣", "re": "\\d+", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"١٢٣\",\"captures\":[]}]"}
+{"src": "curated", "input": "١٢٣", "re": "\\d+", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "١٢٣", "re": "[0-9]+", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "١٢٣", "re": "[0-9]+", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "über", "re": "\\w+", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":4,\"string\":\"über\",\"captures\":[]}]"}
+{"src": "curated", "input": "über", "re": "\\w+", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "über", "re": "[[:alpha:]]+", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":4,\"string\":\"über\",\"captures\":[]}]"}
+{"src": "curated", "input": "über", "re": "[[:alpha:]]+", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "über", "re": "\\bber", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "über", "re": "\\bber", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "a.b", "re": "a\\.b", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"a.b\",\"captures\":[]}]"}
+{"src": "curated", "input": "a.b", "re": "a\\.b", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "a{2}", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"aa\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a{2}", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "a{,2}", "flags": "g", "test": false, "out": "[]"}
+{"src": "curated", "input": "aaa", "re": "a{,2}", "flags": "g", "test": true, "out": "false"}
+{"src": "curated", "input": "aaa", "re": "a{2,}", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"aaa\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a{2,}", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "(?<=a)b", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab", "re": "(?<=a)b", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "(?<!a)b", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab", "re": "(?<!a)b", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "ab", "re": "a(?!b)", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab", "re": "a(?!b)", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "ab", "re": "(?~b)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab", "re": "(?~b)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?<a>.)(?<b>.)(?<c>.)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"a\"},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":\"b\"},{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":\"c\"}]}]"}
+{"src": "curated", "input": "abc", "re": "(?<a>.)(?<b>.)(?<c>.)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "line1\nline2", "re": "^line\\d$", "flags": "g", "test": false, "out": "[]"}
+{"src": "curated", "input": "line1\nline2", "re": "^line\\d$", "flags": "g", "test": true, "out": "false"}
+{"src": "curated", "input": "line1\r\nline2", "re": "^line\\d$", "flags": "g", "test": false, "out": "[]"}
+{"src": "curated", "input": "line1\r\nline2", "re": "^line\\d$", "flags": "g", "test": true, "out": "false"}
+{"src": "curated", "input": "AbC", "re": "[a-z]", "flags": "gi", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"A\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"C\",\"captures\":[]}]"}
+{"src": "curated", "input": "AbC", "re": "[a-z]", "flags": "gi", "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "a\\Kb", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab", "re": "a\\Kb", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "(?=ab\\K)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab", "re": "(?=ab\\K)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?=a(b)\\K)", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(?=a(b)\\K)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "a(?=(bc)\\K)", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":1,\"string\":\"\",\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "a(?=(bc)\\K)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "(?=(a)\\K)|b", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[{\"offset\":0,\"string\":\"\",\"length\":0,\"name\":null}]},{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[{\"offset\":-1,\"string\":null,\"length\":0,\"name\":null}]}]"}
+{"src": "curated", "input": "ab", "re": "(?=(a)\\K)|b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "a", "flags": "gn", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a", "flags": "gn", "test": true, "out": "true"}
+{"src": "curated", "input": "", "re": "", "flags": "n", "test": false, "out": "[]"}
+{"src": "curated", "input": "", "re": "", "flags": "n", "test": true, "out": "false"}
+{"src": "curated", "input": "aaa", "re": "a*", "flags": "n", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"aaa\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "a*", "flags": "n", "test": true, "out": "true"}
+{"src": "curated", "input": "xaaa", "re": "a*", "flags": "gn", "test": false, "out": "[{\"offset\":1,\"length\":3,\"string\":\"aaa\",\"captures\":[]}]"}
+{"src": "curated", "input": "xaaa", "re": "a*", "flags": "gn", "test": true, "out": "true"}
+{"src": "curated", "input": "abcd", "re": "a|ab|abc", "flags": "l", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abcd", "re": "a|ab|abc", "flags": "l", "test": true, "out": "true"}
+{"src": "curated", "input": "abcd", "re": "(a|ab)(c|bcd)", "flags": "l", "test": false, "out": "[{\"offset\":0,\"length\":4,\"string\":\"abcd\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null},{\"offset\":1,\"length\":3,\"string\":\"bcd\",\"name\":null}]}]"}
+{"src": "curated", "input": "abcd", "re": "(a|ab)(c|bcd)", "flags": "l", "test": true, "out": "true"}
+{"src": "curated", "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab!", "re": "(a|a)*b$", "flags": null, "test": false, "err": "Regex failure: retry-limit-in-match over"}
+{"src": "curated", "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab!", "re": "(a|a)*b$", "flags": null, "test": true, "err": "Regex failure: retry-limit-in-match over"}
+{"src": "curated", "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxy!", "re": "(x+x+)+y$", "flags": null, "test": false, "err": "Regex failure: retry-limit-in-match over"}
+{"src": "curated", "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxy!", "re": "(x+x+)+y$", "flags": null, "test": true, "err": "Regex failure: retry-limit-in-match over"}
+{"src": "curated", "input": "Ǆǅǆ", "re": "ǆ", "flags": "gi", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"Ǆ\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"ǅ\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"ǆ\",\"captures\":[]}]"}
+{"src": "curated", "input": "Ǆǅǆ", "re": "ǆ", "flags": "gi", "test": true, "out": "true"}
+{"src": "curated", "input": "ΣσςΣ", "re": "σ", "flags": "gi", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"Σ\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"σ\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"ς\",\"captures\":[]},{\"offset\":3,\"length\":1,\"string\":\"Σ\",\"captures\":[]}]"}
+{"src": "curated", "input": "ΣσςΣ", "re": "σ", "flags": "gi", "test": true, "out": "true"}
+{"src": "curated", "input": "ﬀ", "re": "ff", "flags": "i", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"ﬀ\",\"captures\":[]}]"}
+{"src": "curated", "input": "ﬀ", "re": "ff", "flags": "i", "test": true, "out": "true"}
+{"src": "curated", "input": "İi", "re": "i", "flags": "gi", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"i\",\"captures\":[]}]"}
+{"src": "curated", "input": "İi", "re": "i", "flags": "gi", "test": true, "out": "true"}
+{"src": "curated", "input": "αβγ abc", "re": "\\p{Greek}+", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"αβγ\",\"captures\":[]}]"}
+{"src": "curated", "input": "αβγ abc", "re": "\\p{Greek}+", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "αβγ abc", "re": "\\p{^Greek}+", "flags": "g", "test": false, "out": "[{\"offset\":3,\"length\":4,\"string\":\" abc\",\"captures\":[]}]"}
+{"src": "curated", "input": "αβγ abc", "re": "\\p{^Greek}+", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a1_é-", "re": "[[:^alpha:]]", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"1\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"_\",\"captures\":[]},{\"offset\":4,\"length\":1,\"string\":\"-\",\"captures\":[]}]"}
+{"src": "curated", "input": "a1_é-", "re": "[[:^alpha:]]", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a1_é-", "re": "\\p{L}", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":3,\"length\":1,\"string\":\"é\",\"captures\":[]}]"}
+{"src": "curated", "input": "a1_é-", "re": "\\p{L}", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "éx", "re": "\\X", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"é\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"x\",\"captures\":[]}]"}
+{"src": "curated", "input": "éx", "re": "\\X", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "🇯🇵🇺🇸", "re": "\\X", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"🇯🇵\",\"captures\":[]},{\"offset\":2,\"length\":2,\"string\":\"🇺🇸\",\"captures\":[]}]"}
+{"src": "curated", "input": "🇯🇵🇺🇸", "re": "\\X", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\r\nb\nc", "re": "\\R", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":2,\"string\":\"\\r\\n\",\"captures\":[]},{\"offset\":4,\"length\":1,\"string\":\"\\n\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\r\nb\nc", "re": "\\R", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\nb", "re": "\\N+", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\nb", "re": "\\N+", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "a\nb", "re": "\\O", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"\\n\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\nb", "re": "\\O", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aAbB", "re": "(?i:a)b", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":2,\"string\":\"Ab\",\"captures\":[]}]"}
+{"src": "curated", "input": "aAbB", "re": "(?i:a)b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aAbB", "re": "(?i)a(?-i)b", "flags": "g", "test": false, "out": "[{\"offset\":1,\"length\":2,\"string\":\"Ab\",\"captures\":[]}]"}
+{"src": "curated", "input": "aAbB", "re": "(?i)a(?-i)b", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "(?<x>a)?(?(<x>)b|c)", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"ab\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"x\"}]}]"}
+{"src": "curated", "input": "ab", "re": "(?<x>a)?(?(<x>)b|c)", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "(?<x>a)(?<x>b)\\k<x>", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab", "re": "(?<x>a)(?<x>b)\\k<x>", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "abab", "re": "(?<x>a)(?<x>b)\\k<x>", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"aba\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":\"x\"},{\"offset\":1,\"length\":1,\"string\":\"b\",\"name\":\"x\"}]}]"}
+{"src": "curated", "input": "abab", "re": "(?<x>a)(?<x>b)\\k<x>", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "a(*FAIL)|b", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"b\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "a(*FAIL)|b", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?:a|b)(*SKIP)c|.", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":2,\"string\":\"bc\",\"captures\":[]}]"}
+{"src": "curated", "input": "abc", "re": "(?:a|b)(*SKIP)c|.", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "(?<n>a)\\g<n>", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"aa\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"a\",\"name\":\"n\"}]}]"}
+{"src": "curated", "input": "aaa", "re": "(?<n>a)\\g<n>", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "((a))", "re": "\\((?<p>[^()]|\\(\\g<p>\\))*\\)", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":5,\"string\":\"((a))\",\"captures\":[{\"offset\":1,\"length\":3,\"string\":\"(a)\",\"name\":\"p\"}]}]"}
+{"src": "curated", "input": "((a))", "re": "\\((?<p>[^()]|\\(\\g<p>\\))*\\)", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "\\Qa.c\\E", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "abc", "re": "\\Qa.c\\E", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "a.c", "re": "\\Qa.c\\E", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"a.c\",\"captures\":[]}]"}
+{"src": "curated", "input": "a.c", "re": "\\Qa.c\\E", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "a+b", "re": "a\\x2bb", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"a+b\",\"captures\":[]}]"}
+{"src": "curated", "input": "a+b", "re": "a\\x2bb", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "aé", "re": "\\x{e9}", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"é\",\"captures\":[]}]"}
+{"src": "curated", "input": "aé", "re": "\\x{e9}", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "a\u0007b", "re": "\\a", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":1,\"string\":\"\\u0007\",\"captures\":[]}]"}
+{"src": "curated", "input": "a\u0007b", "re": "\\a", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "\t", "re": "\\t\\z", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"\\t\",\"captures\":[]}]"}
+{"src": "curated", "input": "\t", "re": "\\t\\z", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "ab", "re": "\\Ga", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab", "re": "\\Ga", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "aaa", "re": "\\Ga", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\"a\",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"a\",\"captures\":[]}]"}
+{"src": "curated", "input": "aaa", "re": "\\Ga", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "ab\ncd\n", "re": "$", "flags": "g", "test": false, "out": "[{\"offset\":5,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":6,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab\ncd\n", "re": "$", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "ab\ncd\n", "re": "\\Z", "flags": "g", "test": false, "out": "[{\"offset\":5,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":6,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab\ncd\n", "re": "\\Z", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "ab\ncd\n", "re": "\\z", "flags": "g", "test": false, "out": "[{\"offset\":6,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab\ncd\n", "re": "\\z", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "ab\ncd", "re": "(?m)b.c", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "ab\ncd", "re": "(?m)b.c", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "ab\ncd", "re": "(?s)b.c", "flags": null, "test": false, "out": "[{\"offset\":1,\"length\":3,\"string\":\"b\\nc\",\"captures\":[]}]"}
+{"src": "curated", "input": "ab\ncd", "re": "(?s)b.c", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "x", "re": "x{2,}?", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "x", "re": "x{2,}?", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "xxx", "re": "x{2,}?", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"xx\",\"captures\":[]}]"}
+{"src": "curated", "input": "xxx", "re": "x{2,}?", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "xxx", "re": "x{,2}+x", "flags": null, "test": false, "out": "[]"}
+{"src": "curated", "input": "xxx", "re": "x{,2}+x", "flags": null, "test": true, "out": "false"}
+{"src": "curated", "input": "12ab", "re": "(?<d>\\d)+", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":2,\"string\":\"12\",\"captures\":[{\"offset\":1,\"length\":1,\"string\":\"2\",\"name\":\"d\"}]}]"}
+{"src": "curated", "input": "12ab", "re": "(?<d>\\d)+", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(.)*", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(.)*", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "((.))*", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":null},{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "((.))*", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "abc", "re": "(?:(a)|b|(c))+", "flags": null, "test": false, "out": "[{\"offset\":0,\"length\":3,\"string\":\"abc\",\"captures\":[{\"offset\":0,\"length\":1,\"string\":\"a\",\"name\":null},{\"offset\":2,\"length\":1,\"string\":\"c\",\"name\":null}]}]"}
+{"src": "curated", "input": "abc", "re": "(?:(a)|b|(c))+", "flags": null, "test": true, "out": "true"}
+{"src": "curated", "input": "test", "re": "", "flags": "gx", "test": false, "out": "[{\"offset\":0,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":1,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":2,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":3,\"length\":0,\"string\":\"\",\"captures\":[]},{\"offset\":4,\"length\":0,\"string\":\"\",\"captures\":[]}]"}
+{"src": "curated", "input": "test", "re": "", "flags": "gx", "test": true, "out": "true"}
+{"src": "curated", "input": "  ", "re": "\\s", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\" \",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\" \",\"captures\":[]}]"}
+{"src": "curated", "input": "  ", "re": "\\s", "flags": "g", "test": true, "out": "true"}
+{"src": "curated", "input": "  　", "re": "\\s", "flags": "g", "test": false, "out": "[{\"offset\":0,\"length\":1,\"string\":\" \",\"captures\":[]},{\"offset\":1,\"length\":1,\"string\":\" \",\"captures\":[]},{\"offset\":2,\"length\":1,\"string\":\"　\",\"captures\":[]}]"}
+{"src": "curated", "input": "  　", "re": "\\s", "flags": "g", "test": true, "out": "true"}
