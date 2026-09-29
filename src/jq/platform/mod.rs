@@ -9,10 +9,12 @@
 //!   version jq 1.8.1 vendors.
 //! - [`time`]: `strptime`, `strftime`, `strflocaltime`, `mktime`, `gmtime`, `localtime`
 //!   and `now`, through libc like jq.
+//! - [`math`]: the `libm.h` function table.
 //!
 //! Behavior is platform dependent in the same way jq's is (macOS libc vs glibc); each
 //! function documents the differences it knows about.
 
+pub mod math;
 pub mod regex;
 pub mod time;
 mod utf8;
@@ -75,6 +77,16 @@ pub(crate) fn c_double_to_i64(d: f64) -> i64 {
     d as i64
 }
 
+/// C's implicit `double` to `int` conversion (see [`c_double_to_i64`]); on x86-64 the
+/// 32-bit `cvttsd2si` returns `i32::MIN` for NaN and out-of-range values.
+pub(crate) fn c_double_to_i32(d: f64) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    if !(-2_147_483_648.0..2_147_483_648.0).contains(&d) {
+        return i32::MIN;
+    }
+    d as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +95,8 @@ mod tests {
     fn c_conversions_truncate_in_range() {
         assert_eq!(c_double_to_i64(1.9), 1);
         assert_eq!(c_double_to_i64(-1.9), -1);
+        assert_eq!(c_double_to_i32(2147483647.9), 2147483647);
+        assert_eq!(c_double_to_i32(-2147483648.9), -2147483648);
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -91,6 +105,9 @@ mod tests {
         assert_eq!(c_double_to_i64(f64::NAN), 0);
         assert_eq!(c_double_to_i64(1e30), i64::MAX);
         assert_eq!(c_double_to_i64(-1e30), i64::MIN);
+        assert_eq!(c_double_to_i32(f64::NAN), 0);
+        assert_eq!(c_double_to_i32(1e10), i32::MAX);
+        assert_eq!(c_double_to_i32(-1e10), i32::MIN);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -98,5 +115,8 @@ mod tests {
     fn c_conversions_are_indefinite_on_x86_64() {
         assert_eq!(c_double_to_i64(f64::NAN), i64::MIN);
         assert_eq!(c_double_to_i64(1e30), i64::MIN);
+        assert_eq!(c_double_to_i32(f64::NAN), i32::MIN);
+        assert_eq!(c_double_to_i32(1e10), i32::MIN);
+        assert_eq!(c_double_to_i32(2147483648.0), i32::MIN);
     }
 }
