@@ -409,8 +409,9 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         {
             panic::resume_unwind(p);
         }
-        for (id, &(_, end, _, _)) in jobs.iter().enumerate() {
-            let r = results[id].take().expect("every job reports");
+        let mut k = 0;
+        while k < n {
+            let r = results[k].take().expect("every job reports");
             self.stats.worker_records += r.recs.len() as u64;
             let (mut o, mut e) = (0, 0);
             for rec in &r.recs {
@@ -422,17 +423,32 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 flow?;
             }
             let Some(failed_at) = r.failed_at else {
-                self.reader.commit(end);
+                self.reader.commit(jobs[k].1);
+                k += 1;
                 continue;
             };
             // Read on from the line the worker didn't take until the reader
-            // is idle at this job's end, where the next job's results start.
+            // is idle at the start of a later job, whose results are then
+            // valid. Jobs it read into are skipped.
             self.reader.commit(failed_at);
+            let mut next = k + 1;
             loop {
-                match self.reader.catch_up(w.generation, end) {
+                let Some(pos) = self.reader.window_position(w.generation) else {
+                    self.stats.discarded_jobs += (n - next) as u64;
+                    return ControlFlow::Continue(());
+                };
+                while next < n && jobs[next].0 < pos {
+                    next += 1;
+                    self.stats.discarded_jobs += 1;
+                }
+                let target = if next < n { jobs[next].0 } else { w.end };
+                match self.reader.catch_up(w.generation, target) {
                     CatchUp::Reached => break,
-                    CatchUp::Beyond => {
-                        self.stats.discarded_jobs += (jobs.len() - id - 1) as u64;
+                    // Past it: look for the next job (none left: done).
+                    CatchUp::Beyond if next >= n => return ControlFlow::Continue(()),
+                    CatchUp::Beyond => {}
+                    CatchUp::Left => {
+                        self.stats.discarded_jobs += (n - next) as u64;
                         return ControlFlow::Continue(());
                     }
                     CatchUp::Behind => {
@@ -444,6 +460,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                     }
                 }
             }
+            k = next;
         }
         ControlFlow::Continue(())
     }

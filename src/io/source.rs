@@ -149,17 +149,17 @@ fn open_file(file: File) -> io::Result<Opened> {
     })
 }
 
-/// Standard input, read through fd 0 without Rust's `Stdin` buffering (the
-/// reader does its own), and never closed.
-struct StdinReader;
+/// A borrowed file descriptor read without Rust's `Stdin` buffering (the
+/// reader does its own), and never closed: standard input.
+struct FdReader(i32);
 
-impl Read for StdinReader {
+impl Read for FdReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         #[cfg(unix)]
         {
-            // SAFETY: fd 0 is valid for the process lifetime; buf is a valid
-            // writable region of buf.len() bytes.
-            let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+            // SAFETY: the descriptor stays open for the reader's lifetime (fd
+            // 0 for the process's); buf is writable for buf.len() bytes.
+            let n = unsafe { libc::read(self.0, buf.as_mut_ptr().cast(), buf.len()) };
             if n < 0 {
                 Err(io::Error::last_os_error())
             } else {
@@ -168,46 +168,53 @@ impl Read for StdinReader {
         }
         #[cfg(not(unix))]
         {
+            let _ = self.0;
             io::stdin().read(buf)
         }
     }
 }
 
-#[cfg(unix)]
 fn open_stdin() -> io::Result<Opened> {
-    // SAFETY: fstat on fd 0 with a valid out-pointer.
+    open_borrowed_fd(0)
+}
+
+/// Standard input (or another descriptor the reader doesn't own): when it
+/// is a regular file (input redirected from a file), the rest of the file
+/// from the current offset is mapped and the offset moved to the end as if
+/// it had been read (so a second `-` sees EOF); otherwise it is streamed.
+#[cfg(unix)]
+pub(crate) fn open_borrowed_fd(fd: i32) -> io::Result<Opened> {
+    // SAFETY: fstat with a valid out-pointer.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    let is_file = unsafe { libc::fstat(0, &mut st) } == 0
+    let is_file = unsafe { libc::fstat(fd, &mut st) } == 0
         && (st.st_mode & libc::S_IFMT) == libc::S_IFREG
         && std::env::var_os("QJ_NO_MMAP").is_none();
     if is_file {
-        // `jq . < file`: map the rest of the file, then move the offset to
-        // the end as if it had been read (a second `-` sees EOF).
-        // SAFETY: lseek on fd 0.
-        let offset = unsafe { libc::lseek(0, 0, libc::SEEK_CUR) };
+        // SAFETY: lseek on an open descriptor.
+        let offset = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
         let len = st.st_size as usize;
         if offset >= 0 && (offset as usize) <= len {
             let offset = offset as usize;
             if offset == len {
                 return Ok(Opened::bytes(Vec::new()));
             }
-            if let Some(map) = Mmap::map(0, offset, len - offset) {
-                // SAFETY: lseek on fd 0.
-                unsafe { libc::lseek(0, 0, libc::SEEK_END) };
+            if let Some(map) = Mmap::map(fd, offset, len - offset) {
+                // SAFETY: lseek on an open descriptor.
+                unsafe { libc::lseek(fd, 0, libc::SEEK_END) };
                 return Ok(Opened::Whole(Arc::new(map)));
             }
         }
     }
     Ok(Opened::Stream {
-        reader: Box::new(StdinReader),
-        fd: Some(0),
+        reader: Box::new(FdReader(fd)),
+        fd: Some(fd),
     })
 }
 
 #[cfg(not(unix))]
-fn open_stdin() -> io::Result<Opened> {
+pub(crate) fn open_borrowed_fd(fd: i32) -> io::Result<Opened> {
     Ok(Opened::Stream {
-        reader: Box::new(StdinReader),
+        reader: Box::new(FdReader(fd)),
         fd: None,
     })
 }

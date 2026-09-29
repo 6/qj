@@ -4,6 +4,7 @@
 
 mod diff;
 mod engine;
+mod files;
 mod generate;
 mod live;
 mod reader;

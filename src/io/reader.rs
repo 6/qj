@@ -1083,7 +1083,7 @@ impl InputReader {
     /// idle there.
     pub(crate) fn catch_up(&mut self, generation: u64, target: usize) -> CatchUp {
         if self.generation != generation || self.cur.is_none() || self.ended {
-            return CatchUp::Beyond;
+            return CatchUp::Left;
         }
         let p = self.fp.pos;
         if p > target {
@@ -1109,6 +1109,12 @@ impl InputReader {
         } else {
             CatchUp::Behind
         }
+    }
+
+    /// Where the fast path is in input `generation` (`None` if the reader
+    /// moved on).
+    pub(crate) fn window_position(&self, generation: u64) -> Option<usize> {
+        (self.generation == generation && self.cur.is_some() && !self.ended).then_some(self.fp.pos)
     }
 
     /// Bytes held for the current input's stream buffer (0 for inputs
@@ -1150,9 +1156,14 @@ pub(crate) struct Window {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CatchUp {
+    /// Idle at the target.
     Reached,
+    /// Records remain before the target.
     Behind,
+    /// Past the target (a text read on from before it ended after it).
     Beyond,
+    /// The reader moved on to another input (or ended).
+    Left,
 }
 
 /// The value jq reads for one line of a window, and where jq's parser
