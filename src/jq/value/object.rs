@@ -167,18 +167,54 @@ impl Object {
     /// `jv_object_merge_recursive` (object `*`): nested objects present on
     /// both sides are merged recursively, anything else is replaced.
     pub fn merge_recursive(&mut self, other: &Object) {
-        for (k, v) in other.iter() {
-            let merged = match (self.get(k), v) {
-                (Some(Value::Object(a)), Value::Object(b)) => {
-                    // Like jq, `a` stays referenced by `self` meanwhile, so the
-                    // nested object is copied rather than updated in place.
-                    let mut a = a.clone();
-                    a.merge_recursive(b);
-                    Value::Object(a)
+        // jq recurses once per level of nesting shared by both sides; this
+        // keeps the recursion in an explicit stack (values can be 10000
+        // levels deep) with the same order of updates.
+        struct Frame<'a> {
+            target: Object,
+            other: &'a Object,
+            i: usize,
+            /// The key this frame's result is stored under in its parent.
+            key: Option<Str>,
+        }
+        let mut stack = vec![Frame {
+            target: std::mem::take(self),
+            other,
+            i: 0,
+            key: None,
+        }];
+        loop {
+            let top = stack.last_mut().expect("a frame is active");
+            if let Some((k, v)) = top.other.get_index(top.i) {
+                top.i += 1;
+                match (top.target.get(k), v) {
+                    (Some(Value::Object(a)), Value::Object(b)) => {
+                        // Like jq, `a` stays referenced by the target
+                        // meanwhile, so the nested object is copied rather
+                        // than updated in place.
+                        let child = a.clone();
+                        stack.push(Frame {
+                            target: child,
+                            other: b,
+                            i: 0,
+                            key: Some(k.clone()),
+                        });
+                    }
+                    _ => top.target.insert(k.clone(), v.clone()),
                 }
-                _ => v.clone(),
-            };
-            self.insert(k.clone(), merged);
+            } else {
+                let done = stack.pop().expect("a frame is active");
+                match stack.last_mut() {
+                    None => {
+                        *self = done.target;
+                        return;
+                    }
+                    Some(parent) => parent.target.insert(
+                        done.key.expect("nested frames have a key"),
+                        Value::Object(done.target),
+                    ),
+                }
+            }
         }
     }
 
@@ -191,6 +227,11 @@ impl Object {
     /// Whether this is the only reference to the map.
     pub fn is_unique(&self) -> bool {
         Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) == 0
+    }
+
+    /// The number of references to the map (`jv_get_refcnt`).
+    pub fn refcount(&self) -> usize {
+        Rc::strong_count(&self.0)
     }
 }
 
