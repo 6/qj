@@ -272,8 +272,9 @@ struct Ctx<'a> {
     max_rss: u64,
 }
 
-fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, Vec<u8>) {
+fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, Vec<u8>, Duration) {
     let env: Vec<(String, String)> = ctx.env.iter().chain(&job.inv.env).cloned().collect();
+    let started = Instant::now();
     let out = exec::run(&exec::Spec {
         bin,
         args: &job.inv.args,
@@ -285,6 +286,7 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
         max_rss: ctx.max_rss,
     })
     .unwrap_or_else(|e| panic!("{}: {e}", job.id));
+    let elapsed = started.elapsed();
     let normalized = compare::normalize_stderr(&out.stderr);
     (
         Observed {
@@ -293,6 +295,7 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
             stderr: Blob::new(normalized, keep_verbatim),
         },
         out.stderr,
+        elapsed,
     )
 }
 
@@ -300,15 +303,18 @@ struct Outcome {
     verdict: Verdict,
     /// jq, qj and qj's raw stderr; kept only for non-passing cases.
     detail: Option<(Observed, Observed, Vec<u8>)>,
+    /// Wall time of jq (when not cached) and qj.
+    jq_time: Option<Duration>,
+    qj_time: Option<Duration>,
 }
 
 fn run_job(ctx: &Ctx, cache: &cache::Cache, key: &str, jq: &Path, qj: &Path, job: &Job) -> Outcome {
-    let jq_obs = match cache.get(key) {
-        Some(o) => o,
+    let (jq_obs, jq_time) = match cache.get(key) {
+        Some(o) => (o, None),
         None => {
-            let (o, _) = observe(ctx, jq, job, false);
+            let (o, _, t) = observe(ctx, jq, job, false);
             cache.put(key.to_string(), o.clone());
-            o
+            (o, Some(t))
         }
     };
     if let exec::Status::Timeout | exec::Status::OutputLimit | exec::Status::MemoryLimit =
@@ -317,12 +323,19 @@ fn run_job(ctx: &Ctx, cache: &cache::Cache, key: &str, jq: &Path, qj: &Path, job
         return Outcome {
             verdict: compare::classify(&jq_obs, &jq_obs),
             detail: None,
+            jq_time,
+            qj_time: None,
         };
     }
-    let (qj_obs, qj_raw_err) = observe(ctx, qj, job, true);
+    let (qj_obs, qj_raw_err, qj_time) = observe(ctx, qj, job, true);
     let verdict = compare::classify(&jq_obs, &qj_obs);
     let detail = (verdict != Verdict::Level(Level::Pass)).then_some((jq_obs, qj_obs, qj_raw_err));
-    Outcome { verdict, detail }
+    Outcome {
+        verdict,
+        detail,
+        jq_time,
+        qj_time: Some(qj_time),
+    }
 }
 
 fn show_bytes(b: &[u8], max: usize) -> String {
@@ -657,6 +670,32 @@ fn jq_diff() {
          cerr = stderr-only cases where jq exited 3 (compile error wording)\n"
     );
     say!("{}", scoreboard(&jobs, &outcomes));
+    // Slow cases are where a loaded machine could turn a result into a
+    // timeout; keep an eye on anything approaching the limit.
+    let slowest = |tool: &str, time_of: fn(&Outcome) -> Option<Duration>| {
+        let mut timed: Vec<(Duration, &str)> = jobs
+            .iter()
+            .zip(&outcomes)
+            .filter_map(|(j, o)| time_of(o).map(|t| (t, j.id.as_str())))
+            .filter(|(t, _)| *t < cfg.timeout)
+            .collect();
+        timed.sort_by(|a, b| b.0.cmp(&a.0));
+        if let Some((t, _)) = timed.first() {
+            let top: Vec<String> = timed
+                .iter()
+                .take(3)
+                .map(|(t, id)| format!("{:.2}s {id}", t.as_secs_f64()))
+                .collect();
+            let warn = if *t * 2 > cfg.timeout {
+                "  (WARNING: over half the timeout)"
+            } else {
+                ""
+            };
+            say!("slowest {tool}: {}{warn}", top.join(", "));
+        }
+    };
+    slowest("jq", |o| o.jq_time);
+    slowest("qj", |o| o.qj_time);
     say!(
         "details: {}\n         {}\n         {}",
         work.join("report.txt").display(),
