@@ -843,6 +843,115 @@ fn disasm_vs_live_jq_impl() {
     assert!(fails.is_empty(), "{} programs differ from jq", fails.len());
 }
 
+/// `$ORIGIN` and jq's default search list (no `-L`), which the corpus can't reach:
+/// runs jq through a symlink in `target/tmp/jq_origin/bin`, so `$ORIGIN/../lib/jq`
+/// is `target/tmp/jq_origin/lib/jq`, with `$HOME` holding a `~/.jq` file (the
+/// implicit include) or a `~/.jq` directory (the first search entry).
+///
+/// jq resolves the search entry `.` against the current directory, so our compiles
+/// here briefly change the process's (no other test resolves modules through `.`).
+#[test]
+#[ignore]
+fn origin_and_default_search_vs_live_jq() {
+    use std::os::unix::ffi::OsStrExt;
+    let jq = jq_binary();
+    match Command::new(&jq).arg("--version").output() {
+        Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "jq-1.8.1" => {}
+        _ => {
+            eprintln!("origin_and_default_search_vs_live_jq: skipped, need jq 1.8.1 (set JQ)");
+            return;
+        }
+    }
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("jq_origin");
+    let _ = std::fs::remove_dir_all(&base);
+    for d in ["bin", "lib/jq", "home_file", "home_dir/.jq", "cwd"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    let real_jq = std::fs::canonicalize(&jq).unwrap();
+    std::os::unix::fs::symlink(&real_jq, base.join("bin/jq")).unwrap();
+    let files = [
+        ("lib/jq/o.jq", "def o: $__loc__;"),
+        ("lib/p.jq", "def p: $__loc__;"),
+        ("lib/jq/q.jq", "def q: \"lib/jq\";"),
+        ("lib/q.jq", "def q: \"lib\";"),
+        ("home_file/.jq", "def h: $__loc__; def o: \"home\";"),
+        ("home_dir/.jq/m.jq", "def m: $__loc__;"),
+        ("home_dir/.jq/o.jq", "def o: \"home_dir\";"),
+        ("cwd/c.jq", "def c: $__loc__;"),
+    ];
+    for (f, text) in files {
+        std::fs::write(base.join(f), text).unwrap();
+    }
+    let base_real = std::fs::canonicalize(&base).unwrap();
+    let norm = |s: &str| s.replace(base_real.to_str().unwrap(), "$BASE");
+    let programs = [
+        "import \"o\" as o; o::o",
+        "import \"p\" as p; p::p",
+        "import \"q\" as q; q::q",
+        "import \"c\" as c; c::c",
+        "import \"m\" as m; m::m",
+        "h, o",
+        "import \"nonexistent\" as n; .",
+        "import \"o\" as o {search: \"$ORIGIN/../lib/jq\"}; o::o",
+        "import \"o\" as o {search: [\"~/nope\", \"$ORIGIN/../lib/jq\"]}; o::o",
+    ];
+    let mut fails = 0;
+    for home in ["home_file", "home_dir"] {
+        let home_path = base.join(home);
+        for src in programs {
+            let out = Command::new(base.join("bin/jq"))
+                .args(["--debug-dump-disasm", "--", src])
+                .current_dir(base.join("cwd"))
+                .env_clear()
+                .env("HOME", &home_path)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let want = Outcome {
+                exit: out.status.code().unwrap(),
+                stdout: norm(&String::from_utf8_lossy(&out.stdout)),
+                stderr: norm(&String::from_utf8_lossy(&out.stderr)),
+            };
+            let opts = CompileOptions {
+                args: Object::new(),
+                env: Some(Value::Null),
+                attrs: JqAttrs {
+                    lib_dirs: qj::jq::lang::linker::default_lib_dirs(),
+                    jq_origin: Value::string_from_bytes(base.join("bin").as_os_str().as_bytes()),
+                    prog_origin: jq_realpath(Value::string_from_bytes(
+                        base.join("cwd").as_os_str().as_bytes(),
+                    )),
+                    home: Some(home_path.to_str().unwrap().to_string()),
+                },
+            };
+            // Relative paths in the search chain ("." here) resolve against the cwd.
+            let got = {
+                let cwd = std::env::current_dir().unwrap();
+                std::env::set_current_dir(base.join("cwd")).unwrap();
+                let r = jq_compile_args(src.as_bytes(), &opts);
+                std::env::set_current_dir(cwd).unwrap();
+                match r {
+                    Ok(bc) => Outcome {
+                        exit: 0,
+                        stdout: norm(&format!("{}\n", dump_disassembly(0, &bc))),
+                        stderr: String::new(),
+                    },
+                    Err(e) => Outcome {
+                        exit: 3,
+                        stdout: String::new(),
+                        stderr: norm(&e.render()),
+                    },
+                }
+            };
+            if got != want {
+                fails += 1;
+                eprintln!("HOME={home} {src}\n--- jq\n{want:?}\n--- ours\n{got:?}");
+            }
+        }
+    }
+    assert_eq!(fails, 0);
+}
+
 #[test]
 #[ignore]
 fn adhoc() {
