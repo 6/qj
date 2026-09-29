@@ -184,17 +184,33 @@ impl Level {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Level(Level),
-    /// The case can't be judged: jq itself timed out or hit the output or
-    /// memory cap.
+    /// jq never finished, and neither did qj: there is no output to compare,
+    /// only the fact that both refuse to terminate.
     Skipped(&'static str),
 }
 
+/// Whether the tool was killed because it would not finish: it ran past the
+/// timeout, or past the output or memory cap.
+fn hit_a_limit(status: &Status) -> bool {
+    matches!(
+        status,
+        Status::Timeout | Status::OutputLimit | Status::MemoryLimit
+    )
+}
+
 pub fn classify(jq: &Observed, qj: &Observed) -> Verdict {
-    match jq.status {
-        Status::Timeout => return Verdict::Skipped("jq timeout"),
-        Status::OutputLimit => return Verdict::Skipped("jq output limit"),
-        Status::MemoryLimit => return Verdict::Skipped("jq memory limit"),
-        _ => {}
+    // Where jq never finishes (`[1] | delpaths([[nan]])` loops forever,
+    // growing an array as it goes), its output can't be an expectation. What
+    // can be checked is that qj doesn't finish either: with `QJ_JQ_COMPAT=1`
+    // it reproduces the hang, so a qj that produces an answer here is a real
+    // difference, not something to skip. Which limit ended each tool depends
+    // on how fast it allocates, so any of the three counts.
+    if hit_a_limit(&jq.status) {
+        return if hit_a_limit(&qj.status) {
+            Verdict::Skipped("neither tool finished")
+        } else {
+            Verdict::Level(Level::Fail)
+        };
     }
     if jq.status != qj.status || !jq.stdout.same(&qj.stdout) {
         Verdict::Level(Level::Fail)
@@ -276,26 +292,30 @@ mod tests {
         let n1 = obs(Status::Exit(0), "1.0\n", "");
         let n2 = obs(Status::Exit(0), "1\n", "");
         assert_eq!(classify(&n1, &n2), Verdict::Level(Level::Fail));
-        // A qj crash or hang is a failure, a jq timeout is a skip.
+        // A qj crash or hang where jq finishes is a failure.
         let crash = obs(Status::Signal(11), "", "");
         assert_eq!(
             classify(&obs(Status::Exit(0), "", ""), &crash),
             Verdict::Level(Level::Fail)
         );
         let hang = obs(Status::Timeout, "", "");
-        assert_eq!(
-            classify(&hang, &obs(Status::Exit(0), "", "")),
-            Verdict::Skipped("jq timeout")
-        );
         let hog = obs(Status::MemoryLimit, "", "");
         assert_eq!(
             classify(&obs(Status::Exit(0), "", ""), &hog),
             Verdict::Level(Level::Fail)
         );
-        assert_eq!(
-            classify(&hog, &obs(Status::Exit(0), "", "")),
-            Verdict::Skipped("jq memory limit")
-        );
+        // Where jq never finishes, qj must not finish either; which limit
+        // ended each of them doesn't matter.
+        for jq in [&hang, &hog] {
+            for qj in [&hang, &hog, &obs(Status::OutputLimit, "", "")] {
+                assert_eq!(classify(jq, qj), Verdict::Skipped("neither tool finished"));
+            }
+            assert_eq!(
+                classify(jq, &obs(Status::Exit(0), "1\n", "")),
+                Verdict::Level(Level::Fail)
+            );
+            assert_eq!(classify(jq, &crash), Verdict::Level(Level::Fail));
+        }
     }
 
     #[test]
