@@ -232,6 +232,14 @@ interface scaffold before spawning it.
   the corpus 11,200/11,205 (the rest is jq nondeterminism). `--debug-trace` matches jq on
   11,202 programs. Wave 3 started: CLI (main.c/util.c processing on the new core, behind
   `QJ_CORE=port`). C1 (disassembly parity, startup) and IO are still running.
+- 2026-09-29: **C1 final merged** (`7ea3243`): disassembly parity on 3,519/3,519 corpus
+  programs and 23,000/23,000 random programs.
+- 2026-09-29: **CLI merged** (`c890e5c`). With `QJ_CORE=port`, the qj binary scores
+  **19,577/19,584 strict** on jq_diff: 100% in compact, pretty, file, ndjson and fail modes,
+  upstream 2,903/2,903. The 7 misses are qj's exempt help/version/usage text. No per-case
+  regressions against the old core. Started: SW (make the port the default, update old tests,
+  docs), IO (wire the simdjson reader and parallel engine into the port), FZ (sustained
+  differential fuzzing against jq).
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
