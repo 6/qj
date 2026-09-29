@@ -273,6 +273,8 @@ Never run benchmarks concurrently with tests or other CPU-intensive processes.
 Benchmarks require exclusive CPU access for reliable results.
 
 ## Architecture
+- `src/cli/` — the command line: port of jq's `main.c` option handling (`args.rs`: options,
+  their errors and exit codes, colors, `-f`), and qj's own help/version text (`usage.rs`)
 - `src/simdjson/` — vendored simdjson.h/cpp + C-linkage bridge + safe Rust FFI wrapper
 - `src/filter/` — jq filter lexer, parser, AST evaluator (On-Demand fast path + DOM fallback)
 - `src/value.rs` — JSON value representation (Arc-based arrays/objects)
@@ -287,7 +289,9 @@ Benchmarks require exclusive CPU access for reliable results.
 
 ## Compressed file support
 Transparent decompression for `.gz` (gzip) and `.zst`/`.zstd` (zstd) files, detected by extension.
-Glob patterns in file arguments are expanded (quote to bypass shell: `'data/*.json.gz'`).
+Glob patterns in file arguments are expanded (quote to bypass shell: `'data/*.json.gz'`), but
+only when the argument isn't an existing path and matches something; otherwise it stays a file
+name and fails to open exactly as in jq.
 ```
 qj '.actor.login' data/*.json.gz                      # shell-expanded
 qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'  # qj-expanded glob
