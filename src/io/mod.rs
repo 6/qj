@@ -50,6 +50,14 @@
 //!   jq's parser port, for A/B checks. `stats()` tells how values were
 //!   produced.
 //!
+//! * [`SharedReader`]: the reader shared by the main loop and the VM, as
+//!   jq's single input state is. It implements
+//!   [`crate::jq::lang::execute::InputSource`], so `jq.set_input(Some(Box::new(shared.clone())))`
+//!   makes `input`/`inputs`/`input_filename`/`input_line_number` work, and
+//!   the main loop calls `shared.borrow_mut().next()` (don't hold the borrow
+//!   while the program runs). `src/io/tests/vm.rs` has a complete `main.c`
+//!   loop on the VM, checked against jq for programs using `input`.
+//!
 //! The default opener ([`FsOpener`]) memory-maps regular files (and stdin
 //! when it is a regular file), streams pipes, FIFOs and devices (a
 //! directory fails with `Is a directory` on its first read, as in jq), and
@@ -84,6 +92,12 @@
 //! `input_filename` (unless answered from `RecordMeta`), or anything else
 //! with state across records. See [`parallel`].
 //!
+//! A CLI worker compiles its own program (`jq_compile_args`, `Jq::new`),
+//! runs `main.c`'s `process()` for each record, and gives the VM an
+//! `InputSource` whose `current_filename`/`current_line` return the
+//! record's `RecordMeta` (see `JqWorker` in `src/io/tests/vm.rs`, which
+//! matches jq's stdout, stderr and exit status end to end).
+//!
 //! Worker threads get 256 MiB stacks by default (virtual; jq accepts
 //! 10000-deep input and recurses on its 8 MB main stack); the calling
 //! thread's stack is the caller's business.
@@ -114,5 +128,5 @@ pub mod source;
 #[cfg(test)]
 mod tests;
 
-pub use reader::{InputReader, ReaderOptions, ReaderStats, input_names};
+pub use reader::{InputReader, ReaderOptions, ReaderStats, SharedReader, input_names};
 pub use source::{FsOpener, InputMessage, MemoryOpener, Opened, Opener};

@@ -315,3 +315,159 @@ fn engine_with_vm_matches_jq_long() {
     });
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// main.c with the reader shared between the main loop and the program's
+/// `input`/`inputs` (`SharedReader`), sequentially.
+fn run_shared(program: &str, null_input: bool, paths: &[OsString]) -> (Vec<u8>, Vec<u8>, i32) {
+    use crate::io::reader::SharedReader;
+    let reader = InputReader::new(paths.to_vec(), ReaderOptions::default());
+    let shared = SharedReader::new(reader);
+    let bc =
+        jq_compile_args(program.as_bytes(), &CompileOptions::new("/usr/bin")).expect("compiles");
+    let mut jq = Jq::new(bc);
+    jq.set_input(Some(Box::new(shared.clone())));
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut process = |jq: &mut Jq, v: Value, out: &mut Vec<u8>, err: &mut Vec<u8>| -> i32 {
+        let mut ret = JQ_OK_NO_OUTPUT;
+        jq.start(v, 0);
+        while let Some(r) = jq.next() {
+            match r {
+                Ok(v) => {
+                    ret = if matches!(v, Value::Null | Value::Bool(false)) {
+                        JQ_OK_NULL_KIND
+                    } else {
+                        0
+                    };
+                    dump_to_vec(&v, &DumpOptions::compact(), out);
+                    out.push(b'\n');
+                }
+                Err(e) => {
+                    let pos = shared.borrow_mut().position();
+                    match e.value() {
+                        Value::String(s) => {
+                            err.extend_from_slice(format!("jq: error (at {pos}): ").as_bytes());
+                            err.extend_from_slice(s.as_bytes());
+                            err.push(b'\n');
+                        }
+                        v => err.extend_from_slice(
+                            format!("jq: error (at {pos}) (not a string): {}\n", v.to_json())
+                                .as_bytes(),
+                        ),
+                    }
+                    ret = JQ_ERROR_UNKNOWN;
+                    break;
+                }
+            }
+        }
+        ret
+    };
+    let mut ret = JQ_OK_NO_OUTPUT;
+    if null_input {
+        ret = process(&mut jq, Value::Null, &mut out, &mut err);
+    } else {
+        loop {
+            if shared.borrow_mut().failures() != 0 {
+                break;
+            }
+            let next = shared.borrow_mut().next();
+            match next {
+                Some(Ok(v)) => ret = process(&mut jq, v, &mut out, &mut err),
+                Some(Err(e)) => {
+                    ret = JQ_ERROR_UNKNOWN;
+                    err.extend_from_slice(format!("jq: parse error: {e}\n").as_bytes());
+                    break;
+                }
+                None => break,
+            }
+        }
+    }
+    let rc = if shared.borrow_mut().failures() != 0 {
+        2
+    } else if ret > 0 {
+        ret
+    } else {
+        0
+    };
+    (out, err, rc)
+}
+
+#[test]
+fn shared_reader_with_input_builtins_matches_jq() {
+    if !jq_available() {
+        eprintln!("skipped: jq 1.8.1 not on PATH");
+        return;
+    }
+    let cases: &[(&str, bool, &[&str])] = &[
+        ("[inputs]", true, &["1 2 3\n", "[4]\n{\"a\":5}\n"]),
+        ("[., input]", false, &["1 2 3\n", "4 5\n"]),
+        (
+            "input, input_filename, input_line_number, [inputs], input_filename",
+            true,
+            &["1\n2\n", "3\n"],
+        ),
+        ("first(inputs), input", true, &["\"a\"\n\"b\"\n", "\"c\""]),
+        (
+            "reduce inputs as $x (0; . + 1)",
+            true,
+            &["1\n2\n3\n", "4\n"],
+        ),
+        (
+            "[range(6) as $i | try input catch .]",
+            true,
+            &["1 } 2\n3 ]\n4\n", "5\n"],
+        ),
+        (
+            "[., input_line_number, (try input catch \"E\")]",
+            false,
+            &["1\n2\n3\n", "{\"a\":\n1}\n"],
+        ),
+        ("[inputs]", true, &["[1,2", "]\n"]),
+        (".", false, &["1\n", "2 [3,\n"]),
+    ];
+    let failures = big_stack(move || {
+        let mut failures = Vec::new();
+        for (program, null_input, contents) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let names: Vec<String> = (0..contents.len()).map(|i| format!("s{i}.json")).collect();
+            for (n, c) in names.iter().zip(contents.iter()) {
+                std::fs::write(dir.path().join(n), c).unwrap();
+            }
+            let mut cmd = Command::new("jq");
+            cmd.current_dir(dir.path()).arg("-c");
+            if *null_input {
+                cmd.arg("-n");
+            }
+            let want = cmd
+                .arg(program)
+                .args(&names)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let want = (want.stdout, want.stderr, want.status.code().unwrap_or(-1));
+            let paths: Vec<OsString> = names
+                .iter()
+                .map(|n| OsString::from(dir.path().join(n)))
+                .collect();
+            let (out, err, rc) = run_shared(program, *null_input, &paths);
+            let prefix = format!("{}/", dir.path().display());
+            let out = String::from_utf8_lossy(&out)
+                .replace(&prefix, "")
+                .into_bytes();
+            let err = String::from_utf8_lossy(&err)
+                .replace(&prefix, "")
+                .into_bytes();
+            if (&out, &err, rc) != (&want.0, &want.1, want.2) {
+                failures.push(format!(
+                    "{program:?} -n={null_input}: rc {rc} vs jq {}\n  out {:?}\n  jq  {:?}\n  err {:?}\n  jq  {:?}",
+                    want.2,
+                    show(&out),
+                    show(&want.0),
+                    show(&err),
+                    show(&want.1)
+                ));
+            }
+        }
+        failures
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

@@ -1379,6 +1379,42 @@ fn scan_extent(cur: &FileData, st: &mut ExtentScan, avail: usize) -> Option<usiz
     None
 }
 
+/// An [`InputReader`] shared by the CLI's main loop and the VM, like jq's
+/// one `jq_util_input_state`: `input`/`inputs` in a program pull from the
+/// same stream as the main loop, and `input_filename`/`input_line_number`
+/// see the same state. Implements the VM's
+/// [`InputSource`](crate::jq::lang::execute::InputSource) (give
+/// `Jq::set_input` a clone). Don't hold [`SharedReader::borrow_mut`] while
+/// the program runs.
+#[derive(Clone)]
+pub struct SharedReader(pub std::rc::Rc<std::cell::RefCell<InputReader>>);
+
+impl SharedReader {
+    pub fn new(reader: InputReader) -> SharedReader {
+        SharedReader(std::rc::Rc::new(std::cell::RefCell::new(reader)))
+    }
+
+    /// The reader, for the main loop (`next`, `failures`, `position`).
+    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, InputReader> {
+        self.0.borrow_mut()
+    }
+}
+
+impl crate::jq::lang::execute::InputSource for SharedReader {
+    fn next_input(&mut self) -> Option<Result<Value, Error>> {
+        self.0.borrow_mut().next()
+    }
+
+    fn current_filename(&self) -> Option<Value> {
+        let f = self.0.borrow().current_filename();
+        (!f.is_null()).then_some(f)
+    }
+
+    fn current_line(&self) -> Value {
+        Value::from(self.0.borrow().current_line() as f64)
+    }
+}
+
 /// For callers that want the reader's message rendering with another
 /// program name.
 pub fn render_message(m: &InputMessage, prog: &str) -> Vec<u8> {
