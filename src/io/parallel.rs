@@ -201,9 +201,51 @@ pub trait RecordSink {
     ) -> ControlFlow<()> {
         self.record(out, err, status)
     }
+    /// A job's records, in order: their outputs and stderr bytes follow each
+    /// other in `out` and `err`, their marks are in `marks` (offsets in
+    /// `out`), and record `k` ends where `recs[k]` says. By default each is
+    /// handed to [`RecordSink::record`] (or [`RecordSink::record_marked`])
+    /// in turn ([`records_one_by_one`]).
+    fn records(
+        &mut self,
+        out: &[u8],
+        err: &[u8],
+        marks: &[(usize, usize)],
+        recs: &[Rec],
+    ) -> ControlFlow<()> {
+        records_one_by_one(self, out, err, marks, recs)
+    }
     /// A parse error in the input (jq's main loop prints
     /// `jq: parse error: ...` and stops; with `--seq` it continues).
     fn parse_error(&mut self, error: Error) -> ControlFlow<()>;
+}
+
+/// [`RecordSink::records`] as [`RecordSink::record`] calls, stopping at
+/// the first that breaks.
+pub fn records_one_by_one<S: RecordSink + ?Sized>(
+    sink: &mut S,
+    out: &[u8],
+    err: &[u8],
+    marks: &[(usize, usize)],
+    recs: &[Rec],
+) -> ControlFlow<()> {
+    let (mut o, mut e, mut m) = (0, 0, 0);
+    for rec in recs {
+        let (out_k, err_k) = (&out[o..rec.out_end], &err[e..rec.err_end]);
+        let marks_k = &marks[m..rec.marks_end];
+        if marks_k.is_empty() {
+            sink.record(out_k, err_k, rec.status)?;
+        } else {
+            // Offsets in the record's own output.
+            let marks_k: Vec<(usize, usize)> =
+                marks_k.iter().map(|&(off, len)| (off - o, len)).collect();
+            sink.record_marked(out_k, err_k, &marks_k, rec.status)?;
+        }
+        o = rec.out_end;
+        e = rec.err_end;
+        m = rec.marks_end;
+    }
+    ControlFlow::Continue(())
 }
 
 /// Engine settings.
@@ -314,11 +356,14 @@ struct Job {
     filename: Option<Arc<str>>,
 }
 
-struct Rec {
-    out_end: usize,
-    err_end: usize,
-    marks_end: usize,
-    status: i32,
+/// Where a record of a job ends in the job's buffers (see
+/// [`RecordSink::records`]), and its status.
+#[derive(Clone, Copy, Debug)]
+pub struct Rec {
+    pub out_end: usize,
+    pub err_end: usize,
+    pub marks_end: usize,
+    pub status: i32,
 }
 
 struct JobResult {
@@ -933,23 +978,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         let slot = self.queue.pop_front().expect("non-empty");
         self.in_flight -= slot.end - slot.start;
         self.stats.worker_records += r.recs.len() as u64;
-        let (mut o, mut e, mut m) = (0, 0, 0);
-        for rec in &r.recs {
-            let (out, err) = (&r.out[o..rec.out_end], &r.err[e..rec.err_end]);
-            let marks = &r.marks[m..rec.marks_end];
-            let flow = if marks.is_empty() {
-                self.sink.record(out, err, rec.status)
-            } else {
-                // Offsets in the record's own output.
-                let marks: Vec<(usize, usize)> =
-                    marks.iter().map(|&(off, len)| (off - o, len)).collect();
-                self.sink.record_marked(out, err, &marks, rec.status)
-            };
-            o = rec.out_end;
-            e = rec.err_end;
-            m = rec.marks_end;
-            flow?;
-        }
+        self.sink.records(&r.out, &r.err, &r.marks, &r.recs)?;
         // Everything before the line the worker didn't take was consumed
         // like the fast path would; the reader reads on from there.
         match r.failed_at {

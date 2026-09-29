@@ -1492,6 +1492,16 @@ struct MainLoop {
     last_result: i32,
 }
 
+impl MainLoop {
+    /// main.c's bookkeeping of a `process()` result.
+    fn status(&mut self, status: i32) {
+        self.ret = status;
+        if status <= 0 && status != JQ_OK_NO_OUTPUT {
+            self.last_result = i32::from(status != JQ_OK_NULL_KIND);
+        }
+    }
+}
+
 impl crate::io::parallel::RecordSink for MainLoop {
     fn record(&mut self, out: &[u8], err: &[u8], status: i32) -> std::ops::ControlFlow<()> {
         self.record_marked(out, err, &[], status)
@@ -1523,9 +1533,34 @@ impl crate::io::parallel::RecordSink for MainLoop {
         if !err.is_empty() {
             write_stderr(err);
         }
-        self.ret = status;
-        if status <= 0 && status != JQ_OK_NO_OUTPUT {
-            self.last_result = i32::from(status != JQ_OK_NULL_KIND);
+        self.status(status);
+        std::ops::ControlFlow::Continue(())
+    }
+
+    /// A job's records. Without stderr bytes or marks between them, their
+    /// outputs are one write: the same bytes and flushes as a write per
+    /// record (and with `--unbuffered`, one flush at the end is the same as
+    /// one per record, as nothing else is written in between); a large one
+    /// goes out straight from the job's buffer.
+    fn records(
+        &mut self,
+        out: &[u8],
+        err: &[u8],
+        marks: &[(usize, usize)],
+        recs: &[crate::io::parallel::Rec],
+    ) -> std::ops::ControlFlow<()> {
+        if !err.is_empty() || !marks.is_empty() {
+            return crate::io::parallel::records_one_by_one(self, out, err, marks, recs);
+        }
+        let out = &out[..recs.last().map_or(0, |r| r.out_end)];
+        if !out.is_empty() {
+            with_stdout(|s| {
+                s.write(out);
+                s.after_output(self.unbuffered);
+            });
+        }
+        for rec in recs {
+            self.status(rec.status);
         }
         std::ops::ControlFlow::Continue(())
     }
