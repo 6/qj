@@ -877,3 +877,312 @@ fn stack_usage() {
         );
     }
 }
+/// Binding and scoping edge cases, with jq 1.8.1's output inline (recorded with
+/// `jq --debug-dump-disasm -L modules [ARGS] -- PROGRAM`, as [`live_jq`] runs it):
+/// the disassembly, or the compile errors (exit code 3).
+#[test]
+fn binding_and_scoping() {
+    #[rustfmt::skip]
+    let cases: &[(&str, &[&str], i32, &str)] = &[
+        // A definition binds the calls after it: g calls the first f (f:0), the main program the second (f:2).
+        ("def f: 1; def g: f; def f: 2; g, f", &[], 0, r#"0000 TOP
+0001 FORK 0009
+0003 CALL_JQ g:1
+0007 JUMP 0013
+0009 CALL_JQ f:2
+0013 RET
+f:0:
+  0000 LOADK 1
+  0002 RET
+g:1:
+  0000 TAIL_CALL_JQ f:0^1
+  0004 RET
+f:2:
+  0000 LOADK 2
+  0002 RET
+
+"#),
+        // Functions are bound by name and arity: f/0 and f/1 coexist.
+        ("def f(x): x; def f: 3; f, f(1)", &[], 0, r#"0000 TOP
+0001 FORK 0009
+0003 CALL_JQ f:1
+0007 JUMP 0015
+0009 CALL_JQ f:0 @lambda:2
+0015 RET
+f:0:
+  [params: x]
+  0000 CALL_JQ x:0
+  0004 RET
+f:1:
+  0000 LOADK 3
+  0002 RET
+@lambda:2:
+  0000 LOADK 1
+  0002 RET
+
+"#),
+        // `def f: def g: ...;`: g is a subfunction of f.
+        ("def f: def g: 3; g; f", &[], 0, r#"0000 TOP
+0001 CALL_JQ f:0
+0005 RET
+f:0:
+  0000 CALL_JQ g:0
+  0004 RET
+  g:0:
+    0000 LOADK 3
+    0002 RET
+
+"#),
+        // Recursion: fac calls itself one level up (fac:0^1).
+        ("def fac: if . <= 1 then 1 else . * (. - 1 | fac) end; fac", &[], 0, r#"0000 TOP
+0001 CALL_JQ fac:0
+0005 RET
+fac:0:
+  0000 DUP
+  0001 SUBEXP_BEGIN
+  0002 PUSHK_UNDER 1
+  0004 DUP
+  0005 CALL_BUILTIN _lesseq
+  0008 SUBEXP_END
+  0009 POP
+  0010 JUMP_F 0017
+  0012 POP
+  0013 LOADK 1
+  0015 JUMP 0034
+  0017 POP
+  0018 SUBEXP_BEGIN
+  0019 PUSHK_UNDER 1
+  0021 DUP
+  0022 CALL_BUILTIN _minus
+  0025 CALL_JQ fac:0^1
+  0029 SUBEXP_END
+  0030 DUP
+  0031 CALL_BUILTIN _multiply
+  0034 RET
+
+"#),
+        // A closure capturing its enclosing function's parameter (g:0^1), as a tail call.
+        ("def f(g): def h: g; h; f(.)", &[], 0, r#"0000 TOP
+0001 CALL_JQ f:0 @lambda:1
+0007 RET
+f:0:
+  [params: g]
+  0000 CALL_JQ h:0
+  0004 RET
+  h:0:
+    0000 TAIL_CALL_JQ g:0^1
+    0004 RET
+@lambda:1:
+  0000 RET
+
+"#),
+        // `$a` parameters are desugared to `a as $a`, and captured by inner functions ($a:0^1).
+        ("def f($a): def g: $a; g; f(1)", &[], 0, r#"0000 TOP
+0001 CALL_JQ f:0 @lambda:1
+0007 RET
+f:0:
+  [params: a]
+  0000 DUP
+  0001 SUBEXP_BEGIN
+  0002 CALL_JQ a:0
+  0006 SUBEXP_END
+  0007 POP
+  0008 STOREV $a:0
+  0011 CALL_JQ g:0
+  0015 RET
+  g:0:
+    0000 LOADV $a:0^1
+    0003 RET
+@lambda:1:
+  0000 LOADK 1
+  0002 RET
+
+"#),
+        // An inner variable shadows an outer one of the same name.
+        (". as $x | . as $x | $x", &[], 0, r#"0000 TOP
+0001 DUP
+0002 DUP
+0003 POP
+0004 STOREV $x:0
+0007 DUP
+0008 DUP
+0009 POP
+0010 STOREV $x:1
+0013 LOADV $x:1
+0016 RET
+
+"#),
+        // Array patterns bind later elements first, so `$a` is the second element.
+        ("[1,2] as [$a, $a] | $a", &[], 0, r#"0000 TOP
+0001 DUP
+0002 PUSHK_UNDER [1,2]
+0004 POP
+0005 DUP
+0006 PUSHK_UNDER 1
+0008 INDEX
+0009 STOREV $a:0
+0012 DUP
+0013 PUSHK_UNDER 0
+0015 INDEX
+0016 STOREV $a:1
+0019 POP
+0020 LOADV $a:0
+0023 RET
+
+"#),
+        // Variables in frame order; `$__loc__` is folded into a constant.
+        ("1 as $x | 2 as $y | [$x, $y, $__loc__]", &[], 0, r#"0000 TOP
+0001 DUP
+0002 PUSHK_UNDER 1
+0004 POP
+0005 STOREV $x:0
+0008 DUP
+0009 PUSHK_UNDER 2
+0011 POP
+0012 STOREV $y:1
+0015 DUP
+0016 LOADK []
+0018 STOREV $collect:2
+0021 FORK 0043
+0023 FORK 0037
+0025 FORK 0032
+0027 LOADV $x:0
+0030 JUMP 0035
+0032 LOADV $y:1
+0035 JUMP 0039
+0037 LOADK {"file":"<top-level>","line":1}
+0039 APPEND $collect:2
+0042 BACKTRACK
+0043 LOADVN $collect:2
+0046 RET
+
+"#),
+        // `$ENV` becomes a constant of the environment.
+        ("$ENV.HOME", &[], 0, r#"0000 TOP
+0001 PUSHK_UNDER "HOME"
+0003 LOADK {"HOME":"/nonexistent-qj-home","QJ_TEST":"1"}
+0005 INDEX
+0006 RET
+
+"#),
+        // Named arguments become constants (`--arg x 1`).
+        ("$x, $ARGS.named", &["--arg", "x", "1"], 0, r#"0000 TOP
+0001 FORK 0007
+0003 LOADK "1"
+0005 JUMP 0012
+0007 PUSHK_UNDER "named"
+0009 LOADK {"positional":[],"named":{"x":"1"}}
+0011 INDEX
+0012 RET
+
+"#),
+        // A parameter shadows a named argument of the same name.
+        ("def f($x): $x; f(2), $x", &["--arg", "x", "1"], 0, r#"0000 TOP
+0001 FORK 0011
+0003 CALL_JQ f:0 @lambda:1
+0009 JUMP 0013
+0011 LOADK "1"
+0013 RET
+f:0:
+  [params: x]
+  0000 DUP
+  0001 SUBEXP_BEGIN
+  0002 CALL_JQ x:0
+  0006 SUBEXP_END
+  0007 POP
+  0008 STOREV $x:0
+  0011 LOADV $x:0
+  0014 RET
+@lambda:1:
+  0000 LOADK 2
+  0002 RET
+
+"#),
+        // `label`/`break`: the label is the variable `$*label-out`.
+        ("label $out | 1, break $out", &[], 0, r#"0000 TOP
+0001 DUP
+0002 GENLABEL
+0003 STOREV $*label-out:0
+0006 POP
+0007 TRY_BEGIN 0024
+0009 FORK 0015
+0011 LOADK 1
+0013 JUMP 0021
+0015 LOADV $*label-out:0
+0018 CALL_BUILTIN error
+0021 TRY_END
+0022 JUMP 0047
+0024 DUP
+0025 SUBEXP_BEGIN
+0026 SUBEXP_BEGIN
+0027 LOADV $*label-out:0
+0030 SUBEXP_END
+0031 DUP
+0032 CALL_BUILTIN _equal
+0035 SUBEXP_END
+0036 POP
+0037 JUMP_F 0043
+0039 POP
+0040 BACKTRACK
+0041 JUMP 0047
+0043 POP
+0044 CALL_BUILTIN error
+0047 RET
+
+"#),
+        // An unreferenced definition is dropped, errors and all.
+        ("def f: $x; 1", &[], 0, r#"0000 TOP
+0001 LOADK 1
+0003 RET
+
+"#),
+        // Only the main program's error: f is dropped before compiling.
+        ("def f: $x; $y", &[], 3, r#"jq: error: $y is not defined at <top-level>, line 1, column 12:
+    def f: $x; $y
+               ^^
+jq: 1 compile error
+"#),
+        // A module import binds `foo::a`.
+        ("import \"a\" as foo; foo::a", &[], 0, r#"0000 TOP
+0001 CALL_JQ a:0
+0005 RET
+a:0:
+  0000 LOADK "a"
+  0002 RET
+
+"#),
+        // A data import is a global (`STORE_GLOBAL`), bound as `$d` and `$d::d`.
+        ("import \"data\" as $d; $d::d[0].this", &[], 0, r#"0000 STORE_GLOBAL [{"this":"is a test","that":"is too"}]
+0004 TOP
+0005 PUSHK_UNDER "this"
+0007 PUSHK_UNDER 0
+0009 LOADV $d:0
+0012 INDEX
+0013 INDEX
+0014 RET
+
+"#),
+        // In a module, a later definition shadows an earlier one.
+        ("include \"shadow1\"; e", &[], 0, r#"0000 TOP
+0001 CALL_JQ e:0
+0005 RET
+e:0:
+  0000 LOADK 2
+  0002 RET
+
+"#),
+        // A missing module; jq's message ends with an extra newline.
+        ("import \"nonexistent\" as x; .", &[], 3, r#"jq: error: module not found: nonexistent
+
+jq: 1 compile error
+"#),
+    ];
+    for &(src, args, exit, expected) in cases {
+        let mut p = Program::new("inline".into(), src.as_bytes().to_vec());
+        p.args = args.iter().map(|s| s.to_string()).collect();
+        let got = ours(&p);
+        let text = if exit == 0 { &got.stdout } else { &got.stderr };
+        assert_eq!(got.exit, exit, "{src}");
+        assert_eq!(text, expected, "{src}");
+    }
+}

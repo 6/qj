@@ -406,4 +406,101 @@ mod tests {
         assert!(list.iter().any(|s| s == "map/1"));
         assert!(list.iter().all(|s| !s.starts_with('_')));
     }
+
+    /// builtin.c's `builtins_bind` exactly as jq does it: every builtin becomes a
+    /// binder, and block_bind_referenced keeps what's referenced.
+    fn naive_builtins_bind(c: &mut Compiler, program: Block) -> Block {
+        let text = builtin_jq();
+        let lf = c.add_locfile(Rc::new(LocFile::new("<builtin>", text.as_bytes())));
+        let mut builtins = Block::NOOP;
+        for d in full_parse() {
+            let f = Lowerer::new(c, lf).lower_funcdef(&d);
+            builtins = c.block_join(builtins, f);
+        }
+        // bind_bytecoded_builtins
+        let mut bytecoded = Block::NOOP;
+        for (b, _, _) in BYTECODED {
+            let f = gen_bytecoded(c, b);
+            bytecoded = c.block_join(bytecoded, f);
+        }
+        builtins = c.block_join(bytecoded, builtins);
+        builtins = c.gen_cbinding(&function_list(), builtins);
+        // gen_builtin_list
+        let mut list: Vec<Value> = c
+            .block_list_funcs(builtins, true)
+            .into_iter()
+            .map(Value::from)
+            .collect();
+        list.push(Value::from("builtins/0"));
+        let k = c.gen_const(Value::from(list));
+        let f = c.gen_function("builtins", Block::NOOP, k);
+        builtins = c.block_join(builtins, f);
+        c.block_bind_referenced(builtins, program, OP_IS_CALL_PSEUDO)
+    }
+
+    fn disassemble(src: &str, bind: fn(&mut Compiler, Block) -> Block) -> String {
+        use crate::jq::lang::bytecode::dump_disassembly;
+        use crate::jq::lang::compile::Globals;
+        use crate::jq::lang::linker::{JqAttrs, load_program};
+        use crate::jq::value::Object;
+        let attrs = JqAttrs {
+            lib_dirs: Value::from(Vec::<Value>::new()),
+            jq_origin: Value::from("."),
+            prog_origin: Value::from("."),
+            home: None,
+        };
+        let mut c = Compiler::new();
+        let lf = c.add_locfile(Rc::new(LocFile::new("<top-level>", src.as_bytes())));
+        let program = load_program(&mut c, &attrs, lf).expect("parses");
+        let program = bind(&mut c, program);
+        let args = Object::new();
+        let mut globals = Globals {
+            args: &args,
+            env: Some(Value::Null),
+        };
+        match c.block_compile(program, lf, &mut globals) {
+            Ok(bc) => dump_disassembly(0, &bc),
+            Err(_) => c.messages.join("\n"),
+        }
+    }
+
+    /// The simulation binds exactly what jq's bind-everything approach binds: every
+    /// builtin, called alone and in combinations, compiles to the same bytecode (and
+    /// the same errors for the ones that shadow or don't exist).
+    #[test]
+    fn simulated_binding_matches_jqs() {
+        let mut programs: Vec<String> = builtin_list()
+            .iter()
+            .map(|sig| {
+                let (name, arity) = sig.rsplit_once('/').unwrap();
+                let arity: usize = arity.parse().unwrap();
+                if arity == 0 {
+                    name.to_string()
+                } else {
+                    format!("{name}({})", vec!["."; arity].join("; "))
+                }
+            })
+            .collect();
+        programs.extend(
+            [
+                "[paths] | map(tostring) | join(\",\") | test(\"a\") | sub(\"a\"; \"b\")",
+                "def map(f): 1; [.[] | select(.)] | map(.) | add",
+                "def empty: 1; first(empty), limit(1; empty), isempty(empty)",
+                "def _plus(a; b): 42; . + 1, add",
+                "leaf_paths, _modify(.; .), _nonexistent",
+                "to_entries | with_entries(.) | from_entries | walk(.) | tostream | fromstream(.)",
+                ". as [$a] ?// $a | $a | .a += 1 | .b //= 2 | del(.c) | pick(.d) | getpath([\"e\"])",
+                "input, inputs, $__loc__, splits(\"x\"), ascii(65), @base64d, gsub(\"a\"; \"b\"; \"g\")",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+        for p in &programs {
+            assert_eq!(
+                disassemble(p, builtins_bind),
+                disassemble(p, naive_builtins_bind),
+                "{p}"
+            );
+        }
+    }
 }
