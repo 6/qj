@@ -48,6 +48,48 @@ pub struct SimdParser {
     parser: TapeParser,
     /// Padded copy of the text when the caller's buffer lacks padding.
     scratch: Vec<u8>,
+    /// Open containers while building (empty between calls).
+    stack: Vec<Frame>,
+    keys: KeyCache,
+}
+
+/// Recently seen object keys, shared between the objects and documents a
+/// parser builds (NDJSON repeats the same keys in every record). Sharing a
+/// key's allocation isn't observable in jq: keys are never mutated in
+/// place (copy on write), and identity only matters for values at paths
+/// (`path_intact` in jq's execute.c), which keys never are.
+struct KeyCache {
+    slots: Box<[Option<(u64, Str)>]>,
+}
+
+const KEY_SLOTS: usize = 1024;
+const MAX_CACHED_KEY: usize = 48;
+
+impl KeyCache {
+    fn new() -> KeyCache {
+        KeyCache {
+            slots: vec![None; KEY_SLOTS].into_boxed_slice(),
+        }
+    }
+
+    #[inline]
+    fn get(&mut self, key: &str) -> Str {
+        if key.len() > MAX_CACHED_KEY {
+            return Str::from(key);
+        }
+        use std::hash::BuildHasher;
+        let h = foldhash::fast::FixedState::with_seed(0x51_7c_c1_b7).hash_one(key.as_bytes());
+        let slot = &mut self.slots[h as usize & (KEY_SLOTS - 1)];
+        if let Some((sh, s)) = slot
+            && *sh == h
+            && s.as_bytes() == key.as_bytes()
+        {
+            return s.clone();
+        }
+        let s = Str::from(key);
+        *slot = Some((h, s.clone()));
+        s
+    }
 }
 
 impl Default for SimdParser {
@@ -61,6 +103,8 @@ impl SimdParser {
         SimdParser {
             parser: TapeParser::new().expect("simdjson parser allocation"),
             scratch: Vec::new(),
+            stack: Vec::new(),
+            keys: KeyCache::new(),
         }
     }
 
@@ -89,7 +133,9 @@ impl SimdParser {
             &self.scratch
         };
         let tape = self.parser.parse(text, len).map_err(Rejected)?;
-        build(&tape, &text[..len])
+        let result = build(&tape, &text[..len], &mut self.stack, &mut self.keys);
+        self.stack.clear();
+        result
     }
 }
 
@@ -117,10 +163,14 @@ fn is_number_byte(c: u8) -> bool {
 /// structural cursor `si` tracks the source position of each tape item
 /// (skipping the `:`/`,` separators that valid JSON puts in fixed places),
 /// which is where number literals are read from.
-fn build(tape: &Tape<'_>, src: &[u8]) -> Result<Value, Rejected> {
+fn build(
+    tape: &Tape<'_>,
+    src: &[u8],
+    stack: &mut Vec<Frame>,
+    keys: &mut KeyCache,
+) -> Result<Value, Rejected> {
     let words = tape.words;
     let structurals = tape.structurals;
-    let mut stack: Vec<Frame> = Vec::new();
     let mut i = 1; // words[0] is the root
     let mut si = 0usize;
     loop {
@@ -173,14 +223,20 @@ fn build(tape: &Tape<'_>, src: &[u8]) -> Result<Value, Rejected> {
                 // SAFETY: the payload of a string word is its offset in the
                 // string buffer of this tape.
                 let bytes = unsafe { tape.string((word & PAYLOAD_MASK) as usize) };
-                let s = std::str::from_utf8(bytes).map_err(|_| Rejected::UNSUPPORTED)?;
+                debug_assert!(std::str::from_utf8(bytes).is_ok());
+                // SAFETY: simdjson validated the whole text as UTF-8, and a
+                // decoded string is made of complete source sequences between
+                // ASCII delimiters (quotes, escapes) and simdjson's UTF-8
+                // encodings of escaped code points, which are never lone
+                // surrogates (it rejects those) nor above U+10FFFF.
+                let s = unsafe { std::str::from_utf8_unchecked(bytes) };
                 i += 1;
                 si += 1;
                 if let Some(Frame::Object {
                     key: key @ None, ..
                 }) = stack.last_mut()
                 {
-                    *key = Some(Str::from(s));
+                    *key = Some(keys.get(s));
                     continue;
                 }
                 Value::String(Str::from(s))

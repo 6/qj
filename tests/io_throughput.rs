@@ -9,8 +9,12 @@ use std::time::Instant;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+use std::ops::ControlFlow;
+
+use qj::io::parallel::{self, DumpFactory, EngineOptions, RecordSink};
 use qj::io::simd::SimdParser;
-use qj::jq::value::{ParseFlags, Parser};
+use qj::io::{InputReader, MemoryOpener, ReaderOptions};
+use qj::jq::value::{DumpOptions, ParseFlags, Parser};
 
 fn synthetic_ndjson(records: usize) -> Vec<u8> {
     let mut out = Vec::new();
@@ -82,5 +86,113 @@ fn parse_throughput_sanity() {
             "[{round}] simdjson -> Value: {n} values, {:.0} MB/s",
             mb / dt
         );
+
+        // The reader over the same bytes as one input (NDJSON fast path).
+        let t = Instant::now();
+        let mut m = MemoryOpener::new();
+        m.add("f", data.clone());
+        let mut r =
+            InputReader::with_opener(vec!["f".into()], ReaderOptions::default(), Box::new(m));
+        let mut n = 0;
+        while let Some(v) = r.next() {
+            v.unwrap();
+            n += 1;
+        }
+        let dt = t.elapsed().as_secs_f64();
+        eprintln!("[{round}] reader (NDJSON): {n} values, {:.0} MB/s", mb / dt);
+
+        // The same records pretty-printed inside one array.
+        let mut pretty = b"[\n".to_vec();
+        for (i, line) in data
+            .split(|&c| c == b'\n')
+            .filter(|l| !l.is_empty())
+            .enumerate()
+        {
+            if i > 0 {
+                pretty.extend_from_slice(b",\n");
+            }
+            let v = qj::jq::value::parse_sized(line).unwrap();
+            pretty.extend_from_slice(
+                qj::jq::value::dump_string(&v, &qj::jq::value::DumpOptions::pretty()).as_bytes(),
+            );
+        }
+        pretty.extend_from_slice(b"\n]\n");
+        let pmb = pretty.len() as f64 / 1e6;
+        let t = Instant::now();
+        let mut m = MemoryOpener::new();
+        m.add("f", pretty.clone());
+        let mut r =
+            InputReader::with_opener(vec!["f".into()], ReaderOptions::default(), Box::new(m));
+        let v = r.next().unwrap().unwrap();
+        assert!(r.next().is_none());
+        let dt = t.elapsed().as_secs_f64();
+        eprintln!(
+            "[{round}] reader (one pretty-printed {pmb:.0} MB array of {}): {:.0} MB/s",
+            v.as_array().unwrap().len(),
+            pmb / dt
+        );
+        drop(v);
+
+        // Parse + print, sequential vs the engine.
+        for threads in [0, 4, 16] {
+            let t = Instant::now();
+            let mut m = MemoryOpener::new();
+            m.add("f", data.clone());
+            let mut r =
+                InputReader::with_opener(vec!["f".into()], ReaderOptions::default(), Box::new(m));
+            let factory = DumpFactory {
+                opts: DumpOptions::compact(),
+                with_position: false,
+            };
+            let mut sink = Count(0);
+            let opts = EngineOptions {
+                threads,
+                ..EngineOptions::default()
+            };
+            let stats = parallel::run(&mut r, &factory, &mut sink, &opts);
+            let dt = t.elapsed().as_secs_f64();
+            eprintln!(
+                "[{round}] parse+print, {threads} threads: {} bytes out, {:.0} MB/s ({} by workers)",
+                sink.0,
+                mb / dt,
+                stats.worker_records
+            );
+        }
+    }
+}
+
+/// A loop to attach a profiler to (`QJ_PROFILE_SECS`, default 8):
+/// `cargo test --profile profiling --test io_throughput profile_loop -- --ignored`
+#[test]
+#[ignore]
+fn profile_loop() {
+    let secs: u64 = std::env::var("QJ_PROFILE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
+    let data = synthetic_ndjson(20_000);
+    let mut s = SimdParser::new();
+    let t = Instant::now();
+    let mut n = 0u64;
+    while t.elapsed().as_secs() < secs {
+        let mut start = 0;
+        for nl in memchr::memchr_iter(b'\n', &data) {
+            let _v = s.parse(&data, start, nl).unwrap();
+            start = nl + 1;
+            n += 1;
+        }
+    }
+    eprintln!("{n} values");
+}
+
+struct Count(usize);
+
+impl RecordSink for Count {
+    fn record(&mut self, out: &[u8], _err: &[u8], _status: i32) -> ControlFlow<()> {
+        self.0 += out.len();
+        ControlFlow::Continue(())
+    }
+    fn parse_error(&mut self, _e: qj::jq::value::Error) -> ControlFlow<()> {
+        ControlFlow::Break(())
     }
 }
