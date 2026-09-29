@@ -85,14 +85,20 @@ cargo bench --bench eval_regression
 ```
 
 Counts CPU instructions (deterministic, no wall-clock noise). Runs on CI for every PR.
+Covers the jq port's compiler and VM, the printer, and the input layer (simdjson's tape to
+jq values, jq's parser port, the NDJSON reader).
 
-### Parse throughput (simdjson vs serde_json)
+### Parse throughput (input layer stages vs serde_json)
 
 ```bash
-bash benches/download_data.sh --json
-bash benches/generate_data.sh --ndjson
+bash benches/download_data.sh --json --gharchive
+cargo build --release    # to include qj end to end
 cargo bench --bench parse_throughput
 ```
+
+Measures simdjson's DOM parse through the FFI, simdjson to jq values, jq's parser port, and
+(for NDJSON) jq's input loop with and without the simdjson fast path, next to serde_json and
+qj/jq/jaq/gojq end to end.
 
 ### C++ baseline (no FFI overhead)
 
@@ -100,6 +106,8 @@ cargo bench --bench parse_throughput
 bash benches/build_cpp_bench.sh
 ./benches/bench_cpp
 ```
+
+The same simdjson DOM parse in C++: compare with parse_throughput's FFI numbers.
 
 ### Ad-hoc comparison
 
