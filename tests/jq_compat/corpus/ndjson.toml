@@ -1,5 +1,5 @@
-# Adversarial NDJSON for qj's parallel NDJSON path and its fast paths
-# (NdjsonFastPath in src/parallel/ndjson.rs). Format: tests/jq_diff/cli.rs.
+# Adversarial NDJSON for qj's parallel NDJSON path, over the shapes the old
+# core's fast paths took (its NdjsonFastPath, since removed). Format: tests/jq_diff/cli.rs.
 #
 # Data (tests/jq_compat/corpus/data/):
 # - adv.ndjson, adv2.ndjson, bad.ndjson: from the orchestrator's audit.

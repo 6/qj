@@ -5610,7 +5610,7 @@ fn tostring_large_number_preserves_raw() {
 }
 
 // ---------------------------------------------------------------------------
-// Try/? operator on array construction (flat_eval error propagation)
+// Try/? operator on array construction (error propagation)
 // ---------------------------------------------------------------------------
 
 #[test]
