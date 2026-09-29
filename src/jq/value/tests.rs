@@ -685,3 +685,57 @@ fn colors_parse() {
     assert!(Colors::parse("x").is_none());
     assert_eq!(Colors::parse("").unwrap(), Colors::default());
 }
+
+#[test]
+fn updates_never_affect_other_references() {
+    let a = jv("{\"x\":[1,2,{\"y\":3}],\"s\":\"ab\"}");
+    let keep = a.clone();
+    let b = a
+        .setpath(&jv("[\"x\",2,\"y\"]"), Value::from(9))
+        .unwrap()
+        .delpaths(&jv("[[\"x\",0]]"))
+        .unwrap()
+        .set(&jv("\"s\""), Value::from("zz"))
+        .unwrap();
+    assert_eq!(keep.to_json(), "{\"x\":[1,2,{\"y\":3}],\"s\":\"ab\"}");
+    assert_eq!(b.to_json(), "{\"x\":[2,{\"y\":9}],\"s\":\"zz\"}");
+    // Slices share storage but writes go to a copy when shared.
+    let arr = jv("[1,2,3,4]");
+    let mut view = arr.get(&jv("{\"start\":1,\"end\":3}")).unwrap();
+    if let Value::Array(v) = &mut view {
+        v.as_mut_slice()[0] = Value::from(7);
+        assert_eq!(v.get_mut(1).map(|x| x.to_json()), Some("3".into()));
+        assert!(v.get_mut(2).is_none());
+    }
+    assert_eq!(view.to_json(), "[7,3]");
+    assert_eq!(arr.to_json(), "[1,2,3,4]");
+    // Strings and objects too.
+    let mut s = Str::from("ab");
+    let s2 = s.clone();
+    s.push_str("c");
+    assert_eq!((s.as_str(), s2.as_str()), ("abc", "ab"));
+    let mut o = jv("{\"a\":1,\"b\":2,\"c\":3}").as_object().unwrap().clone();
+    let o2 = o.clone();
+    *o.get_mut("b").unwrap() = Value::from(20);
+    assert!(o.get_mut("zz").is_none());
+    o.retain(|k, _| k != "a");
+    assert_eq!(Value::Object(o).to_json(), "{\"b\":20,\"c\":3}");
+    assert_eq!(Value::Object(o2).to_json(), "{\"a\":1,\"b\":2,\"c\":3}");
+}
+
+#[test]
+fn array_conversions() {
+    let a = jv("[0,1,2,3,4,5]");
+    let v = a.get(&jv("{\"start\":2,\"end\":5}")).unwrap();
+    let Value::Array(view) = v else { panic!() };
+    // A shared view converts by copying...
+    assert_eq!(Value::from(view.clone().into_vec()).to_json(), "[2,3,4]");
+    drop(a);
+    // ...a unique one by moving its elements out.
+    let items: Vec<Value> = view.into_iter().collect();
+    assert_eq!(Value::from(items).to_json(), "[2,3,4]");
+    let mut b: Array = (0..3).map(Value::from).collect();
+    b.extend([Value::from("x")]);
+    b.extend_from_array(&Array::from_vec(vec![Value::Null]));
+    assert_eq!(Value::Array(b).to_json(), "[0,1,2,\"x\",null]");
+}
