@@ -356,6 +356,19 @@ impl std::fmt::Debug for Bytecode {
     }
 }
 
+/// Dropping is iterative: functions nest as deeply as jq's parser allows (thousands
+/// of levels), which a recursive drop could overflow on a small thread stack.
+impl Drop for Bytecode {
+    fn drop(&mut self) {
+        let mut stack = std::mem::take(&mut self.subfunctions);
+        while let Some(child) = stack.pop() {
+            if let Ok(mut bc) = Rc::try_unwrap(child) {
+                stack.append(&mut bc.subfunctions);
+            }
+        }
+    }
+}
+
 impl Bytecode {
     /// `codelen`.
     #[inline]
@@ -415,7 +428,27 @@ pub fn dump_disassembly(indent: usize, bc: &Bytecode) -> String {
     out
 }
 
+/// bytecode.c's recursive `dump_disassembly`, with an explicit stack.
 fn write_disassembly(out: &mut String, indent: usize, bc: &Bytecode) {
+    write_function(out, indent, bc);
+    // (function, its indent, next subfunction to print)
+    let mut stack: Vec<(&Bytecode, usize, usize)> = vec![(bc, indent, 0)];
+    while let Some(top) = stack.last_mut() {
+        let (b, ind, i) = *top;
+        let Some(subfn) = b.subfunctions.get(i) else {
+            stack.pop();
+            continue;
+        };
+        top.2 += 1;
+        indent_str(out, ind);
+        let _ = writeln!(out, "{}:{}:", subfn.name_str(), i);
+        write_function(out, ind + 2, subfn);
+        stack.push((subfn, ind + 2, 0));
+    }
+}
+
+/// A function's parameters and code (without its subfunctions).
+fn write_function(out: &mut String, indent: usize, bc: &Bytecode) {
     if bc.nclosures > 0 {
         indent_str(out, indent);
         out.push_str("[params: ");
@@ -428,11 +461,6 @@ fn write_disassembly(out: &mut String, indent: usize, bc: &Bytecode) {
         out.push_str("]\n");
     }
     dump_code(out, indent, bc);
-    for (i, subfn) in bc.subfunctions.iter().enumerate() {
-        indent_str(out, indent);
-        let _ = writeln!(out, "{}:{}:", subfn.name_str(), i);
-        write_disassembly(out, indent + 2, subfn);
-    }
 }
 
 /// `dump_operation(bc, codeptr)`: one instruction (at `pc`), without a newline, e.g.

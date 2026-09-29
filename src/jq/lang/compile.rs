@@ -1822,36 +1822,53 @@ impl Compiler {
             return Err(nerrors);
         }
         let globals = Rc::new(SymbolTable { cfunctions });
-        let mut fns: Vec<Option<FnState>> = fns.into_iter().map(Some).collect();
+        let mut fns: Vec<Option<Box<FnState>>> =
+            fns.into_iter().map(|f| Some(Box::new(f))).collect();
         Ok(build_bytecode(&mut fns, 0, &globals, Weak::new()))
     }
 }
 
 /// Builds the `Rc<Bytecode>` tree (with parent links) and applies execute.c's
 /// tail-call optimization to each function.
+///
+/// `Rc::new_cyclic` needs a function's children built inside its constructor (they
+/// point back at it), so this recurses once per level of function nesting. That is
+/// bounded by the parser (a few thousand levels), and the frames are kept small.
+#[inline(never)]
 fn build_bytecode(
-    fns: &mut [Option<FnState>],
+    fns: &mut [Option<Box<FnState>>],
     fid: usize,
     globals: &Rc<SymbolTable>,
     parent: Weak<Bytecode>,
 ) -> Rc<Bytecode> {
-    let mut f = fns[fid].take().expect("function built twice");
+    let f = fns[fid].take().expect("function built twice");
+    Rc::new_cyclic(move |me: &Weak<Bytecode>| make_bytecode(fns, f, globals, parent, me))
+}
+
+// `f` stays boxed so each level of the recursion keeps a small frame.
+#[inline(never)]
+#[allow(clippy::boxed_local)]
+fn make_bytecode(
+    fns: &mut [Option<Box<FnState>>],
+    mut f: Box<FnState>,
+    globals: &Rc<SymbolTable>,
+    parent: Weak<Bytecode>,
+    me: &Weak<Bytecode>,
+) -> Bytecode {
     bytecode::optimize_code(&mut f.code);
-    Rc::new_cyclic(|me: &Weak<Bytecode>| {
-        let subfunctions = f
-            .subfunctions
-            .iter()
-            .map(|&sid| build_bytecode(fns, sid, globals, me.clone()))
-            .collect();
-        Bytecode {
-            code: f.code,
-            nlocals: f.nlocals,
-            nclosures: f.nclosures,
-            constants: f.constants,
-            globals: globals.clone(),
-            subfunctions,
-            parent,
-            debuginfo: f.debuginfo,
-        }
-    })
+    let mut subfunctions = Vec::with_capacity(f.subfunctions.len());
+    for &sid in &f.subfunctions {
+        subfunctions.push(build_bytecode(fns, sid, globals, me.clone()));
+    }
+    let f = *f;
+    Bytecode {
+        code: f.code,
+        nlocals: f.nlocals,
+        nclosures: f.nclosures,
+        constants: f.constants,
+        globals: globals.clone(),
+        subfunctions,
+        parent,
+        debuginfo: f.debuginfo,
+    }
 }

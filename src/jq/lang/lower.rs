@@ -9,10 +9,12 @@
 //!
 //! # Depth
 //!
-//! Left-associative chains (`1 + 1 + ... + 1`, `a, b, c, ...`, `.a.b.c...`) are
-//! unbounded in jq (bison reduces them as it goes), so they are lowered with a loop.
-//! Everything else nests through the parser's stack, which jq bounds at 10000 states,
-//! and is lowered recursively.
+//! jq runs these actions as bison reduces, so it never recurses over the tree. Here
+//! the tree is walked in post-order with an explicit stack ([`Lowerer::run`]): a
+//! node's action runs once its children's blocks are on the result stack. Nesting
+//! is bounded only by the parser (about 10000 states), and left-associative chains
+//! (`1 + 1 + ... + 1`, `.a.b.c...`) are unbounded, so recursion could overflow a
+//! thread's stack.
 
 use super::ast::*;
 use super::bytecode::OP_IS_CALL_PSEUDO;
@@ -29,18 +31,33 @@ pub struct Lowerer<'a> {
     pub lf: LocFileId,
 }
 
-/// The child that forms left-deep chains (lowered iteratively).
-fn chain_child(n: &Node) -> Option<&Node> {
-    match &n.kind {
-        NodeKind::Binary { lhs, .. } => Some(lhs),
-        NodeKind::Comma(a, _) | NodeKind::Pipe(a, _) => Some(a),
-        NodeKind::Index {
-            target: Some(t), ..
-        } => Some(t),
-        NodeKind::Each { target, .. } | NodeKind::Slice { target, .. } => Some(target),
-        NodeKind::Optional(t) | NodeKind::Neg(t) => Some(t),
-        _ => None,
-    }
+/// Something with an action: a node, or one of the grammar's other nonterminals.
+#[derive(Clone, Copy)]
+enum Item<'a> {
+    Node(&'a Node),
+    FuncDef(&'a FuncDef),
+    Str(&'a StringLit),
+    Patterns(&'a [Pattern]),
+    Pattern(&'a Pattern),
+    ObjPat(&'a ObjPat),
+    DictPair(&'a DictPair),
+}
+
+enum Task<'a> {
+    /// Push the item's children (then its `Finish`), or its block if it has none.
+    Visit(Item<'a>),
+    /// The children's blocks are on the result stack: run the action.
+    Finish(Item<'a>),
+}
+
+/// Pops the last `n` results, in order.
+fn pop_n(results: &mut Vec<Block>, n: usize) -> Vec<Block> {
+    let at = results.len() - n;
+    results.split_off(at)
+}
+
+fn pop(results: &mut Vec<Block>) -> Block {
+    results.pop().expect("lowering: missing child block")
 }
 
 impl Lowerer<'_> {
@@ -98,231 +115,380 @@ impl Lowerer<'_> {
 
     /// `FuncDef`: `gen_function(name, params, body)`.
     pub fn lower_funcdef(&mut self, d: &FuncDef) -> Block {
-        let mut formals = Block::NOOP;
-        for p in &d.params {
-            let b = match p.kind {
-                ParamKind::Value => self.c.gen_param_regular(&p.name),
-                ParamKind::Filter => self.c.gen_param(&p.name),
-            };
-            formals = self.c.block_join(formals, b);
-        }
-        let body = self.lower(&d.body);
-        self.c.gen_function(&d.name, formals, body)
+        self.run(Item::FuncDef(d))
     }
 
     /// Lowers a `Query`/`Expr`/`Term`.
     pub fn lower(&mut self, n: &Node) -> Block {
-        let mut chain = Vec::new();
-        let mut cur = n;
-        while let Some(child) = chain_child(cur) {
-            chain.push(cur);
-            cur = child;
-        }
-        let mut acc = self.lower_leaf(cur);
-        for node in chain.into_iter().rev() {
-            acc = self.lower_on(node, acc);
-        }
-        acc
+        self.run(Item::Node(n))
     }
 
-    /// The action of a chain node, given its lowered chain child.
-    fn lower_on(&mut self, n: &Node, first: Block) -> Block {
+    /// The post-order walk.
+    fn run(&mut self, root: Item<'_>) -> Block {
+        let mut tasks = vec![Task::Visit(root)];
+        let mut results: Vec<Block> = Vec::new();
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Visit(item) => {
+                    if let Some(b) = self.leaf(item) {
+                        results.push(b);
+                        continue;
+                    }
+                    tasks.push(Task::Finish(item));
+                    let mark = tasks.len();
+                    push_children(item, &mut tasks);
+                    // Children run left to right.
+                    tasks[mark..].reverse();
+                }
+                Task::Finish(item) => {
+                    let b = self.finish(item, &mut results);
+                    results.push(b);
+                }
+            }
+        }
+        debug_assert_eq!(results.len(), 1);
+        pop(&mut results)
+    }
+
+    /// The block of an item without children, or `None`.
+    fn leaf(&mut self, item: Item<'_>) -> Option<Block> {
+        let c = &mut *self.c;
+        Some(match item {
+            Item::Node(n) => match &n.kind {
+                NodeKind::Identity | NodeKind::Error => Block::NOOP,
+                NodeKind::Recurse => c.gen_call("recurse", Block::NOOP),
+                NodeKind::Break(name) => {
+                    // impossible symbol
+                    let v = c.gen_op_unbound(LOADV, &format!("*label-{name}"));
+                    let e = c.gen_call("error", Block::NOOP);
+                    let b = c.block_join(v, e);
+                    c.gen_location(n.loc, self.lf, b)
+                }
+                NodeKind::Literal(lit) => c.gen_const(literal_value(lit)),
+                NodeKind::Format(name) => self.gen_format(Block::NOOP, name),
+                NodeKind::Array(None) => c.gen_const(Value::empty_array()),
+                NodeKind::VarTake(name) => {
+                    let b = c.gen_op_unbound(LOADVN, name);
+                    c.gen_location(n.loc, self.lf, b)
+                }
+                NodeKind::Var(name) => {
+                    let b = c.gen_op_unbound(LOADV, name);
+                    c.gen_location(n.loc, self.lf, b)
+                }
+                NodeKind::LocObject => self.gen_loc_object(n.loc),
+                _ => return None,
+            },
+            Item::Pattern(p) => match &p.kind {
+                PatternKind::Var(name) => c.gen_op_unbound(STOREV, name),
+                _ => return None,
+            },
+            Item::ObjPat(e) => match &e.kind {
+                ObjPatKind::Var(name) => {
+                    let k = c.gen_const(Value::from(name.as_str()));
+                    let store = c.gen_op_unbound(STOREV, name);
+                    c.gen_object_matcher(k, store)
+                }
+                _ => return None,
+            },
+            Item::DictPair(p) => match &p.kind {
+                DictPairKind::Var(name) => {
+                    let k = c.gen_const(Value::from(name.as_str()));
+                    let v = c.gen_op_unbound(LOADV, name);
+                    let v = c.gen_location(p.loc, self.lf, v);
+                    c.gen_dictpair(k, v)
+                }
+                DictPairKind::NameShorthand(name) => {
+                    let k = c.gen_const(Value::from(name.as_str()));
+                    let kk = c.gen_const(Value::from(name.as_str()));
+                    let v = self.gen_index(Block::NOOP, kk, false);
+                    self.c.gen_dictpair(k, v)
+                }
+                DictPairKind::LocObject => {
+                    let k = c.gen_const(Value::from("__loc__"));
+                    let v = self.gen_loc_object(p.loc);
+                    self.c.gen_dictpair(k, v)
+                }
+                _ => return None,
+            },
+            Item::FuncDef(_) | Item::Str(_) | Item::Patterns(_) => return None,
+        })
+    }
+
+    /// The action of an item whose children's blocks are on `results`.
+    fn finish(&mut self, item: Item<'_>, results: &mut Vec<Block>) -> Block {
+        match item {
+            Item::Node(n) => self.finish_node(n, results),
+            Item::FuncDef(d) => {
+                let body = pop(results);
+                let mut formals = Block::NOOP;
+                for p in &d.params {
+                    let b = match p.kind {
+                        ParamKind::Value => self.c.gen_param_regular(&p.name),
+                        ParamKind::Filter => self.c.gen_param(&p.name),
+                    };
+                    formals = self.c.block_join(formals, b);
+                }
+                self.c.gen_function(&d.name, formals, body)
+            }
+            Item::Str(s) => {
+                // QQString: fold the parts with `+`, starting from "".
+                let ninterp = s
+                    .parts
+                    .iter()
+                    .filter(|p| matches!(p, StrPart::Interp(_)))
+                    .count();
+                let mut interps = pop_n(results, ninterp).into_iter();
+                let fmt = s.format_name();
+                let mut acc = self.c.gen_const(Value::from(""));
+                for part in &s.parts {
+                    let b = match part {
+                        StrPart::Text(t) => self.c.gen_const(Value::from(t.as_str())),
+                        StrPart::Interp(_) => {
+                            let q = interps.next().unwrap();
+                            self.gen_format(q, fmt)
+                        }
+                    };
+                    acc = self.gen_binop(acc, b, BinOp::Add);
+                }
+                acc
+            }
+            Item::Patterns(pats) => {
+                // RepPatterns "?//" Pattern: each alternative but the last becomes a
+                // DESTRUCTURE_ALT.
+                let ms = pop_n(results, pats.len());
+                let (last, alts) = ms.split_last().expect("at least one pattern");
+                let mut acc = Block::NOOP;
+                for &m in alts {
+                    let alt = self.c.gen_destructure_alt(m);
+                    acc = self.c.block_join(acc, alt);
+                }
+                self.c.block_join(acc, *last)
+            }
+            Item::Pattern(p) => match &p.kind {
+                PatternKind::Array(elems) => {
+                    let ms = pop_n(results, elems.len());
+                    let mut acc = Block::NOOP;
+                    for m in ms {
+                        acc = self.c.gen_array_matcher(acc, m);
+                    }
+                    let pop = self.c.gen_op_simple(POP);
+                    self.c.block_join(acc, pop)
+                }
+                PatternKind::Object(entries) => {
+                    let ms = pop_n(results, entries.len());
+                    let acc = self.c.blocks(&ms);
+                    let pop = self.c.gen_op_simple(POP);
+                    self.c.block_join(acc, pop)
+                }
+                PatternKind::Var(_) => unreachable!("leaf"),
+            },
+            Item::ObjPat(e) => match &e.kind {
+                ObjPatKind::VarPattern(name, _) => {
+                    let m = pop(results);
+                    let k = self.c.gen_const(Value::from(name.as_str()));
+                    let dup = self.c.gen_op_simple(DUP);
+                    let store = self.c.gen_op_unbound(STOREV, name);
+                    let curr = self.c.block3(dup, store, m);
+                    self.c.gen_object_matcher(k, curr)
+                }
+                ObjPatKind::Named(name, _) => {
+                    let m = pop(results);
+                    let k = self.c.gen_const(Value::from(name.as_str()));
+                    self.c.gen_object_matcher(k, m)
+                }
+                ObjPatKind::Str(..) | ObjPatKind::Computed { .. } => {
+                    let m = pop(results);
+                    let k = pop(results);
+                    self.c.gen_object_matcher(k, m)
+                }
+                ObjPatKind::Error(_) => pop(results),
+                ObjPatKind::Var(_) => unreachable!("leaf"),
+            },
+            Item::DictPair(p) => match &p.kind {
+                DictPairKind::Named { key, .. } => {
+                    let v = pop(results);
+                    let k = self.c.gen_const(Value::from(key.as_str()));
+                    self.c.gen_dictpair(k, v)
+                }
+                DictPairKind::Str { .. } | DictPairKind::Computed { .. } => {
+                    let v = pop(results);
+                    let k = pop(results);
+                    self.c.gen_dictpair(k, v)
+                }
+                DictPairKind::StrShorthand(_) => {
+                    let k = pop(results);
+                    let pop_ = self.c.gen_op_simple(POP);
+                    let d1 = self.c.gen_op_simple(DUP2);
+                    let d2 = self.c.gen_op_simple(DUP2);
+                    let idx = self.c.gen_op_simple(INDEX);
+                    let v = self.c.blocks(&[pop_, d1, d2, idx]);
+                    self.c.gen_dictpair(k, v)
+                }
+                DictPairKind::VarKey { name, .. } => {
+                    let v = pop(results);
+                    let k = self.c.gen_op_unbound(LOADV, name);
+                    let k = self.c.gen_location(p.loc, self.lf, k);
+                    self.c.gen_dictpair(k, v)
+                }
+                DictPairKind::Error(_) => pop(results),
+                DictPairKind::Var(_) | DictPairKind::NameShorthand(_) | DictPairKind::LocObject => {
+                    unreachable!("leaf")
+                }
+            },
+        }
+    }
+
+    fn finish_node(&mut self, n: &Node, results: &mut Vec<Block>) -> Block {
         match &n.kind {
-            NodeKind::Binary { op, rhs, .. } => {
-                let b = self.lower(rhs);
-                self.binary(*op, first, b)
+            NodeKind::FuncDef { .. } => {
+                let rest = pop(results);
+                let def = pop(results);
+                self.c.block_bind_referenced(def, rest, OP_IS_CALL_PSEUDO)
             }
-            NodeKind::Comma(_, b) => {
-                let b = self.lower(b);
-                self.c.gen_both(first, b)
+            NodeKind::As { .. } => {
+                let body = pop(results);
+                let matchers = pop(results);
+                let source = pop(results);
+                self.c.gen_destructure(source, matchers, body)
             }
-            NodeKind::Pipe(_, b) => {
-                let b = self.lower(b);
-                self.c.block_join(first, b)
+            NodeKind::Label { name, .. } => {
+                let body = pop(results);
+                let l = self.c.gen_label(&format!("*label-{name}"), body);
+                self.c.gen_location(n.loc, self.lf, l)
             }
-            NodeKind::Index { key, optional, .. } => {
-                let key = self.lower(key);
-                self.gen_index(first, key, *optional)
+            NodeKind::Pipe(..) => {
+                let b = pop(results);
+                let a = pop(results);
+                self.c.block_join(a, b)
+            }
+            NodeKind::Comma(..) => {
+                let b = pop(results);
+                let a = pop(results);
+                self.c.gen_both(a, b)
+            }
+            NodeKind::Binary { op, .. } => {
+                let b = pop(results);
+                let a = pop(results);
+                self.binary(*op, a, b)
+            }
+            NodeKind::Index {
+                target, optional, ..
+            } => {
+                let key = pop(results);
+                let obj = match target {
+                    Some(_) => pop(results),
+                    None => Block::NOOP,
+                };
+                self.gen_index(obj, key, *optional)
             }
             NodeKind::Each { optional, .. } => {
+                let t = pop(results);
                 let each = self
                     .c
                     .gen_op_simple(if *optional { EACH_OPT } else { EACH });
-                self.c.block_join(first, each)
+                self.c.block_join(t, each)
             }
             NodeKind::Slice {
                 from, to, optional, ..
             } => {
-                let start = match from {
-                    Some(f) => self.lower(f),
-                    None => self.c.gen_const(Value::Null),
-                };
                 let end = match to {
-                    Some(t) => self.lower(t),
+                    Some(_) => pop(results),
                     None => self.c.gen_const(Value::Null),
                 };
-                self.gen_slice_index(first, start, end, if *optional { INDEX_OPT } else { INDEX })
+                let start = match from {
+                    Some(_) => pop(results),
+                    None => self.c.gen_const(Value::Null),
+                };
+                let obj = pop(results);
+                self.gen_slice_index(obj, start, end, if *optional { INDEX_OPT } else { INDEX })
             }
             NodeKind::Optional(_) => {
+                let t = pop(results);
                 let backtrack = self.c.gen_op_simple(BACKTRACK);
-                self.c.gen_try(first, backtrack)
+                self.c.gen_try(t, backtrack)
             }
+            NodeKind::Str(_) => pop(results),
             NodeKind::Neg(_) => {
+                let t = pop(results);
                 let neg = self.c.gen_call("_negate", Block::NOOP);
-                self.c.block_join(first, neg)
+                self.c.block_join(t, neg)
             }
-            _ => unreachable!("not a chain node"),
-        }
-    }
-
-    /// Nodes without a chain child.
-    fn lower_leaf(&mut self, n: &Node) -> Block {
-        match &n.kind {
-            NodeKind::FuncDef { def, rest } => {
-                let d = self.lower_funcdef(def);
-                let r = self.lower(rest);
-                self.c.block_bind_referenced(d, r, OP_IS_CALL_PSEUDO)
+            NodeKind::Array(Some(_)) => {
+                let q = pop(results);
+                self.c.gen_collect(q)
             }
-            NodeKind::As {
-                source,
-                patterns,
-                body,
-            } => {
-                let source = self.lower(source);
-                let matchers = self.lower_patterns(patterns);
-                let body = self.lower(body);
-                self.c.gen_destructure(source, matchers, body)
-            }
-            NodeKind::Label { name, body } => {
-                let body = self.lower(body);
-                let l = self.c.gen_label(&format!("*label-{name}"), body);
-                self.c.gen_location(n.loc, self.lf, l)
-            }
-            NodeKind::Identity => Block::NOOP,
-            NodeKind::Recurse => self.c.gen_call("recurse", Block::NOOP),
-            NodeKind::Break(name) => {
-                // impossible symbol
-                let v = self.c.gen_op_unbound(LOADV, &format!("*label-{name}"));
-                let e = self.c.gen_call("error", Block::NOOP);
-                let b = self.c.block_join(v, e);
-                self.c.gen_location(n.loc, self.lf, b)
-            }
-            NodeKind::Index {
-                target: None,
-                key,
-                optional,
-            } => {
-                let key = self.lower(key);
-                self.gen_index(Block::NOOP, key, *optional)
-            }
-            NodeKind::Literal(lit) => {
-                let v = literal_value(lit);
-                self.c.gen_const(v)
-            }
-            NodeKind::Str(s) => self.lower_string(s),
-            NodeKind::Format(name) => self.gen_format(Block::NOOP, name),
-            NodeKind::Array(q) => match q {
-                Some(q) => {
-                    let q = self.lower(q);
-                    self.c.gen_collect(q)
-                }
-                None => self.c.gen_const(Value::empty_array()),
-            },
             NodeKind::Object(pairs) => {
-                let mut dp = Block::NOOP;
-                for p in pairs {
-                    let b = self.lower_dictpair(p);
-                    dp = self.c.block_join(dp, b);
-                }
+                let ps = pop_n(results, pairs.len());
+                let dp = self.c.blocks(&ps);
                 let o = self.c.gen_const_object(dp);
                 if o.first.is_some() {
                     o
                 } else {
                     let empty = self.c.gen_const(Value::empty_object());
                     let empty = self.c.gen_subexp(empty);
-                    let pop = self.c.gen_op_simple(POP);
-                    self.c.block3(empty, dp, pop)
+                    let pop_ = self.c.gen_op_simple(POP);
+                    self.c.block3(empty, dp, pop_)
                 }
             }
-            NodeKind::Reduce {
-                source,
-                patterns,
-                init,
-                update,
-            } => {
-                let source = self.lower(source);
-                let matcher = self.lower_patterns(patterns);
-                let init = self.lower(init);
-                let update = self.lower(update);
+            NodeKind::Reduce { .. } => {
+                let update = pop(results);
+                let init = pop(results);
+                let matcher = pop(results);
+                let source = pop(results);
                 self.c.gen_reduce(source, matcher, init, update)
             }
-            NodeKind::Foreach {
-                source,
-                patterns,
-                init,
-                update,
-                extract,
-            } => {
-                let source = self.lower(source);
-                let matcher = self.lower_patterns(patterns);
-                let init = self.lower(init);
-                let update = self.lower(update);
+            NodeKind::Foreach { extract, .. } => {
                 let extract = match extract {
-                    Some(e) => self.lower(e),
+                    Some(_) => pop(results),
                     None => Block::NOOP,
                 };
+                let update = pop(results);
+                let init = pop(results);
+                let matcher = pop(results);
+                let source = pop(results);
                 self.c.gen_foreach(source, matcher, init, update, extract)
             }
-            NodeKind::If { cond, then_, else_ } => {
-                let cond = self.lower(cond);
-                let then_ = self.lower(then_);
+            NodeKind::If { else_, .. } => {
                 let else_ = match else_ {
-                    Some(e) => self.lower(e),
+                    Some(_) => pop(results),
                     None => Block::NOOP,
                 };
+                let then_ = pop(results);
+                let cond = pop(results);
                 self.c.gen_cond(cond, then_, else_)
             }
-            NodeKind::Try { body, handler } => {
-                let body = self.lower(body);
+            NodeKind::Try { handler, .. } => {
                 let handler = match handler {
-                    Some(h) => self.lower(h),
+                    Some(_) => pop(results),
                     None => self.c.gen_op_simple(BACKTRACK),
                 };
+                let body = pop(results);
                 self.c.gen_try(body, handler)
             }
-            NodeKind::VarTake(name) => {
-                let b = self.c.gen_op_unbound(LOADVN, name);
-                self.c.gen_location(n.loc, self.lf, b)
-            }
-            NodeKind::Var(name) => {
-                let b = self.c.gen_op_unbound(LOADV, name);
-                self.c.gen_location(n.loc, self.lf, b)
-            }
-            NodeKind::LocObject => self.gen_loc_object(n.loc),
             NodeKind::Call {
                 name,
                 args,
                 name_loc,
             } => {
+                let bodies = pop_n(results, args.len());
                 let mut arglist = Block::NOOP;
-                for a in args {
-                    let a = self.lower(a);
+                for a in bodies {
                     let l = self.c.gen_lambda(a);
                     arglist = self.c.block_join(arglist, l);
                 }
                 let call = self.c.gen_call(name, arglist);
                 self.c.gen_location(*name_loc, self.lf, call)
             }
-            NodeKind::Error => Block::NOOP,
-            // Chain nodes are handled by `lower`.
-            NodeKind::Binary { .. }
-            | NodeKind::Comma(..)
-            | NodeKind::Pipe(..)
-            | NodeKind::Index { .. }
-            | NodeKind::Each { .. }
-            | NodeKind::Slice { .. }
-            | NodeKind::Optional(_)
-            | NodeKind::Neg(_) => unreachable!("chain node in lower_leaf"),
+            NodeKind::Identity
+            | NodeKind::Recurse
+            | NodeKind::Break(_)
+            | NodeKind::Literal(_)
+            | NodeKind::Format(_)
+            | NodeKind::Array(None)
+            | NodeKind::VarTake(_)
+            | NodeKind::Var(_)
+            | NodeKind::LocObject
+            | NodeKind::Error => unreachable!("leaf"),
         }
     }
 
@@ -483,150 +649,165 @@ impl Lowerer<'_> {
         o.insert(Str::from("line"), Value::number(line as f64));
         self.c.gen_const(Value::Object(o))
     }
+}
 
-    /// `String`: `QQString` folds its parts with `gen_binop(..., '+')` starting from
-    /// `""`; interpolations go through `gen_format` with the string's format.
-    pub fn lower_string(&mut self, s: &StringLit) -> Block {
-        let fmt = s.format_name();
-        let mut acc = self.c.gen_const(Value::from(""));
-        for part in &s.parts {
-            let b = match part {
-                StrPart::Text(t) => self.c.gen_const(Value::from(t.as_str())),
-                StrPart::Interp(q) => {
-                    let q = self.lower(q);
-                    self.gen_format(q, fmt)
+/// Pushes `Visit` tasks for an item's children, left to right.
+fn push_children<'a>(item: Item<'a>, tasks: &mut Vec<Task<'a>>) {
+    fn visit<'a>(tasks: &mut Vec<Task<'a>>, n: &'a Node) {
+        tasks.push(Task::Visit(Item::Node(n)));
+    }
+    match item {
+        Item::Node(n) => match &n.kind {
+            NodeKind::FuncDef { def, rest } => {
+                tasks.push(Task::Visit(Item::FuncDef(def)));
+                tasks.push(Task::Visit(Item::Node(rest)));
+            }
+            NodeKind::As {
+                source,
+                patterns,
+                body,
+            } => {
+                tasks.push(Task::Visit(Item::Node(source)));
+                tasks.push(Task::Visit(Item::Patterns(patterns)));
+                tasks.push(Task::Visit(Item::Node(body)));
+            }
+            NodeKind::Label { body, .. } => visit(tasks, body),
+            NodeKind::Pipe(a, b) | NodeKind::Comma(a, b) => {
+                visit(tasks, a);
+                visit(tasks, b);
+            }
+            NodeKind::Binary { lhs, rhs, .. } => {
+                visit(tasks, lhs);
+                visit(tasks, rhs);
+            }
+            NodeKind::Index { target, key, .. } => {
+                if let Some(t) = target {
+                    visit(tasks, t);
                 }
-            };
-            acc = self.gen_binop(acc, b, BinOp::Add);
+                visit(tasks, key);
+            }
+            NodeKind::Each { target, .. } | NodeKind::Optional(target) | NodeKind::Neg(target) => {
+                visit(tasks, target)
+            }
+            NodeKind::Slice {
+                target, from, to, ..
+            } => {
+                visit(tasks, target);
+                if let Some(f) = from {
+                    visit(tasks, f);
+                }
+                if let Some(t) = to {
+                    visit(tasks, t);
+                }
+            }
+            NodeKind::Str(s) => tasks.push(Task::Visit(Item::Str(s))),
+            NodeKind::Array(Some(q)) => visit(tasks, q),
+            NodeKind::Object(pairs) => {
+                for p in pairs {
+                    tasks.push(Task::Visit(Item::DictPair(p)));
+                }
+            }
+            NodeKind::Reduce {
+                source,
+                patterns,
+                init,
+                update,
+            } => {
+                tasks.push(Task::Visit(Item::Node(source)));
+                tasks.push(Task::Visit(Item::Patterns(patterns)));
+                tasks.push(Task::Visit(Item::Node(init)));
+                tasks.push(Task::Visit(Item::Node(update)));
+            }
+            NodeKind::Foreach {
+                source,
+                patterns,
+                init,
+                update,
+                extract,
+            } => {
+                tasks.push(Task::Visit(Item::Node(source)));
+                tasks.push(Task::Visit(Item::Patterns(patterns)));
+                tasks.push(Task::Visit(Item::Node(init)));
+                tasks.push(Task::Visit(Item::Node(update)));
+                if let Some(e) = extract {
+                    tasks.push(Task::Visit(Item::Node(e)));
+                }
+            }
+            NodeKind::If { cond, then_, else_ } => {
+                visit(tasks, cond);
+                visit(tasks, then_);
+                if let Some(e) = else_ {
+                    visit(tasks, e);
+                }
+            }
+            NodeKind::Try { body, handler } => {
+                visit(tasks, body);
+                if let Some(h) = handler {
+                    visit(tasks, h);
+                }
+            }
+            NodeKind::Call { args, .. } => {
+                for a in args {
+                    visit(tasks, a);
+                }
+            }
+            _ => {}
+        },
+        Item::FuncDef(d) => visit(tasks, &d.body),
+        Item::Str(s) => {
+            for part in &s.parts {
+                if let StrPart::Interp(q) = part {
+                    visit(tasks, q);
+                }
+            }
         }
-        acc
-    }
-
-    /// `Patterns`: `RepPatterns "?//" Pattern` or `Pattern`.
-    fn lower_patterns(&mut self, pats: &[Pattern]) -> Block {
-        let (last, alts) = pats.split_last().expect("at least one pattern");
-        let mut acc = Block::NOOP;
-        for p in alts {
-            let m = self.lower_pattern(p);
-            let alt = self.c.gen_destructure_alt(m);
-            acc = self.c.block_join(acc, alt);
+        Item::Patterns(ps) => {
+            for p in ps {
+                tasks.push(Task::Visit(Item::Pattern(p)));
+            }
         }
-        let last = self.lower_pattern(last);
-        self.c.block_join(acc, last)
-    }
-
-    /// `Pattern`.
-    fn lower_pattern(&mut self, p: &Pattern) -> Block {
-        match &p.kind {
-            PatternKind::Var(name) => self.c.gen_op_unbound(STOREV, name),
+        Item::Pattern(p) => match &p.kind {
             PatternKind::Array(elems) => {
-                let mut acc = Block::NOOP;
                 for e in elems {
-                    let m = self.lower_pattern(e);
-                    acc = self.c.gen_array_matcher(acc, m);
+                    tasks.push(Task::Visit(Item::Pattern(e)));
                 }
-                let pop = self.c.gen_op_simple(POP);
-                self.c.block_join(acc, pop)
             }
             PatternKind::Object(entries) => {
-                let mut acc = Block::NOOP;
                 for e in entries {
-                    let m = self.lower_objpat(e);
-                    acc = self.c.block_join(acc, m);
+                    tasks.push(Task::Visit(Item::ObjPat(e)));
                 }
-                let pop = self.c.gen_op_simple(POP);
-                self.c.block_join(acc, pop)
             }
-        }
-    }
-
-    /// `ObjPat`.
-    fn lower_objpat(&mut self, e: &ObjPat) -> Block {
-        match &e.kind {
-            ObjPatKind::Var(name) => {
-                let k = self.c.gen_const(Value::from(name.as_str()));
-                let store = self.c.gen_op_unbound(STOREV, name);
-                self.c.gen_object_matcher(k, store)
-            }
-            ObjPatKind::VarPattern(name, pat) => {
-                let k = self.c.gen_const(Value::from(name.as_str()));
-                let dup = self.c.gen_op_simple(DUP);
-                let store = self.c.gen_op_unbound(STOREV, name);
-                let m = self.lower_pattern(pat);
-                let curr = self.c.block3(dup, store, m);
-                self.c.gen_object_matcher(k, curr)
-            }
-            ObjPatKind::Named(name, pat) => {
-                let k = self.c.gen_const(Value::from(name.as_str()));
-                let m = self.lower_pattern(pat);
-                self.c.gen_object_matcher(k, m)
+            PatternKind::Var(_) => {}
+        },
+        Item::ObjPat(e) => match &e.kind {
+            ObjPatKind::VarPattern(_, pat) | ObjPatKind::Named(_, pat) | ObjPatKind::Error(pat) => {
+                tasks.push(Task::Visit(Item::Pattern(pat)))
             }
             ObjPatKind::Str(key, pat) => {
-                let k = self.lower_string(key);
-                let m = self.lower_pattern(pat);
-                self.c.gen_object_matcher(k, m)
+                tasks.push(Task::Visit(Item::Str(key)));
+                tasks.push(Task::Visit(Item::Pattern(pat)));
             }
             ObjPatKind::Computed { key, pattern, .. } => {
-                let k = self.lower(key);
-                let m = self.lower_pattern(pattern);
-                self.c.gen_object_matcher(k, m)
+                tasks.push(Task::Visit(Item::Node(key)));
+                tasks.push(Task::Visit(Item::Pattern(pattern)));
             }
-            ObjPatKind::Error(pat) => self.lower_pattern(pat),
-        }
-    }
-
-    /// `DictPair`.
-    fn lower_dictpair(&mut self, p: &DictPair) -> Block {
-        match &p.kind {
-            DictPairKind::Named { key, value } => {
-                let k = self.c.gen_const(Value::from(key.as_str()));
-                let v = self.lower(value);
-                self.c.gen_dictpair(k, v)
-            }
+            ObjPatKind::Var(_) => {}
+        },
+        Item::DictPair(p) => match &p.kind {
+            DictPairKind::Named { value, .. }
+            | DictPairKind::VarKey { value, .. }
+            | DictPairKind::Error(value) => visit(tasks, value),
             DictPairKind::Str { key, value } => {
-                let k = self.lower_string(key);
-                let v = self.lower(value);
-                self.c.gen_dictpair(k, v)
+                tasks.push(Task::Visit(Item::Str(key)));
+                tasks.push(Task::Visit(Item::Node(value)));
             }
-            DictPairKind::StrShorthand(key) => {
-                let k = self.lower_string(key);
-                let pop = self.c.gen_op_simple(POP);
-                let d1 = self.c.gen_op_simple(DUP2);
-                let d2 = self.c.gen_op_simple(DUP2);
-                let idx = self.c.gen_op_simple(INDEX);
-                let v = self.c.blocks(&[pop, d1, d2, idx]);
-                self.c.gen_dictpair(k, v)
-            }
-            DictPairKind::VarKey { name, value } => {
-                let k = self.c.gen_op_unbound(LOADV, name);
-                let k = self.c.gen_location(p.loc, self.lf, k);
-                let v = self.lower(value);
-                self.c.gen_dictpair(k, v)
-            }
-            DictPairKind::Var(name) => {
-                let k = self.c.gen_const(Value::from(name.as_str()));
-                let v = self.c.gen_op_unbound(LOADV, name);
-                let v = self.c.gen_location(p.loc, self.lf, v);
-                self.c.gen_dictpair(k, v)
-            }
-            DictPairKind::NameShorthand(name) => {
-                let k = self.c.gen_const(Value::from(name.as_str()));
-                let kk = self.c.gen_const(Value::from(name.as_str()));
-                let v = self.gen_index(Block::NOOP, kk, false);
-                self.c.gen_dictpair(k, v)
-            }
-            DictPairKind::LocObject => {
-                let k = self.c.gen_const(Value::from("__loc__"));
-                let v = self.gen_loc_object(p.loc);
-                self.c.gen_dictpair(k, v)
-            }
+            DictPairKind::StrShorthand(key) => tasks.push(Task::Visit(Item::Str(key))),
             DictPairKind::Computed { key, value, .. } => {
-                let k = self.lower(key);
-                let v = self.lower(value);
-                self.c.gen_dictpair(k, v)
+                tasks.push(Task::Visit(Item::Node(key)));
+                tasks.push(Task::Visit(Item::Node(value)));
             }
-            DictPairKind::Error(value) => self.lower(value),
-        }
+            DictPairKind::Var(_) | DictPairKind::NameShorthand(_) | DictPairKind::LocObject => {}
+        },
     }
 }
 
