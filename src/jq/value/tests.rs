@@ -800,6 +800,12 @@ fn deep_values_compare_without_overflow() {
                 let sorted = sort(&arr, &arr);
                 assert!(sorted.get(0).unwrap().equal(&a));
                 assert!(a.to_json().contains("<skipped: too deep>"));
+                // Object `*` merges all the way down.
+                if let (Value::Object(x), Value::Object(y)) = (&a, &c) {
+                    let mut m = x.clone();
+                    m.merge_recursive(y);
+                    assert!(Value::Object(m).equal(&c));
+                }
             }
         })
         .unwrap();
