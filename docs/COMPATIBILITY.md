@@ -42,12 +42,14 @@ Results on macOS (arm64) against jq 1.8.1:
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 16,681 | 16,674 |
-| **Total** | **19,584** | **19,577** |
+| qj's corpus | 16,842 | 16,835 |
+| **Total** | **19,745** | **19,738** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Across modes, the counts are 11,203 compact, 2,249 pretty,
-2,249 file, 1,414 NDJSON, 19 `%%FAIL`, and 2,450 command-line cases.
+2,249 file, 1,414 NDJSON, 19 `%%FAIL`, and 2,611 command-line cases. The command-line cases
+include some that merge stdout and stderr into one file or pipe, checking that output and
+error messages interleave exactly as jq's stdio buffering interleaves them.
 
 The older runners also pass with the default binary. They're either lenient (they compare
 outputs as JSON, with numbers as f64) or narrower, and jq_diff covers what they check:
