@@ -25,7 +25,7 @@
 //! saturates those counts at 2^24 - 1; such huge containers are counted by
 //! walking them.)
 
-use crate::jq::value::print::{MAX_PRINT_DEPTH, write_json_string};
+use crate::jq::value::print::{DumpSink, MAX_PRINT_DEPTH, write_json_string};
 use crate::jq::value::{DumpOptions, Indent, Number, hash_key};
 use crate::simdjson::Tape;
 
@@ -567,32 +567,32 @@ impl<'a> Doc<'a> {
     ///
     /// Returns the node after `n` (what [`Doc::skip`] gives), so that
     /// printing walks the tape once.
-    pub fn print(
+    pub fn print<S: DumpSink>(
         &self,
         n: Node,
         depth: usize,
         layout: &Layout,
         scratch: &mut Scratch,
-        out: &mut Vec<u8>,
+        sink: &mut S,
     ) -> Node {
         if depth > PRINT_DEPTH {
-            out.extend_from_slice(b"<skipped: too deep>");
+            sink.buf().extend_from_slice(b"<skipped: too deep>");
             return self.skip(n);
         }
         let w = self.word(n);
         match tag(w) {
-            b'n' => out.extend_from_slice(b"null"),
-            b'f' => out.extend_from_slice(b"false"),
-            b't' => out.extend_from_slice(b"true"),
-            b'l' | b'u' | b'd' => self.write_number(n, out),
-            b'"' => write_json_string(self.str(n), layout.ascii, out),
+            b'n' => sink.buf().extend_from_slice(b"null"),
+            b'f' => sink.buf().extend_from_slice(b"false"),
+            b't' => sink.buf().extend_from_slice(b"true"),
+            b'l' | b'u' | b'd' => self.write_number(n, sink.buf()),
+            b'"' => write_json_string(self.str(n), layout.ascii, sink.buf()),
             b'[' => {
                 let count = self.count(n);
                 if count == 0 {
-                    out.extend_from_slice(b"[]");
+                    sink.buf().extend_from_slice(b"[]");
                     return self.after_close(n);
                 }
-                out.push(b'[');
+                sink.buf().push(b'[');
                 let mut e = Node {
                     i: n.i + 1,
                     si: n.si + 1,
@@ -601,9 +601,11 @@ impl<'a> Doc<'a> {
                     if idx != 0 {
                         e.si += 1; // ','
                     }
-                    layout.before_element(idx, depth, out);
-                    e = self.print(e, depth + 1, layout, scratch, out);
+                    layout.before_element(idx, depth, sink.buf());
+                    e = self.print(e, depth + 1, layout, scratch, sink);
+                    sink.checkpoint();
                 }
+                let out = sink.buf();
                 layout.before_close(depth, out);
                 out.push(b']');
                 // `e` is at the closing bracket.
@@ -615,10 +617,10 @@ impl<'a> Doc<'a> {
             b'{' => {
                 let count = self.count(n);
                 if count == 0 {
-                    out.extend_from_slice(b"{}");
+                    sink.buf().extend_from_slice(b"{}");
                     return self.after_close(n);
                 }
-                out.push(b'{');
+                sink.buf().push(b'{');
                 let close;
                 if !layout.sort_keys && !self.may_have_duplicate_keys(n, scratch) {
                     let mut k = Node {
@@ -629,13 +631,15 @@ impl<'a> Doc<'a> {
                         if idx != 0 {
                             k.si += 1; // ','
                         }
+                        let out = sink.buf();
                         layout.before_element(idx, depth, out);
                         layout.key(self.str(k), out);
                         let v = Node {
                             i: k.i + 1,
                             si: k.si + 2, // the key and ':'
                         };
-                        k = self.print(v, depth + 1, layout, scratch, out);
+                        k = self.print(v, depth + 1, layout, scratch, sink);
+                        sink.checkpoint();
                     }
                     close = k;
                 } else {
@@ -646,12 +650,15 @@ impl<'a> Doc<'a> {
                         entries.sort_by(|a, b| self.str(a.0).cmp(self.str(b.0)));
                     }
                     for (idx, &(k, v)) in entries.iter().enumerate() {
+                        let out = sink.buf();
                         layout.before_element(idx, depth, out);
                         layout.key(self.str(k), out);
-                        self.print(v, depth + 1, layout, scratch, out);
+                        self.print(v, depth + 1, layout, scratch, sink);
+                        sink.checkpoint();
                     }
                     scratch.put(entries);
                 }
+                let out = sink.buf();
                 layout.before_close(depth, out);
                 out.push(b'}');
                 return Node {

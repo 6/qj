@@ -193,6 +193,40 @@ impl<W: Write> Sink for WriterSink<'_, W> {
     }
 }
 
+/// Where a dump goes when its owner may write it out as it's produced (like
+/// stdio, which jq's `jv_dumpf` writes a token at a time): the printers
+/// append to [`DumpSink::buf`] and call [`DumpSink::checkpoint`] between
+/// elements.
+pub trait DumpSink {
+    fn buf(&mut self) -> &mut Vec<u8>;
+    /// Between elements: the owner may write out (a prefix of) the buffer.
+    fn checkpoint(&mut self);
+}
+
+impl DumpSink for Vec<u8> {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        self
+    }
+    #[inline]
+    fn checkpoint(&mut self) {}
+}
+
+/// A [`DumpSink`] as the printer's sink.
+struct Streaming<'s, S: DumpSink>(&'s mut S);
+
+impl<S: DumpSink> Sink for Streaming<'_, S> {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        self.0.buf()
+    }
+    #[inline]
+    fn checkpoint(&mut self) -> io::Result<()> {
+        self.0.checkpoint();
+        Ok(())
+    }
+}
+
 /// Stops the dump once more than `limit` bytes were produced.
 struct TruncSink {
     buf: Vec<u8>,
@@ -561,6 +595,14 @@ pub fn dump_to_vec(v: &Value, opts: &DumpOptions, out: &mut Vec<u8>) {
     printer(opts)
         .term(v, 0, out)
         .expect("writing to a Vec cannot fail");
+}
+
+/// [`dump_to_vec`] into a [`DumpSink`], which may write the dump out as it
+/// grows.
+pub fn dump_to_sink<S: DumpSink>(v: &Value, opts: &DumpOptions, sink: &mut S) {
+    printer(opts)
+        .term(v, 0, &mut Streaming(sink))
+        .expect("a DumpSink cannot fail");
 }
 
 /// `jv_dumpf`: writes the dump of `v` to `w` (no trailing newline).

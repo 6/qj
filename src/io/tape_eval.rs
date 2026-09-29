@@ -28,6 +28,7 @@ use std::cell::RefCell;
 use crate::jq::lang::ast::{self, BinOp, DictPairKind, Literal, NodeKind, ProgramBody};
 use crate::jq::lang::parser::{NoHooks, parse};
 use crate::jq::value::Number;
+use crate::jq::value::print::DumpSink;
 
 use super::tape::{Doc, Layout, Node, NodeKind as Kind, Scratch};
 
@@ -547,64 +548,69 @@ impl Output<'_, '_> {
     }
 
     /// Writes it as `dump_to_vec` writes the value jq would have.
-    pub fn dump(&self, layout: &Layout, scratch: &mut Scratch, out: &mut Vec<u8>) {
-        dump(self.doc, self.val, 0, layout, scratch, out)
+    pub fn dump<S: DumpSink>(&self, layout: &Layout, scratch: &mut Scratch, sink: &mut S) {
+        dump(self.doc, self.val, 0, layout, scratch, sink)
     }
 }
 
-fn dump(
+fn dump<S: DumpSink>(
     doc: &Doc<'_>,
     v: &TVal<'_>,
     depth: usize,
     layout: &Layout,
     scratch: &mut Scratch,
-    out: &mut Vec<u8>,
+    sink: &mut S,
 ) {
     if depth > super::tape::PRINT_DEPTH {
-        out.extend_from_slice(b"<skipped: too deep>");
+        sink.buf().extend_from_slice(b"<skipped: too deep>");
         return;
     }
     match v {
         TVal::Node(n) => {
-            doc.print(*n, depth, layout, scratch, out);
+            doc.print(*n, depth, layout, scratch, sink);
         }
-        TVal::Null => out.extend_from_slice(b"null"),
+        TVal::Null => sink.buf().extend_from_slice(b"null"),
         TVal::Number(x) => {
             if x.is_nan() {
-                out.extend_from_slice(b"null");
+                sink.buf().extend_from_slice(b"null");
             } else {
-                x.write_json(out);
+                x.write_json(sink.buf());
             }
         }
         TVal::Array(items) => {
             if items.is_empty() {
-                out.extend_from_slice(b"[]");
+                sink.buf().extend_from_slice(b"[]");
                 return;
             }
-            out.push(b'[');
+            sink.buf().push(b'[');
             for (i, item) in items.iter().enumerate() {
-                layout.before_element(i, depth, out);
-                dump(doc, item, depth + 1, layout, scratch, out);
+                layout.before_element(i, depth, sink.buf());
+                dump(doc, item, depth + 1, layout, scratch, sink);
+                sink.checkpoint();
             }
+            let out = sink.buf();
             layout.before_close(depth, out);
             out.push(b']');
         }
         TVal::Object(entries) => {
             if entries.is_empty() {
-                out.extend_from_slice(b"{}");
+                sink.buf().extend_from_slice(b"{}");
                 return;
             }
-            out.push(b'{');
+            sink.buf().push(b'{');
             let mut order: Vec<usize> = (0..entries.len()).collect();
             if layout.sort_keys() {
                 order.sort_by(|&a, &b| entries[a].0.cmp(entries[b].0));
             }
             for (i, &at) in order.iter().enumerate() {
                 let (k, v) = &entries[at];
+                let out = sink.buf();
                 layout.before_element(i, depth, out);
                 layout.key(k, out);
-                dump(doc, v, depth + 1, layout, scratch, out);
+                dump(doc, v, depth + 1, layout, scratch, sink);
+                sink.checkpoint();
             }
+            let out = sink.buf();
             layout.before_close(depth, out);
             out.push(b'}');
         }

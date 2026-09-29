@@ -44,7 +44,7 @@ use crate::io::tape_eval::{Decline, Output, TapeProgram};
 use crate::jq::lang::execute::{InputSource, Jq};
 use crate::jq::lang::linker::JqAttrs;
 use crate::jq::lang::{CompileOptions, jq_compile_args};
-use crate::jq::value::print::dump_to_vec;
+use crate::jq::value::print::{DumpSink, dump_to_sink, dump_to_vec};
 use crate::jq::value::{
     Array, Colors, DumpOptions, Error, Indent, Object, ParseFlags, Parser, Str, Value, dump_string,
     parse_sized, unicode,
@@ -144,8 +144,8 @@ impl Stdout {
     }
 
     /// Writes `bytes` to fd 1. A failed write loses the data and sets the
-    /// error, as stdio does.
-    fn write_fd(&mut self, bytes: &[u8]) {
+    /// error, as stdio does. Returns whether it all went out.
+    fn write_fd(&mut self, bytes: &[u8]) -> bool {
         let mut done = 0;
         while done < bytes.len() {
             let chunk = &bytes[done..];
@@ -157,10 +157,11 @@ impl Stdout {
                     continue;
                 }
                 self.error = Some(e);
-                break;
+                return false;
             }
             done += r as usize;
         }
+        true
     }
 
     /// Writes `self.buf[..n]` to fd 1 and drops it from the buffer.
@@ -196,13 +197,24 @@ impl Stdout {
 
     /// Output written a character or token at a time (`jv_dumpf`, `printf`).
     pub(super) fn write(&mut self, bytes: &[u8]) {
+        let size = self.size();
+        let (have, total) = (self.buf.len(), self.buf.len() + bytes.len());
+        let out = total.saturating_sub(1) / size * size;
+        if !self.line_buffered && bytes.len() > size && out >= have {
+            // What appending and settling does, without copying whole buffers
+            // into the buffer: the buffer and the start of `bytes` go out
+            // (as one write, stopping at an error), the rest is buffered.
+            let (head, rest) = bytes.split_at(out - have);
+            let buf = std::mem::take(&mut self.buf);
+            if self.write_fd(&buf) {
+                self.write_fd(head);
+            }
+            self.buf = buf;
+            self.buf.clear();
+            self.buf.extend_from_slice(rest);
+            return;
+        }
         self.buf.extend_from_slice(bytes);
-        self.settle();
-    }
-
-    /// Output appended by `f`, as by [`Stdout::write`] (without a copy).
-    fn write_with(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
-        f(&mut self.buf);
         self.settle();
     }
 
@@ -599,15 +611,40 @@ fn c_str(s: &str) -> &str {
 /// Where `process()` writes results: stdout, or a record's buffer in the
 /// parallel engine (which [`MainLoop`] writes to stdout in order).
 trait ResultOut {
+    /// What dumps are written into.
+    type Sink: DumpSink;
     /// Bytes jq writes a character or token at a time (`jv_dumpf`, `"\n"`).
-    fn put(&mut self, f: impl FnOnce(&mut Vec<u8>));
+    fn put(&mut self, f: impl FnOnce(&mut Self::Sink));
     /// A `-r` string, which jq writes with a single `fwrite`.
     fn put_raw(&mut self, bytes: &[u8]);
 }
 
+/// Dumps bigger than this are written out while they're printed, in whole
+/// stdio buffers, rather than held until the end.
+const STREAM_AT: usize = 1 << 20;
+
+/// Stdout as the printers' sink: a dump goes out in whole buffers as it
+/// grows. The bytes, their order and what stays buffered at the end are the
+/// same as when the dump is written out after printing (stdio writes it out
+/// buffer by buffer as jq prints it, token by token).
+impl DumpSink for Stdout {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+    #[inline]
+    fn checkpoint(&mut self) {
+        if self.buf.len() >= STREAM_AT {
+            self.settle();
+        }
+    }
+}
+
 impl ResultOut for Stdout {
-    fn put(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
-        self.write_with(f);
+    type Sink = Stdout;
+    fn put(&mut self, f: impl FnOnce(&mut Stdout)) {
+        f(self);
+        self.settle();
     }
     fn put_raw(&mut self, bytes: &[u8]) {
         self.fwrite(bytes);
@@ -615,6 +652,7 @@ impl ResultOut for Stdout {
 }
 
 impl ResultOut for RecordOut<'_> {
+    type Sink = Vec<u8>;
     fn put(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
         f(self.out);
     }
@@ -648,7 +686,7 @@ trait Printable {
     /// Whether it is `null` or `false`.
     fn null_or_false(&self) -> bool;
     /// `jv_dumpf` with these options (never colored for a [`TapeResult`]).
-    fn dump(&self, opts: &DumpOptions, out: &mut Vec<u8>);
+    fn dump<S: DumpSink>(&self, opts: &DumpOptions, sink: &mut S);
 }
 
 impl Printable for Value {
@@ -658,16 +696,17 @@ impl Printable for Value {
     fn null_or_false(&self) -> bool {
         matches!(self, Value::Null | Value::Bool(false))
     }
-    fn dump(&self, opts: &DumpOptions, out: &mut Vec<u8>) {
-        dump_to_vec(self, opts, out);
+    fn dump<S: DumpSink>(&self, opts: &DumpOptions, sink: &mut S) {
+        dump_to_sink(self, opts, sink);
     }
 }
 
 /// One result as main.c's `process()` prints it, with the status it sets.
 /// `None` for a string containing NUL with `--raw-output0` (nothing is
 /// written; `process()` raises an error instead).
-fn write_result(result: &impl Printable, p: &Process, out: &mut impl ResultOut) -> Option<i32> {
-    let end = |b: &mut Vec<u8>| {
+fn write_result<O: ResultOut>(result: &impl Printable, p: &Process, out: &mut O) -> Option<i32> {
+    let end = |b: &mut O::Sink| {
+        let b = b.buf();
         if !p.raw_no_lf {
             b.push(b'\n');
         }
@@ -699,7 +738,7 @@ fn write_result(result: &impl Printable, p: &Process, out: &mut impl ResultOut) 
         _ => {
             out.put(|b| {
                 if p.seq {
-                    b.push(0x1e);
+                    b.buf().push(0x1e);
                 }
                 result.dump(&p.dump, b);
                 end(b);
@@ -731,9 +770,9 @@ impl Printable for TapeResult<'_, '_> {
     fn null_or_false(&self) -> bool {
         self.out.is_null_or_false()
     }
-    fn dump(&self, opts: &DumpOptions, out: &mut Vec<u8>) {
+    fn dump<S: DumpSink>(&self, opts: &DumpOptions, sink: &mut S) {
         let layout = Layout::new(opts).expect("tape programs never print colors");
-        self.out.dump(&layout, &mut self.scratch.borrow_mut(), out);
+        self.out.dump(&layout, &mut self.scratch.borrow_mut(), sink);
     }
 }
 
@@ -1313,6 +1352,12 @@ impl crate::io::parallel::WorkerFactory for PortFactory {
         Some(Box::new(RecordOutTape(TapeRun::new(prog, self.p.clone()))))
     }
 
+    /// The sequential loop's: straight to stdout.
+    fn new_direct_tape(&self) -> Option<Box<dyn TapeSink>> {
+        let prog = TapeProgram::new(&self.plan.program)?;
+        Some(Box::new(StdoutTape(TapeRun::new(prog, self.p.clone()))))
+    }
+
     /// The program compiled as `run_program` compiles it (it compiled there,
     /// so it compiles here).
     fn new_worker(&self) -> PortWorker {
@@ -1351,30 +1396,24 @@ impl crate::io::parallel::WorkerFactory for PortFactory {
     }
 }
 
-impl crate::io::parallel::RecordWorker for PortWorker {
-    /// main.c's `process()` into buffers (no halt: programs that can halt run
-    /// sequentially).
-    fn process(
+impl PortWorker {
+    /// main.c's `process()` (no halt: programs that can halt run
+    /// sequentially), with each result handed to `emit` (which writes it, or
+    /// returns `None` for a string `--raw-output0` refuses): the status, and
+    /// the uncaught error's line, if any.
+    fn run(
         &mut self,
         value: Value,
         meta: &crate::io::parallel::RecordMeta<'_>,
-        out: &mut Vec<u8>,
-        err: &mut Vec<u8>,
-    ) -> i32 {
+        mut emit: impl FnMut(&Value, &Process, &mut Vec<(usize, usize)>) -> Option<i32>,
+    ) -> (i32, Option<String>) {
         *self.position.borrow_mut() = (meta.filename.map(Value::from), meta.line);
         let mut ret = JQ_OK_NO_OUTPUT;
         self.jq.start(value, self.p.jq_flags);
         let mut error: Option<Value> = None;
         for result in self.jq.by_ref() {
             match result {
-                Ok(v) => match write_result(
-                    &v,
-                    &self.p,
-                    &mut RecordOut {
-                        out,
-                        marks: &mut self.marks,
-                    },
-                ) {
+                Ok(v) => match emit(&v, &self.p, &mut self.marks) {
                     Some(r) => ret = r,
                     None => {
                         error = Some(Value::from(RAW_OUTPUT0_NUL));
@@ -1387,13 +1426,54 @@ impl crate::io::parallel::RecordWorker for PortWorker {
                 }
             }
         }
-        if let Some(msg) = error {
+        let line = error.map(|msg| {
             let pos = match meta.filename {
                 Some(f) => format!("{}:{}", c_str(f), meta.line),
                 None => "<unknown>".to_owned(),
             };
-            err.extend_from_slice(uncaught_error_line(&msg, &pos).as_bytes());
             ret = JQ_ERROR_UNKNOWN;
+            uncaught_error_line(&msg, &pos)
+        });
+        (ret, line)
+    }
+}
+
+impl crate::io::parallel::RecordWorker for PortWorker {
+    /// main.c's `process()` into buffers.
+    fn process(
+        &mut self,
+        value: Value,
+        meta: &crate::io::parallel::RecordMeta<'_>,
+        out: &mut Vec<u8>,
+        err: &mut Vec<u8>,
+    ) -> i32 {
+        let (ret, error) = self.run(value, meta, |v, p, marks| {
+            write_result(v, p, &mut RecordOut { out, marks })
+        });
+        if let Some(line) = error {
+            err.extend_from_slice(line.as_bytes());
+        }
+        ret
+    }
+
+    fn writes_direct(&self) -> bool {
+        true
+    }
+
+    /// main.c's `process()` itself: results to stdout as they're made (as
+    /// `MainLoop` writes them), then the uncaught error to stderr.
+    fn process_direct(&mut self, value: Value, meta: &crate::io::parallel::RecordMeta<'_>) -> i32 {
+        let (ret, error) = self.run(value, meta, |v, p, _| {
+            with_stdout(|out| {
+                let r = write_result(v, p, out);
+                if r.is_some() {
+                    out.after_output(p.unbuffered);
+                }
+                r
+            })
+        });
+        if let Some(line) = error {
+            write_stderr(line.as_bytes());
         }
         ret
     }

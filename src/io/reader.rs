@@ -1261,6 +1261,15 @@ impl InputReader {
         }
     }
 
+    /// Whether the current input ends at `at`: all of it has been read, and
+    /// nothing is left after `at`.
+    pub(crate) fn ends_at(&self, at: &Cut) -> bool {
+        match &self.cur {
+            Some(cur) if self.generation == at.generation => cur.eof && cur.avail_end() <= at.pos,
+            _ => false,
+        }
+    }
+
     /// Records up to `upto` (a line start within the last job) were
     /// processed by the engine: move past them as the fast path would have.
     pub(crate) fn commit(&mut self, upto: usize) {
