@@ -30,7 +30,8 @@ The cases come from three places:
 - **qj's corpus** (`tests/jq_compat/corpus/`), which has three parts:
   - probes by category: paths and assignment, `reduce`/`foreach`, sorting and
     comparison, `try` and errors, strings and formats, streams, dates, number
-    formatting, literals, and input robustness
+    formatting, literals, input robustness, and value layout (array allocation,
+    duplicate keys, identity of parsed values in path expressions)
   - a generated matrix of builtins × inputs
   - command-line cases: options and their errors, exit codes, input and output modes,
     and adversarial NDJSON
@@ -42,12 +43,12 @@ Results on macOS (arm64) against jq 1.8.1:
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 16,842 | 16,835 |
-| **Total** | **19,745** | **19,738** |
+| qj's corpus | 17,013 | 17,006 |
+| **Total** | **19,916** | **19,909** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
-[Exemptions](#exemptions). Across modes, the counts are 11,203 compact, 2,249 pretty,
-2,249 file, 1,414 NDJSON, 19 `%%FAIL`, and 2,611 command-line cases. The command-line cases
+[Exemptions](#exemptions). Across modes, the counts are 11,244 compact, 2,290 pretty,
+2,290 file, 1,455 NDJSON, 19 `%%FAIL`, and 2,618 command-line cases. The command-line cases
 include some that merge stdout and stderr into one file or pipe, checking that output and
 error messages interleave exactly as jq's stdio buffering interleaves them.
 

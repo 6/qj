@@ -119,6 +119,7 @@ pub use print::{
     Colors, DumpOptions, Indent, dump, dump_refcounted, dump_string, dump_string_trunc,
 };
 pub use string::Str;
+pub(crate) use string::hash_key;
 
 /// `jv_kind` without `JV_KIND_INVALID`, in jq's order (which is also the
 /// cross-type sort order: null < false < true < numbers < strings < arrays <

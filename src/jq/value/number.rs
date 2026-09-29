@@ -16,6 +16,7 @@ use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::dtoa;
 
@@ -42,6 +43,78 @@ pub struct Number(Repr);
 enum Repr {
     Native(f64),
     Literal(Rc<Literal>),
+    /// An integer literal of at most [`INLINE_DIGITS`] digits, as the JSON
+    /// input path makes them ([`Number::inline_int_literal`]): the value of
+    /// a [`Repr::Literal`] with that coefficient and exponent 0, stored
+    /// without an allocation. `serial` stands in for the allocation's
+    /// identity (`jv_identical` compares literals by pointer): copies share
+    /// it, and no two literals are ever given the same one. Its refcount
+    /// isn't tracked, which only `--debug-trace` would show, and trace runs
+    /// never parse input on that path.
+    Int {
+        serial: [u8; 7],
+        value: i64,
+    },
+}
+
+/// Inline integer literals have at most this many digits: their doubles are
+/// exact and they aren't lossy (see [`lossy_of`]), and the canonical
+/// decNumber text of such a literal is the integer's decimal form.
+const INLINE_DIGITS: u32 = 15;
+const INLINE_MAX: i64 = 10i64.pow(INLINE_DIGITS) - 1;
+
+/// The next unused block of inline-literal serials, process-wide.
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+/// Serials are 56 bits: past this, no more inline literals are made.
+const SERIAL_LIMIT: u64 = 1 << 56;
+const SERIAL_BLOCK: u64 = 1 << 16;
+
+/// Serials for [`Number::inline_int_literal`], handed out a block at a time
+/// (one per parser).
+#[derive(Default)]
+pub struct Serials {
+    next: u64,
+    end: u64,
+}
+
+impl Serials {
+    #[inline]
+    fn take(&mut self) -> Option<u64> {
+        if self.next == self.end {
+            let start = NEXT_SERIAL.fetch_add(SERIAL_BLOCK, AtomicOrdering::Relaxed);
+            if start >= SERIAL_LIMIT - SERIAL_BLOCK {
+                // Exhausted (after 2^56 literals): keep failing, so the
+                // caller makes allocated literals, whose identity is exact.
+                NEXT_SERIAL.store(SERIAL_LIMIT, AtomicOrdering::Relaxed);
+                return None;
+            }
+            self.next = start;
+            self.end = start + SERIAL_BLOCK;
+        }
+        let s = self.next;
+        self.next += 1;
+        Some(s)
+    }
+}
+
+#[inline]
+fn serial_bytes(s: u64) -> [u8; 7] {
+    let b = s.to_le_bytes();
+    [b[0], b[1], b[2], b[3], b[4], b[5], b[6]]
+}
+
+/// The allocated literal with an inline literal's value.
+fn int_literal(value: i64) -> Literal {
+    debug_assert!((-INLINE_MAX..=INLINE_MAX).contains(&value));
+    Literal {
+        neg: value < 0,
+        inf: false,
+        coeff: Coeff::Small(value.unsigned_abs()),
+        exp: 0,
+        // Exact (at most 15 digits), as `compute_double` gives it.
+        double: Cell::new(value as f64),
+        lossy: false,
+    }
 }
 
 /// Decimal coefficient: significant digits with leading zeros removed (a zero
@@ -629,6 +702,19 @@ impl Number {
         Number::from_literal(&s[..end])
     }
 
+    /// The literal jq's parser makes of an integer written in canonical
+    /// form (no sign but a leading `-`, no leading zeros, not `-0`), without
+    /// an allocation: `None` when `value` has more than 15 digits (or
+    /// `serials` ran out; then use [`Number::from_literal`]).
+    #[inline]
+    pub fn inline_int_literal(value: i64, serials: &mut Serials) -> Option<Number> {
+        if !(-INLINE_MAX..=INLINE_MAX).contains(&value) {
+            return None;
+        }
+        let serial = serial_bytes(serials.take()?);
+        Some(Number(Repr::Int { serial, value }))
+    }
+
     /// `jv_number_value`: the number as a double (for literals, the cached
     /// result of jq's decimal-to-double conversion).
     #[inline]
@@ -636,13 +722,15 @@ impl Number {
         match &self.0 {
             Repr::Native(x) => *x,
             Repr::Literal(l) => l.to_double(),
+            // Exact: at most 15 digits.
+            Repr::Int { value, .. } => *value as f64,
         }
     }
 
     /// `jv_number_has_literal`.
     #[inline]
     pub fn is_literal(&self) -> bool {
-        matches!(self.0, Repr::Literal(_))
+        !matches!(self.0, Repr::Native(_))
     }
 
     /// `jv_number_get_literal`: the canonical decimal text of a literal, or
@@ -652,6 +740,7 @@ impl Number {
         match &self.0 {
             Repr::Native(_) => None,
             Repr::Literal(l) => l.canonical_string(),
+            Repr::Int { value, .. } => Some(itoa::Buffer::new().format(*value).to_owned()),
         }
     }
 
@@ -659,16 +748,17 @@ impl Number {
     /// conversion to double (see `qsort` for why sorting cares).
     pub(crate) fn is_lossy_literal(&self) -> bool {
         match &self.0 {
-            Repr::Native(_) => false,
+            Repr::Native(_) | Repr::Int { .. } => false,
             Repr::Literal(l) => l.is_lossy(),
         }
     }
 
     /// `jv_get_refcnt`: references to a literal's allocation; 1 for a
-    /// native double (not allocated in jq).
+    /// native double (not allocated in jq). An inline literal's count isn't
+    /// tracked (see [`Repr::Int`]).
     pub fn refcount(&self) -> usize {
         match &self.0 {
-            Repr::Native(_) => 1,
+            Repr::Native(_) | Repr::Int { .. } => 1,
             Repr::Literal(l) => Rc::strong_count(l),
         }
     }
@@ -678,7 +768,7 @@ impl Number {
     pub fn is_nan(&self) -> bool {
         match &self.0 {
             Repr::Native(x) => x.is_nan(),
-            Repr::Literal(_) => false,
+            Repr::Literal(_) | Repr::Int { .. } => false,
         }
     }
 
@@ -707,6 +797,9 @@ impl Number {
                     lossy: l.lossy,
                 })))
             }
+            // A new allocation in jq, so a new identity (the zero rule is
+            // decNumberMinus's: -0 is 0).
+            Repr::Int { value, .. } => Number(Repr::Literal(Rc::new(int_literal(-value)))),
         }
     }
 
@@ -722,6 +815,7 @@ impl Number {
                 double: Cell::new(f64::NAN),
                 lossy: l.lossy,
             }))),
+            Repr::Int { value, .. } => Number(Repr::Literal(Rc::new(int_literal(value.abs())))),
         }
     }
 
@@ -730,8 +824,19 @@ impl Number {
     /// Greater; so NaN compares Greater than everything here — jq's `jv_cmp`
     /// handles NaN before getting here).
     pub fn compare(&self, other: &Number) -> Ordering {
-        if let (Repr::Literal(a), Repr::Literal(b)) = (&self.0, &other.0) {
-            return literal_cmp(a, b);
+        match (&self.0, &other.0) {
+            (Repr::Literal(a), Repr::Literal(b)) => return literal_cmp(a, b),
+            (Repr::Int { value: a, .. }, Repr::Int { value: b, .. }) => return a.cmp(b),
+            // An inline literal isn't lossy, so against a literal that isn't
+            // either the doubles compare like the decimals (see
+            // `literal_cmp`); otherwise compare decimals.
+            (Repr::Int { value, .. }, Repr::Literal(b)) if b.is_lossy() => {
+                return literal_cmp_decimal(&int_literal(*value), b);
+            }
+            (Repr::Literal(a), Repr::Int { value, .. }) if a.is_lossy() => {
+                return literal_cmp_decimal(a, &int_literal(*value));
+            }
+            _ => {}
         }
         let da = self.value();
         let db = other.value();
@@ -756,6 +861,7 @@ impl Number {
         match (&self.0, &other.0) {
             (Repr::Native(a), Repr::Native(b)) => a.to_bits() == b.to_bits(),
             (Repr::Literal(a), Repr::Literal(b)) => Rc::ptr_eq(a, b),
+            (Repr::Int { serial: a, .. }, Repr::Int { serial: b, .. }) => a == b,
             _ => false,
         }
     }
@@ -765,6 +871,9 @@ impl Number {
     /// the double with infinities clamped to `±DBL_MAX`.
     pub fn write_json(&self, out: &mut Vec<u8>) {
         match &self.0 {
+            Repr::Int { value, .. } => {
+                out.extend_from_slice(itoa::Buffer::new().format(*value).as_bytes())
+            }
             Repr::Literal(l) if !l.inf => l.write_canonical(out),
             _ => {
                 let d = self.value();
@@ -796,7 +905,9 @@ impl fmt::Debug for Number {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             Repr::Native(x) => write!(f, "Number({x:?})"),
-            Repr::Literal(_) => write!(f, "Literal({})", self.to_json_string()),
+            Repr::Literal(_) | Repr::Int { .. } => {
+                write!(f, "Literal({})", self.to_json_string())
+            }
         }
     }
 }
@@ -1029,5 +1140,77 @@ mod tests {
         assert_eq!(lit("-1e2").abs().to_json_string(), "1E+2");
         assert_eq!(lit("-0").abs().to_json_string(), "0");
         assert_eq!(Number::from_f64(0.0).negate().to_json_string(), "-0");
+    }
+
+    #[test]
+    fn inline_literals_behave_like_allocated_ones() {
+        assert_eq!(std::mem::size_of::<Number>(), 16);
+        assert_eq!(std::mem::size_of::<super::super::Value>(), 24);
+        let mut serials = Serials::default();
+        let int = |v: i64, s: &mut Serials| Number::inline_int_literal(v, s).unwrap();
+        assert!(Number::inline_int_literal(999_999_999_999_999, &mut serials).is_some());
+        assert!(Number::inline_int_literal(1_000_000_000_000_000, &mut serials).is_none());
+        assert!(Number::inline_int_literal(-999_999_999_999_999, &mut serials).is_some());
+        assert!(Number::inline_int_literal(-1_000_000_000_000_000, &mut serials).is_none());
+        let values = [
+            0i64,
+            1,
+            -1,
+            7,
+            100,
+            -250,
+            123_456_789,
+            999_999_999_999_999,
+            -999_999_999_999_999,
+        ];
+        // Numbers to compare against: allocated literals (some lossy) and
+        // natives.
+        let others = [
+            lit("0"),
+            lit("-0"),
+            lit("1"),
+            lit("1.0"),
+            lit("1e2"),
+            lit("100.000000000000000000001"),
+            lit("99.9999999999999999999999"),
+            lit("999999999999999.0000000000001"),
+            lit("999999999999998.9999999999999"),
+            lit("-999999999999999.00000000000001"),
+            lit("123456789"),
+            lit("123456789.000000000000000001"),
+            lit("1e400"),
+            lit("-1e400"),
+            Number::from_f64(100.0),
+            Number::from_f64(0.5),
+            Number::from_f64(f64::INFINITY),
+        ];
+        for &v in &values {
+            let i = int(v, &mut serials);
+            let l = lit(&v.to_string());
+            assert!(i.is_literal() && !i.is_lossy_literal() && !i.is_nan());
+            assert_eq!(i.to_json_string(), l.to_json_string());
+            assert_eq!(i.literal(), l.literal());
+            assert_eq!(i.value().to_bits(), l.value().to_bits());
+            assert_eq!(i.is_integer(), l.is_integer());
+            assert_eq!(i.negate().to_json_string(), l.negate().to_json_string());
+            assert_eq!(i.abs().to_json_string(), l.abs().to_json_string());
+            for o in &others {
+                assert_eq!(i.compare(o), l.compare(o), "{v} vs {o:?}");
+                assert_eq!(o.compare(&i), o.compare(&l), "{o:?} vs {v}");
+            }
+            for &w in &values {
+                assert_eq!(
+                    i.compare(&int(w, &mut serials)),
+                    l.compare(&lit(&w.to_string()))
+                );
+            }
+            // Identity: copies share it; equal literals, allocated ones and
+            // natives don't.
+            assert!(i.identical(&i.clone()));
+            assert!(!i.identical(&int(v, &mut serials)));
+            assert!(!i.identical(&l));
+            assert!(!i.identical(&Number::from_f64(v as f64)));
+            assert!(!i.negate().identical(&i.negate()));
+        }
     }
 }

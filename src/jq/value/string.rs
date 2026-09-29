@@ -5,124 +5,345 @@
 //! Strings are reference counted; appending to a uniquely owned string grows
 //! it in place (`jvp_string_append`), which keeps repeated concatenation in
 //! `reduce`/`add` linear.
+//!
+//! Like jq's `jvp_string`, a string is one allocation: a header (reference
+//! count, length, capacity) followed by the bytes. So a string
+//! costs one `malloc` (an `Rc<String>` would cost two), and [`Str`] is a
+//! thin pointer.
 
+use std::alloc::{self, Layout};
 use std::borrow::Borrow;
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::rc::Rc;
+use std::ptr::NonNull;
 
 use super::unicode;
 use super::{Array, Value};
 
+/// The header in front of a string's bytes.
+#[repr(C)]
+struct Header {
+    strong: Cell<usize>,
+    /// [`hash_key`] of the contents once computed (0 until then; the hash
+    /// is never 0).
+    hash: Cell<u64>,
+    len: usize,
+    cap: usize,
+}
+
+const HEADER: usize = std::mem::size_of::<Header>();
+
 /// A jq string value (`JV_KIND_STRING`).
-#[derive(Clone, Default)]
-pub struct Str(Rc<String>);
+pub struct Str(NonNull<Header>);
+
+#[inline]
+fn layout(cap: usize) -> Layout {
+    match HEADER.checked_add(cap) {
+        Some(size) if size <= isize::MAX as usize => {
+            // SAFETY: the size doesn't overflow isize and the alignment is a
+            // power of two.
+            unsafe { Layout::from_size_align_unchecked(size, std::mem::align_of::<Header>()) }
+        }
+        _ => panic!("string too long"),
+    }
+}
 
 impl Str {
+    /// A uniquely owned string of length 0 with room for `cap` bytes.
+    fn alloc(cap: usize) -> Str {
+        let layout = layout(cap);
+        // SAFETY: the layout has a non-zero size (the header).
+        let p = unsafe { alloc::alloc(layout) }.cast::<Header>();
+        let Some(p) = NonNull::new(p) else {
+            alloc::handle_alloc_error(layout)
+        };
+        // SAFETY: `p` is valid for writes of the header.
+        unsafe {
+            p.as_ptr().write(Header {
+                strong: Cell::new(1),
+                hash: Cell::new(0),
+                len: 0,
+                cap,
+            });
+        }
+        Str(p)
+    }
+
+    #[inline]
+    fn header(&self) -> &Header {
+        // SAFETY: the pointer is live for as long as `self` holds a reference.
+        unsafe { self.0.as_ref() }
+    }
+
+    #[inline]
+    fn data(&self) -> *mut u8 {
+        // SAFETY: the bytes follow the header in the same allocation.
+        unsafe { self.0.as_ptr().cast::<u8>().add(HEADER) }
+    }
+
+    /// A string holding `s`.
+    #[inline]
+    fn copy_of(s: &[u8]) -> Str {
+        let r = Str::alloc(s.len());
+        // SAFETY: the allocation has room for `s.len()` bytes after the header,
+        // and nothing else refers to it yet.
+        unsafe {
+            std::ptr::copy_nonoverlapping(s.as_ptr(), r.data(), s.len());
+            (*r.0.as_ptr()).len = s.len();
+        }
+        r
+    }
+
     /// An empty string.
     pub fn new() -> Str {
-        Str::default()
+        Str::alloc(0)
+    }
+
+    /// An empty string with room for `cap` bytes.
+    pub fn with_capacity(cap: usize) -> Str {
+        Str::alloc(cap)
     }
 
     /// `jv_string_sized`: builds a string from bytes, replacing invalid UTF-8
     /// with U+FFFD exactly as jq does.
     pub fn from_bytes(bytes: &[u8]) -> Str {
-        Str(Rc::new(unicode::decode_lossy(bytes)))
+        match std::str::from_utf8(bytes) {
+            Ok(s) => Str::from(s),
+            Err(_) => Str::from(unicode::decode_lossy(bytes)),
+        }
     }
 
     /// The string contents.
     #[inline]
     pub fn as_str(&self) -> &str {
-        &self.0
+        // SAFETY: the bytes are valid UTF-8 (every constructor and mutator
+        // only stores valid UTF-8).
+        unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
     }
 
     /// The string contents as bytes.
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
+        // SAFETY: the first `len` bytes after the header are initialized.
+        unsafe { std::slice::from_raw_parts(self.data(), self.header().len) }
     }
 
     /// `jv_string_length_bytes`.
     #[inline]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.header().len
     }
 
     /// Whether the string is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.len() == 0
     }
 
     /// `jv_string_length_codepoints`.
     pub fn codepoint_len(&self) -> usize {
-        self.0.chars().count()
+        self.as_str().chars().count()
     }
 
     /// The contents as C sees them through `jv_string_value`: up to the
     /// first NUL. Use this wherever jq formats a string with `%s` (error
     /// messages) or passes it to a C string function.
     pub fn as_c_str(&self) -> &str {
-        match memchr::memchr(0, self.as_bytes()) {
-            Some(i) => &self.0[..i],
-            None => &self.0,
+        let s = self.as_str();
+        match memchr::memchr(0, s.as_bytes()) {
+            Some(i) => &s[..i],
+            None => s,
         }
     }
 
-    /// Mutable access, copying the contents first if they are shared
-    /// (jq's refcount-1 in-place mutation).
-    #[inline]
-    pub fn make_mut(&mut self) -> &mut String {
-        Rc::make_mut(&mut self.0)
-    }
-
     /// Whether this is the only reference to the underlying buffer.
+    #[inline]
     pub fn is_unique(&self) -> bool {
-        Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) == 0
+        self.header().strong.get() == 1
     }
 
     /// The number of references to the buffer (`jv_get_refcnt`).
+    #[inline]
     pub fn refcount(&self) -> usize {
-        Rc::strong_count(&self.0)
+        self.header().strong.get()
     }
 
     /// Pointer identity (as used by `jv_equal`'s fast path and `jv_identical`).
     #[inline]
     pub fn ptr_eq(&self, other: &Str) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        self.0 == other.0
+    }
+
+    /// Makes `self` uniquely owned with room for `extra` more bytes: in place
+    /// when it's unique and fits, otherwise into a new buffer (jq's
+    /// `jvp_string_append` sizing: twice the new length, at least 32).
+    fn reserve_unique(&mut self, extra: usize) {
+        let len = self.len();
+        let need = len.checked_add(extra).expect("string too long");
+        if self.is_unique() {
+            if need <= self.header().cap {
+                return;
+            }
+            let cap = need.saturating_mul(2).max(32);
+            let old = layout(self.header().cap);
+            // SAFETY: the block was allocated with `old`, the new size is
+            // valid (`layout` checks it), and it's uniquely owned, so moving
+            // it invalidates no other reference.
+            let p = unsafe { alloc::realloc(self.0.as_ptr().cast(), old, layout(cap).size()) };
+            let Some(p) = NonNull::new(p.cast::<Header>()) else {
+                alloc::handle_alloc_error(layout(cap))
+            };
+            self.0 = p;
+            // SAFETY: unique, so nothing else observes the header.
+            unsafe { (*self.0.as_ptr()).cap = cap };
+        } else {
+            let cap = if extra == 0 {
+                len
+            } else {
+                need.saturating_mul(2).max(32)
+            };
+            let mut copy = Str::alloc(cap);
+            // SAFETY: `copy` has room for `len` bytes and is unique.
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.data(), copy.data(), len);
+                (*copy.0.as_ptr()).len = len;
+            }
+            std::mem::swap(self, &mut copy);
+        }
+    }
+
+    /// Appends bytes that keep the contents valid UTF-8.
+    #[inline]
+    fn push_utf8(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            // jq unshares even for an empty append (identity is observable).
+            self.reserve_unique(0);
+            return;
+        }
+        self.reserve_unique(bytes.len());
+        let len = self.len();
+        // SAFETY: `reserve_unique` made the buffer unique with room for
+        // `bytes.len()` more bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.data().add(len), bytes.len());
+            let h = &mut *self.0.as_ptr();
+            h.len = len + bytes.len();
+            h.hash.set(0);
+        }
     }
 
     /// `jv_string_append_str` / `jvp_string_append` for valid text.
     pub fn push_str(&mut self, s: &str) {
-        self.make_mut().push_str(s);
+        self.push_utf8(s.as_bytes());
     }
 
     /// `jv_string_append_buf`: appends bytes, replacing invalid UTF-8.
     pub fn push_bytes(&mut self, bytes: &[u8]) {
-        unicode::push_lossy(self.make_mut(), bytes);
+        match std::str::from_utf8(bytes) {
+            Ok(s) => self.push_str(s),
+            Err(_) => {
+                let mut fixed = String::with_capacity(bytes.len() + 8);
+                unicode::push_lossy(&mut fixed, bytes);
+                self.push_str(&fixed);
+            }
+        }
     }
 
     /// `jv_string_append_codepoint`. Non-scalar values (surrogates, values
     /// above U+10FFFF) become U+FFFD, which is what a jq string ends up
     /// holding for them.
     pub fn push_codepoint(&mut self, c: u32) {
-        self.make_mut()
-            .push(char::from_u32(c).unwrap_or('\u{FFFD}'));
+        let mut buf = [0u8; 4];
+        let c = char::from_u32(c).unwrap_or('\u{FFFD}');
+        self.push_str(c.encode_utf8(&mut buf));
     }
 
     /// `jv_string_concat` (in place when `self` is uniquely owned).
     pub fn concat(&mut self, other: &Str) {
+        // (`other` can't share `self`'s buffer while `self` is unique, so an
+        // in-place append never moves bytes `other` points into.)
         self.push_str(other.as_str());
     }
 
-    /// Consumes the string, returning the owned contents (copying only if
-    /// shared).
+    /// Consumes the string, returning the contents.
     pub fn into_string(self) -> String {
-        Rc::try_unwrap(self.0).unwrap_or_else(|rc| (*rc).clone())
+        self.as_str().to_owned()
     }
 
+    /// [`hash_key`] of the contents, cached in the string (objects index
+    /// their keys by it).
+    #[inline]
+    pub(crate) fn key_hash(&self) -> u64 {
+        let h = self.header().hash.get();
+        if h != 0 {
+            return h;
+        }
+        let h = hash_key(self.as_bytes());
+        self.header().hash.set(h);
+        h
+    }
+
+    /// Records `h`, which must be [`hash_key`] of the contents, as the
+    /// cached hash (for callers that hashed the bytes already).
+    #[inline]
+    pub(crate) fn set_key_hash(&self, h: u64) {
+        debug_assert_eq!(h, hash_key(self.as_bytes()));
+        self.header().hash.set(h);
+    }
+}
+
+/// The hash of an object key's bytes (see [`Str::key_hash`]); never 0.
+/// The seed is random per process.
+#[inline]
+pub(crate) fn hash_key(bytes: &[u8]) -> u64 {
+    use std::hash::BuildHasher;
+    use std::sync::OnceLock;
+    static SEED: OnceLock<u64> = OnceLock::new();
+    let seed =
+        *SEED.get_or_init(|| foldhash::fast::RandomState::default().hash_one(0x51_7c_c1_b7u64));
+    let h = foldhash::fast::FixedState::with_seed(seed).hash_one(bytes);
+    if h == 0 { 1 } else { h }
+}
+
+impl Clone for Str {
+    #[inline]
+    fn clone(&self) -> Str {
+        let h = self.header();
+        let n = h.strong.get();
+        if n == usize::MAX {
+            std::process::abort();
+        }
+        h.strong.set(n + 1);
+        Str(self.0)
+    }
+}
+
+impl Drop for Str {
+    #[inline]
+    fn drop(&mut self) {
+        let h = self.header();
+        let n = h.strong.get();
+        if n == 1 {
+            let cap = h.cap;
+            // SAFETY: the last reference: the block was allocated with
+            // `layout(cap)` and nothing refers to it anymore.
+            unsafe { alloc::dealloc(self.0.as_ptr().cast(), layout(cap)) };
+        } else {
+            h.strong.set(n - 1);
+        }
+    }
+}
+
+impl Default for Str {
+    fn default() -> Str {
+        Str::new()
+    }
+}
+
+impl Str {
     /// `jv_string_slice`: codepoint-indexed slice. `start`/`end` are clamped
     /// like `jvp_clamp_slice_params` (against the byte length, as jq does).
     pub fn slice(&self, start: i64, end: i64) -> Str {
@@ -308,25 +529,26 @@ impl Deref for Str {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        &self.0
+        self.as_str()
     }
 }
 
 impl AsRef<str> for Str {
     fn as_ref(&self) -> &str {
-        &self.0
+        self.as_str()
     }
 }
 
 impl Borrow<str> for Str {
     fn borrow(&self) -> &str {
-        &self.0
+        self.as_str()
     }
 }
 
 impl PartialEq for Str {
+    #[inline]
     fn eq(&self, other: &Str) -> bool {
-        self.ptr_eq(other) || self.0.as_bytes() == other.0.as_bytes()
+        self.ptr_eq(other) || self.as_bytes() == other.as_bytes()
     }
 }
 
@@ -367,20 +589,21 @@ impl Hash for Str {
 }
 
 impl From<&str> for Str {
+    #[inline]
     fn from(s: &str) -> Str {
-        Str(Rc::new(s.to_owned()))
+        Str::copy_of(s.as_bytes())
     }
 }
 
 impl From<String> for Str {
     fn from(s: String) -> Str {
-        Str(Rc::new(s))
+        Str::copy_of(s.as_bytes())
     }
 }
 
 impl From<&String> for Str {
     fn from(s: &String) -> Str {
-        Str(Rc::new(s.clone()))
+        Str::copy_of(s.as_bytes())
     }
 }
 
@@ -496,10 +719,46 @@ mod tests {
     }
 
     #[test]
+    fn shared_strings_are_copied_on_write() {
+        let a = s("ab");
+        assert_eq!(a.refcount(), 1);
+        let b = a.clone();
+        assert_eq!(a.refcount(), 2);
+        assert!(a.ptr_eq(&b));
+        // Appending, even nothing, to a shared string makes a new one (jq's
+        // jvp_string_append allocates unless the string is unshared).
+        let mut c = a.clone();
+        c.push_str("");
+        assert!(!c.ptr_eq(&a));
+        assert_eq!(c.as_str(), "ab");
+        assert_eq!(a.refcount(), 2);
+        let mut d = b;
+        d.push_str("cd");
+        assert_eq!((a.as_str(), d.as_str()), ("ab", "abcd"));
+        assert_eq!(a.refcount(), 1);
+        // A unique string is appended to in place, even with nothing.
+        let mut e = s("x");
+        let p = e.as_ptr();
+        e.push_str("");
+        assert_eq!(e.as_ptr(), p);
+        // Growth keeps the contents; NUL and multi-byte text survive.
+        let mut f = Str::new();
+        for i in 0..1000 {
+            f.push_str(if i % 2 == 0 { "\u{e9}" } else { "\0" });
+        }
+        assert_eq!(f.len(), 1500);
+        assert_eq!(f.codepoint_len(), 1000);
+        f.push_codepoint(0xD800);
+        assert!(f.as_str().ends_with('\u{FFFD}'));
+        f.push_bytes(b"\xffz");
+        assert!(f.as_str().ends_with("\u{FFFD}z"));
+    }
+
+    #[test]
     fn in_place_append() {
         let mut a = s("x");
         let p = a.as_ptr();
-        a.make_mut().reserve(64);
+        a.reserve_unique(64);
         let p2 = a.as_ptr();
         a.push_str("yz");
         assert_eq!(a.as_ptr(), p2);
