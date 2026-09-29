@@ -1,21 +1,30 @@
-//! Runs jq 1.8.1's upstream test suites (`tests/jq_compat/*.test`) through the VM on
-//! jq's own bytecode (rebuilt from `--debug-dump-disasm`), comparing stdout, the
-//! uncaught error and the exit code with the jq binary. This measures the VM (and the
-//! builtins) independently of our compiler. The trace variant compares the whole
-//! `--debug-trace` output (every instruction, stack and refcount) instead:
+//! Runs jq 1.8.1's upstream test suites (`tests/jq_compat/*.test`, and qj's corpus with
+//! `SUITES_CORPUS=1`) through the new core and compares stdout, the uncaught error and
+//! the exit code with the jq binary. Two bytecode sources:
+//!
+//! * `*_on_jq_bytecode`: jq's own bytecode, rebuilt from `--debug-dump-disasm`, which
+//!   measures the VM and builtins independently of our compiler;
+//! * `*_on_our_compiler`: our compiler's bytecode, i.e. the whole ported core.
+//!
+//! The `traces` variants compare the entire `--debug-trace` output instead (every
+//! instruction, its stack inputs and their refcounts, interleaved with the results).
 //!
 //! ```text
-//! cargo test --release --lib upstream_suites_on_jq_bytecode -- --ignored --nocapture
-//! cargo test --release --lib upstream_traces_on_jq_bytecode -- --ignored --nocapture
-//! SUITES_VERBOSE=1 SUITES_FILTER=jq.test ...   # print failures, one suite
-//! SUITES_NO_OVERRIDES=1 ...                    # no stand-ins for unported builtins
+//! cargo test --release --lib upstream_suites_on_our_compiler -- --ignored --nocapture
+//! cargo test --release --lib upstream_traces_on_our_compiler -- --ignored --nocapture
+//! SUITES_VERBOSE=1 SUITES_FILTER=jq.test,man.test ...   # print failures, some files
+//! SUITES_CORPUS=1 ...                                    # add tests/jq_compat/corpus
 //! ```
 
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 
 use super::disasm;
-use super::tests::{OVERRIDES, Shared};
+use super::tests::{OVERRIDES, Shared, strip_refcounts};
 use super::{InputSource, JQ_DEBUG_TRACE, Jq};
+use crate::jq::lang::bytecode::Bytecode;
+use crate::jq::lang::linker::JqAttrs;
+use crate::jq::lang::{CompileOptions, jq_compile_args};
 use crate::jq::value::{DumpOptions, Error, ParseFlags, Parser, Value, dump_string};
 
 /// One `program / input / outputs` case (`%%FAIL` blocks are compile-time tests and
@@ -76,36 +85,59 @@ fn parse_cases(file: &'static str, content: &str) -> Vec<Case> {
 struct Outcome {
     /// Results (and, when tracing, the trace interleaved with them).
     stdout: String,
-    /// The uncaught error's message (`jq: error (at ...): <msg>` without the prefix).
+    /// The uncaught error's message (`jq: error (at ...): <msg>` without the prefix),
+    /// `parse error: <msg>`, or the compile errors.
     error: Option<String>,
     exit: i32,
 }
 
-/// Runs jq and returns its disassembly and outcome.
-fn run_jq(case: &Case, trace: bool) -> Option<(String, Outcome)> {
-    let mut args = vec!["-c", "--debug-dump-disasm"];
+/// jq's test modules, for programs that import (jq_diff passes `-L modules` too).
+fn modules_dir(program: &str) -> Option<String> {
+    ["import", "include", "modulemeta", "get_search_list"]
+        .iter()
+        .any(|w| program.contains(w))
+        .then(|| format!("{}/tests/jq_compat/modules", env!("CARGO_MANIFEST_DIR")))
+}
+
+/// Runs jq and returns its disassembly (if it compiled) and outcome.
+fn run_jq(case: &Case, trace: bool) -> (Option<String>, Outcome) {
+    let mut args: Vec<String> = vec!["-c".into(), "--debug-dump-disasm".into()];
     if trace {
-        args.push("--debug-trace");
+        args.push("--debug-trace".into());
     }
-    args.push(&case.program);
+    if let Some(dir) = modules_dir(&case.program) {
+        args.extend(["-L".into(), dir]);
+    }
+    args.push(case.program.clone());
     let mut child = Command::new("jq")
         .args(&args)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
+        .expect("spawn jq");
     {
         use std::io::Write;
-        let mut si = child.stdin.take()?;
+        let mut si = child.stdin.take().unwrap();
         let _ = si.write_all(case.input.as_bytes());
         let _ = si.write_all(b"\n");
     }
-    let out = child.wait_with_output().ok()?;
+    let out = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (disasm, rest) = stdout.split_once("\n\n")?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let exit = out.status.code().unwrap_or(-1);
+    let Some((disasm, rest)) = stdout.split_once("\n\n") else {
+        // Didn't compile.
+        return (
+            None,
+            Outcome {
+                stdout: String::new(),
+                error: Some(stderr),
+                exit,
+            },
+        );
+    };
     let error = stderr.lines().rev().find_map(|l| {
         if let Some(m) = l.strip_prefix("jq: parse error: ") {
             return Some(format!("parse error: {m}"));
@@ -113,14 +145,14 @@ fn run_jq(case: &Case, trace: bool) -> Option<(String, Outcome)> {
         let (_, r) = l.strip_prefix("jq: error (at ")?.split_once(')')?;
         Some(r.strip_prefix(": ").unwrap_or(r).trim_start().to_string())
     });
-    Some((
-        disasm.to_string(),
+    (
+        Some(disasm.to_string()),
         Outcome {
             stdout: rest.to_string(),
             error: if exit == 5 { error } else { None },
             exit,
         },
-    ))
+    )
 }
 
 /// The rest of the input values, as `input`/`inputs` see them.
@@ -135,12 +167,23 @@ impl InputSource for Inputs {
     }
 }
 
-/// Runs the VM like jq's main loop: each input value in turn, `input` reading ahead.
-fn run_vm(disasm_text: &str, input: &str, overrides: bool, trace: bool) -> Outcome {
-    let bc = disasm::load(disasm_text, if overrides { OVERRIDES } else { &[] });
+/// The attributes for `case` (jq run from the repository root, maybe with `-L`).
+fn attrs(case: &Case) -> JqAttrs {
+    let mut a = JqAttrs::new(".");
+    if let Some(dir) = modules_dir(&case.program) {
+        a.lib_dirs = Value::from(vec![Value::from(dir)]);
+    }
+    a.prog_origin = Value::from(env!("CARGO_MANIFEST_DIR"));
+    a
+}
+
+/// Runs the VM on `bc` like jq's main loop: each input value in turn, `input`
+/// reading ahead, stopping at an error or halt.
+fn run_vm(bc: Rc<Bytecode>, case: &Case, trace: bool) -> Outcome {
     let mut jq = Jq::new(bc);
+    jq.set_jq_attrs(&attrs(case));
     let mut parser = Parser::new(ParseFlags::default());
-    let text = format!("{input}\n");
+    let text = format!("{}\n", case.input);
     parser.set_buf(text.as_bytes(), false);
     let mut values = std::collections::VecDeque::new();
     while let Some(v) = parser.next() {
@@ -230,11 +273,66 @@ fn first_difference(want: &Outcome, got: &Outcome) -> String {
     }
 }
 
-fn run_suites(trace: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Core {
+    /// jq's bytecode from `--debug-dump-disasm`.
+    JqBytecode,
+    /// Our compiler.
+    Ours,
+}
+
+/// Runs one case; `None` when jq doesn't compile it and we're on jq's bytecode.
+fn run_case(case: &Case, core: Core, trace: bool) -> Option<(bool, String)> {
+    let head = format!(
+        "{}:{}: {}\n  input: {}",
+        case.file, case.line, case.program, case.input
+    );
+    let (dis, want) = run_jq(case, trace);
+    let got = match core {
+        Core::JqBytecode => {
+            let dis = dis?;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_vm(disasm::load(&dis, OVERRIDES), case, trace)
+            }))
+        }
+        Core::Ours => {
+            let mut opts = CompileOptions::new(".");
+            opts.attrs = attrs(case);
+            match jq_compile_args(case.program.as_bytes(), &opts) {
+                Ok(bc) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_vm(bc, case, trace)
+                })),
+                Err(e) => Ok(Outcome {
+                    stdout: String::new(),
+                    error: Some(e.render()),
+                    exit: 3,
+                }),
+            }
+        }
+    };
+    // SUITES_IGNORE_REFCOUNTS=1 compares traces without the ` (<refcount>)`s.
+    let (want, got) = if trace && std::env::var_os("SUITES_IGNORE_REFCOUNTS").is_some() {
+        let strip = |o: Outcome| Outcome {
+            stdout: strip_refcounts(&o.stdout),
+            ..o
+        };
+        (strip(want), got.map(strip))
+    } else {
+        (want, got)
+    };
+    Some(match got {
+        Ok(got) => (
+            got == want,
+            format!("{head}\n  {}", first_difference(&want, &got)),
+        ),
+        Err(_) => (false, format!("{head}\n  PANICKED")),
+    })
+}
+
+fn run_suites(core: Core, trace: bool) {
     let root = env!("CARGO_MANIFEST_DIR");
     let filter = std::env::var("SUITES_FILTER").ok();
     let verbose = std::env::var_os("SUITES_VERBOSE").is_some();
-    let overrides = std::env::var_os("SUITES_NO_OVERRIDES").is_none();
     let mut files: Vec<&'static str> = vec![
         "jq.test",
         "man.test",
@@ -244,7 +342,6 @@ fn run_suites(trace: bool) {
         "uri.test",
         "optional.test",
     ];
-    // qj's corpus (same format, no expected outputs) with SUITES_CORPUS=1.
     if std::env::var_os("SUITES_CORPUS").is_some() {
         let mut corpus: Vec<String> = std::fs::read_dir(format!("{root}/tests/jq_compat/corpus"))
             .unwrap()
@@ -268,35 +365,19 @@ fn run_suites(trace: bool) {
     }
     let nthreads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let chunks: Vec<&[Case]> = cases.chunks(cases.len().div_ceil(nthreads)).collect();
-    // (file, Some(passed) or None when jq itself doesn't compile the program, detail)
+    // (file, Some(passed) or None when skipped, detail)
     let results: Vec<(&'static str, Option<bool>, String)> = std::thread::scope(|s| {
         let handles: Vec<_> = chunks
             .iter()
             .map(|chunk| {
                 s.spawn(move || {
-                    let mut out = Vec::new();
-                    for case in chunk.iter() {
-                        let head = format!(
-                            "{}:{}: {}\n  input: {}",
-                            case.file, case.line, case.program, case.input
-                        );
-                        let Some((dis, want)) = run_jq(case, trace) else {
-                            out.push((case.file, None, format!("{head}\n  jq failed")));
-                            continue;
-                        };
-                        let got = std::panic::catch_unwind(|| {
-                            run_vm(&dis, &case.input, overrides, trace)
-                        });
-                        let (ok, detail) = match got {
-                            Ok(got) => (
-                                got == want,
-                                format!("{head}\n  {}", first_difference(&want, &got)),
-                            ),
-                            Err(_) => (false, format!("{head}\n  PANICKED")),
-                        };
-                        out.push((case.file, Some(ok), detail));
-                    }
-                    out
+                    chunk
+                        .iter()
+                        .map(|case| match run_case(case, core, trace) {
+                            Some((ok, detail)) => (case.file, Some(ok), detail),
+                            None => (case.file, None, String::new()),
+                        })
+                        .collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -330,7 +411,7 @@ fn run_suites(trace: bool) {
     let (mut pass, mut total, mut skipped) = (0, 0, 0);
     for (file, p, t, s) in &summary {
         let note = if *s > 0 {
-            format!(" ({s} not compiled by jq)")
+            format!(" ({s} not compiled by jq, skipped)")
         } else {
             String::new()
         };
@@ -339,20 +420,29 @@ fn run_suites(trace: bool) {
         total += t;
         skipped += s;
     }
-    eprintln!(
-        "{:>14}: {pass}/{total} ({skipped} not compiled by jq)",
-        "total"
-    );
+    eprintln!("{:>14}: {pass}/{total} ({skipped} skipped)", "total");
 }
 
 #[test]
 #[ignore]
 fn upstream_suites_on_jq_bytecode() {
-    run_suites(false);
+    run_suites(Core::JqBytecode, false);
 }
 
 #[test]
 #[ignore]
 fn upstream_traces_on_jq_bytecode() {
-    run_suites(true);
+    run_suites(Core::JqBytecode, true);
+}
+
+#[test]
+#[ignore]
+fn upstream_suites_on_our_compiler() {
+    run_suites(Core::Ours, false);
+}
+
+#[test]
+#[ignore]
+fn upstream_traces_on_our_compiler() {
+    run_suites(Core::Ours, true);
 }

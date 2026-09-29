@@ -51,6 +51,7 @@
 //! * Path expressions track `jq->path` and `jq->value_at_path`, raising
 //!   `Invalid path expression ...` when a value doesn't come from the path.
 
+pub mod driver;
 mod program;
 mod run;
 mod stack;
@@ -68,6 +69,7 @@ use std::rc::Rc;
 
 use crate::jq::builtins::{CResult, Host};
 use crate::jq::lang::bytecode::Bytecode;
+use crate::jq::lang::linker::{JqAttrs, load_module_meta};
 use crate::jq::value::{DumpOptions, Error, Object, Str, Value, dump_string};
 
 use program::Program;
@@ -105,11 +107,6 @@ impl<F: FnMut() -> Option<Result<Value, Error>>> InputSource for F {
 
 /// A message callback (`jq_msg_cb`): debug, stderr and error callbacks.
 pub type MsgCallback = Box<dyn FnMut(&Value)>;
-
-/// linker.c `load_module_meta`, supplied by the compiler/linker: given the library
-/// search list (`jq_get_lib_dirs`), the jq origin and a module name, returns the
-/// module's metadata. Syntax errors in the module go to `report`.
-pub type ModuleMetaFn = Box<dyn FnMut(&Value, &Value, &Value, &mut dyn FnMut(Value)) -> CResult>;
 
 /// An error being raised (`jq->error` when it is an invalid with a message): the
 /// message, wrapped `wraps` times by `TRY_END` (jq nests `jv_invalid_with_msg`).
@@ -150,7 +147,8 @@ pub struct Jq {
     debug_cb: Option<MsgCallback>,
     stderr_cb: Option<MsgCallback>,
     err_cb: Option<MsgCallback>,
-    module_meta: Option<ModuleMetaFn>,
+    /// `$HOME` for module lookups by `modulemeta` (jq calls `get_home()` there).
+    home: Option<String>,
     trace_out: Option<Box<dyn Write>>,
 }
 
@@ -180,7 +178,7 @@ impl Jq {
             debug_cb: None,
             stderr_cb: None,
             err_cb: None,
-            module_meta: None,
+            home: std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()),
             trace_out: None,
         }
     }
@@ -275,11 +273,6 @@ impl Jq {
         report_error_to(&mut self.err_cb, msg);
     }
 
-    /// Supplies linker.c's `load_module_meta` for the `modulemeta` builtin.
-    pub fn set_module_meta_fn(&mut self, f: Option<ModuleMetaFn>) {
-        self.module_meta = f;
-    }
-
     /// Where `--debug-trace` output goes (jq prints it to stdout, interleaved with the
     /// results). Defaults to this process's stdout.
     pub fn set_trace_writer(&mut self, w: Option<Box<dyn Write>>) {
@@ -311,6 +304,26 @@ impl Jq {
     /// `jq_get_attr`: `None` is jq's invalid (absent).
     pub fn get_attr(&self, attr: &str) -> Option<Value> {
         self.attrs.as_object().and_then(|o| o.get(attr)).cloned()
+    }
+
+    /// Sets the attributes main.c sets (`JQ_LIBRARY_PATH`, `JQ_ORIGIN`,
+    /// `PROGRAM_ORIGIN`) from the ones the program was compiled with, plus the `$HOME`
+    /// that `modulemeta` uses to find modules.
+    pub fn set_jq_attrs(&mut self, attrs: &JqAttrs) {
+        self.set_attr("JQ_LIBRARY_PATH", attrs.lib_dirs.clone());
+        self.set_attr("JQ_ORIGIN", attrs.jq_origin.clone());
+        self.set_attr("PROGRAM_ORIGIN", attrs.prog_origin.clone());
+        self.home = attrs.home.clone();
+    }
+
+    /// The linker's view of the attributes (for `modulemeta`).
+    fn linker_attrs(&self) -> JqAttrs {
+        JqAttrs {
+            lib_dirs: Jq::lib_dirs(self),
+            jq_origin: Jq::jq_origin(self),
+            prog_origin: Jq::prog_origin(self),
+            home: self.home.clone(),
+        }
     }
 
     /// `jq_get_jq_origin`: the `JQ_ORIGIN` attribute.
@@ -430,20 +443,13 @@ impl Host for Jq {
     }
 
     fn module_meta(&mut self, name: &Value) -> CResult {
-        let lib_dirs = Jq::lib_dirs(self);
-        let jq_origin = Jq::jq_origin(self);
-        let Some(mut f) = self.module_meta.take() else {
-            return Err(Error::msg(format!(
-                "modulemeta: module loading is not available ({})",
-                name
-            )));
-        };
+        // linker.c load_module_meta; the module's syntax errors go to jq_report_error.
+        let attrs = self.linker_attrs();
+        let name = name.as_str().unwrap_or("");
         let err_cb = &mut self.err_cb;
-        let r = f(&lib_dirs, &jq_origin, name, &mut |msg| {
-            report_error_to(err_cb, msg)
-        });
-        self.module_meta = Some(f);
-        r
+        load_module_meta(&attrs, name, &mut |msg| {
+            report_error_to(err_cb, Value::from(msg))
+        })
     }
 
     fn current_filename(&self) -> Option<Value> {

@@ -1,6 +1,8 @@
-//! VM tests. Most run jq 1.8.1's own bytecode (rebuilt from `--debug-dump-disasm` by
-//! [`super::disasm`]) and compare outputs, errors and `--debug-trace` output with the jq
-//! binary. They are skipped when `jq` on PATH isn't jq 1.8.1.
+//! VM tests. Most compare with the jq 1.8.1 binary (they are skipped when `jq` on
+//! PATH isn't jq 1.8.1), running each program twice: on jq's own bytecode (rebuilt
+//! from `--debug-dump-disasm` by [`super::disasm`]), which isolates the VM, and on the
+//! bytecode from our compiler ([`jq_compile_args`]), which checks the whole core.
+//! Outputs, errors and `--debug-trace` output (refcounts included) must match.
 
 use std::cell::RefCell;
 use std::process::{Command, Stdio};
@@ -8,111 +10,14 @@ use std::rc::Rc;
 
 use super::disasm;
 use super::{JQ_DEBUG_TRACE, JQ_DEBUG_TRACE_ALL, Jq};
-use crate::jq::builtins::{CFn, CResult, Host};
+use crate::jq::builtins::CFn;
+use crate::jq::lang::bytecode::Bytecode;
+use crate::jq::lang::{CompileOptions, jq_compile_args};
 use crate::jq::value::{DumpOptions, Error, Value, dump_string, parse_sized};
 
-// ---- builtins whose ports haven't landed yet (test-only stand-ins) ------------------
-
-fn t_error(_: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
-    Err(Error::new(input))
-}
-
-fn t_length(_: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
-    Ok(match &input {
-        Value::Array(a) => Value::from(a.len()),
-        Value::Object(o) => Value::from(o.len()),
-        Value::String(s) => Value::from(s.codepoint_len()),
-        Value::Number(n) => Value::Number(n.abs()),
-        Value::Null => Value::from(0),
-        _ => return Err(Error::type_error(&input, "has no length")),
-    })
-}
-
-fn t_getpath(host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
-    let p = std::mem::take(&mut args[0]);
-    let r = input.getpath(&p);
-    host.path_append(input, p, r)
-}
-
-fn t_setpath(_: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
-    let p = std::mem::take(&mut args[0]);
-    let v = std::mem::take(&mut args[1]);
-    input.setpath(&p, v)
-}
-
-fn t_delpaths(_: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
-    let p = std::mem::take(&mut args[0]);
-    input.delpaths(&p)
-}
-
-fn t_keys(_: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
-    match &input {
-        Value::Object(_) | Value::Array(_) => input.keys(),
-        _ => Err(Error::type_error(&input, "has no keys")),
-    }
-}
-
-fn t_keys_unsorted(_: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
-    match &input {
-        Value::Object(_) | Value::Array(_) => input.keys_unsorted(),
-        _ => Err(Error::type_error(&input, "has no keys")),
-    }
-}
-
-fn t_type(_: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
-    Ok(Value::from(input.kind_name()))
-}
-
-fn t_tojson(_: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
-    Ok(Value::from(input.to_json()))
-}
-
-fn t_halt(host: &mut dyn Host, _: Value, _: &mut [Value]) -> CResult {
-    host.halt(None, None);
-    Ok(Value::Bool(true))
-}
-
-fn t_halt_error(host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
-    let a = std::mem::take(&mut args[0]);
-    if !matches!(a, Value::Number(_)) {
-        return Err(Error::type_error(&input, "halt_error/1: number required"));
-    }
-    host.halt(Some(a), Some(input));
-    Ok(Value::Bool(true))
-}
-
-fn t_has(_: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
-    input.has(&args[0]).map(Value::Bool)
-}
-
-fn t_input(host: &mut dyn Host, _: Value, _: &mut [Value]) -> CResult {
-    match host.next_input() {
-        Some(r) => r,
-        None => Err(Error::msg("break")),
-    }
-}
-
-fn t_debug(host: &mut dyn Host, input: Value, _: &mut [Value]) -> CResult {
-    host.debug(&input);
-    Ok(input)
-}
-
-pub(super) const OVERRIDES: &[(&str, CFn)] = &[
-    ("error", t_error),
-    ("length", t_length),
-    ("getpath", t_getpath),
-    ("setpath", t_setpath),
-    ("delpaths", t_delpaths),
-    ("keys", t_keys),
-    ("keys_unsorted", t_keys_unsorted),
-    ("type", t_type),
-    ("tojson", t_tojson),
-    ("halt", t_halt),
-    ("halt_error", t_halt_error),
-    ("has", t_has),
-    ("input", t_input),
-    ("debug", t_debug),
-];
+/// Test-only replacements for C builtins, by name (none are needed now that every
+/// builtin is ported; kept for bisecting builtin/VM interactions).
+pub(super) const OVERRIDES: &[(&str, CFn)] = &[];
 
 // ---- running jq ------------------------------------------------------------------
 
@@ -156,20 +61,29 @@ fn run_jq(args: &[&str], stdin: &str) -> JqResult {
 
 /// jq's bytecode for `program` (compiled with `jq -n --debug-dump-disasm`, which also
 /// runs it on `null`; the output after the disassembly is ignored).
-fn jq_bytecode(program: &str) -> Rc<crate::jq::lang::bytecode::Bytecode> {
-    jq_bytecode_with(program, OVERRIDES)
-}
-
-fn jq_bytecode_with(
-    program: &str,
-    overrides: &[(&'static str, CFn)],
-) -> Rc<crate::jq::lang::bytecode::Bytecode> {
+fn jq_bytecode(program: &str) -> Rc<Bytecode> {
     let r = run_jq(&["-n", "--debug-dump-disasm", program], "");
     let text = match r.stdout.split_once("\n\n") {
         Some((d, _)) => d,
         None => panic!("no disassembly for {program}: {}", r.stderr),
     };
-    disasm::load(text, overrides)
+    disasm::load(text, OVERRIDES)
+}
+
+/// Our compiler's bytecode for `program`.
+fn our_bytecode(program: &str) -> Rc<Bytecode> {
+    match jq_compile_args(program.as_bytes(), &CompileOptions::new(".")) {
+        Ok(bc) => bc,
+        Err(e) => panic!("{program} doesn't compile:\n{}", e.render()),
+    }
+}
+
+/// Both bytecodes for `program`, labeled.
+fn bytecodes(program: &str) -> [(&'static str, Rc<Bytecode>); 2] {
+    [
+        ("jq's bytecode", jq_bytecode(program)),
+        ("our bytecode", our_bytecode(program)),
+    ]
 }
 
 /// What jq prints: result lines, then the uncaught error (`jq: error (at ...): msg`
@@ -201,9 +115,8 @@ fn error_line(e: &Error) -> String {
     }
 }
 
-/// Runs the VM on jq's bytecode for `program` over each input (like jq's main loop).
-fn vm_outputs(program: &str, input: &str) -> Vec<String> {
-    let bc = jq_bytecode(program);
+/// Runs the VM on `bc` over each input (like jq's main loop).
+fn vm_outputs(bc: Rc<Bytecode>, input: &str) -> Vec<String> {
     let mut jq = Jq::new(bc);
     let mut out = Vec::new();
     let mut parser = crate::jq::value::Parser::new(crate::jq::value::ParseFlags::default());
@@ -232,8 +145,10 @@ fn check(program: &str, input: &str) {
         return;
     }
     let want = jq_expect(program, input);
-    let got = vm_outputs(program, input);
-    assert_eq!(got, want, "program: {program}\ninput: {input}");
+    for (which, bc) in bytecodes(program) {
+        let got = vm_outputs(bc, input);
+        assert_eq!(got, want, "program: {program}\ninput: {input}\n({which})");
+    }
 }
 
 // ---- comparisons with jq -----------------------------------------------------------
@@ -491,23 +406,24 @@ fn halting() {
         ("\"bye\" | halt_error(3)", Some(3.0), Some("\"bye\"")),
         ("[1, halt_error(1)]", Some(1.0), Some("{\"a\":1}")),
     ] {
-        let bc = jq_bytecode(program);
-        let mut jq = Jq::new(bc);
-        jq.start(parse_sized(b"{\"a\":1}").unwrap(), 0);
-        let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
-        assert!(jq.halted(), "{program}");
-        assert_eq!(jq.exit_code().and_then(Value::as_f64), code, "{program}");
-        assert_eq!(
-            jq.error_message().map(|v| v.to_json()),
-            msg.map(str::to_string),
-            "{program}"
-        );
-        if program.starts_with('1') {
-            assert_eq!(outs, vec!["1".to_string()]);
+        for (_, bc) in bytecodes(program) {
+            let mut jq = Jq::new(bc);
+            jq.start(parse_sized(b"{\"a\":1}").unwrap(), 0);
+            let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
+            assert!(jq.halted(), "{program}");
+            assert_eq!(jq.exit_code().and_then(Value::as_f64), code, "{program}");
+            assert_eq!(
+                jq.error_message().map(|v| v.to_json()),
+                msg.map(str::to_string),
+                "{program}"
+            );
+            if program.starts_with('1') {
+                assert_eq!(outs, vec!["1".to_string()]);
+            }
+            // A new start resets the halt.
+            jq.start(Value::Null, 0);
+            assert!(!jq.halted());
         }
-        // A new start resets the halt.
-        jq.start(Value::Null, 0);
-        assert!(!jq.halted());
     }
 }
 
@@ -516,19 +432,20 @@ fn input_and_debug_callbacks() {
     if !jq_ok() {
         return;
     }
-    let bc = jq_bytecode("[., input, (try input catch .)] | debug");
-    let mut jq = Jq::new(bc);
-    let mut queue = vec![Value::from(2)];
-    jq.set_input(Some(Box::new(move || queue.pop().map(Ok))));
-    let seen = Rc::new(RefCell::new(Vec::new()));
-    let seen2 = seen.clone();
-    jq.set_debug_cb(Some(Box::new(move |v: &Value| {
-        seen2.borrow_mut().push(v.to_json())
-    })));
-    jq.start(Value::from(1), 0);
-    let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
-    assert_eq!(outs, vec!["[1,2,\"break\"]"]);
-    assert_eq!(*seen.borrow(), vec!["[1,2,\"break\"]"]);
+    for (_, bc) in bytecodes("[., input, (try input catch .)] | debug") {
+        let mut jq = Jq::new(bc);
+        let mut queue = vec![Value::from(2)];
+        jq.set_input(Some(Box::new(move || queue.pop().map(Ok))));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen2 = seen.clone();
+        jq.set_debug_cb(Some(Box::new(move |v: &Value| {
+            seen2.borrow_mut().push(v.to_json())
+        })));
+        jq.start(Value::from(1), 0);
+        let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
+        assert_eq!(outs, vec!["[1,2,\"break\"]"]);
+        assert_eq!(*seen.borrow(), vec!["[1,2,\"break\"]"]);
+    }
 }
 
 #[test]
@@ -537,21 +454,22 @@ fn labels_count_across_inputs() {
     if !jq_ok() {
         return;
     }
-    let bc = jq_bytecode("[label $f | try break $f catch .]");
-    let mut jq = Jq::new(bc);
-    let mut outs = Vec::new();
-    for _ in 0..2 {
-        jq.start(Value::Null, 0);
-        outs.extend((&mut jq).map(|r| r.unwrap().to_json()));
-    }
     let want = jq_expect("[label $f | try break $f catch .]", "null null");
-    assert_eq!(outs, want);
+    for (_, bc) in bytecodes("[label $f | try break $f catch .]") {
+        let mut jq = Jq::new(bc);
+        let mut outs = Vec::new();
+        for _ in 0..2 {
+            jq.start(Value::Null, 0);
+            outs.extend((&mut jq).map(|r| r.unwrap().to_json()));
+        }
+        assert_eq!(outs, want);
+    }
 }
 
 // ---- traces ----------------------------------------------------------------------
 
 /// Removes `JV_PRINT_REFCOUNT` annotations (` (<n>)` after a string, array or object).
-fn strip_refcounts(s: &str) -> String {
+pub(super) fn strip_refcounts(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -600,47 +518,54 @@ fn check_trace(program: &str, input: &str, flags: u32) {
         "--debug-trace"
     };
     let want = run_jq(&["-c", flag, program], input);
-    let bc = jq_bytecode(program);
-    let mut jq = Jq::new(bc);
-    let out = Shared::default();
-    jq.set_trace_writer(Some(Box::new(out.clone())));
-    jq.start(parse_sized(input.as_bytes()).unwrap(), flags);
-    let mut err = None;
-    for r in &mut jq {
-        match r {
-            Ok(v) => {
-                let mut o = out.0.borrow_mut();
-                o.extend_from_slice(v.to_json().as_bytes());
-                o.push(b'\n');
+    for (which, bc) in bytecodes(program) {
+        let mut jq = Jq::new(bc);
+        let out = Shared::default();
+        jq.set_trace_writer(Some(Box::new(out.clone())));
+        jq.start(parse_sized(input.as_bytes()).unwrap(), flags);
+        let mut err = None;
+        for r in &mut jq {
+            match r {
+                Ok(v) => {
+                    let mut o = out.0.borrow_mut();
+                    o.extend_from_slice(v.to_json().as_bytes());
+                    o.push(b'\n');
+                }
+                Err(e) => err = Some(e),
             }
-            Err(e) => err = Some(e),
         }
-    }
-    let got = String::from_utf8(out.0.borrow().clone()).unwrap();
-    // Refcounts included: the VM holds the same references as jq. (Set
-    // TRACE_IGNORE_REFCOUNTS to compare without them.)
-    let (want_stdout, got) = if std::env::var_os("TRACE_IGNORE_REFCOUNTS").is_some() {
-        (strip_refcounts(&want.stdout), strip_refcounts(&got))
-    } else {
-        (want.stdout.clone(), got)
-    };
-    if got != want_stdout {
-        let g: Vec<&str> = got.lines().collect();
-        let w: Vec<&str> = want_stdout.lines().collect();
-        let first = g
+        let got = String::from_utf8(out.0.borrow().clone()).unwrap();
+        // Refcounts included: the VM holds the same references as jq. (Set
+        // TRACE_IGNORE_REFCOUNTS to compare without them.) `type` returns shared
+        // kind-name strings (jq allocates a fresh one each time), so programs using it
+        // are compared without refcounts.
+        let uses_type = ["type", "numbers", "strings", "arrays", "objects"]
             .iter()
-            .zip(&w)
-            .position(|(a, b)| a != b)
-            .unwrap_or(g.len().min(w.len()));
-        panic!(
-            "trace differs for {program} at line {first}:\n got: {:?}\nwant: {:?}\n(got {} lines, want {})",
-            g.get(first),
-            w.get(first),
-            g.len(),
-            w.len()
-        );
+            .any(|w| program.contains(w));
+        let (want_stdout, got) =
+            if uses_type || std::env::var_os("TRACE_IGNORE_REFCOUNTS").is_some() {
+                (strip_refcounts(&want.stdout), strip_refcounts(&got))
+            } else {
+                (want.stdout.clone(), got)
+            };
+        if got != want_stdout {
+            let g: Vec<&str> = got.lines().collect();
+            let w: Vec<&str> = want_stdout.lines().collect();
+            let first = g
+                .iter()
+                .zip(&w)
+                .position(|(a, b)| a != b)
+                .unwrap_or(g.len().min(w.len()));
+            panic!(
+                "trace differs for {program} ({which}) at line {first}:\n got: {:?}\nwant: {:?}\n(got {} lines, want {})",
+                g.get(first),
+                w.get(first),
+                g.len(),
+                w.len()
+            );
+        }
+        assert_eq!(err.is_some(), want.code == 5, "{program}: {}", want.stderr);
     }
-    assert_eq!(err.is_some(), want.code == 5, "{program}: {}", want.stderr);
 }
 
 #[test]
@@ -673,15 +598,6 @@ fn traces_match_jq() {
 
 // ---- performance ------------------------------------------------------------------
 
-/// jq's `BINOP` frees the input before the operation, which makes `a` unique in
-/// `. + [$x]` (input and `a` are the same value). Stand-in until binops.rs does the same.
-fn t_plus(_: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
-    drop(input);
-    let a = std::mem::take(&mut args[0]);
-    let b = std::mem::take(&mut args[1]);
-    crate::jq::builtins::binops::binop_plus(a, b)
-}
-
 /// `reduce` appending to an array or updating an object must stay linear, as in jq:
 /// uniquely owned values are updated in place (LOADVN moves the accumulator out of its
 /// variable, builtins receive their arguments by value).
@@ -690,8 +606,6 @@ fn reduce_is_linear() {
     if !jq_ok() {
         return;
     }
-    let mut overrides = OVERRIDES.to_vec();
-    overrides.push(("_plus", t_plus));
     for (program, n, want) in [
         (
             "reduce range(.) as $x ([]; . + [$x]) | length",
@@ -720,15 +634,16 @@ fn reduce_is_linear() {
             100_000,
         ),
     ] {
-        let bc = jq_bytecode_with(program, &overrides);
-        let mut jq = Jq::new(bc);
-        let t = std::time::Instant::now();
-        jq.start(Value::from(n), 0);
-        let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
-        let dt = t.elapsed();
-        assert_eq!(outs, vec![want.to_string()], "{program}");
-        // Quadratic copying would take minutes; linear is well under a second in release
-        // builds and a few seconds in debug builds.
-        assert!(dt.as_secs() < 30, "{program} took {dt:?}");
+        for (which, bc) in bytecodes(program) {
+            let mut jq = Jq::new(bc);
+            let t = std::time::Instant::now();
+            jq.start(Value::from(n), 0);
+            let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
+            let dt = t.elapsed();
+            assert_eq!(outs, vec![want.to_string()], "{program} ({which})");
+            // Quadratic copying would take minutes; linear is well under a second in
+            // release builds and a few seconds in debug builds.
+            assert!(dt.as_secs() < 30, "{program} ({which}) took {dt:?}");
+        }
     }
 }
