@@ -172,6 +172,18 @@ impl Builder {
         if n <= 1 {
             return true;
         }
+        if n <= 8 {
+            // Few keys: compare their hashes pairwise.
+            let mut seen = [0u64; 8];
+            for (j, (k, _)) in self.entries[start..].iter().enumerate() {
+                let h = k.key_hash();
+                if seen[..j].contains(&h) {
+                    return false;
+                }
+                seen[j] = h;
+            }
+            return true;
+        }
         if n > SEEN_SLOTS / 2 {
             return false;
         }
@@ -324,13 +336,15 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
     let structurals = tape.structurals;
     let mut i = 1; // words[0] is the root
     let mut si = 0usize;
+    // The innermost open container (the others are on `b.frames`).
+    let mut top: Option<Frame> = None;
     loop {
         let word = words[i];
         let tag = (word >> 56) as u8;
         // Separator before this item (none before a closing bracket).
         if tag != b']'
             && tag != b'}'
-            && let Some(f) = b.frames.last()
+            && let Some(f) = &top
         {
             if f.object {
                 if f.key.is_some() || b.entries.len() > f.start {
@@ -345,22 +359,20 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             "structural cursor out of sync at tape word {i}"
         );
         let value = match tag {
-            b'{' => {
-                b.frames.push(Frame {
-                    object: true,
-                    start: b.entries.len(),
+            b'{' | b'[' => {
+                let object = tag == b'{';
+                let start = if object {
+                    b.entries.len()
+                } else {
+                    b.values.len()
+                };
+                if let Some(f) = top.replace(Frame {
+                    object,
+                    start,
                     key: None,
-                });
-                i += 1;
-                si += 1;
-                continue;
-            }
-            b'[' => {
-                b.frames.push(Frame {
-                    object: false,
-                    start: b.values.len(),
-                    key: None,
-                });
+                }) {
+                    b.frames.push(f);
+                }
                 i += 1;
                 si += 1;
                 continue;
@@ -368,7 +380,8 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             b'}' => {
                 i += 1;
                 si += 1;
-                let f = b.frames.pop().ok_or(Rejected::UNSUPPORTED)?;
+                let f = top.take().ok_or(Rejected::UNSUPPORTED)?;
+                top = b.frames.pop();
                 if !f.object || f.key.is_some() {
                     return Err(Rejected::UNSUPPORTED);
                 }
@@ -377,7 +390,8 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             b']' => {
                 i += 1;
                 si += 1;
-                let f = b.frames.pop().ok_or(Rejected::UNSUPPORTED)?;
+                let f = top.take().ok_or(Rejected::UNSUPPORTED)?;
+                top = b.frames.pop();
                 if f.object {
                     return Err(Rejected::UNSUPPORTED);
                 }
@@ -396,7 +410,7 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
                 let s = unsafe { std::str::from_utf8_unchecked(bytes) };
                 i += 1;
                 si += 1;
-                if let Some(f) = b.frames.last_mut()
+                if let Some(f) = &mut top
                     && f.object
                     && f.key.is_none()
                 {
@@ -456,7 +470,7 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             }
             _ => return Err(Rejected::UNSUPPORTED),
         };
-        match b.frames.last_mut() {
+        match &mut top {
             None => return Ok(value),
             Some(f) if f.object => {
                 let k = f.key.take().ok_or(Rejected::UNSUPPORTED)?;
