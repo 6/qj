@@ -583,3 +583,128 @@ fn live_random_ops() {
     assert_eq!(failures, 0, "{failures} of {} ops differ", rows.len());
     eprintln!("{} random ops match jq", rows.len());
 }
+
+/// A random ASCII-only, single-line document with random damage.
+fn gen_mutated_doc(rng: &mut Rng) -> Vec<u8> {
+    let mut doc = Vec::new();
+    gen_value(rng, 1, &mut doc);
+    for b in doc.iter_mut() {
+        if *b >= 0x80 || *b == b'\n' || *b == b'\r' {
+            *b = b'x';
+        }
+    }
+    let n = rng.below(4);
+    for _ in 0..n {
+        if doc.is_empty() {
+            break;
+        }
+        let at = rng.below(doc.len() as u64 + 1) as usize;
+        match rng.below(6) {
+            0 if at < doc.len() => {
+                doc.remove(at);
+            }
+            1 | 2 => {
+                let c = *rng.pick(b"[]{}:,\"\\ 0123456789.eE+-tfnulax'\t/");
+                doc.insert(at, c);
+            }
+            3 if at < doc.len() => {
+                doc[at] = *rng.pick(b"[]{}:,\" 1.eE-nx\\");
+            }
+            4 => doc.truncate(at),
+            _ => {
+                let end = (at + rng.below(6) as usize).min(doc.len());
+                let piece = doc[at..end].to_vec();
+                doc.splice(at..at, piece);
+            }
+        }
+    }
+    doc
+}
+
+/// Damaged documents through `fromjson` (jv_parse_sized) and through stdin
+/// with `--seq` and `--stream-errors` (errors do not stop those modes), so
+/// that error messages and positions are compared with jq in bulk.
+#[test]
+#[ignore]
+fn live_parse_mutations() {
+    if !jq_available() {
+        return;
+    }
+    let seed = env_u64("QJ_SEED", 0x9a55);
+    let cases = env_u64("QJ_CASES", 20000);
+    let mut rng = Rng(seed | 1);
+    let docs: Vec<Vec<u8>> = (0..cases).map(|_| gen_mutated_doc(&mut rng)).collect();
+
+    // 1. fromjson, one process for all documents.
+    let input: String = docs
+        .iter()
+        .map(|d| {
+            let s = String::from_utf8(d.clone()).expect("ascii");
+            Value::from(s).to_json() + "\n"
+        })
+        .collect();
+    let (want, err) = run_jq(
+        &["-c", "try (fromjson | [0, .]) catch [1, .]"],
+        input.as_bytes(),
+    );
+    assert!(
+        err.is_empty(),
+        "jq failed: {}",
+        String::from_utf8_lossy(&err)
+    );
+    let want = String::from_utf8(want).unwrap();
+    let mut failures = 0;
+    for (d, line) in docs.iter().zip(want.lines()) {
+        let got = super::tests::tagged(parse_sized(d));
+        if got != line {
+            failures += 1;
+            if failures <= 20 {
+                eprintln!(
+                    "fromjson {:?}\n  got {got}\n  jq  {line}",
+                    String::from_utf8_lossy(d)
+                );
+            }
+        }
+    }
+    assert_eq!(failures, 0, "{failures} fromjson results differ");
+
+    // 2. stdin modes where parse errors are not fatal: one document per
+    // line (jq reads line by line and drops the rest of a line after an
+    // error in --stream-errors mode).
+    for flags in [
+        &["--seq"][..],
+        &["--stream-errors"][..],
+        &["--seq", "--stream"][..],
+    ] {
+        let mut input = Vec::new();
+        for d in &docs[..docs.len().min(3000)] {
+            if flags.contains(&"--seq") {
+                input.push(0x1e);
+            }
+            input.extend_from_slice(d);
+            input.push(b'\n');
+        }
+        let mut args: Vec<&str> = vec!["-c"];
+        args.extend_from_slice(flags);
+        args.push(".");
+        let (want_out, want_err) = run_jq(&args, &input);
+        let flags_s: Vec<String> = flags.iter().map(|s| s.to_string()).collect();
+        let chunks = super::tests::jq_stdin_chunks(&input);
+        let (out, err) = super::tests::simulate_cli(&chunks, &flags_s);
+        if out != want_out || err != want_err {
+            let show = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+            let (go, wo) = (show(&out), show(&want_out));
+            let (ge, we) = (show(&err), show(&want_err));
+            let k = go.lines().zip(wo.lines()).position(|(a, b)| a != b);
+            let ke = ge.lines().zip(we.lines()).position(|(a, b)| a != b);
+            panic!(
+                "{flags:?}: stdout differs at line {k:?}: got {:?} jq {:?}\nstderr differs at line {ke:?}: got {:?} jq {:?}",
+                k.and_then(|k| go.lines().nth(k)),
+                k.and_then(|k| wo.lines().nth(k)),
+                ke.and_then(|k| ge.lines().nth(k)),
+                ke.and_then(|k| we.lines().nth(k)),
+            );
+        }
+    }
+    eprintln!("{} damaged documents match jq", docs.len());
+}

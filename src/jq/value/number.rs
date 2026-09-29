@@ -210,20 +210,39 @@ fn parse_decimal(s: &[u8]) -> Option<ParsedNumber> {
         }
         exponent = if nege { -e } else { e };
     }
-    // Collect significant digits (skip leading zeros, keep a final 0).
+    // Collect significant digits (skip leading zeros, keep a final 0),
+    // accumulating up to 19 of them without allocating.
     let last = last_digit.expect("ndig > 0");
-    let mut digits: Vec<u8> = Vec::with_capacity(ndig);
-    let mut leading = true;
-    for (idx, &c) in s[coeff_start..=last].iter().enumerate() {
+    let body = &s[coeff_start..=last];
+    let mut small: u64 = 0;
+    let mut nsig = 0usize;
+    let mut first_sig = None;
+    for (idx, &c) in body.iter().enumerate() {
         if c == b'.' {
             continue;
         }
-        if leading && c == b'0' && coeff_start + idx != last {
-            continue;
+        if first_sig.is_none() {
+            if c == b'0' && coeff_start + idx != last {
+                continue;
+            }
+            first_sig = Some(idx);
         }
-        leading = false;
-        digits.push(c);
+        nsig += 1;
+        if nsig <= 19 {
+            small = small * 10 + (c - b'0') as u64;
+        }
     }
+    let coeff = if nsig <= 19 {
+        Coeff::Small(small)
+    } else {
+        let start = first_sig.expect("digits");
+        let digits: Vec<u8> = body[start..]
+            .iter()
+            .copied()
+            .filter(|&c| c != b'.')
+            .collect();
+        Coeff::Big(digits.into())
+    };
     if let Some(d) = dot
         && d < last
     {
@@ -232,17 +251,17 @@ fn parse_decimal(s: &[u8]) -> Option<ParsedNumber> {
     let mut dec = Decimal {
         neg,
         inf: false,
-        coeff: Coeff::from_digits(&digits),
+        coeff,
         exp: exponent,
     };
-    finalize(&mut dec, digits);
+    finalize(&mut dec, nsig as i64);
     Some(ParsedNumber::Decimal(dec))
 }
 
 /// decNumber's `decFinalize` for a freshly parsed number in jq's context:
-/// overflow to infinity, subnormal rounding and clamping of zeros.
-fn finalize(dec: &mut Decimal, mut digits: Vec<u8>) {
-    let nd = digits.len() as i64;
+/// overflow to infinity, subnormal rounding and clamping of zeros. `nd` is
+/// the number of coefficient digits.
+fn finalize(dec: &mut Decimal, nd: i64) {
     if dec.coeff.is_zero() {
         // decSetSubnormal clamps a zero's exponent to Etiny; decSetOverflow
         // clamps it to Emax (zero does not overflow).
@@ -263,6 +282,8 @@ fn finalize(dec: &mut Decimal, mut digits: Vec<u8>) {
             dec.exp = CTX_ETINY;
             return;
         }
+        let mut buf = itoa::Buffer::new();
+        let mut digits: Vec<u8> = dec.coeff.digits(&mut buf).to_vec();
         let keep = (nd - adjust) as usize;
         let round_up = digits[keep] >= b'5';
         digits.truncate(keep);

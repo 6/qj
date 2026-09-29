@@ -157,7 +157,7 @@ fn fromjson_fixture() {
 /// How jq's `jq_util_input_read_more` chunks stdin for the parser: `fgets`
 /// into a 4096-byte buffer (so a chunk ends after a newline or 4095 bytes),
 /// and a chunk without a newline is cut at its first NUL (`strlen`).
-fn jq_stdin_chunks(input: &[u8]) -> Vec<&[u8]> {
+pub(super) fn jq_stdin_chunks(input: &[u8]) -> Vec<&[u8]> {
     let mut chunks = Vec::new();
     let mut pos = 0;
     while pos < input.len() {
@@ -177,7 +177,7 @@ fn jq_stdin_chunks(input: &[u8]) -> Vec<&[u8]> {
 
 /// jq's input loop (`main.c` + `jq_util_input_next_input`) over the given
 /// chunks of stdin, printing with `-c`.
-fn simulate_cli(chunks: &[&[u8]], flags: &[String]) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn simulate_cli(chunks: &[&[u8]], flags: &[String]) -> (Vec<u8>, Vec<u8>) {
     let has = |f: &str| flags.iter().any(|x| x == f);
     let pf = ParseFlags {
         seq: has("--seq"),
