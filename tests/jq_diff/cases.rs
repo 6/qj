@@ -456,7 +456,7 @@ mod tests {
         let mut other = inv.clone();
         other.args = vec!["-c .".into()];
         assert_ne!(k, other.key(&[]));
-        assert_ne!(k, inv.key(&[("QJ_CORE".into(), "port".into())]));
+        assert_ne!(k, inv.key(&[("QJ_CORE".into(), "old".into())]));
         let mut other = inv.clone();
         other.files = vec![("in/x".into(), b"1".to_vec())];
         assert_ne!(k, other.key(&[]));

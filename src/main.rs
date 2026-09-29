@@ -257,9 +257,10 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    // The jq 1.8.1 port (src/jq, src/cli/run.rs), until it becomes the
-    // default.
-    if std::env::var_os("QJ_CORE").is_some_and(|c| c == "port") {
+    // qj runs on the jq 1.8.1 port (src/jq, src/cli/run.rs). The old core
+    // below stays reachable with QJ_CORE=old, for comparison, until it is
+    // deleted. QJ_CORE=port (the port's former opt-in) is a no-op.
+    if std::env::var_os("QJ_CORE").is_none_or(|c| c != "old") {
         qj::cli::run::main();
     }
 

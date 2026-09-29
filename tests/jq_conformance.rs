@@ -1,12 +1,14 @@
-/// jq conformance test runner.
+/// jq conformance test runner (legacy).
 ///
 /// Parses the official jq test suite (`tests/jq_compat/jq.test` from jqlang/jq)
 /// and runs each test case against qj. Reports pass/fail percentage.
 ///
-/// This test always passes — it's a measurement tool, not a gate.
-/// Run with `--nocapture` to see the summary:
+/// The comparison is lenient: `%%FAIL` blocks are skipped, and outputs are
+/// compared as JSON (numbers as f64) against the file's expected lines. The
+/// strict gate is `tests/jq_diff.rs`, which runs every upstream suite
+/// byte-exact against the jq binary. This runner fails if any case fails.
 ///
-///   cargo test jq_conformance -- --nocapture
+///   cargo test --release jq_conformance -- --ignored
 ///
 /// To see each failing test case, run the ignored verbose test:
 ///
@@ -165,11 +167,10 @@ fn jq_conformance() {
     eprintln!("  failed:  {failed}");
     eprintln!("  errored: {errored}");
 
-    // Regression gate: conformance must not drop below this threshold.
-    // Current baseline: 454/497 (91.3%). Set 3 below for small tolerance.
-    assert!(
-        passed >= 451,
-        "jq conformance regression: {passed}/497 (was >= 451)"
+    // Regression gate: every case passes (497/497 on jq 1.8.1's jq.test).
+    assert_eq!(
+        passed, total,
+        "jq conformance regression: {passed}/{total} (run jq_conformance_verbose for details)"
     );
 }
 
@@ -185,6 +186,9 @@ fn jq_conformance() {
 /// - Input doesn't start with `{`/`[` (won't trigger NDJSON detection)
 /// - Filter uses `input`/`inputs` (stream-dependent, behaves differently in NDJSON)
 /// - Filter uses `$__loc__` (reports source location, irrelevant)
+/// - Filter uses `debug`/`stderr` (their output goes to stderr)
+///
+/// The test fails on any divergence.
 ///
 /// Run with: cargo test --release jq_conformance_ndjson -- --nocapture --ignored
 #[test]
@@ -219,17 +223,6 @@ fn jq_conformance_ndjson() {
             || case.filter.contains("$__loc__")
             || case.filter.contains("debug")
             || case.filter.contains("stderr")
-        {
-            skipped += 1;
-            continue;
-        }
-
-        // Skip inputs with non-standard JSON tokens (Infinity, NaN).
-        // simdjson (used by the NDJSON path) strictly follows the JSON spec and
-        // rejects these, while the single-doc path has special handling.
-        if case.input.contains("Infinity")
-            || case.input.contains("NaN")
-            || case.input.contains("nan")
         {
             skipped += 1;
             continue;
@@ -312,6 +305,11 @@ fn jq_conformance_ndjson() {
     eprintln!("  failed:  {failed}");
     eprintln!("  errored: {errored}");
     eprintln!("  skipped: {skipped} (non-object input or stream-dependent filter)");
+    assert_eq!(
+        (failed, errored),
+        (0, 0),
+        "NDJSON mode diverged from single-doc mode (divergences above)"
+    );
 }
 
 /// Run with: cargo test jq_conformance_verbose -- --nocapture --ignored

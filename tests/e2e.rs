@@ -971,36 +971,47 @@ fn passthrough_array_construct_prefix_builtin() {
     assert_jq_compat("[.items[] | length]", r#"{"items":[[1,2],[3]]}"#);
 }
 
-// --- Number literal preservation ---
+// --- Number literals ---
+// jq 1.8.1 (built with decNumber) keeps each number literal's decimal value
+// and prints it in decNumber's canonical form: trailing zeros stay, while
+// exponents are normalized (`1e2` → `1E+2`, `2.5E-3` → `0.0025`).
 
 #[test]
 fn number_trailing_zeros_preserved() {
     assert_eq!(qj_compact(".x", r#"{"x":75.80}"#).trim(), "75.80");
     assert_eq!(qj_compact(".x", r#"{"x":1.00}"#).trim(), "1.00");
     assert_eq!(qj_compact(".x", r#"{"x":0.10}"#).trim(), "0.10");
+    assert_jq_compat(".x", r#"{"x":75.80}"#);
+    assert_jq_compat(".x", r#"{"x":1.00}"#);
+    assert_jq_compat(".x", r#"{"x":0.10}"#);
 }
 
 #[test]
-fn number_scientific_notation_preserved() {
-    assert_eq!(qj_compact(".x", r#"{"x":1.5e2}"#).trim(), "1.5e2");
-    assert_eq!(qj_compact(".x", r#"{"x":1e10}"#).trim(), "1e10");
-    assert_eq!(qj_compact(".x", r#"{"x":2.5E-3}"#).trim(), "2.5E-3");
+fn number_scientific_notation_canonical() {
+    assert_eq!(qj_compact(".x", r#"{"x":1.5e2}"#).trim(), "1.5E+2");
+    assert_eq!(qj_compact(".x", r#"{"x":1e10}"#).trim(), "1E+10");
+    assert_eq!(qj_compact(".x", r#"{"x":2.5E-3}"#).trim(), "0.0025");
+    assert_jq_compat(".x", r#"{"x":1.5e2}"#);
+    assert_jq_compat(".x", r#"{"x":1e10}"#);
+    assert_jq_compat(".x", r#"{"x":2.5E-3}"#);
 }
 
 #[test]
-fn number_identity_preserves_formatting() {
-    // Compact identity should preserve all number formatting
+fn number_identity_canonical_formatting() {
     assert_eq!(
         qj_compact(".", r#"{"a":75.80,"b":1.0e3}"#).trim(),
-        r#"{"a":75.80,"b":1.0e3}"#
+        r#"{"a":75.80,"b":1.0E+3}"#
     );
+    assert_jq_compat(".", r#"{"a":75.80,"b":1.0e3}"#);
 }
 
 #[test]
 fn number_arithmetic_drops_raw_text() {
-    // Arithmetic produces computed values — no raw text preservation
+    // Arithmetic produces f64 results, printed in jq's shortest form
     assert_eq!(qj_compact(".x + .x", r#"{"x":37.9}"#).trim(), "75.8");
     assert_eq!(qj_compact(".x * 2", r#"{"x":1.50}"#).trim(), "3");
+    assert_jq_compat(".x + .x", r#"{"x":37.9}"#);
+    assert_jq_compat(".x * 2", r#"{"x":1.50}"#);
 }
 
 #[test]
@@ -1012,11 +1023,13 @@ fn number_integers_unchanged() {
         qj_compact(".x", r#"{"x":9223372036854775807}"#).trim(),
         "9223372036854775807"
     );
+    assert_jq_compat(".x", r#"{"x":9223372036854775807}"#);
 }
 
 #[test]
 fn number_large_uint64_preserves_text() {
-    // i64::MAX + 1 — should preserve original text, not lose precision via f64
+    // Literals of any size keep their exact decimal value, as in jq.
+    // i64::MAX + 1
     assert_eq!(
         qj_compact(".", "9223372036854775808").trim(),
         "9223372036854775808"
@@ -1031,7 +1044,7 @@ fn number_large_uint64_preserves_text() {
         qj_compact(".", "18446744073709551615").trim(),
         "18446744073709551615"
     );
-    // Beyond u64 — preserved via bigint fallback
+    // Beyond u64
     assert_eq!(
         qj_compact(".", "99999999999999999999999999999").trim(),
         "99999999999999999999999999999"
@@ -1041,16 +1054,20 @@ fn number_large_uint64_preserves_text() {
         qj_compact(".id", r#"{"id":99999999999999999999999999999}"#).trim(),
         "99999999999999999999999999999"
     );
+    assert_jq_compat(".", "9223372036854775808");
+    assert_jq_compat(".", "18446744073709551615");
+    assert_jq_compat(".id", r#"{"id":99999999999999999999999999999}"#);
 }
 
 #[test]
 fn number_pretty_preserves_formatting() {
-    // Pretty mode should also preserve number literals
+    // Pretty mode prints number literals the same way
     let out = qj(".", r#"{"x":75.80}"#);
     assert!(
         out.contains("75.80"),
         "pretty output should preserve 75.80, got: {out}"
     );
+    assert_jq_compat_with_flags(&["."], r#"{"x":75.80,"y":1e2}"#);
 }
 
 // --- Error helper ---
@@ -1805,12 +1822,19 @@ fn computed_double_format_threshold_boundary() {
 }
 
 #[test]
-fn large_integer_arithmetic_more_precise_than_jq() {
-    // Twitter-style ID: 505874924095815681 (> 2^53, fits in i64)
-    // qj does exact i64 arithmetic: +1 = 505874924095815682
-    // jq uses f64 and loses precision: +1 = 505874924095815700
-    let result = qj_compact(". + 1", "505874924095815681").trim().to_string();
-    assert_eq!(result, "505874924095815682");
+fn large_integer_arithmetic_is_f64() {
+    // Twitter-style ID: 505874924095815681 (> 2^53). As in jq, the literal
+    // keeps its exact value, but arithmetic is f64: +1 = 505874924095815700.
+    assert_eq!(
+        qj_compact(".", "505874924095815681").trim(),
+        "505874924095815681"
+    );
+    assert_eq!(
+        qj_compact(". + 1", "505874924095815681").trim(),
+        "505874924095815700"
+    );
+    assert_jq_compat(".", "505874924095815681");
+    assert_jq_compat(". + 1", "505874924095815681");
 }
 
 // --- jq conformance tests ---
@@ -1892,13 +1916,71 @@ fn assert_jq_compat(filter: &str, input: &str) {
     );
 }
 
+/// Run jq with custom args and return (exit_code, stdout, stderr).
+fn jq_exit(args: &[&str], input: &str) -> (i32, String, String) {
+    let (stdout, stderr, status) = run_tool_status("jq", args, input);
+    (status.code().unwrap_or(-1), stdout, stderr)
+}
+
+fn run_tool_status(
+    cmd: &str,
+    args: &[&str],
+    input: &str,
+) -> (String, String, std::process::ExitStatus) {
+    let output = Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            // Ignore BrokenPipe — the child may exit before we finish writing.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+            child.wait_with_output()
+        })
+        .unwrap_or_else(|e| panic!("failed to run {cmd}: {e}"));
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status,
+    )
+}
+
+/// qj's stderr as jq would print it: qj's messages say `qj:` where jq's say
+/// `jq:` (the jq_diff harness compares stderr the same way).
+fn as_jq_stderr(stderr: &str) -> String {
+    stderr
+        .split_inclusive('\n')
+        .map(|line| match line.strip_prefix("qj:") {
+            Some(rest) => format!("jq:{rest}"),
+            None => line.to_string(),
+        })
+        .collect()
+}
+
+/// Assert that qj and jq agree on exit code, stdout and stderr, exactly as
+/// the jq_diff harness compares them.
+fn assert_jq_compat_strict(args: &[&str], input: &str) {
+    if !jq_available() {
+        return;
+    }
+    let (qj_code, qj_stdout, qj_stderr) = qj_exit(args, input);
+    let (jq_code, jq_stdout, jq_stderr) = jq_exit(args, input);
+    assert_eq!(
+        (qj_code, qj_stdout.as_str(), as_jq_stderr(&qj_stderr)),
+        (jq_code, jq_stdout.as_str(), jq_stderr),
+        "qj vs jq (exit code, stdout, stderr): args={args:?} input={input:?}"
+    );
+}
+
 #[test]
 fn jq_compat_number_formatting() {
     assert_jq_compat(".x", r#"{"x":75.80}"#);
     assert_jq_compat(".x", r#"{"x":0.10}"#);
     assert_jq_compat(".", r#"{"a":75.80}"#);
-    // Note: jq normalizes scientific notation (e.g. 1.5e2 → 1.5E+2)
-    // while qj preserves the exact original text. Both are valid.
+    // Scientific notation is normalized, as in jq (1.5e2 → 1.5E+2)
+    assert_jq_compat(".", r#"{"a":1.5e2,"b":1e-10,"c":2.5E+300,"d":1E2}"#);
 }
 
 #[test]
@@ -2659,9 +2741,21 @@ fn jq_compat_paths() {
 }
 
 #[test]
-fn leaf_paths_builtin() {
-    let out = qj_compact("[leaf_paths]", r#"{"a":1,"b":{"c":2}}"#);
-    assert_eq!(out.trim(), r#"[["a"],["b","c"]]"#);
+fn leaf_paths_is_not_a_builtin() {
+    // jq 1.8.1 has no leaf_paths (it's paths(scalars)): calling it is a
+    // compile error, exit 3, with jq's message.
+    let (code, stdout, stderr) = qj_exit(&["-c", "[leaf_paths]"], r#"{"a":1,"b":{"c":2}}"#);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.starts_with("qj: error: leaf_paths/0 is not defined"),
+        "unexpected error: {stderr}"
+    );
+    assert_jq_compat_strict(&["-c", "[leaf_paths]"], r#"{"a":1,"b":{"c":2}}"#);
+    assert_eq!(
+        qj_compact("[paths(scalars)]", r#"{"a":1,"b":{"c":2}}"#).trim(),
+        r#"[["a"],["b","c"]]"#
+    );
 }
 
 #[test]
@@ -2830,10 +2924,13 @@ fn logb_basic() {
 
 #[test]
 fn scalb_basic() {
-    // scalb(x; e) = x * 2^e
-    assert_eq!(qj("2 | scalb(3)", "null").trim(), "16");
-    assert_eq!(qj("1 | scalb(10)", "null").trim(), "1024");
-    assert_eq!(qj("0.5 | scalb(1)", "null").trim(), "1");
+    // scalb(x; e) = x * 2^e, libm's two-argument scalb as in jq
+    assert_eq!(qj("scalb(2; 3)", "null").trim(), "16");
+    assert_eq!(qj("scalb(1; 10)", "null").trim(), "1024");
+    assert_eq!(qj("scalb(0.5; 1)", "null").trim(), "1");
+    assert_jq_compat("scalb(2; 3), scalb(1; 10), scalb(0.5; 1)", "null");
+    // jq has no scalb/1: `2 | scalb(3)` is a compile error.
+    assert_jq_compat_strict(&["2 | scalb(3)"], "null");
 }
 
 #[test]
@@ -3114,17 +3211,23 @@ fn jq_compat_variables() {
 }
 
 #[test]
-fn until_terminates_on_unchanged() {
-    // until(false; .) should terminate (structural check: input unchanged)
-    let out = qj("0 | until(false; .)", "null");
-    assert_eq!(out.trim(), "0");
+fn until_loops_until_cond_holds() {
+    // until(cond; update) runs until cond holds; jq doesn't stop when the
+    // update leaves its input unchanged, so `0 | until(false; .)` never
+    // terminates, in jq and in qj. Bounded: 100,000 iterations of the same
+    // loop, deep enough to show until's recursion is a tail call.
+    assert_eq!(qj("0 | until(. >= 100000; . + 1)", "null").trim(), "100000");
+    assert_jq_compat("0 | until(. >= 100000; . + 1)", "null");
+    assert_jq_compat("[.[] | until(. > 100; . * 2)]", "[1, 3, 101]");
 }
 
 #[test]
-fn while_terminates_on_unchanged() {
-    // while(true; .) should terminate (structural check: input unchanged)
-    let out = qj_compact("0 | [limit(1; while(true; .))]", "null");
-    assert_eq!(out.trim(), "[0]");
+fn while_unchanged_is_bounded_by_limit() {
+    // while(true; .) repeats its unchanged input forever, as in jq; limit
+    // stops it.
+    let out = qj_compact("0 | [limit(3; while(true; .))]", "null");
+    assert_eq!(out.trim(), "[0,0,0]");
+    assert_jq_compat("0 | [limit(3; while(true; .))]", "null");
 }
 
 // --- --slurp / -s ---
@@ -3777,8 +3880,9 @@ fn def_recursive_sum() {
 
 #[test]
 fn robustness_setpath_huge_index_rejected() {
-    // setpath with a huge index should produce no output (error), not OOM.
-    let (ok, stdout, stderr) = qj_result("null | setpath([9999999]; 1)", "null");
+    // jq's limit on array indices is 2^29 (536870912): beyond it, setpath
+    // fails with "Array index too large" rather than trying to allocate.
+    let (ok, stdout, stderr) = qj_result("null | setpath([536870912]; 1)", "null");
     assert!(!ok, "expected non-zero exit for huge setpath");
     assert!(
         stdout.trim().is_empty(),
@@ -3788,50 +3892,68 @@ fn robustness_setpath_huge_index_rejected() {
         stderr.contains("Array index too large"),
         "expected error message, got: {stderr}"
     );
+    assert_jq_compat_strict(&["-c", "null | setpath([536870912]; 1)"], "null");
+    assert_jq_compat("try (null | setpath([536870912]; 1)) catch .", "null");
+    // Below the limit, the array grows to the index, as in jq.
+    assert_jq_compat("null | setpath([99999]; 1) | length", "null");
 }
 
 #[test]
 fn robustness_deeply_nested_parens_rejected() {
-    // Parser should reject excessively deep nesting (80 parens → ~160 depth > 128 limit)
-    let deep = "(".repeat(80) + "." + &")".repeat(80);
-    let (ok, _stdout, stderr) = qj_result(&deep, "null");
-    assert!(!ok, "should fail for deep nesting");
+    // jq has no nesting limit of its own: its parser takes nesting up to
+    // bison's stack limit (YYMAXDEPTH, 10000 entries) and rejects deeper
+    // programs with "memory exhausted", exit 3.
+    let shallow = "(".repeat(80) + "." + &")".repeat(80);
+    assert_eq!(qj_compact(&shallow, "null").trim(), "null");
+    assert_jq_compat_strict(&["-c", &shallow], "null");
+    let deep = "(".repeat(10000) + "." + &")".repeat(10000);
+    let (code, _stdout, stderr) = qj_exit(&["-c", &deep], "null");
+    assert_eq!(code, 3, "should fail for deep nesting");
     assert!(
-        stderr.contains("too deeply nested"),
+        stderr.starts_with("qj: error: memory exhausted"),
         "unexpected error: {stderr}"
     );
+    assert_jq_compat_strict(&["-c", &deep], "null");
 }
 
 #[test]
 fn robustness_fromjson_single_quote_safe() {
-    // fromjson with single-quote input should produce no output (error), not panic.
-    // Wrap in try-catch to capture the error message.
-    let out = qj_compact(r#"("'" | fromjson) // "caught_error""#, "null");
-    // Should get the alternative value since fromjson failed
+    // fromjson with single-quote input fails with jq's parse error, which
+    // try/catch captures. (`//` doesn't catch errors in jq.)
+    let out = qj_compact(r#"try ("'" | fromjson) catch "caught_error""#, "null");
     assert_eq!(out.trim(), r#""caught_error""#);
+    assert_jq_compat(r#"try ("'" | fromjson) catch ."#, "null");
+    assert_jq_compat_strict(&["-c", r#"("'" | fromjson) // "alternative""#], "null");
 }
 
 #[test]
-fn robustness_fromjson_multibyte_truncation_safe() {
-    // fromjson with long multi-byte string should not panic on truncation.
-    // 50 copies of é (2 bytes each) = 100 bytes; truncation to 40 must be char-safe.
-    // We use try-catch so we can confirm it produces an error rather than crashing.
+fn robustness_fromjson_multibyte_error_message() {
+    // The parse error for a long multi-byte string quotes the whole string
+    // (50 copies of é, 100 bytes), exactly as jq does.
     let long_str = "é".repeat(50);
-    let filter = format!(r#"("{}" | fromjson) // "safe_fallback""#, long_str);
+    let filter = format!(r#"try ("{long_str}" | fromjson) catch ."#);
     let out = qj_compact(&filter, "null");
-    // Should get the fallback since fromjson on gibberish fails
-    assert_eq!(out.trim(), r#""safe_fallback""#);
+    assert!(
+        out.contains(&format!("(while parsing '{long_str}')")),
+        "unexpected error: {out}"
+    );
+    assert_jq_compat(&filter, "null");
 }
 
 #[test]
-fn robustness_eval_depth_limit() {
-    // def f: f; — infinite recursion should hit eval depth limit, not stack overflow
-    let (ok, _stdout, stderr) = qj_result("def f: f; f", "null");
-    assert!(!ok, "infinite recursion should fail");
-    assert!(
-        stderr.contains("depth limit"),
-        "should mention depth limit: {stderr}"
-    );
+fn robustness_deep_recursion() {
+    // jq has no evaluation depth limit: `def f: f; f` is a tail call that
+    // loops forever in constant space, in jq and in qj. Bounded: deep tail
+    // and non-tail recursion run on the VM's own stack, without overflowing
+    // the native one.
+    let tail = "def f: if . < 100000 then . + 1 | f else . end; 0 | f";
+    assert_eq!(qj_compact(tail, "null").trim(), "100000");
+    assert_jq_compat(tail, "null");
+    let non_tail = "def f: if . == 0 then 0 else (. - 1 | f) + 1 end; 100000 | f";
+    assert_eq!(qj_compact(non_tail, "null").trim(), "100000");
+    assert_jq_compat(non_tail, "null");
+    // A recursive generator, cut off by limit.
+    assert_jq_compat("[limit(5; def f: ., (. + 1 | f); 0 | f)]", "null");
 }
 
 #[test]
@@ -5317,16 +5439,36 @@ fn glob_mixed_with_literal() {
 
 #[test]
 fn glob_slurp() {
-    // Glob with --slurp collects all values
-    let dir = std::env::temp_dir().join("qj_glob_slurp_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let _p1 = write_gz(&dir, "a.json.gz", b"10");
-    let _p2 = write_gz(&dir, "b.json.gz", b"20");
-    let pattern = dir.join("*.json.gz").to_str().unwrap().to_string();
+    // Glob with --slurp collects the values of every matched file
+    let dir = tempfile::tempdir().unwrap();
+    let _p1 = write_gz(dir.path(), "a.json.gz", b"10\n");
+    let _p2 = write_gz(dir.path(), "b.json.gz", b"20\n");
+    let pattern = dir.path().join("*.json.gz").to_str().unwrap().to_string();
     let (code, stdout, stderr) = qj_exit(&["-c", "-s", "add", &pattern], "");
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(stdout.trim(), "30");
-    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn glob_files_are_one_text_stream() {
+    // As in jq, the input files are one stream of text: `10` and `20`
+    // without trailing newlines run together into the single number 1020.
+    let dir = tempfile::tempdir().unwrap();
+    let _p1 = write_gz(dir.path(), "a.json.gz", b"10");
+    let _p2 = write_gz(dir.path(), "b.json.gz", b"20");
+    let pattern = dir.path().join("*.json.gz").to_str().unwrap().to_string();
+    let (code, stdout, stderr) = qj_exit(&["-c", "-s", "add", &pattern], "");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "1020");
+    // jq on the same files, uncompressed
+    if jq_available() {
+        let a = dir.path().join("a.json");
+        let b = dir.path().join("b.json");
+        std::fs::write(&a, "10").unwrap();
+        std::fs::write(&b, "20").unwrap();
+        let args = ["-c", "-s", "add", a.to_str().unwrap(), b.to_str().unwrap()];
+        assert_eq!(jq_exit(&args, ""), (code, stdout, stderr));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6038,9 +6180,9 @@ fn passthrough_diff_identity_large_numbers() {
 
 #[test]
 fn passthrough_diff_identity_float_edge_cases() {
-    // Avoid scientific notation inputs — jq normalizes e.g. 1e-10 to 1E-10
-    // while qj preserves the original text (both valid JSON).
     assert_jq_compat(".", r#"{"z":0.0,"neg":-0.5,"pi":3.14159}"#);
+    // Scientific notation is normalized, as in jq (1e-10 → 1E-10)
+    assert_jq_compat(".", r#"{"e":1e-10,"E":2.5E+3,"x":1.0e2,"big":-1.5e+300}"#);
 }
 
 #[test]
@@ -6055,9 +6197,9 @@ fn passthrough_diff_identity_whitespace_heavy() {
 
 #[test]
 fn passthrough_diff_identity_escaped_strings() {
-    // Note: jq unescapes \/ to / while simdjson minify preserves it.
-    // Test only escapes where both agree.
     assert_jq_compat(".", r#"{"tab":"\t","newline":"\n","backslash":"\\"}"#);
+    // jq re-escapes strings: `\/` prints as `/`, `\u00e9` as the character
+    assert_jq_compat(".", r#"{"slash":"\/","u":"\u00e9","ctl":"\u001f"}"#);
 }
 
 #[test]
@@ -6516,18 +6658,20 @@ fn passthrough_diff_identity_large_integer() {
 
 #[test]
 fn passthrough_diff_identity_various_numbers() {
-    // Avoid scientific notation inputs — jq normalizes case (e vs E)
-    // while qj preserves the original text. Both are valid JSON.
     assert_jq_compat(".", "0");
     assert_jq_compat(".", "-1");
     assert_jq_compat(".", "3.14159");
     assert_jq_compat(".", "0.001");
+    // Scientific notation is normalized, as in jq (e → E, explicit sign)
+    assert_jq_compat(".", "1e-10");
+    assert_jq_compat(".", "1E2");
+    assert_jq_compat(".", "2.5e+3");
 }
 
 #[test]
 fn passthrough_diff_map_field_numeric_values() {
-    // Avoid scientific notation in input — formatting differs between qj and jq
     assert_jq_compat("map(.n)", r#"[{"n":0},{"n":-1},{"n":3.14},{"n":999999}]"#);
+    assert_jq_compat("map(.n)", r#"[{"n":1e5},{"n":1.0E-7},{"n":-2E+2}]"#);
 }
 
 // --- Cross-mode routing differential tests ---
@@ -6621,9 +6765,11 @@ fn assert_ndjson_vs_single_doc(filter: &str, ndjson_input: &str) {
         "NDJSON vs single-doc mismatch for filter={filter:?}\n\
          ndjson output: {ndjson_out}\nsingle-doc output: {single_out}"
     );
+    assert_jq_compat_with_flags(&["-c", filter], ndjson_input);
 }
 
-/// Assert that mmap and read() paths produce identical output for file I/O.
+/// Assert that mmap and read() paths produce identical output for file I/O,
+/// and the same output as jq on that file.
 fn assert_mmap_vs_read(args: &[&str], content: &str) {
     let mmap_out = qj_file_with_env(args, content, &[]);
     let read_out = qj_file_with_env(args, content, &[("QJ_NO_MMAP", "1")]);
@@ -6632,6 +6778,19 @@ fn assert_mmap_vs_read(args: &[&str], content: &str) {
         "mmap vs read() mismatch for args={args:?}\n\
          mmap output: {mmap_out}\nread output: {read_out}"
     );
+    if jq_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.json");
+        std::fs::write(&path, content).unwrap();
+        let mut jq_args = args.to_vec();
+        jq_args.push(path.to_str().unwrap());
+        let (jq_code, jq_out, jq_err) = jq_exit(&jq_args, "");
+        assert_eq!(
+            (jq_code, jq_out.as_str()),
+            (0, mmap_out.as_str()),
+            "qj vs jq mismatch for args={args:?}; jq stderr: {jq_err}"
+        );
+    }
 }
 
 // --- NDJSON auto-detect vs single-doc processing ---
@@ -7101,18 +7260,31 @@ fn output_mode_raw_strings() {
     let raw = qj_with_args(&["-r", ".name"], r#"{"name":"alice"}"#);
     assert_eq!(raw.trim(), "alice");
 
-    // Non-string values should be identical between -r and -c
+    // Non-string values print exactly as without -r: -r doesn't imply -c,
+    // so arrays and objects stay pretty-printed, as in jq.
     let raw_num = qj_with_args(&["-r", ".age"], r#"{"age":30}"#);
-    let compact_num = qj_with_args(&["-c", ".age"], r#"{"age":30}"#);
-    assert_eq!(raw_num.trim(), compact_num.trim());
+    let plain_num = qj_with_args(&[".age"], r#"{"age":30}"#);
+    assert_eq!(raw_num, plain_num);
 
     let raw_null = qj_with_args(&["-r", ".x"], r#"{"x":null}"#);
-    let compact_null = qj_with_args(&["-c", ".x"], r#"{"x":null}"#);
-    assert_eq!(raw_null.trim(), compact_null.trim());
+    let plain_null = qj_with_args(&[".x"], r#"{"x":null}"#);
+    assert_eq!(raw_null, plain_null);
 
     let raw_arr = qj_with_args(&["-r", ".x"], r#"{"x":[1,2]}"#);
-    let compact_arr = qj_with_args(&["-c", ".x"], r#"{"x":[1,2]}"#);
-    assert_eq!(raw_arr.trim(), compact_arr.trim());
+    let plain_arr = qj_with_args(&[".x"], r#"{"x":[1,2]}"#);
+    assert_eq!(raw_arr, plain_arr);
+    assert_eq!(raw_arr, "[\n  1,\n  2\n]\n");
+
+    for input in [
+        r#"{"x":"alice"}"#,
+        r#"{"x":30}"#,
+        r#"{"x":null}"#,
+        r#"{"x":[1,2]}"#,
+        r#"{"x":{"a":"b"}}"#,
+    ] {
+        assert_jq_compat_with_flags(&["-r", ".x"], input);
+        assert_jq_compat_with_flags(&["-r", "-c", ".x"], input);
+    }
 }
 
 #[test]
@@ -7622,96 +7794,85 @@ fn jq_compat_map_on_non_iterable() {
 }
 
 // =========================================================================
-// QJ_JQ_COMPAT=1 mode — f64-compatible large integer handling
+// Numbers beyond 2^53: jq 1.8.1's decNumber literal semantics
 // =========================================================================
+// A number literal keeps its exact decimal value through printing, tostring,
+// tojson, negation and comparisons with other literals; arithmetic converts
+// it to f64 first, and have_decnum is true. This used to take QJ_JQ_COMPAT=1;
+// it's how qj always behaves now, as jq does.
 
-/// Run qj with QJ_JQ_COMPAT=1 and return compact output.
-fn qj_compat(filter: &str, input: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_qj"))
-        .args(["-c", "--", filter])
-        .env("QJ_JQ_COMPAT", "1")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            // Ignore BrokenPipe — the child may exit before we finish writing.
-            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
-            child.wait_with_output()
-        })
-        .expect("failed to run qj");
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+/// Run `qj -c -- FILTER`, check it against jq, and return qj's trimmed output.
+fn qj_c(filter: &str, input: &str) -> String {
+    assert_jq_compat_with_flags(&["-c", "--", filter], input);
+    qj_args(&["-c", "--", filter], input).trim().to_string()
 }
 
 #[test]
-fn compat_large_int_tostring() {
-    // In compat mode with have_decnum=true, precision is preserved for display
+fn large_int_tostring() {
+    // The literal's exact value, not its f64 rounding (...392)
     assert_eq!(
-        qj_compat(".[0] | tostring", "[13911860366432393]"),
+        qj_c(".[0] | tostring", "[13911860366432393]"),
         r#""13911860366432393""#
     );
 }
 
 #[test]
-fn compat_large_int_tojson() {
+fn large_int_tojson() {
     assert_eq!(
-        qj_compat(".x | tojson", r#"{"x":13911860366432393}"#),
+        qj_c(".x | tojson", r#"{"x":13911860366432393}"#),
         r#""13911860366432393""#
     );
 }
 
 #[test]
-fn compat_large_int_equality() {
-    // In compat mode with have_decnum=true, distinct i64 values are not equal
+fn large_int_equality() {
+    // Literals compare exactly, so adjacent large integers are not equal
     assert_eq!(
-        qj_compat("(13911860366432393 == 13911860366432392)", "null"),
+        qj_c("(13911860366432393 == 13911860366432392)", "null"),
         "false"
     );
+    assert_eq!(qj_c("have_decnum", "null"), "true");
 }
 
 #[test]
-fn compat_large_int_arithmetic() {
+fn large_int_arithmetic() {
     // Arithmetic truncates to f64 first, so precision is lost
+    assert_eq!(qj_c(". - 10", "13911860366432393"), "13911860366432382");
     assert_eq!(
-        qj_compat(". - 10", "13911860366432393"),
+        qj_c(".[0] - 10", "[13911860366432393]"),
         "13911860366432382"
     );
     assert_eq!(
-        qj_compat(".[0] - 10", "[13911860366432393]"),
-        "13911860366432382"
-    );
-    assert_eq!(
-        qj_compat(".x - 10", r#"{"x":13911860366432393}"#),
+        qj_c(".x - 10", r#"{"x":13911860366432393}"#),
         "13911860366432382"
     );
 }
 
 #[test]
-fn compat_large_int_negate_tojson() {
-    // Unary negation preserves precision (not arithmetic)
+fn large_int_negate_tojson() {
+    // Unary negation keeps the literal's precision (it isn't arithmetic)
     assert_eq!(
-        qj_compat("-. | tojson", "13911860366432393"),
+        qj_c("-. | tojson", "13911860366432393"),
         r#""-13911860366432393""#
     );
 }
 
 #[test]
-fn compat_normal_ints_unaffected() {
-    // Integers within f64 exact range should be unaffected
-    assert_eq!(qj_compat(". + 1", "42"), "43");
-    assert_eq!(qj_compat(". - 10", "100"), "90");
+fn normal_ints_unaffected() {
+    // Integers within f64's exact range are unaffected
+    assert_eq!(qj_c(". + 1", "42"), "43");
+    assert_eq!(qj_c(". - 10", "100"), "90");
     assert_eq!(
-        qj_compat(". | tostring", "9007199254740992"),
+        qj_c(". | tostring", "9007199254740992"),
         r#""9007199254740992""#
     );
 }
 
 #[test]
-fn compat_large_int_add_zero() {
+fn large_int_add_zero() {
     // jq.test line 2199: $n+0 forces f64 conversion
     assert_eq!(
-        qj_compat(
+        qj_c(
             ".[] as $n | $n+0 | [., tostring]",
             "[-9007199254740993, 9007199254740993, 13911860366432393]"
         ),
@@ -7720,40 +7881,40 @@ fn compat_large_int_add_zero() {
 }
 
 // ── Extreme exponent number literals (jq.test line 661) ────────────────────
-// These require QJ_JQ_COMPAT=1 for extreme exponent text preservation.
+// Out of f64's range, but kept (and normalized) as decimal literals.
 
 #[test]
 fn extreme_exponent_overflow_preserved() {
-    // 9E999999999 overflows f64 but text should be preserved and normalized
-    assert_eq!(qj_compat("9E999999999", "null"), "9E+999999999");
+    // 9E999999999 overflows f64 but the literal is kept and normalized
+    assert_eq!(qj_c("9E999999999", "null"), "9E+999999999");
 }
 
 #[test]
 fn extreme_exponent_normalized_mantissa() {
     // 9999999999E999999990 normalizes to 9.999999999E+999999999
     assert_eq!(
-        qj_compat("9999999999E999999990", "null"),
+        qj_c("9999999999E999999990", "null"),
         "9.999999999E+999999999"
     );
 }
 
 #[test]
 fn extreme_exponent_underflow_preserved() {
-    // 1E-999999999 underflows f64 to 0 but text should be preserved
-    assert_eq!(qj_compat("1E-999999999", "null"), "1E-999999999");
+    // 1E-999999999 underflows f64 to 0 but the literal is kept
+    assert_eq!(qj_c("1E-999999999", "null"), "1E-999999999");
 }
 
 #[test]
 fn extreme_exponent_underflow_normalized() {
     // 0.000000001E-999999990 normalizes to 1E-999999999
-    assert_eq!(qj_compat("0.000000001E-999999990", "null"), "1E-999999999");
+    assert_eq!(qj_c("0.000000001E-999999990", "null"), "1E-999999999");
 }
 
 #[test]
 fn extreme_exponent_combined() {
     // Full jq.test line 661: all four extreme exponent literals
     assert_eq!(
-        qj_compat(
+        qj_c(
             "9E999999999, 9999999999E999999990, 1E-999999999, 0.000000001E-999999990",
             "null"
         ),
@@ -7764,7 +7925,6 @@ fn extreme_exponent_combined() {
 #[test]
 fn extreme_exponent_comparison() {
     // jq.test line 668: comparisons between extreme exponent values
-    // Works both with and without compat mode (inf > 0 = true)
     assert_jq_compat(
         "5E500000000 > 5E-5000000000, 10000E500000000 > 10000E-5000000000",
         "null",

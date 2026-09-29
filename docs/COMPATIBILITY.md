@@ -1,35 +1,109 @@
 # Compatibility
 
-## Test suite
+qj aims to be indistinguishable from jq 1.8.1. For every program, input and command
+line, it should write the same bytes to stdout, exit with the same code, and print the
+same messages on stderr, apart from its own name. To get there, qj runs a port of jq
+1.8.1's own implementation: the value and number model, parser, compiler, bytecode
+interpreter, builtins (the C ones and `builtin.jq`), and `main.c`. See
+[JQ_PORT_PLAN.md](JQ_PORT_PLAN.md).
 
-qj passes **100%** of jq's official [497-test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test) with `QJ_JQ_COMPAT=1`, and **100%** of the 181-feature compatibility matrix below.
+## How it's measured
 
-Without `QJ_JQ_COMPAT=1`, 488/497 tests pass. The 9 differences are all cases where qj gives **more precise** results than jq, not less. jq uses f64 for arithmetic on large numbers (exact only to 2^53); qj uses i64 (exact to 2^63).
+The gate is the jq_diff harness (`tests/jq_diff.rs`), run with
+`cargo test --release jq_diff -- --ignored`. It runs jq 1.8.1 and qj with the same
+arguments, stdin, environment and working directory. It then compares stdout byte for
+byte, the exit code, and stderr. jq's own output is the only expectation; the
+expected-output lines in the test files are never used. The only rewriting is qj's
+name in messages (see [Exemptions](#exemptions)).
 
-For example: `13911860366432393 - 10`
-- **qj:** `13911860366432383` (correct)
-- **jq:** `13911860366432382` (f64 precision loss)
+The cases come from three places:
 
-No real-world jq script depends on getting the less precise answer, so this is safe for drop-in use.
+- **jq 1.8.1's own test suites.** These are `jq.test`, `man.test`, `manonig.test`,
+  `onig.test`, `base64.test`, `uri.test` and `optional.test`, vendored in
+  `tests/jq_compat/`. Each case runs four ways:
+  - compact output (`-c`), input on stdin
+  - pretty output, input on stdin
+  - input as a file argument
+  - input as multi-line NDJSON (for object and array inputs)
 
-## QJ_JQ_COMPAT=1
+  `%%FAIL` cases, programs that must not compile, run once.
+- **qj's corpus** (`tests/jq_compat/corpus/`), which has three parts:
+  - probes by category: paths and assignment, `reduce`/`foreach`, sorting and
+    comparison, `try` and errors, strings and formats, streams, dates, number
+    formatting, literals, and input robustness
+  - a generated matrix of builtins × inputs
+  - command-line cases: options and their errors, exit codes, input and output modes,
+    and adversarial NDJSON
+- **A ratchet**, `tests/jq_compat/diff_baseline.txt`, which fails the run when any case
+  gets worse.
 
-If you need byte-identical output with jq (e.g., for checksumming or diff-testing):
+Results on macOS (arm64) against jq 1.8.1:
 
-```bash
-export QJ_JQ_COMPAT=1
-```
+| Cases | Count | Byte-exact (stdout, exit code, stderr) |
+|---|--:|--:|
+| jq's own suites | 2,903 | **2,903 (100%)** |
+| qj's corpus | 16,681 | 16,674 |
+| **Total** | **19,584** | **19,577** |
 
-This makes qj deliberately truncate arithmetic to f64 for numbers above 2^53, matching jq's behavior. It also enables:
+The 7 cases that differ are all qj's own help, version and usage text; see
+[Exemptions](#exemptions). Across modes, the counts are 11,203 compact, 2,249 pretty,
+2,249 file, 1,414 NDJSON, 19 `%%FAIL`, and 2,450 command-line cases.
 
-- `have_decnum` = true (matches jq's decnum branch in conditional tests)
-- Extreme exponent text preservation (e.g., `9E999999999`)
-- Raw text preservation through negation, abs, and length
+The older runners also pass with the default binary. They're either lenient (they compare
+outputs as JSON, with numbers as f64) or narrower, and jq_diff covers what they check:
 
-## Limitations
+| Runner | Result |
+|---|---|
+| `jq_conformance` | jq.test: 497/497, and 262/262 through the NDJSON path |
+| `conformance_gaps` | 9/9 of the number-model cases that used to need `QJ_JQ_COMPAT=1` |
+| `cli_conformance` | 56/56 command-line comparisons with jq |
+| `jq_differential` | no divergence over 4 × 2,000 random programs and inputs |
+| `jq_compat` (jq.test, all tools) | qj 497/497, jq 497/497, gojq 425/497, jaq 343/497 |
+| `feature_compat` | the matrix below, 181/181 features |
 
-- **No arbitrary precision arithmetic.** qj uses i64/f64. Integers up to 2^63 are exact; beyond that, precision is lost. This only matters for numbers outside the range of any 64-bit type.
-- **Single-document JSON >4 GB** falls back to serde_json (simdjson's limit). Still faster than jq but ~3-6x slower than the simdjson fast path. NDJSON is unaffected since each line is parsed independently.
+CI runs jq_diff on Linux too, but only reports there until a Linux baseline is committed.
+
+## Exemptions
+
+- **Help and version text.** qj has its own output for `-h`/`--help`, `-V`/`--version`,
+  `--build-configuration` (and `$JQ_BUILD_CONFIGURATION`), and for the usage summary
+  printed after usage errors.
+- **qj's name.** qj's messages say `qj:` where jq's say `jq:`
+  (`qj: error (at <stdin>:0): ...`). The hint after an option error says
+  `Use qj --help ...`. jq_diff maps both back before comparing stderr, and rewrites
+  nothing else.
+- **jq's own nondeterminism.** When jq's output doesn't depend only on its input, there's
+  nothing to match. For example, jq's `lgamma_r` returns an uninitialized sign for 0, -0,
+  NaN and ±infinity, so the corpus leaves out those inputs. `now` reads the clock.
+
+## Numbers
+
+jq 1.8.1 is built with decNumber, and qj follows its number model exactly:
+
+- A number literal, in the input or in the program, keeps its exact decimal value.
+  It prints in canonical form: `100000000000000000001` and `1.10` print as written,
+  `1e2` prints as `1E+2`, `2.5E-3` as `0.0025`, and `9E999999999` (beyond f64's range)
+  as `9E+999999999`.
+- Literals compare exactly: `13911860366432393 == 13911860366432392` is `false`.
+- Arithmetic is IEEE 754 double precision, as in jq: `13911860366432393 - 10` is
+  `13911860366432382`. Results print in jq's shortest round-trip form: `0.1 + 0.2` is
+  `0.30000000000000004`, and `1 * 1e20` is `1e+20`.
+- `have_decnum` and `have_literal_numbers` are `true`.
+
+**`QJ_JQ_COMPAT` is obsolete.** qj used to compute with i64 and f64, and needed
+`QJ_JQ_COMPAT=1` to imitate jq's precision. jq's behavior is now the default, and qj
+ignores the variable. Only the old evaluator reads it, and that evaluator is still
+selectable with `QJ_CORE=old` for comparison until it's removed.
+
+## qj's additions
+
+qj adds a few things jq doesn't have, so they aren't part of the comparison:
+
+- `--threads N` and `--jsonl`
+- transparent decompression of `.gz` and `.zst` inputs, chosen by file extension
+- glob expansion of input file names that don't exist, such as `'logs/*.json.gz'`
+
+A file name that exists, or a pattern that matches nothing, behaves exactly as in jq.
 
 <!-- AUTO-GENERATED BELOW — do not edit below this line -->
 

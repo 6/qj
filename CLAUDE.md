@@ -15,19 +15,25 @@ shellcheck <file>.sh
 ```
 
 ## Testing
-`cargo test` runs the fast suite (unit + e2e + ndjson + ffi, ~5s).
-Compat suites are `#[ignore]` — run them with `--release` after adding features.
+`cargo test` runs the fast suite: unit tests (the port's included), e2e, ndjson, ffi, and the
+port's compiler and parser suites (~20s).
+Compat suites are `#[ignore]` — run them with `--release`. **jq_diff is the gate**: every
+change to behavior must keep it free of regressions against its baseline. The other compat
+runners predate the port; they're kept as extra checks (all pass), but they compare
+leniently or cover less, and jq_diff subsumes them.
 
 ```
-cargo test                                                              # fast: unit + e2e (~5s)
-cargo test --release -- --ignored --nocapture                           # all tests including compat (~50s)
-cargo test --release jq_diff -- --ignored                               # strict differential vs jq 1.8.1 (scoreboard on stderr)
+cargo test                                                              # fast suite
+cargo test --release jq_diff -- --ignored                               # THE GATE: strict differential vs jq 1.8.1 (scoreboard on stderr)
 JQ_DIFF_FILTER=onig.test JQ_DIFF_VERBOSE=1 cargo test --release jq_diff -- --ignored  # one suite, with details
-cargo test --release jq_conformance -- --ignored                        # jq.test pass rate (lenient, legacy)
+cargo test --release -- --ignored --nocapture                           # everything, legacy runners included
+# Legacy runners:
+cargo test --release jq_conformance -- --ignored                        # jq.test pass rate (lenient)
 cargo test --release jq_conformance_ndjson -- --ignored --nocapture     # jq.test via NDJSON path (single vs NDJSON diff)
 cargo test --release jq_conformance_verbose -- --ignored --nocapture    # jq.test with failure details
-cargo test --release conformance_gaps -- --ignored                      # gap tests by category
-cargo test --release gap_label_break -- --ignored                       # run one category
+cargo test --release conformance_gaps -- --ignored                      # former number-model gaps (exact)
+cargo test --release gap_bignum -- --ignored                            # run one category
+cargo test --release cli_conformance -- --ignored                       # CLI flags vs jq (stdout + exit code)
 cargo test --release jq_compat -- --ignored --nocapture                 # cross-tool comparison
 cargo test --release feature_compat -- --ignored --nocapture            # feature matrix
 cargo test --release jq_differential -- --ignored --nocapture          # proptest differential vs jq
@@ -43,9 +49,12 @@ handle, so it shows without it.
 Never pipe `--nocapture` output through `tail` — the verbose test produces 500+ lines which
 can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose test.
 
-### jq_diff: the strict conformance harness
+### jq_diff: the conformance gate
 
-`tests/jq_diff.rs` (`#[ignore]`) measures the definition of done in `docs/JQ_PORT_PLAN.md`.
+`tests/jq_diff.rs` (`#[ignore]`) measures the definition of done in `docs/JQ_PORT_PLAN.md`,
+and is the gate for every change to qj's behavior. The default binary scores 19,577/19,584
+strict; the 7 other cases are qj's own help/version text (`corpus/cli_meta.toml`), which the
+plan exempts.
 It runs jq 1.8.1 and qj with identical argv, stdin, environment and cwd, and compares stdout
 bytes, exit code, and stderr with only the program name rewritten: a line-initial `qj:` to
 `jq:`, and the exact line `Use qj --help for help with command-line options,` (the usage hint
@@ -64,7 +73,7 @@ only expectation. Levels: `pass` (all three match),
   `[[case]]` in `corpus/cli.toml`), run jq_diff, and fix it. `corpus/builtins_matrix.test` is
   generated: `python3 tests/jq_compat/corpus/gen_builtin_matrix.py`.
 - **Knobs:** `JQ_DIFF_FILTER=a,b` (id substrings), `JQ_DIFF_MODES=compact,pretty,file,ndjson,fail,cli`,
-  `JQ_DIFF_VERBOSE=1` (print every non-passing case), `JQ_DIFF_QJ_ENV="QJ_CORE=port"` (extra env,
+  `JQ_DIFF_VERBOSE=1` (print every non-passing case), `JQ_DIFF_QJ_ENV="QJ_CORE=old"` (extra env,
   given to jq too so `$ENV` stays comparable), `JQ_DIFF_BASELINE=path`, `JQ_DIFF_UPDATE_BASELINE=1`,
   `JQ_DIFF_JQ`/`JQ_DIFF_QJ` (binaries), `JQ_DIFF_TIMEOUT` (s, default 10), `JQ_DIFF_MEM_MB`
   (per-process RSS cap, default 2048), `JQ_DIFF_JOBS`.
@@ -76,8 +85,10 @@ only expectation. Levels: `pass` (all three match),
   `JQ_DIFF_UPDATE_BASELINE=1 cargo test --release jq_diff -- --ignored` and commit the baseline
   with the fix. Never regenerate the baseline to make a regression pass. Runs filtered with
   `JQ_DIFF_FILTER`/`JQ_DIFF_MODES` update only their cases. Entries match by fingerprint, so
-  moving a case within its file is fine. To measure the port:
-  `JQ_DIFF_QJ_ENV=QJ_CORE=port JQ_DIFF_BASELINE=tests/jq_compat/diff_baseline_port.txt`.
+  moving a case within its file is fine. The baseline is the port's (the default core):
+  `diff_baseline_port.txt`, its baseline while it was opt-in, was folded into it. To score the
+  old core while it still exists, without a ratchet, point `JQ_DIFF_BASELINE` at a file that
+  doesn't exist: `JQ_DIFF_QJ_ENV=QJ_CORE=old JQ_DIFF_BASELINE=target/tmp/no_baseline.txt`.
 - CI runs it on Linux. Until `diff_baseline_linux.txt` exists it only reports; the
   `jq-diff-linux` artifact has a `baseline_candidate.txt` to commit.
 - jq results are cached in `tests/jq_compat/.cache/jq_diff.json` (invalidated automatically).
@@ -91,26 +102,31 @@ only expectation. Levels: `pass` (all three match),
     use `assert_jq_compat` to verify output matches jq exactly. Never write tests that
     accept output differing from jq — if a fast path (passthrough, NDJSON, etc.) would
     produce different results, it must fall back to the normal evaluator.
-  - Includes **number literal preservation tests** — verifies trailing zeros, scientific
-    notation, and raw text are preserved from JSON input through output.
-- **NDJSON tests:** `tests/ndjson.rs` — parallel NDJSON processing integration tests.
+  - Includes **number literal tests** — jq 1.8.1's decNumber semantics: literals keep their
+    exact value and print canonically (trailing zeros kept, `1e2` → `1E+2`), arithmetic is f64.
+  - `assert_jq_compat_strict` also compares stderr and the exact exit code, as jq_diff does.
+- **NDJSON tests:** `tests/ndjson.rs` — parallel NDJSON processing integration tests. The
+  fast-vs-normal comparisons (`QJ_NO_FAST_PATH`) also compare with jq.
 - **FFI tests:** `tests/simdjson_ffi.rs` — low-level simdjson bridge tests.
-- **jq conformance suite** (`#[ignore]`): `tests/jq_conformance.rs` — runs jq's official test
-  suite (`tests/jq_compat/jq.test`, vendored from jqlang/jq) against qj and reports pass rate.
-  Also includes `jq_conformance_ndjson` which runs each object/array test case through both
-  single-doc and NDJSON paths, asserting identical output (catches NDJSON path divergences).
-- **Conformance gap tests** (`#[ignore]`): `tests/conformance_gaps.rs` — 9 tests for
-  jq.test bignum/precision edge cases. All pass with `QJ_JQ_COMPAT=1` (497/497).
-  See `docs/COMPATIBILITY.md` for analysis.
-- **Cross-tool compat comparison** (`#[ignore]`): `tests/jq_compat_runner.rs` — runs jq.test
-  against qj, jq, jaq, and gojq. Writes `tests/jq_compat/results.md`.
-- **Feature compatibility suite** (`#[ignore]`): `tests/jq_compat/features.toml` — TOML-defined
-  tests, per-feature Y/~/N matrix. Writes `docs/COMPATIBILITY.md` (appends below marker).
+- **jq conformance suite** (`#[ignore]`, legacy): `tests/jq_conformance.rs` — runs jq's official
+  test suite (`tests/jq_compat/jq.test`) against qj, comparing outputs as JSON with the file's
+  expected lines; fails unless all 497 pass. Also includes `jq_conformance_ndjson`, which runs
+  each object/array test case through both single-doc and NDJSON paths and fails on any
+  divergence.
+- **Conformance gap tests** (`#[ignore]`, legacy): `tests/conformance_gaps.rs` — the 9 jq.test
+  number-model cases (big integers, extreme exponents, `have_decnum`) the old core failed
+  without `QJ_JQ_COMPAT=1`, compared exactly. The port passes them by default.
+- **Cross-tool compat comparison** (`#[ignore]`, legacy): `tests/jq_compat_runner.rs` — runs
+  jq.test against qj, jq, jaq, and gojq with the same arguments. Writes
+  `tests/jq_compat/results.md`.
+- **Feature compatibility suite** (`#[ignore]`, legacy): `tests/jq_compat/features.toml` —
+  TOML-defined tests, per-feature Y/~/N matrix. Writes `docs/COMPATIBILITY.md` (below the
+  marker; the text above it is hand-written and cites jq_diff's numbers).
 - **Differential testing** (`#[ignore]`): `tests/jq_differential.rs` — property-based tests using
   `proptest` that generate random (filter, input) pairs and compare qj vs jq output. Four focused
-  tests: general filters, arithmetic, builtins, and format strings. 2000 cases each. Catches
-  behavioral divergences that hand-written tests miss. Run iteratively: fix or exclude each
-  failure, re-run to find the next.
+  tests: general filters, arithmetic, builtins, and format strings. 2000 cases each, with a new
+  random seed per run. Catches behavioral divergences that hand-written tests miss. Add each
+  divergence it finds to the jq_diff corpus, then fix it.
 - **Updating the vendored test suites:** `tests/jq_compat/update_test_suite.sh` — downloads
   all of jq's `.test` suites, `shtest` (reference only, in `tests/jq_compat/shtest/`) and the
   test modules from a jq release tag, and updates `mise.toml`. Then regenerate the builtin
@@ -119,13 +135,16 @@ only expectation. Levels: `pass` (all three match),
   bash tests/jq_compat/update_test_suite.sh          # uses version from mise.toml
   bash tests/jq_compat/update_test_suite.sh 1.9.0    # upgrade to new version
   ```
-- **When adding new jq builtins or language features**, always:
-  1. Add corresponding e2e tests in `tests/e2e.rs` and `assert_jq_compat` checks
-  2. Run `cargo test --release jq_compat -- --ignored --nocapture` and update jq compat % in `README.md`
-  3. Run `cargo test --release jq_diff -- --ignored`: no regressions, and record improvements
+- **When changing qj's behavior** (a divergence fixed, a fast path added), always:
+  1. Add the case to the jq_diff corpus (`tests/jq_compat/corpus/`), and e2e tests with
+     `assert_jq_compat` checks where they help
+  2. Run `cargo test --release jq_diff -- --ignored`: no regressions, and record improvements
      with `JQ_DIFF_UPDATE_BASELINE=1`
-- **When adding or modifying NDJSON fast-path variants** (`NdjsonFastPath` enum in
-  `src/parallel/ndjson.rs`), always:
+  3. If the scoreboard's totals change, update the numbers in `README.md` and
+     `docs/COMPATIBILITY.md`
+  The builtin set is jq 1.8.1's `builtins`: don't add qj-only builtins.
+- **When adding or modifying the old core's NDJSON fast-path variants** (`NdjsonFastPath` enum in
+  `src/parallel/ndjson.rs`, `QJ_CORE=old` only), always:
   1. Add a filter for the new variant in `all_fast_path_test_filters()` (same file) —
      the exhaustive match will cause a compile error if you forget
   2. Add the filter to `FILTERS` in `fuzz/fuzz_targets/fuzz_ndjson_diff.rs`
@@ -142,7 +161,9 @@ diff <(./target/release/qj '.field' test.json) <(jq '.field' test.json)
 
 ## Fuzzing
 
-Ten fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`.
+Eleven fuzz targets in `fuzz/`. Requires nightly and `cargo-fuzz`. They exercise the simdjson
+FFI and the old core (`src/filter`, `flat_eval`, `src/parallel`, `src/output.rs`); none
+targets the jq port yet, whose differential coverage is jq_diff and `jq_differential`.
 
 Fuzz binaries use libfuzzer which runs indefinitely without `-max_total_time`.
 All `[[bin]]` entries have `test = false` to prevent `cargo test` from picking them up.
@@ -237,7 +258,8 @@ Use `QJ_GHARCHIVE_HOURS=2` for quick testing with fewer hours of data.
 ```
 ./target/release/qj --debug-timing -c '.' benches/data/large_twitter.json > /dev/null
 ```
-**Caveat:** `--debug-timing` uses the On-Demand parse path (`dom_parse_to_value`), not the
+**Caveat:** only the old core (`QJ_CORE=old`) implements `--debug-timing`; the port accepts
+the flag and ignores it. It uses the On-Demand parse path (`dom_parse_to_value`), not the
 production DOM tape walk path used by flat eval and the regular eval pipeline. Its parse times
 are ~30% higher than actual production performance. Use `hyperfine` for accurate benchmarks.
 
@@ -262,30 +284,40 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
 ```
 
 ### Environment variables
-- `QJ_CORE=port` — run on the jq 1.8.1 port (`src/jq`, `src/cli/run.rs`) instead of the old
-  evaluator. Until it becomes the default, measure it with
-  `JQ_DIFF_QJ_ENV=QJ_CORE=port JQ_DIFF_BASELINE=tests/jq_compat/diff_baseline_port.txt`.
+- `QJ_CORE=old` — run the old evaluator (`src/filter`, `flat_eval`, the NDJSON fast paths)
+  instead of the jq 1.8.1 port, for comparison. Temporary: the old core is being deleted.
+  `QJ_CORE=port`, the port's opt-in before it became the default, is a no-op.
+
+Read by the old core only (`QJ_CORE=old`):
 - `QJ_WINDOW_SIZE=N` — NDJSON streaming window size in megabytes. Default is `num_cores × 2` MB
   (floor 8 MB). Larger values use more memory but may help on machines with many cores.
 - `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
 - `QJ_NO_FAST_PATH=1` — Disable NDJSON fast paths (for A/B benchmarking).
-- `QJ_JQ_COMPAT=1` — Match jq's precision behavior: arithmetic truncates to f64 for numbers
-  > 2^53, extreme exponents preserved, `have_decnum=true`. Enables 497/497 (100%) conformance.
-  See `docs/COMPATIBILITY.md`.
+- `QJ_JQ_COMPAT=1` — obsolete. It made the old core imitate jq's precision (f64 arithmetic
+  beyond 2^53, extreme exponents, `have_decnum`); the port behaves like jq by default and
+  ignores it.
 
 ### Important
 Never run benchmarks concurrently with tests or other CPU-intensive processes.
 Benchmarks require exclusive CPU access for reliable results.
 
 ## Architecture
-- `src/cli/` — the command line: port of jq's `main.c` option handling (`args.rs`: options,
-  their errors and exit codes, colors, `-f`), and qj's own help/version text (`usage.rs`).
-  With `QJ_CORE=port`: the rest of `main.c` on the jq port (`run.rs`: compile, `process()`,
-  output, exit codes), `util.c`'s input reader (`input.rs`, behind the `Reader` trait) and
-  `jq_test.c` (`run_tests.rs`, `--run-tests`)
+qj runs the jq 1.8.1 port. `src/main.rs` dispatches to it (`qj::cli::run::main`) unless
+`QJ_CORE=old` selects the old evaluator, which is kept only for comparison until it's deleted.
+
+- `src/cli/` — the command line, a port of jq's `main.c` and `util.c`: option handling
+  (`args.rs`: options, their errors and exit codes, colors, `-f`), qj's own help/version text
+  (`usage.rs`), the rest of `main.c` on the port (`run.rs`: compile, `process()`, output, exit
+  codes), `util.c`'s input reader (`input.rs`, behind the `Reader` trait) and `jq_test.c`
+  (`run_tests.rs`, `--run-tests`)
 - `src/jq/` — the jq 1.8.1 port: values, lexer/parser, compiler, VM, builtins (see
   `docs/JQ_PORT_PLAN.md`)
+- `src/decompress.rs` — transparent gzip (flate2) and zstd decompression, detected by file extension
 - `src/simdjson/` — vendored simdjson.h/cpp + C-linkage bridge + safe Rust FFI wrapper
+- `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks
+- `fuzz/` — cargo-fuzz targets for the simdjson FFI boundary and the old core (requires nightly)
+
+The old core (`QJ_CORE=old`; temporary, to be deleted with the rest of `src/main.rs`'s old path):
 - `src/filter/` — jq filter lexer, parser, AST evaluator (On-Demand fast path + DOM fallback)
 - `src/value.rs` — JSON value representation (Arc-based arrays/objects)
 - `src/flat_value.rs` — zero-copy navigation of flat token buffer, avoids materializing full Value tree
@@ -293,9 +325,6 @@ Benchmarks require exclusive CPU access for reliable results.
 - `src/parallel/` — NDJSON chunk splitter + thread pool
 - `src/output.rs` — pretty-print, compact, raw output formatters
 - `src/input.rs` — input preprocessing (BOM stripping, JSON/NDJSON parsing into Values)
-- `src/decompress.rs` — transparent gzip (flate2) and zstd decompression, detected by file extension
-- `benches/` — all benchmark scripts, data generators, C++ baseline, and Cargo benchmarks
-- `fuzz/` — cargo-fuzz targets for simdjson FFI boundary (requires nightly)
 
 ## Compressed file support
 Transparent decompression for `.gz` (gzip) and `.zst`/`.zstd` (zstd) files, detected by extension.
