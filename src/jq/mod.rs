@@ -3,6 +3,7 @@
 //! See `docs/JQ_PORT_PLAN.md` for the architecture, module ownership, and
 //! conformance targets. Ported code is derived from jq (MIT, see `LICENSE-jq`).
 
+pub mod builtins;
 pub mod lang;
 pub mod platform;
 pub mod value;
