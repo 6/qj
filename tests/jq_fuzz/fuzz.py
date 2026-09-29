@@ -151,6 +151,8 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT, stdout
         if stdout_tty:
             master, slave = os.openpty()
             stdout_arg = slave
+            if merged:
+                stderr_arg = slave  # a terminal: both on it
         elif merged:
             stderr_arg = fout  # `>out 2>&1`: one open file for both
         p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=stdin_arg, stdout=stdout_arg,
@@ -197,6 +199,8 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT, stdout
         ferr.seek(0)
         out = b"".join(tty_chunks)[:MAX_OUTPUT + 1] if stdout_tty else fout.read(MAX_OUTPUT + 1)
         err = ferr.read(MAX_OUTPUT + 1)
+        if stdout_tty and len(out) > MAX_OUTPUT and status not in ("timeout", "memory"):
+            status = "output"  # (the pty isn't size-checked while running)
         return Result(status, out, err)
     finally:
         fout.close()
@@ -425,6 +429,12 @@ class Runner:
         self.prepare(inv)
         j = self.run_tool(self.jq, inv)
         q = self.run_tool(self.qj, inv)
+        if inv.get("stdout_tty"):
+            # macOS's pty output processing sometimes emits an extra \r at a
+            # 1024-byte boundary of its queue when turning \n into \r\n
+            # (timing-dependent, for either tool).
+            j.stdout = j.stdout.replace(b"\r\r\n", b"\r\n")
+            q.stdout = q.stdout.replace(b"\r\r\n", b"\r\n")
         if inv.get("merged"):
             # stderr text is in the stdout capture: normalize its program name.
             j.stdout = normalize_stderr(j.stdout)
@@ -669,6 +679,14 @@ def gen_tty_case(r):
     if r.random() < 0.15:
         c.raw_args = []  # no program: "." because stdin isn't a terminal
     c.stdout_tty = True
+    # A terminal usually gets stderr too: line-buffered stdout (a 4096-byte
+    # buffer on macOS) against unbuffered stderr.
+    c.merged = r.random() < 0.4
+    if c.merged and r.random() < 0.5:
+        c.prog = r.choice(MERGED_PROGRAMS).replace("{N1}", "2999").replace("{N}", "3000") \
+            .replace("{K1}", "699").replace("{K}", "700").replace(
+                "{L}", str(r.choice(MERGED_LENGTHS)))
+        c.flags = c.flags + [["-n"]] if "range(" in c.prog else c.flags
     return c
 
 
