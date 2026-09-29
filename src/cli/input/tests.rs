@@ -312,3 +312,45 @@ fn stdin_is_opened_once() {
     assert_eq!(drain(&mut r), ["1 @<stdin>:1 f0", "2 @<stdin>:1 f0"]);
     assert_eq!(opened.get(), 1);
 }
+
+#[test]
+fn compressed_files_are_decompressed_when_they_really_are() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("qj-input-gz-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let gz = dir.join("a.json.gz");
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(b"{\"a\":1}\n").unwrap();
+    std::fs::write(&gz, enc.finish().unwrap()).unwrap();
+    // Named .gz but not gzip: read as is, like jq.
+    let plain = dir.join("b.gz");
+    std::fs::write(&plain, b"2\n").unwrap();
+    let corrupt = dir.join("c.gz");
+    std::fs::write(&corrupt, b"\x1f\x8bnot gzip").unwrap();
+    let zst = dir.join("d.json.zst");
+    std::fs::write(&zst, zstd::encode_all(&b"[3]"[..], 0).unwrap()).unwrap();
+    let names: Vec<Vec<u8>> = [&gz, &plain, &zst, &corrupt]
+        .iter()
+        .map(|p| p.as_os_str().as_bytes().to_vec())
+        .collect();
+    let mut r = UtilInput::new(names, json());
+    let msgs = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let m = msgs.clone();
+    r.set_message_sink(Box::new(move |msg| {
+        m.borrow_mut().extend_from_slice(&msg.render("qj"))
+    }));
+    let got: Vec<String> = std::iter::from_fn(|| r.next())
+        .map(|v| v.unwrap().to_json())
+        .collect();
+    assert_eq!(got, ["{\"a\":1}", "2", "[3]"]);
+    assert_eq!(r.failures(), 1);
+    let msg = String::from_utf8(msgs.borrow().clone()).unwrap();
+    assert!(
+        msg.starts_with(&format!(
+            "qj: error: {}: gzip decompression failed: ",
+            corrupt.display()
+        )),
+        "{msg}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -246,13 +246,40 @@ fn open_file(name: &[u8]) -> io::Result<Box<dyn Read>> {
         return Ok(Box::new(whole));
     }
     let buffered = io::BufReader::with_capacity(256 * 1024, whole);
-    if is_gzip {
+    let (inner, format): (Box<dyn Read>, &str) = if is_gzip {
         // Concatenated members decompress as one stream, like gzip(1).
-        Ok(Box::new(flate2::read::MultiGzDecoder::new(buffered)))
+        (
+            Box::new(flate2::read::MultiGzDecoder::new(buffered)),
+            "gzip",
+        )
     } else {
-        Ok(Box::new(zstd::stream::read::Decoder::with_buffer(
-            buffered,
-        )?))
+        (
+            Box::new(zstd::stream::read::Decoder::with_buffer(buffered)?),
+            "zstd",
+        )
+    };
+    Ok(Box::new(Decompressing {
+        inner,
+        what: format!("{lossy}: {format} decompression failed"),
+    }))
+}
+
+/// A decompressing reader whose errors name the file (they have no errno for
+/// jq's `strerror` message).
+struct Decompressing {
+    inner: Box<dyn Read>,
+    what: String,
+}
+
+impl Read for Decompressing {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf).map_err(|e| {
+            if e.raw_os_error().is_some() || e.kind() == io::ErrorKind::Interrupted {
+                e
+            } else {
+                io::Error::new(e.kind(), format!("{}: {e}", self.what))
+            }
+        })
     }
 }
 
