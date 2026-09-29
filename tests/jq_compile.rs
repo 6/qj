@@ -323,6 +323,21 @@ fn generated_programs() -> Vec<(String, Vec<u8>)> {
         "max:paren-dotplus[3331]".into(),
         "(.+".repeat(3331) + "." + &")".repeat(3331),
     ));
+    // Functions longer than 65535 code units, and which of them jq reports.
+    let long = ".a".repeat(21845);
+    out.push(("toolong:sub".into(), format!("def f: {long}; f")));
+    out.push((
+        "toolong:two-subs".into(),
+        format!("def f: {long}; def g: {long}; f, g"),
+    ));
+    out.push((
+        "toolong:top-and-sub".into(),
+        format!("def f: {long}; f, {long}"),
+    ));
+    out.push((
+        "toolong:sub-and-unbound".into(),
+        format!("def f: {long}; def g: $nope; f, g"),
+    ));
     out.into_iter()
         .map(|(n, s)| (format!("gen:{n}"), s.into_bytes()))
         .collect()

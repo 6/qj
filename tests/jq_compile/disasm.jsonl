@@ -3509,3 +3509,7 @@
 {"exit":0,"origin":"gen:max:vars[2498]","stderr":"","stdout":{"fnv64":"3dcc524314384e54","len":154474}}
 {"exit":0,"origin":"gen:max:paren-plus[3331]","stderr":"","stdout":"0000 TOP\n0001 LOADK 3332\n0003 RET\n\n"}
 {"exit":0,"origin":"gen:max:paren-dotplus[3331]","stderr":"","stdout":{"fnv64":"6bd8eab21a656739","len":229163}}
+{"exit":3,"origin":"gen:toolong:sub","stderr":"jq: error: function compiled to 65536 bytes which is too long\njq: 1 compile error\n","stdout":""}
+{"exit":3,"origin":"gen:toolong:two-subs","stderr":"jq: error: function compiled to 65536 bytes which is too long\njq: error: function compiled to 65536 bytes which is too long\njq: 2 compile errors\n","stdout":""}
+{"exit":3,"origin":"gen:toolong:top-and-sub","stderr":"jq: error: function compiled to 65545 bytes which is too long\njq: 1 compile error\n","stdout":""}
+{"exit":3,"origin":"gen:toolong:sub-and-unbound","stderr":{"fnv64":"2ffb9527c928d825","len":87591},"stdout":""}
