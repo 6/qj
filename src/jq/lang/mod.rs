@@ -42,6 +42,7 @@
 
 pub mod ast;
 pub mod bytecode;
+pub mod execute;
 pub mod lexer;
 pub mod locfile;
 pub mod parser;
