@@ -54,6 +54,9 @@
 //!   into a 4096-byte buffer, and a chunk without a newline is cut at its
 //!   first NUL (`strlen`). jq's parser drops the rest of the current chunk
 //!   after an error, so chunking is observable with `--seq`/`--stream-errors`.
+//!   With `-R`, each chunk is turned into a string on its own
+//!   ([`Str::push_bytes`]), so a character split by the 4095-byte boundary
+//!   of a long line becomes two U+FFFD in jq too.
 //!
 //! # Quirks that are reproduced on purpose
 //!
