@@ -46,6 +46,21 @@ jobs:
           cargo test --release jq_conformance -- --ignored
           cargo test --release cli_conformance -- --ignored
           cargo test --release conformance_gaps -- --ignored
+          # Strict differential run against jq 1.8.1. It ratchets against
+          # tests/jq_compat/diff_baseline_linux.txt; until that file exists it
+          # only reports (commit baseline_candidate.txt from the artifact).
+          JQ_DIFF_JQ="$(mise which jq)" cargo test --release jq_diff -- --ignored
+
+      - name: Upload jq_diff results
+        if: always() && matrix.os == 'ubuntu-24.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jq-diff-linux
+          path: |
+            target/tmp/jq_diff/report.txt
+            target/tmp/jq_diff/results.tsv
+            target/tmp/jq_diff/baseline_candidate.txt
+          if-no-files-found: ignore
 
       - name: Check benchmarks compile
         if: matrix.os == 'ubuntu-24.04'
