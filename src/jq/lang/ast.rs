@@ -14,7 +14,8 @@
 //!   `$$ = $1`, so parentheses leave no trace except in the tree shape.
 //! * [`Node::loc`] is the bison location `@$` of the rule that created the node.
 //!   Passthrough rules do not widen it. Where an action uses some other location
-//!   (`@1`, `@2`), the node stores it separately (`Call::name_loc`, `key_loc`, ...).
+//!   (`@1`, `@2`), the node stores it separately (`name_loc` of [`NodeKind::Call`],
+//!   `key_loc`, `meta_loc`, ...).
 //! * Number literals keep their source text ([`Literal::Number`]); jq preserves
 //!   literals (`1.000`, `1E2`, `100000000000000000001`).
 //! * Strings keep their token-level parts ([`StringLit::parts`]): each
@@ -32,6 +33,18 @@
 //! Line/column and the caret excerpts of error messages come from
 //! [`super::locfile::LocFile`] (port of `locfile.c`); `$__loc__`'s line number is
 //! `LocFile::get_line(loc.start) + 1`.
+//!
+//! # Lowering order and depth
+//!
+//! jq runs its actions bottom-up as bison reduces, i.e. a left-to-right post-order walk
+//! of this tree; porting an action means computing a node's block from its children's
+//! blocks. Nesting through brackets is bounded by bison's stack (about 10000 states),
+//! but left-associative chains are not: `1+1+...+1` with a million terms, or a
+//! 100000-element `[1,2,...]`, compiles in jq because it folds constants during the
+//! parse. Such chains make `Binary`/`Comma` left operands and postfix `target`s very
+//! deep, so [`Node`] drops iteratively; consumers should likewise avoid recursing once
+//! per chain element (or run on a large stack). [`Node::into_kind`] gives by-value
+//! access, since `Node` implements `Drop`.
 
 use std::fmt::Write as _;
 
