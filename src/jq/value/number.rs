@@ -65,6 +65,8 @@ pub(crate) struct Literal {
     /// Cached `jvp_literal_number_to_double` (NaN = not computed yet; a
     /// literal is never NaN).
     double: Cell<f64>,
+    /// [`lossy_of`], computed once.
+    lossy: bool,
 }
 
 /// Parsed decimal (the result of `decNumberFromString`).
@@ -327,12 +329,14 @@ fn increment_digits(d: &mut Vec<u8>) {
 
 impl Decimal {
     fn into_literal(self) -> Literal {
+        let lossy = lossy_of(self.inf, &self.coeff, self.exp);
         Literal {
             neg: self.neg,
             inf: self.inf,
             coeff: self.coeff,
             exp: self.exp,
             double: Cell::new(f64::NAN),
+            lossy,
         }
     }
 }
@@ -467,22 +471,44 @@ impl Literal {
         !self.inf && self.coeff.is_zero()
     }
 
-    /// Whether distinct literals may share this literal's double: more than
-    /// 15 significant digits, or outside the normal double range.
+    /// Whether distinct literals may share this literal's double (see
+    /// [`lossy_of`]).
+    #[inline]
     fn is_lossy(&self) -> bool {
-        if self.inf {
-            return true;
-        }
-        if self.coeff.is_zero() {
-            return false;
-        }
-        let mut buf = itoa::Buffer::new();
-        let digits = self.coeff.digits(&mut buf);
-        let trailing = digits.iter().rev().take_while(|&&c| c == b'0').count();
-        let sig = (digits.len() - trailing) as i64;
-        let adjusted = self.exp + trailing as i64 + sig - 1;
-        sig > 15 || !(-307..=307).contains(&adjusted)
+        self.lossy
     }
+}
+
+/// Whether a decimal's value may not be recoverable from its double: more
+/// than 15 significant digits, or outside the normal double range (or an
+/// infinity). Literals that are not lossy compare exactly as their doubles.
+fn lossy_of(inf: bool, coeff: &Coeff, exp: i64) -> bool {
+    if inf {
+        return true;
+    }
+    let (sig, trailing) = match coeff {
+        Coeff::Small(0) => return false,
+        Coeff::Small(c) => {
+            let mut c = *c;
+            let mut trailing = 0i64;
+            while c % 10 == 0 {
+                c /= 10;
+                trailing += 1;
+            }
+            let mut sig = 1i64;
+            while c >= 10 {
+                c /= 10;
+                sig += 1;
+            }
+            (sig, trailing)
+        }
+        Coeff::Big(d) => {
+            let trailing = d.iter().rev().take_while(|&&c| c == b'0').count();
+            ((d.len() - trailing) as i64, trailing as i64)
+        }
+    };
+    let adjusted = exp + trailing + sig - 1;
+    sig > 15 || !(-307..=307).contains(&adjusted)
 }
 
 static POW10: [f64; 23] = [
@@ -492,6 +518,19 @@ static POW10: [f64; 23] = [
 
 /// Exact decimal comparison (`decNumberCompare`) of two literals.
 fn literal_cmp(a: &Literal, b: &Literal) -> Ordering {
+    // Fast path: for literals whose value survives the conversion to double
+    // (at most 15 significant digits in the normal range), the correctly
+    // rounded conversion is injective and monotonic, so the doubles compare
+    // exactly like the decimals (-0 == 0 included).
+    if !a.lossy && !b.lossy {
+        let (x, y) = (a.to_double(), b.to_double());
+        return x.partial_cmp(&y).expect("literals are never NaN");
+    }
+    literal_cmp_decimal(a, b)
+}
+
+/// `decNumberCompare` on the decimal representations.
+fn literal_cmp_decimal(a: &Literal, b: &Literal) -> Ordering {
     // Infinities.
     if a.inf || b.inf {
         let rank = |l: &Literal| -> i8 { if l.inf { if l.neg { -2 } else { 2 } } else { 0 } };
@@ -665,6 +704,7 @@ impl Number {
                     coeff: l.coeff.clone(),
                     exp: l.exp,
                     double: Cell::new(f64::NAN),
+                    lossy: l.lossy,
                 })))
             }
         }
@@ -680,6 +720,7 @@ impl Number {
                 coeff: l.coeff.clone(),
                 exp: l.exp,
                 double: Cell::new(f64::NAN),
+                lossy: l.lossy,
             }))),
         }
     }
@@ -909,6 +950,48 @@ mod tests {
             lit("100000000000000000001").compare(&Number::from_f64(1e20)),
             Equal
         );
+    }
+
+    #[test]
+    fn double_fast_path_agrees_with_decimal_compare() {
+        let mut x: u64 = 0x9e3779b97f4a7c15;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let lit_of = |r: u64, near: Option<&str>| -> String {
+            if let Some(n) = near {
+                // perturb the last digit(s) of another literal
+                let (mant, exp) = n.split_once('e').unwrap();
+                let d: i64 = mant.parse::<i64>().unwrap() + (r % 5) as i64 - 2;
+                return format!("{d}e{exp}");
+            }
+            let digits = 1 + r % 17; // up to 17 digits: some lossy
+            let m = (r >> 8) % 10u64.pow(digits as u32);
+            let e = ((r >> 40) % 640) as i64 - 320;
+            let neg = if (r >> 60) & 1 == 1 { "-" } else { "" };
+            format!("{neg}{m}e{e}")
+        };
+        for _ in 0..200_000 {
+            let a = lit_of(next(), None);
+            let b = if next() % 3 == 0 {
+                let base = a.trim_start_matches('-').to_string();
+                lit_of(next(), Some(&base))
+            } else {
+                lit_of(next(), None)
+            };
+            let (na, nb) = (lit(&a), lit(&b));
+            let (Repr::Literal(la), Repr::Literal(lb)) = (&na.0, &nb.0) else {
+                unreachable!()
+            };
+            assert_eq!(
+                literal_cmp(la, lb),
+                literal_cmp_decimal(la, lb),
+                "{a} vs {b}"
+            );
+        }
     }
 
     #[test]
