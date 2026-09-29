@@ -666,9 +666,153 @@ fn mutations(src: &[u8], per_program: usize) -> Vec<Vec<u8>> {
     out
 }
 
-/// Nesting depths around bison's 10000-state stack limit.
+/// Lexemes for random token soups: every token kind, lexer-state openers and closers,
+/// odd escapes and comments, and invalid bytes.
+const SOUP: &[&[u8]] = &[
+    b"as",
+    b"def",
+    b"module",
+    b"import",
+    b"include",
+    b"if",
+    b"then",
+    b"else",
+    b"elif",
+    b"reduce",
+    b"foreach",
+    b"end",
+    b"and",
+    b"or",
+    b"try",
+    b"catch",
+    b"label",
+    b"break",
+    b"f",
+    b"a::b",
+    b"true",
+    b"null",
+    b"not",
+    b"$__loc__",
+    b"$x",
+    b"$$$$x",
+    b"$",
+    b"@base64",
+    b"@",
+    b"@1",
+    b".a",
+    b".if",
+    b"..",
+    b".",
+    b".[",
+    b".5",
+    b"1",
+    b"1.5",
+    b"1e3",
+    b"1.",
+    b"007",
+    b"1e",
+    b"|",
+    b",",
+    b"=",
+    b"==",
+    b"!=",
+    b"<",
+    b"<=",
+    b">",
+    b">=",
+    b"+",
+    b"-",
+    b"*",
+    b"/",
+    b"%",
+    b"+=",
+    b"-=",
+    b"*=",
+    b"/=",
+    b"%=",
+    b"//=",
+    b"|=",
+    b"//",
+    b"?//",
+    b"?",
+    b":",
+    b";",
+    b"(",
+    b")",
+    b"[",
+    b"]",
+    b"{",
+    b"}",
+    b"\"a\"",
+    b"\"\"",
+    b"\"\\(",
+    b"\"",
+    b"\"\\x\"",
+    b"\"\\u12\"",
+    b"\"\\ud83d\"",
+    b"\"\\n",
+    b"\\(",
+    b"\\",
+    b"# c\n",
+    b"# c \\\n",
+    b"#\r\n",
+    b"#",
+    b" ",
+    b"\n",
+    b"\t",
+    b"\r",
+    b"`",
+    b"!",
+    b"\x80",
+    b"\xc3",
+    b"\xc3\xa9",
+    b"\x0b",
+];
+
+/// Random token soups (deterministic): mostly syntax errors that drive bison's error
+/// recovery through unusual states.
+fn soup_programs(count: usize) -> Vec<(String, Vec<u8>)> {
+    let mut rng = Rng(0x9E3779B97F4A7C15);
+    (0..count)
+        .map(|i| {
+            let len = 1 + rng.below(16);
+            let mut p = Vec::new();
+            for _ in 0..len {
+                p.extend_from_slice(SOUP[rng.below(SOUP.len())]);
+                match rng.below(4) {
+                    0 | 1 => p.push(b' '),
+                    2 => {}
+                    _ => p.push(b'\n'),
+                }
+            }
+            (format!("soup {i}"), p)
+        })
+        .collect()
+}
+
+/// Nesting depths around bison's 10000-state stack limit, and long chains.
 fn generated_programs() -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
+    // jq folds these while parsing, so they compile at any length
+    let n = 100_000;
+    out.push((
+        format!("chain-plus[{n}]"),
+        format!("1{}", "+1".repeat(n)).into_bytes(),
+    ));
+    out.push((
+        format!("chain-comma[{n}]"),
+        format!("[1{}]", ",1".repeat(n)).into_bytes(),
+    ));
+    for n in [3000usize, 3300, 3332, 3333, 3334, 3400] {
+        let pairs: Vec<String> = (0..n).map(|i| format!("a{i}:1")).collect();
+        out.push((
+            format!("object-pairs[{n}]"),
+            format!("{{{}}}", pairs.join(",")).into_bytes(),
+        ));
+    }
+    for n in [9990usize, 9995, 9996] {
+        out.push((format!("deep-neg[{n}]"), ("-".repeat(n) + "1").into_bytes()));
+    }
     for n in [9995usize, 9996, 9997, 9998, 10001] {
         out.push((
             format!("deep[{n}]"),
@@ -754,6 +898,16 @@ fn parse_vs_live_jq() {
     for (origin, src) in generated_programs() {
         if seen.insert(src.clone()) {
             cases.push((origin, src, true));
+        }
+    }
+    let soups: usize = std::env::var("QJ_SOUPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    for (origin, src) in soup_programs(soups) {
+        if seen.insert(src.clone()) {
+            let recorded = fnv1a(&src).is_multiple_of(40);
+            cases.push((origin, src, recorded));
         }
     }
     eprintln!("running jq on {} programs", cases.len());
