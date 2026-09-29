@@ -22,12 +22,9 @@ fn run_tool(cmd: &str, args: &[&str], input: &str) -> (String, bool) {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
+            // Ignore BrokenPipe — the child may exit before reading stdin
+            // (e.g. on a compile error).
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             child.wait_with_output()
         })
         .unwrap_or_else(|e| panic!("{cmd} failed to run: {e}"));
@@ -66,14 +63,17 @@ fn arb_scalar() -> BoxedStrategy<String> {
         (0i64..100).prop_map(|n| n.to_string()),
         // Use (0-N) for negatives to avoid CLI flag issues
         (1i64..100).prop_map(|n| format!("(0-{n})")),
-        // Avoid integer-valued floats like 100.0 — jq preserves ".0" for filter
-        // literals but strips it for computed results, and qj doesn't yet track
-        // raw text of filter literals (known limitation).
         prop_oneof![
             Just("0.5".to_string()),
             Just("1.5".to_string()),
             Just("3.14".to_string()),
             Just("99.9".to_string()),
+            // Literals jq keeps as written (decNumber) until arithmetic:
+            // `100.0` prints as 100.0, `1e2` as 1E+2
+            Just("100.0".to_string()),
+            Just("1e2".to_string()),
+            Just("1.50".to_string()),
+            Just("100000000000000000001".to_string()),
         ],
         "[a-z]{0,8}".prop_map(|s| format!("\"{s}\"")),
     ]
@@ -90,6 +90,10 @@ fn arb_json_input() -> BoxedStrategy<String> {
         (-100i64..-1).prop_map(|n| n.to_string()),
         Just("0.5".to_string()),
         Just("1.5".to_string()),
+        Just("1.0".to_string()),
+        Just("2.5E-3".to_string()),
+        Just("-0".to_string()),
+        Just("13911860366432393".to_string()),
         "[a-z]{0,6}".prop_map(|s| format!("\"{s}\"")),
     ];
 
@@ -197,7 +201,12 @@ fn arb_nullary_builtin() -> BoxedStrategy<String> {
         Just("isinfinite".to_string()),
         Just("isnormal".to_string()),
         Just("paths".to_string()),
-        Just("leaf_paths".to_string()),
+        // jq 1.8.1 has no leaf_paths; this is its old definition
+        Just("paths(scalars)".to_string()),
+        Just("tonumber".to_string()),
+        Just("toarray".to_string()),
+        Just("trim".to_string()),
+        Just("tostream".to_string()),
         Just("any".to_string()),
         Just("all".to_string()),
         Just("transpose".to_string()),

@@ -1,30 +1,25 @@
-/// Conformance gap tests — 9 jq.test cases that qj currently fails.
+/// Former conformance gaps: the 9 jq.test cases the old core failed unless
+/// `QJ_JQ_COMPAT=1` was set.
 ///
-/// All remaining gaps are bignum/arbitrary-precision related. qj uses i64/f64
-/// while jq uses arbitrary precision (have_decnum=true). These tests check
-/// `have_decnum` conditionals that qj doesn't match either branch of, or
-/// require exponents beyond f64 range.
+/// All of them are about jq 1.8.1's number model: jq is built with decNumber,
+/// so a number literal keeps its exact decimal value (for printing, tostring,
+/// tojson, negation, and comparisons between literals), arithmetic is f64,
+/// and `have_decnum` is true. qj's jq port follows that model by default, so
+/// these pass with no environment at all. They stay as regression tests,
+/// compared byte for byte with jq.test's expected lines (jq_diff runs the
+/// same cases against the jq binary).
 ///
-/// See `docs/COMPATIBILITY.md` for full analysis and options.
-///
-///   cargo test --release conformance_gaps -- --include-ignored    # all gaps
-///   cargo test --release gap_bignum -- --include-ignored          # bignum category
-///
-/// As each gap is fixed, remove the test (it will be covered by jq_conformance).
+///   cargo test --release conformance_gaps -- --ignored    # all
+///   cargo test --release gap_bignum -- --ignored          # bignum category
 mod common;
 
 /// Run qj with a filter and input, return stdout lines.
-fn run_jx(filter: &str, input: &str) -> Vec<String> {
-    run_jx_with_args(filter, input, &["-c", "--"])
-}
-
-/// Run qj with a filter, input, and extra args, return stdout lines.
-fn run_jx_with_args(filter: &str, input: &str, args: &[&str]) -> Vec<String> {
+fn run_qj(filter: &str, input: &str) -> Vec<String> {
     let qj = common::Tool {
         name: "qj".to_string(),
         path: env!("CARGO_BIN_EXE_qj").to_string(),
     };
-    match common::run_tool(&qj, filter, input, args) {
+    match common::run_tool(&qj, filter, input, &["-c", "--"]) {
         Some(output) => output
             .lines()
             .filter(|l| !l.is_empty())
@@ -34,32 +29,23 @@ fn run_jx_with_args(filter: &str, input: &str, args: &[&str]) -> Vec<String> {
     }
 }
 
-/// Check if qj output matches expected (JSON-aware comparison).
+/// Check qj's output lines against jq.test's expected lines, exactly: a
+/// JSON-level comparison would take 13911860366432383 for 13911860366432382.
 fn assert_gap(filter: &str, input: &str, expected: &[&str]) {
-    let actual = run_jx(filter, input);
-    let actual_refs: Vec<&str> = actual.iter().map(|s| s.as_str()).collect();
-    assert!(
-        common::json_lines_equal(&actual_refs, expected),
-        "filter: {}\ninput: {}\nexpected: {:?}\nactual:   {:?}",
-        filter,
-        input,
-        expected,
-        actual
+    let actual = run_qj(filter, input);
+    assert_eq!(
+        actual, expected,
+        "filter: {filter}\ninput: {input}\nexpected: {expected:?}\nactual:   {actual:?}"
     );
 }
 
 // ======================================================================
 // Category: Big number / arbitrary precision (have_decnum)
 // 9 test(s)
-//
-// qj uses i64/f64; jq with decnum uses arbitrary precision. These tests
-// check `have_decnum` conditionals. qj's i64 is *more accurate* than
-// jq-without-decnum for integers in the i64 range, but doesn't match
-// either branch of the conditional. See docs/COMPATIBILITY.md.
 // ======================================================================
 
-/// jq.test line 661: extreme exponents that overflow/underflow f64
-/// jq handles via decnum; qj: infinity/0
+/// jq.test line 661: exponents beyond f64's range, kept as decimal literals
+/// and printed in canonical form
 #[test]
 #[ignore]
 fn gap_bignum_line661_extreme_exponents() {
@@ -75,7 +61,7 @@ fn gap_bignum_line661_extreme_exponents() {
     );
 }
 
-/// jq.test line 2154: tostring on large int — qj preserves i64, test expects f64 loss
+/// jq.test line 2154: tostring on a large literal keeps its exact value
 #[test]
 #[ignore]
 fn gap_bignum_line2154_tostring_large_int() {
@@ -86,7 +72,7 @@ fn gap_bignum_line2154_tostring_large_int() {
     );
 }
 
-/// jq.test line 2158: tojson on large int — same precision mismatch
+/// jq.test line 2158: tojson on a large literal keeps its exact value
 #[test]
 #[ignore]
 fn gap_bignum_line2158_tojson_large_int() {
@@ -97,7 +83,7 @@ fn gap_bignum_line2158_tojson_large_int() {
     );
 }
 
-/// jq.test line 2162: equality of adjacent large ints — qj: false (correct), test expects true (f64)
+/// jq.test line 2162: adjacent large literals compare exactly, so unequal
 #[test]
 #[ignore]
 fn gap_bignum_line2162_large_int_equality() {
@@ -108,21 +94,22 @@ fn gap_bignum_line2162_large_int_equality() {
     );
 }
 
-/// jq.test line 2169: subtraction on large int — qj: 383 (correct i64), test expects 382 (f64)
+/// jq.test line 2169: subtraction is f64 arithmetic, so the result is
+/// ...382, not the exact ...383
 #[test]
 #[ignore]
 fn gap_bignum_line2169_large_int_subtract() {
     assert_gap(". - 10", "13911860366432393", &["13911860366432382"]);
 }
 
-/// jq.test line 2173: array element subtraction — same precision mismatch
+/// jq.test line 2173: the same, on an array element
 #[test]
 #[ignore]
 fn gap_bignum_line2173_array_large_int_subtract() {
     assert_gap(".[0] - 10", "[13911860366432393]", &["13911860366432382"]);
 }
 
-/// jq.test line 2177: object field subtraction — same precision mismatch
+/// jq.test line 2177: the same, on an object field
 #[test]
 #[ignore]
 fn gap_bignum_line2177_object_large_int_subtract() {
@@ -133,7 +120,7 @@ fn gap_bignum_line2177_object_large_int_subtract() {
     );
 }
 
-/// jq.test line 2182: negation + tojson — same precision mismatch
+/// jq.test line 2182: negation keeps the literal's exact value
 #[test]
 #[ignore]
 fn gap_bignum_line2182_negate_large_int() {
@@ -144,7 +131,8 @@ fn gap_bignum_line2182_negate_large_int() {
     );
 }
 
-/// jq.test line 2199: multiple large ints with addition — precision mismatches
+/// jq.test line 2199: `$n+0` converts to f64, which still equals the
+/// literal it came from
 #[test]
 #[ignore]
 fn gap_bignum_line2199_large_int_array_add() {
