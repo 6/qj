@@ -13,6 +13,7 @@ pub(crate) use bridge::{
     TAG_ARRAY_START, TAG_BOOL, TAG_DOUBLE, TAG_INT, TAG_NULL, TAG_OBJECT_START, TAG_STRING,
     decode_value,
 };
+pub use bridge::{Tape, TapeParser, tape_error};
 pub use types::{
     Document, JsonType, PaddedFile, Parser, iterate_many_count, iterate_many_extract_field,
     pad_buffer, padding, read_padded, read_padded_file,

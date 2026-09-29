@@ -14,6 +14,11 @@ pub(super) struct JxDomParser {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+pub(super) struct JxTapeParser {
+    _opaque: [u8; 0],
+}
+
 unsafe extern "C" {
     pub(super) fn jx_parser_new() -> *mut JxParser;
     pub(super) fn jx_parser_free(p: *mut JxParser);
@@ -241,4 +246,19 @@ unsafe extern "C" {
         out_ptr: *mut *mut c_char,
         out_len: *mut usize,
     ) -> i32;
+
+    // --- Tape access (src/io) ---
+
+    pub(super) fn jx_tape_parser_new() -> *mut JxTapeParser;
+    pub(super) fn jx_tape_parser_free(p: *mut JxTapeParser);
+    pub(super) fn jx_tape_parse(
+        p: *mut JxTapeParser,
+        buf: *const u8,
+        len: usize,
+        tape: *mut *const u64,
+        strings: *mut *const u8,
+        structurals: *mut *const u32,
+        n_structurals: *mut usize,
+    ) -> i32;
+    pub(super) fn jx_tape_parser_capacity(p: *mut JxTapeParser) -> usize;
 }

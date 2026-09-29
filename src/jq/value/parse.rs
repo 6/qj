@@ -201,6 +201,35 @@ impl Parser {
         }
     }
 
+    /// The position counters used in error messages: `(line, column)`.
+    pub fn position(&self) -> (i32, i32) {
+        (self.line, self.column)
+    }
+
+    /// A parser that continues a stream at a top-level text boundary, as if
+    /// input up to `line`/`column` had already been consumed. The input
+    /// start (and its BOM) is behind it, so no BOM is stripped.
+    pub fn resume(flags: ParseFlags, line: i32, column: i32) -> Parser {
+        let mut p = Parser::new(flags);
+        p.line = line;
+        p.column = column;
+        p.bom_strip_position = UTF8_BOM.len() as u8;
+        p
+    }
+
+    /// Whether the parser is between top-level texts with nothing pending:
+    /// no open container, partial token or string, or undelivered value.
+    pub fn is_idle(&self) -> bool {
+        self.st == State::Normal
+            && self.token.is_empty()
+            && self.next.is_none()
+            && if self.streaming() {
+                self.stacklen == 0 && self.output.is_none()
+            } else {
+                self.stack.is_empty()
+            }
+    }
+
     /// `parser_reset`.
     fn reset(&mut self) {
         if self.streaming() {
