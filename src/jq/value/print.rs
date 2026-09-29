@@ -1,0 +1,524 @@
+//! Port of jq's `jv_print.c`: JSON output with every dump flag (pretty with
+//! `--indent n` / `--tab`, compact, sorted keys, ASCII-only, colors with
+//! `JQ_COLORS`), plus `jv_dump_string` and `jv_dump_string_trunc`.
+//!
+//! Output is built in a byte buffer (flushed to the writer in large chunks),
+//! numbers use `itoa`/`ryu`, and string escaping copies unescaped runs.
+
+use std::io::{self, Write};
+
+use super::{Number, Value};
+
+/// Nesting depth after which jq prints `<skipped: too deep>` (`MAX_PRINT_DEPTH`).
+pub const MAX_PRINT_DEPTH: usize = 256;
+
+const ESC: &str = "\x1b";
+const COLRESET: &[u8] = b"\x1b[0m";
+
+/// jq's default palette (`DEFAULT_COLORS`): null, false, true, numbers,
+/// strings, arrays, objects, object keys.
+const DEFAULT_COLORS: [&str; 8] = [
+    "\x1b[0;90m",
+    "\x1b[0;39m",
+    "\x1b[0;39m",
+    "\x1b[0;39m",
+    "\x1b[0;32m",
+    "\x1b[1;39m",
+    "\x1b[1;39m",
+    "\x1b[1;34m",
+];
+
+/// The color palette (`colors[]` in jv_print.c): one escape sequence per
+/// kind in `jv_kind` order (null, false, true, number, string, array,
+/// object) plus the object-key color.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Colors {
+    codes: [String; 8],
+}
+
+impl Default for Colors {
+    fn default() -> Colors {
+        Colors {
+            codes: DEFAULT_COLORS.map(String::from),
+        }
+    }
+}
+
+impl Colors {
+    /// Port of `jq_set_colors`: parses a `JQ_COLORS` value (colon-separated
+    /// SGR parameters made of digits and `;`, at most 8; missing entries keep
+    /// their defaults, an empty string means all defaults). Returns `None`
+    /// on an invalid character (jq then warns `Failed to set $JQ_COLORS`
+    /// and keeps the defaults).
+    pub fn parse(spec: &str) -> Option<Colors> {
+        const COLORS_LEN: usize = 8;
+        let s = spec.as_bytes();
+        // Start of each color code, and one past the end of the last one.
+        let mut codes: Vec<usize> = Vec::with_capacity(COLORS_LEN + 1);
+        let mut pos = 0usize;
+        let mut num_colors = 0usize;
+        loop {
+            codes.push(pos);
+            while pos < s.len() && (s[pos].is_ascii_digit() || s[pos] == b';') {
+                pos += 1;
+            }
+            if pos >= s.len() || num_colors + 1 >= COLORS_LEN {
+                break;
+            } else if s[pos] != b':' {
+                return None; // invalid character
+            }
+            pos += 1;
+            num_colors += 1;
+        }
+        let mut colors = Colors::default();
+        if codes[num_colors] != pos {
+            // count the last color and store its end (plus one byte for
+            // consistency with starts); an empty last color is ignored
+            num_colors += 1;
+            codes.push(pos + 1);
+        } else if num_colors == 0 {
+            return Some(colors);
+        }
+        for ci in 0..num_colors {
+            let start = codes[ci];
+            let end = codes[ci + 1] - 1;
+            let code = &spec[start..end];
+            colors.codes[ci] = format!("{ESC}[{code}m");
+        }
+        Some(colors)
+    }
+
+    /// The escape sequence used for values of this kind.
+    fn for_value(&self, v: &Value) -> &[u8] {
+        let i = v.kind() as usize - 1;
+        self.codes[i].as_bytes()
+    }
+
+    fn field(&self) -> &[u8] {
+        self.codes[7].as_bytes()
+    }
+}
+
+/// Indentation style for pretty output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Indent {
+    /// Compact output (no `JV_PRINT_PRETTY`).
+    #[default]
+    Compact,
+    /// Pretty output with this many spaces per level (`--indent n`, 0..=7;
+    /// jq's default is 2).
+    Spaces(u8),
+    /// Pretty output indented with tabs (`--tab`, `--indent -1`).
+    Tab,
+}
+
+/// jq's dump flags (`JV_PRINT_*`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DumpOptions {
+    /// `JV_PRINT_PRETTY` + indent width, or compact.
+    pub indent: Indent,
+    /// `JV_PRINT_SORTED` (`-S`): object keys sorted at every level.
+    pub sort_keys: bool,
+    /// `JV_PRINT_ASCII` (`-a`): non-ASCII as `\uXXXX` escapes.
+    pub ascii: bool,
+    /// `JV_PRINT_COLOR` (`-C`) with this palette.
+    pub colors: Option<Colors>,
+}
+
+impl DumpOptions {
+    /// Compact output (flags 0, as used by `tojson`).
+    pub fn compact() -> DumpOptions {
+        DumpOptions::default()
+    }
+
+    /// jq's default output: pretty with 2 spaces.
+    pub fn pretty() -> DumpOptions {
+        DumpOptions {
+            indent: Indent::Spaces(2),
+            ..DumpOptions::default()
+        }
+    }
+
+    /// `JV_PRINT_INDENT_FLAGS(n)`: tab for `n < 0 || n > 7`, else `n` spaces.
+    pub fn with_indent(n: i32) -> DumpOptions {
+        DumpOptions {
+            indent: if !(0..=7).contains(&n) {
+                Indent::Tab
+            } else {
+                Indent::Spaces(n as u8)
+            },
+            ..DumpOptions::default()
+        }
+    }
+}
+
+/// Where the printer writes: a byte buffer that may be drained to a writer
+/// between elements.
+trait Sink {
+    fn buf(&mut self) -> &mut Vec<u8>;
+    /// Called between elements; may flush or abort the dump.
+    fn checkpoint(&mut self) -> io::Result<()>;
+}
+
+impl Sink for Vec<u8> {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        self
+    }
+    #[inline]
+    fn checkpoint(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+const FLUSH_AT: usize = 1 << 16;
+
+struct WriterSink<'w, W: Write> {
+    buf: Vec<u8>,
+    w: &'w mut W,
+}
+
+impl<W: Write> Sink for WriterSink<'_, W> {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+    #[inline]
+    fn checkpoint(&mut self) -> io::Result<()> {
+        if self.buf.len() >= FLUSH_AT {
+            self.w.write_all(&self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+}
+
+/// Stops the dump once more than `limit` bytes were produced.
+struct TruncSink {
+    buf: Vec<u8>,
+    limit: usize,
+}
+
+impl Sink for TruncSink {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+    #[inline]
+    fn checkpoint(&mut self) -> io::Result<()> {
+        if self.buf.len() > self.limit {
+            Err(io::Error::other("truncated"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Bytes that need escaping in a JSON string: control characters, `"`,
+/// `\` and DEL.
+static NEEDS_ESCAPE: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 0x20 {
+        t[i] = true;
+        i += 1;
+    }
+    t[b'"' as usize] = true;
+    t[b'\\' as usize] = true;
+    t[0x7F] = true;
+    t
+};
+
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+fn push_u_escape(out: &mut Vec<u8>, c: u32) {
+    out.extend_from_slice(b"\\u");
+    out.push(HEX[((c >> 12) & 0xF) as usize]);
+    out.push(HEX[((c >> 8) & 0xF) as usize]);
+    out.push(HEX[((c >> 4) & 0xF) as usize]);
+    out.push(HEX[(c & 0xF) as usize]);
+}
+
+/// Port of `jvp_dump_string`: a quoted, escaped JSON string.
+pub fn write_json_string(s: &str, ascii_only: bool, out: &mut Vec<u8>) {
+    let bytes = s.as_bytes();
+    out.reserve(bytes.len() + 2);
+    out.push(b'"');
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x80 {
+            if !NEEDS_ESCAPE[b as usize] {
+                i += 1;
+                continue;
+            }
+            out.extend_from_slice(&bytes[start..i]);
+            match b {
+                b'"' => out.extend_from_slice(b"\\\""),
+                b'\\' => out.extend_from_slice(b"\\\\"),
+                0x08 => out.extend_from_slice(b"\\b"),
+                b'\t' => out.extend_from_slice(b"\\t"),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                b'\n' => out.extend_from_slice(b"\\n"),
+                0x0C => out.extend_from_slice(b"\\f"),
+                _ => push_u_escape(out, b as u32),
+            }
+            i += 1;
+            start = i;
+        } else if ascii_only {
+            out.extend_from_slice(&bytes[start..i]);
+            let c = s[i..].chars().next().expect("char boundary");
+            let c32 = c as u32;
+            if c32 <= 0xFFFF {
+                push_u_escape(out, c32);
+            } else {
+                let c = c32 - 0x10000;
+                push_u_escape(out, 0xD800 | ((c & 0xFFC00) >> 10));
+                push_u_escape(out, 0xDC00 | (c & 0x003FF));
+            }
+            i += c.len_utf8();
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.extend_from_slice(&bytes[start..]);
+    out.push(b'"');
+}
+
+struct Printer<'o> {
+    opts: &'o DumpOptions,
+    /// Spaces per level (pretty) — ignored with tabs.
+    spaces: usize,
+    pretty: bool,
+    tab: bool,
+}
+
+impl Printer<'_> {
+    fn indent(&self, n: usize, out: &mut Vec<u8>) {
+        if self.tab {
+            out.resize(out.len() + n, b'\t');
+        } else {
+            out.resize(out.len() + n * self.spaces, b' ');
+        }
+    }
+
+    /// Port of `jv_dump_term`.
+    fn term<S: Sink>(&self, x: &Value, indent: usize, sink: &mut S) -> io::Result<()> {
+        let color = self.opts.colors.as_ref().map(|c| c.for_value(x));
+        if let Some(c) = color {
+            sink.buf().extend_from_slice(c);
+        }
+        if indent > MAX_PRINT_DEPTH {
+            sink.buf().extend_from_slice(b"<skipped: too deep>");
+        } else {
+            match x {
+                Value::Null => sink.buf().extend_from_slice(b"null"),
+                Value::Bool(false) => sink.buf().extend_from_slice(b"false"),
+                Value::Bool(true) => sink.buf().extend_from_slice(b"true"),
+                Value::Number(n) => self.number(n, indent, sink)?,
+                Value::String(s) => write_json_string(s.as_str(), self.opts.ascii, sink.buf()),
+                Value::Array(a) => {
+                    if a.is_empty() {
+                        sink.buf().extend_from_slice(b"[]");
+                    } else {
+                        sink.buf().push(b'[');
+                        for (i, elem) in a.iter().enumerate() {
+                            let out = sink.buf();
+                            if i != 0 {
+                                if let Some(c) = color {
+                                    out.extend_from_slice(c);
+                                }
+                                out.push(b',');
+                            }
+                            if color.is_some() {
+                                out.extend_from_slice(COLRESET);
+                            }
+                            if self.pretty {
+                                out.push(b'\n');
+                                self.indent(indent + 1, out);
+                            }
+                            self.term(elem, indent + 1, sink)?;
+                            sink.checkpoint()?;
+                        }
+                        let out = sink.buf();
+                        if self.pretty {
+                            out.push(b'\n');
+                            self.indent(indent, out);
+                        }
+                        if let Some(c) = color {
+                            out.extend_from_slice(c);
+                        }
+                        out.push(b']');
+                    }
+                }
+                Value::Object(o) => {
+                    if o.is_empty() {
+                        sink.buf().extend_from_slice(b"{}");
+                    } else {
+                        sink.buf().push(b'{');
+                        if self.opts.sort_keys {
+                            let mut keys: Vec<_> = o.iter().collect();
+                            keys.sort_by(|a, b| a.0.cmp(b.0));
+                            for (i, (k, v)) in keys.into_iter().enumerate() {
+                                self.field(i == 0, k.as_str(), v, color, indent, sink)?;
+                            }
+                        } else {
+                            for (i, (k, v)) in o.iter().enumerate() {
+                                self.field(i == 0, k.as_str(), v, color, indent, sink)?;
+                            }
+                        }
+                        let out = sink.buf();
+                        if self.pretty {
+                            out.push(b'\n');
+                            self.indent(indent, out);
+                        }
+                        if let Some(c) = color {
+                            out.extend_from_slice(c);
+                        }
+                        out.push(b'}');
+                    }
+                }
+            }
+        }
+        if color.is_some() {
+            sink.buf().extend_from_slice(COLRESET);
+        }
+        Ok(())
+    }
+
+    fn number<S: Sink>(&self, n: &Number, _indent: usize, sink: &mut S) -> io::Result<()> {
+        // NaN is dumped as a null term (with the null color when colored,
+        // since jv_dump_term recurses on jv_null()).
+        if n.is_nan() {
+            if let Some(colors) = &self.opts.colors {
+                let out = sink.buf();
+                out.extend_from_slice(colors.for_value(&Value::Null));
+                out.extend_from_slice(b"null");
+                out.extend_from_slice(COLRESET);
+            } else {
+                sink.buf().extend_from_slice(b"null");
+            }
+            return Ok(());
+        }
+        n.write_json(sink.buf());
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn field<S: Sink>(
+        &self,
+        first: bool,
+        key: &str,
+        value: &Value,
+        color: Option<&[u8]>,
+        indent: usize,
+        sink: &mut S,
+    ) -> io::Result<()> {
+        let out = sink.buf();
+        if !first {
+            if let Some(c) = color {
+                out.extend_from_slice(c);
+            }
+            out.push(b',');
+        }
+        if color.is_some() {
+            out.extend_from_slice(COLRESET);
+        }
+        if self.pretty {
+            out.push(b'\n');
+            self.indent(indent + 1, out);
+        }
+        if let Some(colors) = &self.opts.colors {
+            out.extend_from_slice(colors.field());
+        }
+        write_json_string(key, self.opts.ascii, out);
+        if color.is_some() {
+            out.extend_from_slice(COLRESET);
+        }
+        if let Some(c) = color {
+            out.extend_from_slice(c);
+        }
+        out.push(b':');
+        if color.is_some() {
+            out.extend_from_slice(COLRESET);
+        }
+        if self.pretty {
+            out.push(b' ');
+        }
+        self.term(value, indent + 1, sink)?;
+        sink.checkpoint()
+    }
+}
+
+fn printer(opts: &DumpOptions) -> Printer<'_> {
+    let (pretty, tab, spaces) = match opts.indent {
+        Indent::Compact => (false, false, 0),
+        Indent::Spaces(n) => (true, false, n as usize),
+        Indent::Tab => (true, true, 0),
+    };
+    Printer {
+        opts,
+        spaces,
+        pretty,
+        tab,
+    }
+}
+
+/// Appends the dump of `v` to `out` (`jv_dump_term` into a buffer).
+pub fn dump_to_vec(v: &Value, opts: &DumpOptions, out: &mut Vec<u8>) {
+    printer(opts)
+        .term(v, 0, out)
+        .expect("writing to a Vec cannot fail");
+}
+
+/// `jv_dumpf`: writes the dump of `v` to `w` (no trailing newline).
+pub fn dump<W: Write>(v: &Value, opts: &DumpOptions, w: &mut W) -> io::Result<()> {
+    let mut sink = WriterSink {
+        buf: Vec::with_capacity(4096),
+        w,
+    };
+    printer(opts).term(v, 0, &mut sink)?;
+    sink.w.write_all(&sink.buf)
+}
+
+/// `jv_dump_string`: the dump of `v` as a string.
+pub fn dump_string(v: &Value, opts: &DumpOptions) -> String {
+    let mut out = Vec::new();
+    dump_to_vec(v, opts, &mut out);
+    // The printer only emits valid UTF-8 (strings are valid, escapes ASCII).
+    String::from_utf8(out).expect("valid UTF-8")
+}
+
+/// Port of `jv_dump_string_trunc(x, outbuf, bufsize)`: the compact dump,
+/// cut to at most `bufsize - 1` bytes with a trailing `...` when it does
+/// not fit (without splitting a UTF-8 sequence). jq uses `bufsize` 15 or 30
+/// in error messages.
+pub fn dump_string_trunc(v: &Value, bufsize: usize) -> String {
+    let mut sink = TruncSink {
+        buf: Vec::new(),
+        limit: bufsize,
+    };
+    // An early stop only happens once the output is known to be too long.
+    let _ = printer(&DumpOptions::default()).term(v, 0, &mut sink);
+    let mut out = sink.buf;
+    // strlen(): the dump never contains NUL (it is escaped).
+    let len = out.len();
+    if bufsize == 0 {
+        return String::new();
+    }
+    if len > bufsize - 1 && bufsize >= 4 {
+        out.truncate(bufsize);
+        // Indicate truncation with '...' without breaking UTF-8.
+        let mut cut = bufsize - 4;
+        if let Some(s) = super::unicode::utf8_backtrack(&out, bufsize - 4, 0, None) {
+            cut = s;
+        }
+        out.truncate(cut);
+        out.extend_from_slice(b"...");
+    } else {
+        out.truncate(bufsize - 1);
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
