@@ -10574,6 +10574,13 @@ pass corpus/cli_io.toml:modulemeta-syntax-error:cli 6f2b6b457556
 pass corpus/cli_io.toml:names-lines-2:cli af36bcecea55
 pass corpus/cli_io.toml:names-lines:cli ea1a54ed251d
 pass corpus/cli_io.toml:no-color-with-color-flag:cli 677812aecfa1
+pass corpus/cli_io.toml:nul-file-then-bom:cli 05b384f9d09b
+pass corpus/cli_io.toml:nul-led-file-then-bad-bom:cli aa107f94f3ee
+pass corpus/cli_io.toml:nul-led-file-then-bom-inputs:cli 24d833c7842b
+pass corpus/cli_io.toml:nul-led-file-then-bom-slurp:cli 3fb98336f932
+pass corpus/cli_io.toml:nul-led-file-then-bom:cli 56e9b405d274
+pass corpus/cli_io.toml:nul-led-line-then-bom:cli 903c0fd0f5c8
+pass corpus/cli_io.toml:nul-led-stdin-then-bom:cli 1bb92b164c7a
 pass corpus/cli_io.toml:parse-error-input-then-file:cli d3994bec6213
 pass corpus/cli_io.toml:parse-error-then-file:cli 39d1c9b1bf6f
 pass corpus/cli_io.toml:raw-across-files:cli 588a93f3eb42
