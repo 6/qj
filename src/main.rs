@@ -50,10 +50,15 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 /// The process entry point, called by the C runtime.
 ///
-/// `argc`/`argv` are ignored: `qj::cli::run::main` takes the command line
-/// from `std::env::args_os`, which is the same list.
+/// # Safety
+///
+/// `argv` must be the C runtime's array of `argc` NUL-terminated strings,
+/// which is what the C runtime passes.
 #[unsafe(no_mangle)]
-pub extern "C" fn main(_argc: std::os::raw::c_int, _argv: *const *const u8) -> std::os::raw::c_int {
+pub unsafe extern "C" fn main(
+    argc: std::os::raw::c_int,
+    argv: *const *const u8,
+) -> std::os::raw::c_int {
     // Restore default SIGPIPE behavior so piping to `head` etc. exits cleanly
     // instead of producing BrokenPipe errors. (Rust's runtime would set
     // SIG_IGN, but it is not running; some shells and launchers pass SIG_IGN
@@ -64,12 +69,43 @@ pub extern "C" fn main(_argc: std::os::raw::c_int, _argv: *const *const u8) -> s
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    // SAFETY: argc and argv are the C runtime's, valid for this call.
+    let args = unsafe { command_line(argc, argv) };
     // qj is the jq 1.8.1 port: jq's main.c (src/cli/run.rs) on the ported
     // core (src/jq), reading input through src/io. It exits itself; this
     // returns only if that ever changes.
-    match std::panic::catch_unwind(qj::cli::run::main) {
-        Ok(never) => never,
-        // The runtime's exit status for a panic that reaches the top.
-        Err(_) => 101,
+    // A panic must not unwind out of an `extern "C"` function, and 101 is the
+    // exit status the runtime would give it.
+    std::panic::catch_unwind(move || qj::cli::run::main_with(args)).unwrap_or(101)
+}
+
+/// The command line as bytes.
+///
+/// `std::env::args_os` is the same list and handles every platform detail, so
+/// it is what qj uses; it works without the runtime's start-up because std
+/// captures `argv` in an `.init_array` entry on Linux and reads `_NSGetArgv`
+/// on macOS. `argc`/`argv` are the fallback, for the case where some future
+/// platform only fills the list in from `lang_start`.
+///
+/// # Safety
+///
+/// `argv` must be the C runtime's array of `argc` NUL-terminated strings.
+unsafe fn command_line(argc: std::os::raw::c_int, argv: *const *const u8) -> Vec<Vec<u8>> {
+    let from_std = qj::cli::args::argv_bytes();
+    if !from_std.is_empty() || argc <= 0 || argv.is_null() {
+        return from_std;
     }
+    (0..argc as usize)
+        .map(|i| {
+            // SAFETY: the caller guarantees argc entries, each either null
+            // or a valid NUL-terminated string.
+            let p = unsafe { *argv.add(i) };
+            if p.is_null() {
+                return Vec::new();
+            }
+            unsafe { std::ffi::CStr::from_ptr(p.cast()) }
+                .to_bytes()
+                .to_vec()
+        })
+        .collect()
 }
