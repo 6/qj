@@ -522,8 +522,18 @@ fn unparse_is_stable() {
     assert!(checked > 500, "{checked}");
 }
 
-fn run_jq(jq: &str, program: &[u8], input: &[u8]) -> (i32, String, String) {
-    use std::io::Write;
+/// Exit code recorded for a run that hit [`TIMEOUT`] (programs meant for one input can
+/// loop forever on another, e.g. `until(.; .)` on `null`).
+const TIMED_OUT: i32 = -1000;
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Output beyond this is not read (the program is then killed at the timeout).
+const MAX_OUTPUT: u64 = 1 << 20;
+
+/// A jq run: exit code, stdout, stderr.
+type Run = (i32, String, String);
+
+fn run_jq(jq: &str, program: &[u8], input: &[u8]) -> Run {
+    use std::io::{Read, Write};
     let mut child = Command::new(jq)
         .arg("-c")
         .arg("-L")
@@ -540,13 +550,56 @@ fn run_jq(jq: &str, program: &[u8], input: &[u8]) -> (i32, String, String) {
     let writer = std::thread::spawn(move || {
         let _ = stdin.write_all(&input);
     });
-    let out = child.wait_with_output().unwrap();
-    writer.join().unwrap();
+    let read_capped = |r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = r.take(MAX_OUTPUT).read_to_end(&mut buf);
+            buf
+        })
+    };
+    let stdout = read_capped(Box::new(child.stdout.take().unwrap()));
+    let stderr = read_capped(Box::new(child.stderr.take().unwrap()));
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let code = loop {
+        match child.try_wait().expect("wait failed") {
+            Some(status) => break status.code().unwrap_or(-1),
+            None if std::time::Instant::now() > deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break TIMED_OUT;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+    };
+    let _ = writer.join();
     (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+        code,
+        String::from_utf8_lossy(&stdout.join().unwrap()).into_owned(),
+        String::from_utf8_lossy(&stderr.join().unwrap()).into_owned(),
     )
+}
+
+/// Whether jq behaved the same on the original and the unparsed program. Compile
+/// errors mention columns, which differ, so only their exit code is compared; runs
+/// that both time out count as agreeing.
+fn same_behavior(a: &Run, b: &Run) -> bool {
+    if a.0 == TIMED_OUT || b.0 == TIMED_OUT {
+        return a.0 == b.0;
+    }
+    a.0 == b.0 && a.1 == b.1 && (a.0 == 3 || a.2 == b.2)
+}
+
+/// Runs `original` and `ours` and reports a difference only if jq reproduces the
+/// original's behavior (some jq builtins are nondeterministic, e.g. `0 | lgamma_r`
+/// returns an uninitialized sign on macOS).
+fn differs(jq: &str, original: &[u8], ours: &[u8], input: &[u8]) -> Option<(Run, Run)> {
+    let a = run_jq(jq, original, input);
+    let b = run_jq(jq, ours, input);
+    if same_behavior(&a, &b) || !same_behavior(&a, &run_jq(jq, original, input)) {
+        None
+    } else {
+        Some((a, b))
+    }
 }
 
 /// builtin.jq's AST, checked through jq: every upstream test program runs with all of
@@ -587,10 +640,7 @@ fn builtin_jq_roundtrip_vs_live_jq() {
                 scope.spawn(move || {
                     let mut failures = Vec::new();
                     for (origin, original, ours, input) in jobs {
-                        let a = run_jq(&jq, original, input);
-                        let b = run_jq(&jq, ours, input);
-                        let same = a.0 == b.0 && a.1 == b.1 && (a.0 == 3 || a.2 == b.2);
-                        if !same {
+                        if let Some((a, b)) = differs(&jq, original, ours, input) {
                             failures.push(format!(
                                 "{origin}: jq(builtin.jq): {a:?}\n  jq(unparsed): {b:?}"
                             ));
@@ -660,12 +710,7 @@ fn ast_roundtrip_vs_live_jq() {
                 scope.spawn(move || {
                     let mut failures = Vec::new();
                     for (origin, src, text, input) in jobs {
-                        let a = run_jq(&jq, src, input);
-                        let b = run_jq(&jq, text.as_bytes(), input);
-                        // Compile errors mention columns, which differ; compare the
-                        // rest verbatim.
-                        let same = a.0 == b.0 && a.1 == b.1 && (a.0 == 3 || a.2 == b.2);
-                        if !same {
+                        if let Some((a, b)) = differs(&jq, src, text.as_bytes(), input) {
                             failures.push(format!(
                                 "{origin}: {}\n  input: {}\n  unparsed: {text}\n  jq(original): {a:?}\n  jq(unparsed): {b:?}",
                                 String::from_utf8_lossy(src),
