@@ -127,6 +127,23 @@ pub fn normalize_stderr(stderr: &[u8]) -> Vec<u8> {
     out
 }
 
+/// [`normalize_stderr`] for stdout and stderr merged into one stream (CLI
+/// cases with `merge`): there, stdout's buffer is written out in blocks that
+/// split lines, so stderr's messages can start mid-line, and the `qj: `
+/// prefix is rewritten wherever it appears. User text reaches both tools'
+/// streams identically, so rewriting it on both sides can't hide a difference.
+pub fn normalize_merged(stream: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(stream.len());
+    let mut rest = stream;
+    while let Some(i) = memchr::memmem::find(rest, b"qj: ") {
+        out.extend_from_slice(&rest[..i]);
+        out.extend_from_slice(b"jq: ");
+        rest = &rest[i + 4..];
+    }
+    out.extend_from_slice(rest);
+    normalize_stderr(&out)
+}
+
 /// One tool's observable behavior for an invocation. `stderr` is normalized.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Observed {
