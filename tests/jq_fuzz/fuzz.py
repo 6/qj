@@ -117,14 +117,22 @@ def dec(x):
     return x.encode("utf-8")
 
 
-def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT):
-    """Run argv; stdin is bytes (piped or via a regular file) or None (/dev/null)."""
+def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT, stdout_tty=False,
+             merged=False):
+    """Run argv; stdin is bytes (piped or via a regular file) or None (/dev/null).
+    With stdout_tty, stdout is a pseudo-terminal (jq colors output by default
+    there); the terminal's output processing turns \\n into \\r\\n for both tools.
+    With merged, stderr goes to the same regular file as stdout (`>out 2>&1`), so
+    the order in which the two streams are written shows."""
     out_path = os.path.join(scratch, "out")
     err_path = os.path.join(scratch, "err")
     fout = open(out_path, "w+b")
     ferr = open(err_path, "w+b")
     fin = None
     writer = None
+    master = slave = None
+    tty_reader = None
+    tty_chunks = []
     try:
         if stdin is None:
             stdin_arg = subprocess.DEVNULL
@@ -136,8 +144,33 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT):
             stdin_arg = fin
         else:
             stdin_arg = subprocess.PIPE
-        p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=stdin_arg, stdout=fout, stderr=ferr,
-                             close_fds=True)
+        stdout_arg = fout
+        stderr_arg = ferr
+        if stdout_tty:
+            master, slave = os.openpty()
+            stdout_arg = slave
+        elif merged:
+            stderr_arg = fout  # `>out 2>&1`: one open file for both
+        p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=stdin_arg, stdout=stdout_arg,
+                             stderr=stderr_arg, close_fds=True)
+        if stdout_tty:
+            os.close(slave)
+            slave = None
+
+            def drain(fd=master):
+                total = 0
+                while True:
+                    try:
+                        b = os.read(fd, 65536)
+                    except OSError:
+                        break
+                    if not b:
+                        break
+                    total += len(b)
+                    if total <= MAX_OUTPUT + 1:
+                        tty_chunks.append(b)
+            tty_reader = threading.Thread(target=drain, daemon=True)
+            tty_reader.start()
         if stdin_arg is subprocess.PIPE:
             def feed(pipe=p.stdin, data=stdin):
                 try:
@@ -156,9 +189,11 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT):
         status = wait_capped(p, fout, ferr, timeout)
         if writer:
             writer.join(1)
+        if tty_reader:
+            tty_reader.join(2)
         fout.seek(0)
         ferr.seek(0)
-        out = fout.read(MAX_OUTPUT + 1)
+        out = b"".join(tty_chunks)[:MAX_OUTPUT + 1] if stdout_tty else fout.read(MAX_OUTPUT + 1)
         err = ferr.read(MAX_OUTPUT + 1)
         return Result(status, out, err)
     finally:
@@ -166,6 +201,12 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT):
         ferr.close()
         if fin:
             fin.close()
+        for fd in (master, slave):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 
 def wait_capped(p, fout, ferr, timeout):
@@ -263,6 +304,8 @@ class Case:
                  self.positional, self.env, self.prog_file)
         if getattr(self, "raw_args", None) is not None:
             c.raw_args = self.raw_args
+        c.stdout_tty = getattr(self, "stdout_tty", False)
+        c.merged = getattr(self, "merged", False)
         for k, v in kw.items():
             setattr(c, k, v)
         return c
@@ -293,7 +336,8 @@ class Case:
             args += self.positional[1]
         stdin = None if self.stdin is None else content_bytes(self.stdin)
         return {"args": args, "stdin": stdin, "stdin_mode": self.stdin_mode, "files": files,
-                "env": dict(self.env)}
+                "env": dict(self.env), "stdout_tty": getattr(self, "stdout_tty", False),
+                "merged": getattr(self, "merged", False)}
 
 
 def content_bytes(spec):
@@ -310,17 +354,21 @@ def inv_key(inv):
     for k in sorted(inv["files"]):
         h.update(b"\0file\0" + k.encode() + b"\0" + inv["files"][k])
     h.update(json.dumps(sorted(inv["env"].items())).encode())
+    h.update(b"tty" if inv.get("stdout_tty") else b"")
+    h.update(b"merged" if inv.get("merged") else b"")
     return h.hexdigest()
 
 
 def inv_to_json(inv):
     return {"args": inv["args"], "stdin": enc(inv["stdin"]), "stdin_mode": inv["stdin_mode"],
-            "files": {k: enc(v) for k, v in inv["files"].items()}, "env": inv["env"]}
+            "files": {k: enc(v) for k, v in inv["files"].items()}, "env": inv["env"],
+            "stdout_tty": inv.get("stdout_tty", False), "merged": inv.get("merged", False)}
 
 
 def inv_from_json(j):
     return {"args": j["args"], "stdin": dec(j["stdin"]), "stdin_mode": j.get("stdin_mode", "pipe"),
-            "files": {k: dec(v) for k, v in j["files"].items()}, "env": j.get("env", {})}
+            "files": {k: dec(v) for k, v in j["files"].items()}, "env": j.get("env", {}),
+            "stdout_tty": j.get("stdout_tty", False), "merged": j.get("merged", False)}
 
 
 # Everything a program could reference through the environment is pinned.
@@ -364,7 +412,8 @@ class Runner:
         self.runs += 1
         size = sum(len(v) for v in inv["files"].values()) + len(inv["stdin"] or b"")
         return run_proc([tool] + inv["args"], self.casedir, env, inv["stdin"], inv["stdin_mode"],
-                        self.scratch, TIMEOUT if size < (64 << 10) else 20.0)
+                        self.scratch, TIMEOUT if size < (64 << 10) else 20.0,
+                        stdout_tty=inv.get("stdout_tty", False), merged=inv.get("merged", False))
 
     def observe(self, inv, use_cache=True):
         """(jq result, qj result) for an invocation."""
@@ -374,6 +423,10 @@ class Runner:
         self.prepare(inv)
         j = self.run_tool(self.jq, inv)
         q = self.run_tool(self.qj, inv)
+        if inv.get("merged"):
+            # stderr text is in the stdout capture: normalize its program name.
+            j.stdout = normalize_stderr(j.stdout)
+            q.stdout = normalize_stderr(q.stdout)
         if use_cache:
             if len(self.cache) > 20000:
                 self.cache.clear()
@@ -410,7 +463,9 @@ def verdict(j, q):
 MODES = [
     (30, "general"), (13, "builtins"), (8, "values"), (11, "paths"), (9, "control"),
     (5, "regex"), (4, "dates"), (11, "cli"), (9, "parse"), (4, "debug"), (2, "runtests"),
-    (4, "progfile"), (3, "modules"), (3, "env"), (3, "bulk"),
+    (4, "progfile"), (3, "modules"), (3, "env"), (3, "bulk"), (3, "tty"),
+    # Opt-in (--modes merged) until qj flushes stdout like stdio: see gen_merged_case.
+    (0, "merged"),
 ]
 
 
@@ -446,6 +501,10 @@ def gen_case(r, only=None):
         return gen_env_case(r)
     if mode == "bulk":
         return gen_bulk_case(r)
+    if mode == "tty":
+        return gen_tty_case(r)
+    if mode == "merged":
+        return gen_merged_case(r)
     return gen_focused(r, mode)
 
 
@@ -541,6 +600,70 @@ def gen_modules_case(r):
                                  b'include "m";\n'])
         prog = r.choice([prog, "hello", "m", "[hello, m]?"])
     return Case(flags, prog, small_input(r) if r.random() < 0.3 else None, files=files)
+
+
+MERGED_PROGRAMS = [
+    "range({N}) | if . % {K} == {K1} then error(\"e\\(.)\") else . end",
+    "range({N}), error(\"x\")", "range({N}) | (., (select(. % {K} == 0) | debug | empty))",
+    "range({N}) | tostring | stderr", "range({N}) | (., (select(. % {K} == 0) | stderr | empty))",
+    "[range({N})] | .[] | if . == {N1} then error else . end", "range({N}) | tojson",
+    "range({N}), halt_error", "range({N}), (\"bye\\n\" | halt_error(3))",
+    "range({N}) | [., \"xxxxxxxxxxxxxxxx\"]", "range({N}) | {a: ., b: [., .]}",
+    "range({N}) | if . == {N1} then input else . end", ".[]? | if . == null then error else . end",
+    ".", ".[]?", "tostring", "debug", "stderr", "error?", "try error catch .",
+    "if type == \"number\" then error(\"n\") else . end",
+]
+
+
+def gen_merged_case(r):
+    """stdout and stderr into one file (`>out 2>&1`): the interleaving shows
+    where stdout's buffer is flushed relative to each stderr message.
+
+    Known divergence (src/cli/run.rs): jq's stdout is a stdio FILE whose buffer
+    is fstat(1).st_blksize (4096 for a regular file on macOS, 16384 for a pipe)
+    and is flushed each time it fills, at exact multiples of that size; qj
+    buffers 64 KB and flushes past the boundary. E.g.
+    `qj -n 'range(2000), error("x")' >out 2>&1` writes the error first."""
+    n = r.choice([10, 500, 1000, 2000, 4000, 20000, 30000])
+    k = r.choice([100, 333, 700, 1000, 5000])
+    prog = r.choice(MERGED_PROGRAMS)
+    prog = prog.replace("{N1}", str(n - 1)).replace("{N}", str(n)).replace(
+        "{K1}", str(k - 1)).replace("{K}", str(k))
+    flags = [["-c"]] if r.random() < 0.7 else [r.choice(gen.OUTPUT_FLAGS)]
+    if r.random() < 0.15:
+        flags.append(["--unbuffered"])
+    if "{" not in prog and "range(" in prog:
+        flags.append(["-n"])
+    spec = gen.gen_input_bytes(r) if r.random() < 0.5 else modes.gen_bulk_spec(r)
+    c = Case(flags, prog, spec)
+    c.merged = True
+    return c
+
+
+def gen_tty_case(r):
+    """stdout on a pseudo-terminal: jq colors by default there (unless NO_COLOR
+    is set and non-empty), and with no program runs `.` (stdin isn't a tty)."""
+    flags = []
+    if r.random() < 0.6:
+        flags.append(r.choice(gen.OUTPUT_FLAGS))
+    if r.random() < 0.2:
+        flags.append(r.choice([["-C"], ["-M"], ["-C", "-M"], ["-M", "-C"], ["-r"], ["-j"],
+                               ["--seq"], ["-a"], ["-S"], ["--tab"]]))
+    env = {}
+    if r.random() < 0.3:
+        env["NO_COLOR"] = r.choice(["", "1", "0", "x"])
+    if r.random() < 0.3:
+        env["JQ_COLORS"] = r.choice(gen.COLORS)
+    if r.random() < 0.3:
+        prog = gen.gen_program(r, depth=r.choice([1, 2]))
+    else:
+        prog = r.choice(modes.CLI_PROGRAMS)
+    stdin = small_input(r) if r.random() < 0.9 else None
+    c = Case(flags, prog, stdin, env=env)
+    if r.random() < 0.15:
+        c.raw_args = []  # no program: "." because stdin isn't a terminal
+    c.stdout_tty = True
+    return c
 
 
 def gen_env_case(r):
