@@ -64,7 +64,7 @@ only expectation. Levels: `pass` (all three match),
   `[[case]]` in `corpus/cli.toml`), run jq_diff, and fix it. `corpus/builtins_matrix.test` is
   generated: `python3 tests/jq_compat/corpus/gen_builtin_matrix.py`.
 - **Knobs:** `JQ_DIFF_FILTER=a,b` (id substrings), `JQ_DIFF_MODES=compact,pretty,file,ndjson,fail,cli`,
-  `JQ_DIFF_VERBOSE=1` (print every non-passing case), `JQ_DIFF_QJ_ENV="QJ_CORE=port"` (extra env,
+  `JQ_DIFF_VERBOSE=1` (print every non-passing case), `JQ_DIFF_QJ_ENV="QJ_CORE=old"` (extra env,
   given to jq too so `$ENV` stays comparable), `JQ_DIFF_BASELINE=path`, `JQ_DIFF_UPDATE_BASELINE=1`,
   `JQ_DIFF_JQ`/`JQ_DIFF_QJ` (binaries), `JQ_DIFF_TIMEOUT` (s, default 10), `JQ_DIFF_MEM_MB`
   (per-process RSS cap, default 2048), `JQ_DIFF_JOBS`.
@@ -76,8 +76,10 @@ only expectation. Levels: `pass` (all three match),
   `JQ_DIFF_UPDATE_BASELINE=1 cargo test --release jq_diff -- --ignored` and commit the baseline
   with the fix. Never regenerate the baseline to make a regression pass. Runs filtered with
   `JQ_DIFF_FILTER`/`JQ_DIFF_MODES` update only their cases. Entries match by fingerprint, so
-  moving a case within its file is fine. To measure the port:
-  `JQ_DIFF_QJ_ENV=QJ_CORE=port JQ_DIFF_BASELINE=tests/jq_compat/diff_baseline_port.txt`.
+  moving a case within its file is fine. The baseline is the port's (the default core):
+  `diff_baseline_port.txt`, its baseline while it was opt-in, was folded into it. To score the
+  old core while it still exists, without a ratchet, point `JQ_DIFF_BASELINE` at a file that
+  doesn't exist: `JQ_DIFF_QJ_ENV=QJ_CORE=old JQ_DIFF_BASELINE=target/tmp/no_baseline.txt`.
 - CI runs it on Linux. Until `diff_baseline_linux.txt` exists it only reports; the
   `jq-diff-linux` artifact has a `baseline_candidate.txt` to commit.
 - jq results are cached in `tests/jq_compat/.cache/jq_diff.json` (invalidated automatically).
@@ -262,9 +264,9 @@ hyperfine --warmup 1 './target/release/qj ".field" test.json' 'jq ".field" test.
 ```
 
 ### Environment variables
-- `QJ_CORE=port` — run on the jq 1.8.1 port (`src/jq`, `src/cli/run.rs`) instead of the old
-  evaluator. Until it becomes the default, measure it with
-  `JQ_DIFF_QJ_ENV=QJ_CORE=port JQ_DIFF_BASELINE=tests/jq_compat/diff_baseline_port.txt`.
+- `QJ_CORE=old` — run the old evaluator (`src/filter`, `flat_eval`, the NDJSON fast paths)
+  instead of the jq 1.8.1 port, for comparison. Temporary: the old core is being deleted.
+  `QJ_CORE=port`, the port's opt-in before it became the default, is a no-op.
 - `QJ_WINDOW_SIZE=N` — NDJSON streaming window size in megabytes. Default is `num_cores × 2` MB
   (floor 8 MB). Larger values use more memory but may help on machines with many cores.
 - `QJ_NO_MMAP=1` — Disable mmap for file I/O (use heap allocation instead).
