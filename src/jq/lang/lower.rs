@@ -10,7 +10,7 @@
 //! # Depth
 //!
 //! jq runs these actions as bison reduces, so it never recurses over the tree. Here
-//! the tree is walked in post-order with an explicit stack ([`Lowerer::run`]): a
+//! the tree is walked in post-order with an explicit stack (`Lowerer::run`): a
 //! node's action runs once its children's blocks are on the result stack. Nesting
 //! is bounded only by the parser (about 10000 states), and left-associative chains
 //! (`1 + 1 + ... + 1`, `.a.b.c...`) are unbounded, so recursion could overflow a
