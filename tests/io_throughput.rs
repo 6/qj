@@ -185,6 +185,66 @@ fn profile_loop() {
     eprintln!("{n} values");
 }
 
+/// Parse + run a program on the port's VM + print, through the engine.
+/// `cargo test --release --test io_throughput vm_sanity -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn vm_sanity() {
+    use qj::jq::lang::execute::Jq;
+    use qj::jq::lang::{CompileOptions, jq_compile_args};
+    use qj::jq::value::print::dump_to_vec;
+
+    struct W(Jq);
+    impl parallel::RecordWorker for W {
+        fn process(
+            &mut self,
+            v: qj::jq::value::Value,
+            _meta: &parallel::RecordMeta<'_>,
+            out: &mut Vec<u8>,
+            _err: &mut Vec<u8>,
+        ) -> i32 {
+            self.0.start(v, 0);
+            while let Some(Ok(v)) = self.0.next() {
+                dump_to_vec(&v, &DumpOptions::compact(), out);
+                out.push(b'\n');
+            }
+            0
+        }
+    }
+    struct F(&'static str);
+    impl parallel::WorkerFactory for F {
+        type Worker = W;
+        fn new_worker(&self) -> W {
+            W(Jq::new(
+                jq_compile_args(self.0.as_bytes(), &CompileOptions::new("/usr/bin")).unwrap(),
+            ))
+        }
+    }
+    let data = synthetic_ndjson(100_000);
+    let mb = data.len() as f64 / 1e6;
+    for program in [".", ".actor.login", "select(.public) | .id"] {
+        for threads in [0, 16] {
+            let t = Instant::now();
+            let mut m = MemoryOpener::new();
+            m.add("f", data.clone());
+            let mut r =
+                InputReader::with_opener(vec!["f".into()], ReaderOptions::default(), Box::new(m));
+            let mut sink = Count(0);
+            let opts = EngineOptions {
+                threads,
+                ..EngineOptions::default()
+            };
+            parallel::run(&mut r, &F(program), &mut sink, &opts);
+            let dt = t.elapsed().as_secs_f64();
+            eprintln!(
+                "{program:24} {threads:2} threads: {:.0} MB/s ({} bytes out)",
+                mb / dt,
+                sink.0
+            );
+        }
+    }
+}
+
 struct Count(usize);
 
 impl RecordSink for Count {
