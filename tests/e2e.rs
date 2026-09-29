@@ -6099,56 +6099,21 @@ fn negative_zero_ndjson_fast_path() {
 }
 
 #[test]
-fn negative_zero_ndjson_normal_path() {
-    // NDJSON normal path (no fast path) should also preserve -0.
-    // Uses QJ_NO_FAST_PATH=1 to force the DOM eval path.
-    let input = "{\"count\":-0}\n{\"count\":1}\n";
-    let filter = ".count";
-
-    let qj_out = Command::new(env!("CARGO_BIN_EXE_qj"))
-        .args(["-c", filter])
-        .env("QJ_NO_FAST_PATH", "1")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            // Ignore BrokenPipe — the child may exit before we finish writing.
-            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
-            child.wait_with_output()
-        })
-        .expect("failed to run qj");
-
-    let jq_out = Command::new("jq")
-        .args(["-c", filter])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            // Ignore BrokenPipe — the child may exit before we finish writing.
-            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
-            child.wait_with_output()
-        })
-        .expect("failed to run jq");
-
-    let qj_stdout = String::from_utf8_lossy(&qj_out.stdout);
-    let jq_stdout = String::from_utf8_lossy(&jq_out.stdout);
-    assert_eq!(
-        qj_stdout, jq_stdout,
-        "NDJSON normal path -0 mismatch: qj={:?} jq={:?}",
-        qj_stdout, jq_stdout
-    );
+fn negative_zero_ndjson_file() {
+    // The same NDJSON as a file argument (memory-mapped, and split into jobs
+    // for the parallel engine) keeps -0 too.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("in.ndjson");
+    std::fs::write(&path, "{\"count\":-0}\n{\"count\":1}\n").unwrap();
+    assert_jq_compat_strict(&["-c", ".count", path.to_str().unwrap()], "");
 }
 
 // =============================================================================
-// Passthrough fast path differential tests
+// Passthrough differential tests
 //
-// These tests systematically verify that the C++ simdjson passthrough paths
-// produce output identical to jq across diverse inputs. Each passthrough
-// variant is tested with edge-case inputs: unicode, special characters in keys,
+// These tests were written for the old core's C++ simdjson passthroughs
+// (removed with it). They compare qj with jq on the shapes those passthroughs
+// handled, across edge-case inputs: unicode, special characters in keys,
 // empty containers, deeply nested data, large/negative/float numbers, null
 // values, and mixed-type arrays.
 // =============================================================================
@@ -8411,4 +8376,52 @@ fn stream_errors_nested() {
         &["--stream-errors", "-c", "."],
         r#"{"a":{"b":1},"c":[2,3]}"#,
     );
+}
+
+// =========================================================================
+// Process behavior (from the former tests/cli_conformance.rs)
+// =========================================================================
+
+#[test]
+fn sigpipe_exits_quietly() {
+    // Pipe large output through a process that reads one line and closes.
+    // qj should exit cleanly without error messages on stderr.
+    use std::process::Stdio;
+    let mut qj = Command::new(env!("CARGO_BIN_EXE_qj"))
+        .args(["-nc", "[range(100000)][]"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn qj");
+
+    let qj_stdout = qj.stdout.take().unwrap();
+    // head -1: read one line, then close the pipe
+    let head = Command::new("head")
+        .args(["-1"])
+        .stdin(qj_stdout)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .expect("failed to run head");
+
+    let qj_out = qj.wait_with_output().expect("failed to wait on qj");
+    let stderr = String::from_utf8_lossy(&qj_out.stderr);
+    assert!(
+        stderr.is_empty(),
+        "qj should not produce stderr on SIGPIPE, got: {stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        "0",
+        "head should capture first line"
+    );
+}
+
+#[test]
+fn version_exits_zero() {
+    // qj's version text is its own (exempt from comparison with jq).
+    let (code, stdout, _) = qj_exit(&["--version"], "");
+    assert_eq!(code, 0, "qj --version should exit 0");
+    assert!(!stdout.is_empty(), "qj --version should produce output");
 }
