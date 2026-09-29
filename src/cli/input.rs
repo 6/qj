@@ -197,6 +197,19 @@ impl Read for StdinReader {
     }
 }
 
+/// Opens an input by name when util.c would: `-` (standard input, opened
+/// once), or `fopen(name, "r")`.
+pub type Opener = Box<dyn FnMut(&[u8]) -> io::Result<Box<dyn Read>>>;
+
+/// The file system and standard input.
+fn default_open(name: &[u8]) -> io::Result<Box<dyn Read>> {
+    if name == b"-" {
+        Ok(Box::new(StdinReader))
+    } else {
+        open_file(name)
+    }
+}
+
 /// `fopen(name, "r")`, plus qj's transparent decompression.
 fn open_file(name: &[u8]) -> io::Result<Box<dyn Read>> {
     let path = OsStr::from_bytes(name);
@@ -266,6 +279,7 @@ pub struct UtilInput {
     buf_valid_len: usize,
     current_filename: Option<Str>,
     current_line: u64,
+    open: Opener,
     on_message: Box<dyn FnMut(InputMessage)>,
 }
 
@@ -274,6 +288,11 @@ impl UtilInput {
     /// `jq_util_input_add_input` calls: `files` in order (`-` is standard
     /// input; jq passes `["-"]` when there are no file arguments).
     pub fn new(files: Vec<Vec<u8>>, opts: InputOptions) -> UtilInput {
+        UtilInput::with_opener(files, opts, Box::new(default_open))
+    }
+
+    /// Like [`UtilInput::new`], opening inputs with `open`.
+    pub fn with_opener(files: Vec<Vec<u8>>, opts: InputOptions, open: Opener) -> UtilInput {
         let parser = (!opts.raw).then(|| Parser::new(opts.flags));
         let slurped = match (opts.slurp, opts.raw) {
             (true, true) => Some(Value::String(Str::new())),
@@ -292,6 +311,7 @@ impl UtilInput {
             buf_valid_len: 0,
             current_filename: None,
             current_line: 0,
+            open,
             on_message: Box::new(|m| {
                 use std::io::Write;
                 let _ = io::stderr().write_all(&m.render("qj"));
@@ -378,12 +398,15 @@ impl UtilInput {
                 self.current_line = 0;
                 if f == b"-" {
                     self.current_filename = Some(Str::from("<stdin>"));
-                    self.stdin
-                        .get_or_insert_with(|| Stream::new(Box::new(StdinReader)));
+                    if self.stdin.is_none() {
+                        // (Standard input is always open in jq.)
+                        let r = (self.open)(b"-").unwrap_or_else(|_| Box::new(io::empty()));
+                        self.stdin = Some(Stream::new(r));
+                    }
                     self.current = Some(Current::Stdin);
                 } else {
                     self.current_filename = Some(Str::from_bytes(&f));
-                    match open_file(&f) {
+                    match (self.open)(&f) {
                         Ok(r) => self.current = Some(Current::File(Stream::new(r))),
                         Err(error) => {
                             (self.on_message)(InputMessage::OpenFailed { name: f, error });
@@ -486,3 +509,6 @@ impl UtilInput {
         value.map(|v| Ok(Value::String(v)))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -724,3 +724,6 @@ fn run_program(opts: &Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     }
     (close_stdout(ret), last_result)
 }
+
+#[cfg(test)]
+mod tests;
