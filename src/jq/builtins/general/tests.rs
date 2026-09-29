@@ -139,16 +139,18 @@ fn fixture_matrix() {
 }
 
 #[test]
-fn type_names_are_shared_but_copied_before_a_change() {
+fn type_returns_a_new_string_each_time() {
+    // jq allocates the kind name anew on every call, and `--debug-trace` prints
+    // refcounts (`"number" (1)`), so the result must not be a shared string.
     use crate::jq::builtins::binops::f_plus;
     use crate::jq::builtins::general::f_type;
     let mut host = TestHost::default();
     let t = f_type(&mut host, parse("1"), &mut []).unwrap();
-    // `type + "!"` must not append to the cached "number".
+    let again = f_type(&mut host, parse("2"), &mut []).unwrap();
+    assert_eq!((t.refcount(), again.refcount()), (1, 1));
     let mut args = [t, parse("\"!\"")];
     let r = f_plus(&mut host, Value::Null, &mut args).unwrap();
     assert_eq!(r.to_json(), "\"number!\"");
-    let again = f_type(&mut host, parse("2"), &mut []).unwrap();
     assert_eq!(again.to_json(), "\"number\"");
 }
 

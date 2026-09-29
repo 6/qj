@@ -1,0 +1,34 @@
+# Divergences found by the differential fuzzer (tests/jq_fuzz), minimized, in
+# the CLI case format (tests/jq_diff/cli.rs). jq_diff runs each with exactly
+# these args, stdin, files and env and compares stdout, exit code and stderr
+# byte for byte. Filter/input-shaped finds are in fuzz_found.test.
+
+# ---------------------------------------------------------------------------
+# --debug-trace prints every value's refcount (jv_dump with JV_PRINT_REFCOUNT),
+# so builtins must return new strings where jq allocates them, not shared ones.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "trace-type-result-is-a-new-string"
+args = ["-c", "--debug-trace", "[.[] | type]"]
+stdin = '[1,"a",null]'
+note = "type used to return one shared string per kind: \"number\" (2) instead of (1)"
+
+[[case]]
+name = "trace-type-in-select"
+args = ["-c", "--debug-trace", "arrays"]
+stdin = '[]'
+
+[[case]]
+name = "trace-type-all"
+args = ["-c", "--debug-trace=all", "type == \"a\""]
+stdin = '{}'
+
+[[case]]
+name = "trace-match-keys-are-new-strings"
+args = ["-nc", "--debug-trace", '"a" | match("(?<x>a)") | keys_unsorted, (.captures[0] | keys)']
+note = "match and capture object keys used to be shared strings: \"offset\" (2) instead of (1)"
+
+[[case]]
+name = "trace-match-keys-in-paths"
+args = ["-nc", "--debug-trace", '"ab" | [match("(?<x>.)"; "g")] | [paths] | .[0]']

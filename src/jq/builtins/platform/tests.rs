@@ -326,6 +326,35 @@ fn regex_corpus_matches_jq() {
 }
 
 #[test]
+fn match_object_keys_are_not_shared() {
+    // jq allocates every key of every match and capture object anew. Keys become
+    // values (`keys`, `paths`), and `--debug-trace` prints their refcounts:
+    // `"a" | match("a") | keys_unsorted` shows `["offset" (1),...]`.
+    let out = call(
+        "_match_impl",
+        json(r#""aa""#),
+        vec![json(r#""(?<n>a)""#), json(r#""g""#), json("false")],
+    )
+    .unwrap();
+    let Value::Array(matches) = out else {
+        panic!("not an array: {}", out.to_json())
+    };
+    for m in matches.iter() {
+        let obj = m.as_object().unwrap();
+        for (k, v) in obj.iter() {
+            assert_eq!(k.refcount(), 1, "match key {}", k.as_str());
+            if let Value::Array(caps) = v {
+                for c in caps.iter() {
+                    for (ck, _) in c.as_object().unwrap().iter() {
+                        assert_eq!(ck.refcount(), 1, "capture key {}", ck.as_str());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn match_object_key_orders() {
     // A match is offset, length, string, captures. A non-empty capture of a non-empty
     // match is offset, length, string, name; any other capture is offset, string,

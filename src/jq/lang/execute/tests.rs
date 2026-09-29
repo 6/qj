@@ -552,19 +552,13 @@ fn check_trace(program: &str, input: &str, flags: u32) {
             }
         }
         let got = String::from_utf8(out.0.borrow().clone()).unwrap();
-        // Refcounts included: the VM holds the same references as jq. (Set
-        // TRACE_IGNORE_REFCOUNTS to compare without them.) `type` returns shared
-        // kind-name strings (jq allocates a fresh one each time), so programs using it
-        // are compared without refcounts.
-        let uses_type = ["type", "numbers", "strings", "arrays", "objects"]
-            .iter()
-            .any(|w| program.contains(w));
-        let (want_stdout, got) =
-            if uses_type || std::env::var_os("TRACE_IGNORE_REFCOUNTS").is_some() {
-                (strip_refcounts(&want.stdout), strip_refcounts(&got))
-            } else {
-                (want.stdout.clone(), got)
-            };
+        // Refcounts included: the VM and the builtins hold the same references as jq.
+        // (Set TRACE_IGNORE_REFCOUNTS to compare without them.)
+        let (want_stdout, got) = if std::env::var_os("TRACE_IGNORE_REFCOUNTS").is_some() {
+            (strip_refcounts(&want.stdout), strip_refcounts(&got))
+        } else {
+            (want.stdout.clone(), got)
+        };
         if got != want_stdout {
             let g: Vec<&str> = got.lines().collect();
             let w: Vec<&str> = want_stdout.lines().collect();
@@ -606,6 +600,15 @@ fn traces_match_jq() {
         ("[range(0; 10; 3)]", "null"),
         ("$__loc__", "null"),
         ("[.[] | .a?]", "[1,{\"a\":2}]"),
+        // Builtins return new strings, not shared ones (found by tests/jq_fuzz).
+        ("[.[] | type]", "[1,\"a\",null]"),
+        ("[.. | numbers]", "[1,[2]]"),
+        ("type as $t | [$t, type]", "{}"),
+        (
+            "match(\"(?<x>a)\") | keys_unsorted, (.captures[0] | keys)",
+            "\"a\"",
+        ),
+        ("[match(\"a\"; \"g\")] | [paths]", "\"aa\""),
     ] {
         check_trace(program, input, JQ_DEBUG_TRACE);
     }
