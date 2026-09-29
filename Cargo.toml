@@ -20,10 +20,12 @@ exclude = [
 ]
 
 [features]
-bench = []
+# The benchmark drivers (benches/bench_tools.rs, bench_mem.rs) parse their
+# arguments with clap; qj itself parses jq's command line (src/cli/args.rs).
+bench = ["dep:clap"]
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 anyhow = "1"
 libc = "0.2"
 memchr = "2"

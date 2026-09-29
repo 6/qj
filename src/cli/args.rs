@@ -601,8 +601,9 @@ pub fn dirname(path: &[u8]) -> Vec<u8> {
     }
 }
 
-/// `strerror(errnum)`.
-fn strerror(errnum: i32) -> Vec<u8> {
+/// `strerror(errnum)`: the C library's text, which jq prints (Rust's
+/// `io::Error` adds " (os error N)").
+pub fn strerror(errnum: i32) -> Vec<u8> {
     let mut buf = [0 as c_char; 512];
     // SAFETY: `buf` is writable for its length; strerror_r (the XSI version,
     // which the libc crate binds on glibc too) NUL-terminates it.
