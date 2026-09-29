@@ -180,7 +180,7 @@ const FEW_KEYS: usize = 16;
 /// A cheap summary of a key: equal keys have equal fingerprints. (Length
 /// and the first and last 8 bytes, read with overlapping loads.)
 #[inline]
-fn fingerprint(b: &[u8]) -> u64 {
+pub(crate) fn fingerprint(b: &[u8]) -> u64 {
     let n = b.len();
     let (a, z) = if n >= 8 {
         (
@@ -201,6 +201,25 @@ fn fingerprint(b: &[u8]) -> u64 {
         (0, 0)
     };
     a ^ z.rotate_left(29) ^ (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// `a == b`, with overlapping loads rather than a call to `memcmp` for up
+/// to 16 bytes.
+#[inline]
+pub(crate) fn short_eq(a: &[u8], b: &[u8]) -> bool {
+    let n = a.len();
+    if n != b.len() {
+        return false;
+    }
+    let word = |s: &[u8], i: usize| u64::from_le_bytes(s[i..i + 8].try_into().expect("8 bytes"));
+    let half = |s: &[u8], i: usize| u32::from_le_bytes(s[i..i + 4].try_into().expect("4 bytes"));
+    match n {
+        0 => true,
+        1..=3 => a[0] == b[0] && a[n / 2] == b[n / 2] && a[n - 1] == b[n - 1],
+        4..=7 => half(a, 0) == half(b, 0) && half(a, n - 4) == half(b, n - 4),
+        8..=16 => word(a, 0) == word(b, 0) && word(a, n - 8) == word(b, n - 8),
+        _ => a == b,
+    }
 }
 
 impl Scratch {

@@ -29,6 +29,7 @@
 //! for values and error messages. This module never produces an error of its
 //! own.
 
+use super::tape::{fingerprint, short_eq};
 use crate::jq::value::number::Serials;
 use crate::jq::value::{Array, Number, Object, Str, Value, hash_key};
 use crate::simdjson::{Tape, TapeParser, padding};
@@ -69,7 +70,7 @@ pub struct SimdParser {
 /// (`path_intact` in jq's execute.c), which keys never are. Every key the
 /// cache returns has its hash cached ([`Str::key_hash`]).
 struct KeyCache {
-    slots: Box<[Option<(u64, Str)>]>,
+    slots: Box<[Option<Str>]>,
 }
 
 const KEY_SLOTS: usize = 1024;
@@ -82,24 +83,27 @@ impl KeyCache {
         }
     }
 
+    /// The key as a string, from the cache when it's there. (Slots are
+    /// picked by a cheap fingerprint; a key's own hash is only computed
+    /// for a new string.)
     #[inline]
     fn get(&mut self, key: &str) -> Str {
-        let h = hash_key(key.as_bytes());
-        if key.len() > MAX_CACHED_KEY {
+        let b = key.as_bytes();
+        if b.len() > MAX_CACHED_KEY {
             let s = Str::from(key);
-            s.set_key_hash(h);
+            s.set_key_hash(hash_key(b));
             return s;
         }
-        let slot = &mut self.slots[h as usize & (KEY_SLOTS - 1)];
-        if let Some((sh, s)) = slot
-            && *sh == h
-            && s.as_bytes() == key.as_bytes()
+        let f = fingerprint(b).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let slot = &mut self.slots[(f >> 54) as usize];
+        if let Some(s) = slot
+            && short_eq(s.as_bytes(), b)
         {
             return s.clone();
         }
         let s = Str::from(key);
-        s.set_key_hash(h);
-        *slot = Some((h, s.clone()));
+        s.set_key_hash(hash_key(b));
+        *slot = Some(s.clone());
         s
     }
 }

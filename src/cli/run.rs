@@ -92,7 +92,9 @@ pub fn main_with(argv: Vec<Vec<u8>>) -> ! {
 /// when stdout is a terminal (line buffering), when a builtin aborts on macOS,
 /// before a terminal is read, and when stdout is closed at the end. jq writes
 /// JSON a character or token at a time, which [`Stdout::write`] models, and
-/// a `-r` string with one `fwrite` ([`Stdout::fwrite`]).
+/// a `-r` string with one `fwrite` ([`Stdout::fwrite`]). A dump is printed
+/// into the buffer, which writes out its whole buffers while it grows (see
+/// the `DumpSink` impl): the same flushes, without holding a large output.
 pub(super) struct Stdout {
     buf: Vec<u8>,
     /// The buffer size; 0 until the first write, when stdio allocates it.

@@ -30,7 +30,10 @@
 //! [`RecordSink`]: output bytes, stderr bytes, and the worker's status for
 //! each record. jq's exit status depends on the order (the last record's
 //! `process()` result wins), so the sink can fold them exactly as `main.c`
-//! does.
+//! does. A record the calling thread reads itself comes after everything
+//! the sink has been handed, so its worker may write its outputs where the
+//! sink would, as they're made ([`RecordWorker::process_direct`],
+//! [`WorkerFactory::new_direct_tape`]): a large output isn't held.
 //!
 //! **When not to use it.** The engine is only correct when records are
 //! independent. The CLI must process sequentially (`threads: 0`, or its
@@ -39,8 +42,10 @@
 //! whose output interleaving or state spans records (`debug`, `stderr`,
 //! `input_line_number`... unless the worker answers them from
 //! [`RecordMeta`], `$__loc__`, `limit` over `inputs`, `-s`, `-n`, `--seq`,
-//! `--stream`). It is also pointless for a single large document (there's
-//! one record), and gains little on inputs whose texts mostly span lines.
+//! `--stream`). It gains nothing on a single large document (there's one
+//! record: a job holding all the rest of a complete input, with nothing
+//! else in flight, isn't cut, and the calling thread reads it itself), and
+//! little on inputs whose texts mostly span lines.
 
 use std::collections::{HashMap, VecDeque};
 use std::ops::ControlFlow;
