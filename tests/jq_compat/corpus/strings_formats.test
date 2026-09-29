@@ -1,0 +1,206 @@
+# String builtins, @formats, regex and conversions
+# Source: orchestrator audit probe catprobe.py ['strings/formats']
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+@csv
+[1, "a,b", "c\"d", null, true, 1.5]
+
+@tsv
+[1, "a\tb", "c\\d", "e\nf", null, true, "g\rh"]
+
+@sh
+[1, "a b", "it's", null, false]
+
+try @sh catch .
+{"a":1}
+
+try @csv catch .
+[[1]]
+
+@html
+"<a href=\"x\">'&'</a>"
+
+@uri
+"a b&c=d/é?~-_.!*'()"
+
+@urid
+"a%20b%zz%"
+
+@base64, (@base64 | @base64d)
+"hello é"
+
+@base32, (@base32 | @base32d)
+"hello"
+
+@base64d
+"aGVsbG8"
+
+@json "x\(.)"
+[1,"a"]
+
+@text "v=\(.)"
+{"a":1}
+
+@sh "echo \(.)"
+"a b"
+
+@csv "\(.)"
+[1,"x"]
+
+[.[] | tojson]
+["\u0000", "\u001f", "\u007f", "\u2028", "é", "\ud83d\ude00"]
+
+[.[] | ascii_downcase, ascii_upcase]
+["aBc", "ÀÉ"]
+
+explode, (explode | implode)
+"a😀é"
+
+try implode catch .
+[1114112]
+
+try implode catch .
+[55296]
+
+ltrimstr("a"), rtrimstr("c"), trimstr("a")
+"abca"
+
+ltrimstr(1), rtrimstr(null)
+"abc"
+
+trim, ltrim, rtrim
+" \t\n a \r\n"
+
+try trim catch .
+1
+
+split(", ")
+"a, b, c"
+
+split("")
+"abc"
+
+split("a")
+"aXaYa"
+
+join("-")
+["a", 1, null, true, 2.5]
+
+join("")
+[]
+
+ascii
+65
+
+[.[] | startswith("a"), endswith("c")]
+["abc", "xbc"]
+
+try startswith(1) catch .
+"abc"
+
+utf8bytelength, length
+"a😀é"
+
+try utf8bytelength catch .
+[1]
+
+.[1:3], .[-2:], .[:1]
+"a😀éx"
+
+.[1:3], .[-2:], .[:1]
+[1,2,3,4]
+
+.[1.5:3.5]
+[1,2,3,4,5]
+
+.[:-1.5]
+[1,2,3,4,5]
+
+tostring
+{"a":[1,"b"]}
+
+tojson
+{"a":[1,"b"], "c": 1.50}
+
+fromjson
+"{\"a\":1.50,\"b\":[1e2]}"
+
+try fromjson catch .
+"{\"a\":1"
+
+try fromjson catch .
+"nan"
+
+fromjson
+"NaN"
+
+try fromjson catch .
+"[1,]"
+
+tonumber
+" 12 "
+
+try tonumber catch .
+"12abc"
+
+try tonumber catch .
+"0x10"
+
+tonumber
+"1e2"
+
+tonumber
+"-0"
+
+toboolean
+"true"
+
+try toboolean catch .
+"yes"
+
+"\(1)\("a")\(null)\([1])\({"a":1})"
+null
+
+"a" + "b", "a" + null, null + "a"
+null
+
+test("A"; "i"), test("a.c"; "s"), test("a b"; "x")
+"a\nc"
+
+[match("a"; "g").offset]
+"aéa😀a"
+
+capture("(?<y>\\d+)-(?<m>\\d+)")
+"2024-05"
+
+[scan("\\d")]
+"a1b22"
+
+[scan("(a)(b)")]
+"abab"
+
+sub("(?<x>b)"; "[\(.x)]")
+"abc"
+
+gsub("\\s+"; " ")
+"a  b   c"
+
+gsub(""; "-")
+"abc"
+
+gsub("^"; ">")
+"abc"
+
+[splits("a+"; "g")]
+"xaayaz"
+
+ascii_downcase | test("é")
+"É"
+
+@uri "https://x/?q=\(.)"
+"a b"

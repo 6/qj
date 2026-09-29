@@ -1,0 +1,163 @@
+# Streaming, type filters, misc builtins and object construction
+# Source: orchestrator audit probe catprobe.py ['streams/misc']
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+[tostream]
+{"a":[1,{"b":2}],"c":[]}
+
+fromstream(tostream)
+{"a":[1,{"b":2}],"c":[]}
+
+[1 | truncate_stream([[0],1],[[1,0],2],[[1,0]],[[1]])]
+null
+
+fromstream(inputs)
+null
+
+[.[] | tostream] | length
+[[],{},null]
+
+$__loc__
+null
+
+input_filename
+null
+
+[splits("x")] | length
+"axbxc"
+
+getpath(["a"]) as [$x, $y] | [$x, $y]
+{"a":[1]}
+
+[.[] | numbers, strings]
+[1,"a",null]
+
+[.[] | scalars]
+[1,"a",null,[],{}]
+
+[.[] | iterables]
+[1,[],{}]
+
+[.[] | values]
+[1,null,false]
+
+[.[] | nulls]
+[1,null]
+
+[.[]|booleans]
+[true,1]
+
+[.[] | objects, arrays]
+[{},[]]
+
+[.[] | normals]
+[1, 0, 5e-324, 1e308]
+
+[.[] | finites]
+[1, 1e1000]
+
+[.[] | isnormal, isnan, isinfinite]
+[0, 1]
+
+env | type, ($ENV | type)
+null
+
+builtins | length > 100
+null
+
+"\(input_line_number)"
+1
+
+[splits("b")]
+"abc"
+
+getpath([]) , getpath(["x"])
+{"a":1}
+
+[paths] | length
+[[[[]]]]
+
+tojson | fromjson
+{"a":[1.0, 2.50]}
+
+[.[] | type]
+[0, false, [], {}, null, "hello"]
+
+infinite | floor
+null
+
+[limit(3; .[])]
+"abc"
+
+keys_unsorted, keys
+{"b":1,"a":2}
+
+has("a"), has("z")
+{"a":null}
+
+has(0), has(5)
+[1]
+
+in({"a":1})
+"a"
+
+map(in([0,1]))
+[0, 3]
+
+map_values(. + 1)
+[1,2]
+
+map_values(empty)
+[1,2,3]
+
+map_values(empty)
+{"a":1,"b":2}
+
+to_entries
+[]
+
+with_entries(.key |= ascii_upcase)
+{"a":1}
+
+[.[] | splits(",")]
+["a,b","c"]
+
+ltrimstr("x")
+1
+
+tostream
+1
+
+[.. ]
+[[1]]
+
+# The audit probed [recurse(.a?; true)] | length, which never terminates in
+# jq (null | .a? is null, forever); bounded here so it can be compared.
+[limit(5; recurse(.a?; true))] | length
+{"a":{"a":null}}
+
+getpath(["a","b","c"])
+{"a":null}
+
+[.[] | @text]
+[1, "a", null]
+
+{(.[]): 1}
+["a","b"]
+
+{a: (1,2), b: (3,4)}
+null
+
+{"a b": 1, "\(.)": 2, @base64 "x": 3, $__loc__}
+"k"
+
+{$__loc__}
+null
+
+[.[] as $x ({}; .)]
+null

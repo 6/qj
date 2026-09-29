@@ -1,0 +1,158 @@
+# try/catch, error values and runtime error messages
+# Source: orchestrator audit probe catprobe.py ['try/error']
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+try (1, error("x"), 3) catch .
+null
+
+[.[] | try if . == 2 then error("e") else . end catch "c"]
+[1,2,3]
+
+try error({}) catch .
+null
+
+try error(null) catch .
+null
+
+try error catch .
+{"a":1}
+
+(try error("x") catch .) | ascii_upcase
+null
+
+[.[] | try tonumber catch "bad"]
+["1","x","2.5"]
+
+try ("a" | tonumber) catch .
+null
+
+[label $f | try break $f catch .]
+null
+
+first(try error("x") catch .)
+null
+
+[limit(3; try (1,2,error("x"),4) catch .)]
+null
+
+try (try error("x") catch error("y")) catch .
+null
+
+.a? // "d"
+1
+
+[(.a | .b)?]
+{"a":1}
+
+[.[]?]
+1
+
+[..?]
+[1]
+
+error("x")?
+null
+
+[.[] | (1 / .)?]
+[1,0,2]
+
+try ([1] | .[1:] = 3) catch .
+null
+
+[.[] | try error catch .]
+[null,1,"a",{}]
+
+try error("\(1,2)") catch .
+null
+
+[try (1,error("x"),2)]
+null
+
+[(1,error("x"),2)?]
+null
+
+try (null | implode) catch .
+null
+
+try ([1,[2]] | implode) catch .
+null
+
+try ([-1] | implode) catch .
+null
+
+try ({} | keys | .[0] | ascii_downcase) catch .
+null
+
+try (1 | ltrimstr("a")) catch .
+null
+
+try ([] | first) catch .
+null
+
+try ("abc" | .[0]) catch .
+null
+
+try ({} | .[0]) catch .
+null
+
+try ([] | .["a"]) catch .
+null
+
+try ([] | has("a")) catch .
+null
+
+try ({} | has(0)) catch .
+null
+
+try (1 | keys) catch .
+null
+
+try ("a" | length) catch .
+null
+
+try (true | length) catch .
+null
+
+try ({} | sort) catch .
+null
+
+try (1 | tostring | tonumber | . + "a") catch .
+null
+
+try ([1,2] | join(",") | .[5:]) catch .
+null
+
+try ([[1]] | join(",")) catch .
+null
+
+try ({a:1} | join(",")) catch .
+null
+
+try ("x" | test(1)) catch .
+null
+
+try ("x" | test("(")) catch .
+null
+
+try ("x" | fromjson) catch .
+null
+
+try ("1 2" | fromjson) catch .
+null
+
+try ([1] | .[1.5]) catch .
+null
+
+try ("a" * -1) catch .
+null
+
+try ({} - {}) catch .
+null
+
+try ([] | add | . + 1) catch .
+null

@@ -1,0 +1,158 @@
+# Paths, path expressions, assignment and update operators
+# Source: orchestrator audit probe catprobe.py ['paths/assign']
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+[paths]
+{"a":[1,{"b":null}]}
+
+[paths(type == "number")]
+{"a":[1,{"b":2}]}
+
+path(..)
+{"a":[1]}
+
+[path(.a[].b)]
+{"a":[{"b":1},{"b":2}]}
+
+path(first(.a,.b))
+{}
+
+path(if .a then .b else .c end)
+{"a":true}
+
+path(.a // .b)
+{"a":null}
+
+path(getpath(["a","b"]))
+null
+
+try path(1) catch .
+null
+
+try path(.a | tostring) catch .
+{"a":1}
+
+path(.[1:3])
+[1,2,3,4]
+
+path(.a[1:2][0])
+{"a":[1,2,3]}
+
+del(.. | select(. == null))
+{"a":null,"b":[null,1,{"c":null}]}
+
+del(.[1,2])
+[1,2,3,4]
+
+del(.[] | select(. == 2))
+[1,2,3,2]
+
+del(.a, .b)
+{"a":1,"b":2,"c":3}
+
+to_entries
+{"a":1,"b":2}
+
+with_entries(select(.value > 1))
+{"a":1,"b":2}
+
+from_entries
+[{"k":"a","v":1},{"name":"b","value":2},{"key":null,"value":3},{"key":false},{"key":1,"value":4}]
+
+.[] |= empty
+[1,2,3,4,5]
+
+(.[] | select(. >= 2)) |= empty
+[1,5,3,0,7]
+
+.a[1:3] = ["x"]
+{"a":[1,2,3,4]}
+
+.a[1:3] |= ["x"]
+{"a":[1,2,3,4]}
+
+try (.[-1] = 5) catch .
+[]
+
+.[-1] = 5
+[1,2]
+
+try (.[1e9] = 5 | length) catch .
+[]
+
+.a += 1
+{}
+
+.a //= 3
+{"a":false}
+
+.[] += 10
+[1,2]
+
+(.. | numbers) |= . + 1
+[1,[2,{"a":3}]]
+
+.a |= (.,.)
+{"a":1}
+
+.a = (1,2)
+{}
+
+.[] = 1
+[0,0]
+
+(.a, .b) = range(2)
+{}
+
+reduce path(..) as $p (.; setpath($p; 1))
+{"a":[1]}
+
+setpath(["a",1]; 5)
+null
+
+try setpath(["a"]; 1) catch .
+[1]
+
+delpaths([["a",0],["b"]])
+{"a":[1,2],"b":3}
+
+try delpaths([["a","x"]]) catch .
+{"a":[1]}
+
+getpath(["a",0,"b"])
+{"a":[{"b":5}]}
+
+try getpath(["a","b"]) catch .
+{"a":[1]}
+
+pick(.a, .b.c)
+{"a":1,"b":{"c":2,"d":3},"e":4}
+
+pick(.[1])
+[1,2,3]
+
+to_entries | map(.key)
+{"b":1,"a":2}
+
+walk(if type == "array" then sort else . end)
+[3,[2,1]]
+
+[leaf_paths]
+{"a":[1]}
+
+paths(..) 
+[[1]]
+
+.a.b.c = 1
+null
+
+try (.a.b = 1) catch .
+{"a":"x"}
+
+.. |= (if type == "object" then del(.a) else . end)
+{"a":1,"b":{"a":2,"c":3}}

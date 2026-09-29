@@ -1,0 +1,68 @@
+# Date and time builtins (TZ=America/New_York, LC_ALL=C)
+# Source: orchestrator audit probe catprobe.py ['dates']
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# and qj in compact, pretty, file and ndjson modes and compares stdout, exit
+# code and stderr byte for byte; jq's output is the expectation.
+
+todate
+1425599507
+
+todate
+1425599507.9
+
+fromdate
+"2015-03-05T23:51:47Z"
+
+try fromdate catch .
+"2015-03-05 23:51:47"
+
+gmtime
+1425599507
+
+gmtime
+1425599507.5
+
+gmtime | mktime
+1425599507
+
+gmtime | todate
+1425599507
+
+strftime("%Y-%m-%dT%H:%M:%SZ")
+1425599507
+
+strftime("%A %B %d %j %U %u %w %y %e %%")
+1425599507
+
+strptime("%Y-%m-%dT%H:%M:%SZ")
+"2015-03-05T23:51:47Z"
+
+strptime("%Y-%m-%dT%H:%M:%SZ") | mktime
+"2015-03-05T23:51:47Z"
+
+try strptime("%Y") catch .
+"abc"
+
+dateadd("seconds"; 10)
+1425599507
+
+date
+1425599507
+
+todateiso8601, (todateiso8601 | fromdateiso8601)
+1425599507
+
+[.[] | todate]
+[0, -1, 253402300799]
+
+try todate catch .
+"x"
+
+now | type
+null
+
+gmtime | .[5] | type
+0

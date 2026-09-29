@@ -1,0 +1,927 @@
+# CLI cases for jq_diff (format: tests/jq_diff/cli.rs). Each case runs jq
+# 1.8.1 and qj with exactly these args, stdin, files and env, in its own
+# directory, and compares stdout, exit code and stderr byte for byte.
+# Without `stdin`, stdin is /dev/null. jq's test modules are at ../../modules.
+
+# ---------------------------------------------------------------------------
+# Orchestrator audit probe t4.sh: argument handling and output options.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "args-before-program"
+args = ["-n", "--args", "$ARGS", "a", "b"]
+
+[[case]]
+name = "args-after-program"
+args = ["-n", "$ARGS", "--args", "a", "b"]
+
+[[case]]
+name = "jsonargs-positional"
+args = ["-n", "--jsonargs", "$ARGS.positional", "1", "{}"]
+
+[[case]]
+name = "args-then-n-flag"
+args = ["--args", "-n", "$ARGS.positional", "x", "y"]
+
+[[case]]
+name = "prog-args-undefined"
+args = ["-n", "$__prog_args", "--args", "a"]
+
+[[case]]
+name = "indent-0"
+args = ["--indent", "0", "."]
+stdin = '{"a":[1,2]}'
+
+[[case]]
+name = "indent-1"
+args = ["--indent", "1", "."]
+stdin = '{"a":[1,2]}'
+
+[[case]]
+name = "indent-7"
+args = ["--indent", "7", "."]
+stdin = '{"a":[1,2]}'
+
+[[case]]
+name = "indent-8-rejected"
+args = ["--indent", "8", "."]
+stdin = '{"a":[1,2]}'
+
+[[case]]
+name = "tab"
+args = ["--tab", "."]
+stdin = '{"a":[1,{"b":2}]}'
+
+[[case]]
+name = "raw-output-object"
+args = ["-r", "."]
+stdin = '{"a":[1,2]}'
+
+[[case]]
+name = "raw-output-mixed"
+args = ["-r", ".[]"]
+stdin = '["x",{"a":1},[1]]'
+
+[[case]]
+name = "join-output-mixed"
+args = ["-j", ".[]"]
+stdin = '["x",{"a":1},[1]]'
+
+[[case]]
+name = "ascii-output"
+args = ["-a", "."]
+stdin = '"é😀"'
+
+[[case]]
+name = "sort-keys-pretty"
+args = ["-S", "."]
+stdin = '{"b":{"d":1,"c":2},"a":[{"z":1,"y":2}]}'
+
+[[case]]
+name = "sort-keys-compact"
+args = ["-S", "-c", "."]
+stdin = '{"b":{"d":1,"c":2},"a":[{"z":1,"y":2}]}'
+
+[[case]]
+name = "seq-output"
+args = ["--seq", "."]
+stdin = "[1]"
+
+[[case]]
+name = "exit-status-false"
+args = ["-e", ".a"]
+stdin = '{"a":false}'
+
+[[case]]
+name = "exit-status-null"
+args = ["-e", ".a"]
+stdin = '{"a":null}'
+
+[[case]]
+name = "exit-status-no-output"
+args = ["-e", "empty"]
+stdin = "1"
+
+[[case]]
+name = "exit-status-truthy"
+args = ["-e", ".a"]
+stdin = '{"a":1}'
+
+[[case]]
+name = "exit-status-last-false"
+args = ["-e", ".[]"]
+stdin = "[1,false]"
+
+[[case]]
+name = "exit-status-last-truthy"
+args = ["-e", ".[]"]
+stdin = "[false,1]"
+
+[[case]]
+name = "slurp-numbers"
+args = ["-s", "."]
+stdin = "1 2 3"
+
+[[case]]
+name = "slurp-empty"
+args = ["-s", "."]
+stdin = ""
+
+[[case]]
+name = "null-input-input-no-data"
+args = ["-n", "input"]
+stdin = ""
+
+[[case]]
+name = "null-input-inputs-no-data"
+args = ["-n", "[inputs]"]
+stdin = ""
+
+[[case]]
+name = "no-input"
+args = ["."]
+stdin = ""
+
+[[case]]
+name = "raw-input-no-final-newline"
+args = ["-R", "."]
+stdin = "a\nb"
+
+[[case]]
+name = "raw-input-final-newline"
+args = ["-R", "."]
+stdin = "a\nb\n"
+
+[[case]]
+name = "raw-input-slurp"
+args = ["-Rs", "."]
+stdin = "a\nb\n"
+
+[[case]]
+name = "raw-input-crlf"
+args = ["-Rr", "."]
+stdin = "a\r\nb"
+
+[[case]]
+name = "raw-output0"
+args = ["--raw-output0", ".[]"]
+stdin = '["a","b"]'
+
+[[case]]
+name = "color-pretty"
+args = ["-C", "."]
+stdin = '{"a":[1,"x",null,true]}'
+
+[[case]]
+name = "color-compact"
+args = ["-C", "-c", "."]
+stdin = '{"a":[1,"x",null,true]}'
+
+[[case]]
+name = "arg-string"
+args = ["--arg", "x", "1", "$x"]
+stdin = "null"
+
+[[case]]
+name = "argjson-object"
+args = ["--argjson", "x", '{"a":1}', "$x.a"]
+stdin = "null"
+
+[[case]]
+name = "env-home-type"
+args = ["$ENV.HOME|type"]
+stdin = "null"
+
+[[case]]
+name = "env-type"
+args = ["-n", "env|type"]
+
+[[case]]
+name = "loc"
+args = ["-n", "$__loc__"]
+
+[[case]]
+name = "input-filename-null-input"
+args = ["-n", "input_filename"]
+
+[[case]]
+name = "text-format-non-ascii"
+args = ["-n", '"é" | @text']
+
+[[case]]
+name = "slice-assign"
+args = ["-n", "[1,2] | .[1:] = [9]"]
+
+[[case]]
+name = "getpath-pretty-flag-c"
+args = ["-c", 'getpath(["a"])']
+stdin = '{"a":1}'
+
+[[case]]
+name = "halt"
+args = ["-n", "halt"]
+
+[[case]]
+name = "halt-midstream"
+args = ["-n", "1, halt, 2"]
+
+[[case]]
+name = "exit-status-long-flag-after-program"
+args = [".a", "--exit-status"]
+stdin = '{"a":1}'
+
+[[case]]
+name = "flag-after-program"
+args = ["-n", '"abc" | ascii_downcase', "-c"]
+
+[[case]]
+name = "dash-means-stdin"
+args = ["-c", ".", "-"]
+stdin = '{"a":1}'
+
+[[case]]
+name = "stream-object"
+args = ["--stream", "-c", "."]
+stdin = '{"a":[1,2]}'
+
+[[case]]
+name = "stream-empty-array"
+args = ["--stream", "-c", "."]
+stdin = "[]"
+
+[[case]]
+name = "tostream-empty-array-value"
+args = ["-c", "tostream"]
+stdin = '{"a":[]}'
+
+[[case]]
+name = "slurp-raw-input-long-flags"
+args = ["--slurp", "--raw-input", "."]
+stdin = "x\ny"
+
+[[case]]
+name = "limit-inputs"
+args = ["-cn", "[limit(3;inputs)]"]
+stdin = "1 2 3 4 5"
+
+[[case]]
+name = "unknown-long-option"
+args = ["--foo", "."]
+stdin = "1"
+
+[[case]]
+name = "library-path-dot"
+args = ["-L", ".", "-n", "1"]
+
+[[case]]
+name = "sh-format-raw"
+args = ["-nr", '@sh "echo \(.)"']
+
+# ---------------------------------------------------------------------------
+# Orchestrator audit probe t3.sh, with the exact bytes (no trailing newline).
+# One-line UTF-8 inputs also appear in input_robustness.test (with newline).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "invalid-utf8-in-string"
+args = ["-c", "."]
+stdin = { b64 = "ImH/YiI=" }  # "a\xffb"
+
+[[case]]
+name = "truncated-utf8-in-object"
+args = ["-c", "."]
+stdin = { b64 = "eyJhIjoiwyJ9" }  # {"a":"\xc3"}
+
+[[case]]
+name = "invalid-utf8-multiline-field"
+args = ["-c", ".a"]
+stdin = { b64 = "eyJhIjoieP95In0KeyJhIjoieiJ9" }  # {"a":"x\xffy"}\n{"a":"z"}
+
+[[case]]
+name = "lone-high-surrogate"
+args = ["-c", "."]
+stdin = '"\ud800"'
+
+[[case]]
+name = "lone-low-surrogate"
+args = ["-c", "."]
+stdin = '"\udc00x"'
+
+[[case]]
+name = "astral-char"
+args = ["-c", "."]
+stdin = '"😀"'
+
+[[case]]
+name = "raw-tab-in-string"
+args = ["-c", "."]
+stdin = "\"a\tb\""
+
+[[case]]
+name = "nan-lowercase"
+args = ["-c", "."]
+stdin = "nan"
+
+[[case]]
+name = "nan-capitalized"
+args = ["-c", "."]
+stdin = "NaN"
+
+[[case]]
+name = "nan-infinity-array"
+args = ["-c", "."]
+stdin = "[NaN, Infinity, -Infinity]"
+
+[[case]]
+name = "leading-zero"
+args = ["-c", "."]
+stdin = "01"
+
+[[case]]
+name = "trailing-comma"
+args = ["-c", "."]
+stdin = '{"a":1,}'
+
+[[case]]
+name = "unterminated-array"
+args = ["-c", "."]
+stdin = "[1,2"
+
+[[case]]
+name = "unterminated-object"
+args = ["-c", "."]
+stdin = '{"a":'
+
+[[case]]
+name = "multiple-numbers"
+args = ["-c", "."]
+stdin = "1 2 3"
+
+[[case]]
+name = "adjacent-objects"
+args = ["-c", "."]
+stdin = '{"a":1}{"b":2}'
+
+[[case]]
+name = "adjacent-arrays"
+args = ["-c", "."]
+stdin = "[1][2]"
+
+[[case]]
+name = "adjacent-strings"
+args = ["-c", "."]
+stdin = '"a""b"'
+
+[[case]]
+name = "two-literals"
+args = ["-c", "."]
+stdin = "true false"
+
+[[case]]
+name = "bad-literal"
+args = ["-c", "."]
+stdin = "truex"
+
+[[case]]
+name = "value-then-garbage"
+args = ["-c", "."]
+stdin = "1 [ 2"
+
+[[case]]
+name = "multiline-unterminated-middle"
+args = ["-c", "."]
+stdin = "{\"a\":1}\n{\"b\":2\n{\"c\":3}"
+
+[[case]]
+name = "multiline-unterminated-middle-field"
+args = ["-c", ".a"]
+stdin = "{\"a\":1}\n{\"b\":2\n{\"a\":3}"
+
+[[case]]
+name = "multiline-garbage-line"
+args = ["-c", ".a"]
+stdin = "{\"a\":1}\nnot json\n{\"a\":3}"
+
+[[case]]
+name = "bom"
+args = ["-c", "."]
+stdin = { b64 = "77u/eyJhIjoxfQ==" }  # BOM {"a":1}
+
+# ---------------------------------------------------------------------------
+# More input robustness (exact bytes).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "bom-then-garbage"
+args = ["-c", "."]
+stdin = { b64 = "77u/eA==" }  # BOM x
+
+[[case]]
+name = "bom-mid-stream"
+args = ["-c", "."]
+stdin = { b64 = "MQrvu78y" }  # 1\n BOM 2
+
+[[case]]
+name = "invalid-utf8-raw-input"
+args = ["-R", "."]
+stdin = { b64 = "Yf9iCmPA" }  # a\xffb\nc\xc0
+
+[[case]]
+name = "overlong-utf8"
+args = ["-c", "."]
+stdin = { b64 = "IsCvIg==" }  # "\xc0\xaf"
+
+[[case]]
+name = "utf8-surrogate-bytes"
+args = ["-c", "."]
+stdin = { b64 = "Iu2goCI=" }  # "\xed\xa0\xa0" (CESU surrogate)
+
+[[case]]
+name = "nul-byte-in-input"
+args = ["-c", "."]
+stdin = { b64 = "WzEsAF0=" }  # [1,\0]
+
+[[case]]
+name = "empty-stdin-slurp-raw"
+args = ["-Rs", "."]
+stdin = ""
+
+[[case]]
+name = "whitespace-only-stdin"
+args = ["-c", "."]
+stdin = " \n\t\r\n "
+
+[[case]]
+name = "crlf-between-values"
+args = ["-c", "."]
+stdin = "1\r\n2\r\n"
+
+[[case]]
+name = "number-then-eof-no-newline"
+args = ["-c", "."]
+stdin = "123"
+
+[[case]]
+name = "bare-minus"
+args = ["-c", "."]
+stdin = "-"
+
+[[case]]
+name = "comment-like-input"
+args = ["-c", "."]
+stdin = "# not a comment\n1"
+
+[[case]]
+name = "parse-error-then-values"
+args = ["-c", "."]
+stdin = "1 } 2"
+
+[[case]]
+name = "huge-exponent-literals"
+args = ["-c", "."]
+stdin = "1e1000 -1e1000 1e-1000 123456789012345678901234567890"
+
+[[case]]
+name = "single-quoted-string"
+args = ["-c", "."]
+stdin = "'a'"
+
+[[case]]
+name = "control-char-escape-output"
+args = ["-c", "."]
+stdin = '"\u0000\u001f\u007f  "'
+
+[[case]]
+name = "seq-input-record-separator"
+args = ["--seq", "-c", "."]
+stdin = "\u001e1\n\u001e[2]\n"
+
+[[case]]
+name = "seq-input-truncated-record"
+args = ["--seq", "-c", "."]
+stdin = "\u001e[1,\n\u001e2\n"
+
+[[case]]
+name = "stream-errors-truncated"
+args = ["--stream-errors", "-c", "."]
+stdin = '{"a":[1,'
+
+[[case]]
+name = "stream-scalars"
+args = ["--stream", "-c", "."]
+stdin = '1 "a" null {} [[]]'
+
+[[case]]
+name = "stream-fromstream-inputs"
+args = ["--stream", "-nc", "fromstream(inputs)"]
+stdin = '{"a":[1,{"b":2}]} [3]'
+
+[[case]]
+name = "stream-truncated-input"
+args = ["--stream", "-c", "."]
+stdin = '[1,[2'
+
+# ---------------------------------------------------------------------------
+# Deep nesting: jq's parser allows depth 10000.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "deep-array-1024"
+args = ["-c", "."]
+stdin = { repeat = [["[", 1024], ["]", 1024]] }
+
+[[case]]
+name = "deep-array-1024-pretty"
+args = ["."]
+stdin = { repeat = [["[", 1024], ["]", 1024]] }
+
+[[case]]
+name = "deep-array-1025"
+args = ["-c", "."]
+stdin = { repeat = [["[", 1025], ["]", 1025]] }
+
+[[case]]
+name = "deep-array-1025-pretty"
+args = ["."]
+stdin = { repeat = [["[", 1025], ["]", 1025]] }
+
+[[case]]
+name = "deep-array-1025-length"
+args = ["-c", "length"]
+stdin = { repeat = [["[", 1025], ["]", 1025]] }
+
+[[case]]
+name = "deep-array-10000"
+args = ["-c", "."]
+stdin = { repeat = [["[", 10000], ["]", 10000]] }
+
+[[case]]
+name = "deep-array-10000-tojson-length"
+args = ["-c", "tojson | length"]
+stdin = { repeat = [["[", 10000], ["]", 10000]] }
+
+[[case]]
+name = "deep-array-10001"
+args = ["-c", "."]
+stdin = { repeat = [["[", 10001], ["]", 10001]] }
+
+[[case]]
+name = "deep-object-1025"
+args = ["-c", "."]
+stdin = { repeat = [['{"a":', 1025], ["1", 1], ["}", 1025]] }
+
+[[case]]
+name = "deep-object-10000"
+args = ["-c", "[paths] | length"]
+stdin = { repeat = [['{"a":', 10000], ["1", 1], ["}", 10000]] }
+
+[[case]]
+name = "deep-object-10001"
+args = ["-c", "."]
+stdin = { repeat = [['{"a":', 10001], ["1", 1], ["}", 10001]] }
+
+[[case]]
+name = "deep-array-1025-file"
+args = ["-c", ".", "deep.json"]
+files = { "deep.json" = { repeat = [["[", 1025], ["]", 1025]] } }
+
+[[case]]
+name = "deep-array-10000-file"
+args = ["-c", ".", "deep.json"]
+files = { "deep.json" = { repeat = [["[", 10000], ["]", 10000]] } }
+
+[[case]]
+name = "deep-array-10001-file"
+args = ["-c", "length", "deep.json"]
+files = { "deep.json" = { repeat = [["[", 10001], ["]", 10001]] } }
+
+[[case]]
+name = "deep-computed-10001"
+args = ["-nc", "reduce range(10001) as $i (0; [.]) | tojson | length"]
+
+[[case]]
+name = "deep-fromjson-10001"
+args = ["-c", "fromjson | length"]
+stdin = { repeat = [['"', 1], ["[", 10001], ["]", 10001], ['"', 1]] }
+
+# ---------------------------------------------------------------------------
+# Files, program files, variables.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "two-files"
+args = ["-c", ".", "a.json", "b.json"]
+files = { "a.json" = '{"a":1}', "b.json" = "[2]\n3" }
+
+[[case]]
+name = "input-filename-per-file"
+args = ["-c", "[input_filename, input_line_number]", "a.json", "b.json"]
+files = { "a.json" = "1\n2\n", "b.json" = "3" }
+
+[[case]]
+name = "inputs-across-files"
+args = ["-nc", "[inputs]", "a.json", "b.json"]
+files = { "a.json" = "1 2", "b.json" = "3" }
+
+[[case]]
+name = "slurp-across-files"
+args = ["-sc", ".", "a.json", "b.json"]
+files = { "a.json" = "1 2", "b.json" = "3" }
+
+[[case]]
+name = "raw-slurp-across-files"
+args = ["-Rs", ".", "a.txt", "b.txt"]
+files = { "a.txt" = "x\n", "b.txt" = "y" }
+
+[[case]]
+name = "value-spans-files"
+args = ["-c", ".", "a.json", "b.json"]
+files = { "a.json" = "[1,", "b.json" = "2]" }
+
+[[case]]
+name = "missing-file"
+args = ["-c", ".", "a.json", "missing.json", "b.json"]
+files = { "a.json" = "1", "b.json" = "2" }
+
+[[case]]
+name = "directory-as-file"
+args = ["-c", ".", "."]
+
+[[case]]
+name = "parse-error-in-second-file"
+args = ["-c", ".", "a.json", "b.json"]
+files = { "a.json" = "1", "b.json" = "{" }
+
+[[case]]
+name = "error-location-in-file"
+args = ["-c", ".a", "a.json"]
+files = { "a.json" = "{\"a\":1}\n\n[1]\n" }
+
+[[case]]
+name = "program-from-file"
+args = ["-c", "-f", "prog.jq", "in.json"]
+files = { "prog.jq" = ".a | . + 1\n", "in.json" = '{"a":1}' }
+
+[[case]]
+name = "program-from-file-syntax-error"
+args = ["-c", "-f", "prog.jq"]
+stdin = "1"
+files = { "prog.jq" = "# comment\n.a |\n" }
+
+[[case]]
+name = "program-from-file-args"
+args = ["-nc", "--from-file", "prog.jq", "--args", "x", "y"]
+files = { "prog.jq" = "$ARGS" }
+
+[[case]]
+name = "slurpfile-and-rawfile"
+args = ["-nc", "--slurpfile", "s", "a.json", "--rawfile", "r", "b.txt", "{$s, $r}"]
+files = { "a.json" = "1 [2]", "b.txt" = "line\n" }
+
+[[case]]
+name = "slurpfile-missing"
+args = ["-nc", "--slurpfile", "s", "missing.json", "$s"]
+
+[[case]]
+name = "slurpfile-invalid-json"
+args = ["-nc", "--slurpfile", "s", "a.json", "$s"]
+files = { "a.json" = "[1," }
+
+[[case]]
+name = "named-args"
+args = ["-nc", "--arg", "a", "1", "--argjson", "b", "2", "$ARGS"]
+
+[[case]]
+name = "arg-missing-value"
+args = ["-n", "--arg", "x"]
+
+[[case]]
+name = "argjson-invalid"
+args = ["-n", "--argjson", "x", "{bad", "$x"]
+
+[[case]]
+name = "jsonargs-invalid"
+args = ["-n", "$ARGS", "--jsonargs", "1", "{bad"]
+
+[[case]]
+name = "args-then-jsonargs"
+args = ["-nc", "$ARGS.positional", "--args", "a", "--jsonargs", "1", "--args", "b"]
+
+[[case]]
+name = "arg-shadows-builtin-var"
+args = ["-nc", "--arg", "ENV", "x", "$ENV"]
+
+[[case]]
+name = "double-dash-program"
+args = ["-nc", "--", "-1"]
+
+[[case]]
+name = "combined-short-flags"
+args = ["-nrj", '"a", "b"']
+
+[[case]]
+name = "indent-then-compact"
+args = ["--indent", "3", "-c", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "compact-then-indent"
+args = ["-c", "--indent", "3", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "tab-then-indent"
+args = ["--tab", "--indent", "1", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "indent-negative"
+args = ["--indent", "-1", "."]
+stdin = '{"a":[1]}'
+
+[[case]]
+name = "raw-output0-nul-in-string"
+args = ["--raw-output0", "."]
+stdin = '"a\u0000b"'
+
+[[case]]
+name = "join-output-numbers"
+args = ["-j", ".[]"]
+stdin = '[1, "a", null, 1.5]'
+
+[[case]]
+name = "ascii-output-surrogate-pair"
+args = ["-ac", "."]
+stdin = '["😀", "é", "\u001f"]'
+
+[[case]]
+name = "sort-keys-nested-unicode"
+args = ["-Sc", "."]
+stdin = '{"é":1,"e":2,"E":3,"a":{"c":1,"b":2}}'
+
+[[case]]
+name = "color-default-escapes"
+args = ["-C", "."]
+stdin = '{"a":[1.5,"x",null,true,false,{"b":{}},[]]}'
+
+[[case]]
+name = "color-jq-colors-env"
+args = ["-C", "-c", "."]
+stdin = '{"a":[1,"x",null,true,false]}'
+env = { JQ_COLORS = "0;31:0;32:0;33:0;34:0;35:0;36:0;37:4;31" }
+
+[[case]]
+name = "color-jq-colors-invalid"
+args = ["-C", "-c", "."]
+stdin = '{"a":1}'
+env = { JQ_COLORS = "garbage" }
+
+[[case]]
+name = "color-no-color-env-with-flag"
+args = ["-C", "-c", "."]
+stdin = '{"a":1}'
+env = { NO_COLOR = "1" }
+
+[[case]]
+name = "monochrome"
+args = ["-M", "-c", "."]
+stdin = '{"a":1}'
+
+[[case]]
+name = "halt-error-string"
+args = ["-n", '"bye\n" | halt_error']
+
+[[case]]
+name = "halt-error-string-no-newline"
+args = ["-n", '"bye" | halt_error']
+
+[[case]]
+name = "halt-error-object-code"
+args = ["-n", '{"a":1} | halt_error(3)']
+
+[[case]]
+name = "halt-error-null"
+args = ["-n", "null | halt_error"]
+
+[[case]]
+name = "error-exit-code"
+args = ["-n", '1, error("x"), 2']
+
+[[case]]
+name = "error-then-more-inputs"
+args = ["-c", ".a"]
+stdin = '{"a":1} 2 {"a":3}'
+
+[[case]]
+name = "exit-status-with-error"
+args = ["-e", ".a"]
+stdin = "1"
+
+[[case]]
+name = "exit-status-empty-input"
+args = ["-e", "."]
+stdin = ""
+
+[[case]]
+name = "error-object-message"
+args = ["-n", 'error({"a":1})']
+
+[[case]]
+name = "error-null-message"
+args = ["-n", "error(null)"]
+
+[[case]]
+name = "debug-and-stderr"
+args = ["-nc", '1 | debug | debug("msg") | stderr | ., ("x" | stderr)']
+
+[[case]]
+name = "input-line-number"
+args = ["-c", "input_line_number"]
+stdin = "1\n2\n\n3"
+
+[[case]]
+name = "env-keys"
+args = ["-nc", "env | keys"]
+
+[[case]]
+name = "env-var-from-case"
+args = ["-nc", "$ENV.JQ_DIFF_X, env.JQ_DIFF_X"]
+env = { JQ_DIFF_X = "y" }
+
+[[case]]
+name = "prog-origin"
+args = ["-n", "get_prog_origin | type"]
+
+[[case]]
+name = "jq-origin-type"
+args = ["-n", "get_jq_origin | type"]
+
+[[case]]
+name = "now-type"
+args = ["-n", "now | type"]
+
+[[case]]
+name = "search-list-with-L"
+args = ["-nc", "-L", "../../modules", "get_search_list | length"]
+
+[[case]]
+name = "import-module"
+args = ["-nc", "-L", "../../modules", 'import "a" as a; a::a']
+
+[[case]]
+name = "import-data-module"
+args = ["-nc", "-L", "../../modules", 'import "data" as $d; $d']
+
+[[case]]
+name = "include-module"
+args = ["-nc", "-L", "../../modules", 'include "c"; [a, c]']
+
+[[case]]
+name = "modulemeta"
+args = ["-c", "-L", "../../modules", "modulemeta"]
+stdin = '"c"'
+
+[[case]]
+name = "import-missing-module"
+args = ["-nc", "-L", "../../modules", 'import "nonexistent" as n; 1']
+
+[[case]]
+name = "import-syntax-error-module"
+args = ["-nc", "-L", "../../modules", 'import "syntaxerror" as e; 1']
+
+[[case]]
+name = "home-jq-file-autoload"
+args = ["-nc", "1"]
+env = { HOME = "../../modules/home1" }
+
+[[case]]
+name = "compile-error-location"
+args = ["-n", "1 +"]
+
+[[case]]
+name = "compile-error-multiple"
+args = ["-n", "$a | $b | nosuchfn"]
+
+[[case]]
+name = "compile-error-multiline-program"
+args = ["-n", "1 |\n  .a +\n  ]"]
+
+[[case]]
+name = "unbuffered"
+args = ["--unbuffered", "-c", ".[]"]
+stdin = "[1,2]"
+
+[[case]]
+name = "stdin-and-null-input"
+args = ["-n", "-c", "[., input]"]
+stdin = "1 2"
+
+[[case]]
+name = "raw-input-with-null-input"
+args = ["-nR", "-c", "[inputs]"]
+stdin = "a\nb\n"
+
+[[case]]
+name = "seq-raw-output"
+args = ["--seq", "-r", ".[]"]
+stdin = '["a",1]'
