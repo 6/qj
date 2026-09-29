@@ -1,0 +1,122 @@
+# Closed standard descriptors (format: tests/jq_diff/cli.rs).
+#
+# jq is C: it sees fd 0, 1 or 2 closed and fails on the first read or write.
+# Rust's runtime start-up would have reopened them on /dev/null before `main`,
+# so qj used to write into the void and exit 0; `src/main.rs` is `#![no_main]`
+# with a C `main` so that it doesn't.
+#
+# `close_fds` closes the descriptors in the child before it execs. Whatever
+# the tool writes to a descriptor it still has is captured as usual, so a
+# closed stdout leaves only stderr and the exit code to compare, and with all
+# three closed only the exit code.
+
+[[case]]
+name = "closed-stdout-null-input"
+args = ["-n", "1"]
+close_fds = [1]
+note = "jq: error: writing output failed: Bad file descriptor, exit 2"
+
+[[case]]
+name = "closed-stdout-reading-stdin"
+args = ["."]
+stdin = "1\n"
+close_fds = [1]
+
+[[case]]
+name = "closed-stdout-raw-output"
+args = ["-rn", "\"x\""]
+close_fds = [1]
+
+[[case]]
+name = "closed-stdout-no-output"
+args = ["-n", "empty"]
+close_fds = [1]
+
+[[case]]
+name = "closed-stdout-help"
+args = ["-h"]
+close_fds = [1]
+note = "usage(0, 0) writes to stdout and exits 0; the failed flush isn't checked"
+
+[[case]]
+name = "closed-stdout-version"
+args = ["-V"]
+close_fds = [1]
+
+[[case]]
+name = "closed-stdout-option-error"
+args = ["-Z", "."]
+close_fds = [1]
+
+[[case]]
+name = "closed-stdout-halt-error"
+args = ["-n", "\"msg\\n\" | halt_error"]
+close_fds = [1]
+
+[[case]]
+name = "closed-stderr-null-input"
+args = ["-n", "1"]
+close_fds = [2]
+
+[[case]]
+name = "closed-stderr-uncaught-error"
+args = ["-n", "error(\"boom\")"]
+close_fds = [2]
+
+[[case]]
+name = "closed-stderr-parse-error"
+args = ["."]
+stdin = "{"
+close_fds = [2]
+
+[[case]]
+name = "closed-stderr-debug"
+args = ["-nc", "1 | debug"]
+close_fds = [2]
+
+[[case]]
+name = "closed-stdin-null-input"
+args = ["-n", "1"]
+close_fds = [0]
+
+[[case]]
+name = "closed-stdin-reading-stdin"
+args = ["."]
+close_fds = [0]
+note = "jq: error: Bad file descriptor, exit 2 (fgets fails with EBADF)"
+
+[[case]]
+name = "closed-stdin-with-a-file"
+args = ["-c", ".", "in.json"]
+files = { "in.json" = "{\"a\":1}\n" }
+close_fds = [0]
+
+[[case]]
+name = "closed-stdin-with-a-dash-file"
+args = ["-c", ".", "-"]
+close_fds = [0]
+
+[[case]]
+name = "closed-stdin-and-stdout"
+args = ["."]
+close_fds = [0, 1]
+
+[[case]]
+name = "closed-stdout-and-stderr"
+args = ["-n", "1"]
+close_fds = [1, 2]
+
+[[case]]
+name = "closed-stdin-and-stderr"
+args = ["."]
+close_fds = [0, 2]
+
+[[case]]
+name = "all-three-closed"
+args = ["."]
+close_fds = [0, 1, 2]
+
+[[case]]
+name = "all-three-closed-null-input"
+args = ["-n", "1"]
+close_fds = [0, 1, 2]

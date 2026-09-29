@@ -293,6 +293,7 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
         max_output: MAX_OUTPUT,
         max_rss: ctx.max_rss,
         merge: job.inv.merge,
+        close_fds: &job.inv.close_fds,
     })
     .unwrap_or_else(|e| panic!("{}: {e}", job.id));
     let elapsed = started.elapsed();
