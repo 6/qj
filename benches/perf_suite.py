@@ -14,7 +14,8 @@ Tools (select with --tools, comma separated):
 
 Suites (select with --suite): json (large_twitter.json, 51 MB), array (a
 200 MB array of GH Archive events), ndjson (gharchive.ndjson, 1.1 GB),
-slurp (-s over 200 MB of NDJSON), stdin (NDJSON through a pipe), startup.
+slurp (-s over 200 MB of NDJSON), stdin (NDJSON through a pipe), vm (-n
+programs: the interpreter and builtins without input), startup.
 
 Timing: by default runs are interleaved (warmup, then run r of every tool
 before run r+1 of any), output goes to /dev/null, and wall time and peak RSS
@@ -130,6 +131,26 @@ STDIN_WORKLOADS = [
     ("stdin select", ["-c"], 'select(.type == "PushEvent")', "pipe:ndjson"),
 ]
 
+# No input: the interpreter and builtins alone.
+VM_WORKLOADS = [
+    ("vm reduce", ["-n"], "reduce range(5000000) as $i (0; . + $i)", None),
+    ("vm map add", ["-n"], "[range(2000000)] | map(. * 2) | add", None),
+    ("vm select", ["-n"], "[range(2000000) | select(. % 3 == 0)] | length", None),
+    ("vm tostring join", ["-n"], '[range(300000) | tostring] | join(",") | length', None),
+    ("vm recursion", ["-n"],
+     "def f: if . < 1 then 0 else (. - 1 | f) + 1 end; [range(3000) | f] | add", None),
+    ("vm limit", ["-n"], "[limit(1000000; repeat(1))] | length", None),
+    ("vm object update", ["-n"],
+     'reduce range(300000) as $i ({}; .["k\\($i % 1000)"] += 1) | length', None),
+    ("vm walk", ["-n"],
+     '[range(100000)] | map({a: ., b: [., .]}) | walk(if type == "number" then . + 1 else . end) | length',
+     None),
+    ("vm to_entries", ["-n"], "[range(200000) | {a: ., b: 1}] | map(to_entries) | length", None),
+    ("vm paths", ["-n"], "[range(100000) | [., [., .]]] | [paths] | length", None),
+    ("vm update |=", ["-n"], "[range(1000000)] | .[] |= . + 1 | length", None),
+    ("vm ascii_downcase", ["-n"], '[range(200000) | "AbC\\(.)XyZ" | ascii_downcase] | length', None),
+]
+
 STARTUP_WORKLOADS = [
     ("startup -n 1", ["-n"], "1", None),
     ("startup tiny file", ["-c"], ".a", "tiny"),
@@ -145,6 +166,7 @@ SUITES = {
     "ndjson": NDJSON_WORKLOADS,
     "slurp": SLURP_WORKLOADS,
     "stdin": STDIN_WORKLOADS,
+    "vm": VM_WORKLOADS,
     "startup": STARTUP_WORKLOADS,
 }
 
@@ -361,7 +383,7 @@ def render(results, suites_order):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--suite", default="json,array,ndjson,slurp,stdin,startup")
+    ap.add_argument("--suite", default="json,array,ndjson,slurp,stdin,vm,startup")
     ap.add_argument("--tools", default="qj,qj1,jq")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--warmup", type=int, default=1)

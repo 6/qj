@@ -239,6 +239,27 @@ fn push_u_escape(out: &mut Vec<u8>, c: u32) {
     out.push(HEX[(c & 0xF) as usize]);
 }
 
+const LO: u64 = 0x0101_0101_0101_0101;
+const HI: u64 = 0x8080_8080_8080_8080;
+
+/// A mask whose lowest set bit is the high bit of the first byte of `w`
+/// (little-endian) that [`NEEDS_ESCAPE`] flags, and that is zero when none
+/// does. Higher bits may be spurious (borrows), so only the lowest counts.
+#[inline]
+fn escape_mask(w: u64) -> u64 {
+    #[inline]
+    fn zero_bytes(v: u64) -> u64 {
+        v.wrapping_sub(LO) & !v & HI
+    }
+    // Bytes below 0x20 (exact for the lowest one; bytes >= 0x80 never set
+    // their bit because of `!w`).
+    let control = w.wrapping_sub(0x20 * LO) & !w & HI;
+    control
+        | zero_bytes(w ^ (b'"' as u64 * LO))
+        | zero_bytes(w ^ (b'\\' as u64 * LO))
+        | zero_bytes(w ^ (0x7F * LO))
+}
+
 /// Port of `jvp_dump_string`: a quoted, escaped JSON string.
 pub fn write_json_string(s: &str, ascii_only: bool, out: &mut Vec<u8>) {
     let bytes = s.as_bytes();
@@ -246,7 +267,20 @@ pub fn write_json_string(s: &str, ascii_only: bool, out: &mut Vec<u8>) {
     out.push(b'"');
     let mut start = 0;
     let mut i = 0;
+    // With `ascii_only`, non-ASCII bytes need escaping too.
+    let high = if ascii_only { HI } else { 0 };
     while i < bytes.len() {
+        // Skip 8 bytes at a time while none needs escaping, then look at the
+        // first one that may.
+        if let Some(chunk) = bytes.get(i..i + 8) {
+            let w = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
+            let m = escape_mask(w) | (w & high);
+            if m == 0 {
+                i += 8;
+                continue;
+            }
+            i += (m.trailing_zeros() / 8) as usize;
+        }
         let b = bytes[i];
         if b < 0x80 {
             if !NEEDS_ESCAPE[b as usize] {
@@ -556,4 +590,80 @@ pub fn dump_string_trunc(v: &Value, bufsize: usize) -> String {
         out.truncate(bufsize - 1);
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `jvp_dump_string` one character at a time.
+    fn reference(s: &str, ascii_only: bool) -> Vec<u8> {
+        let mut out = vec![b'"'];
+        for c in s.chars() {
+            let c32 = c as u32;
+            match c {
+                '"' => out.extend_from_slice(b"\\\""),
+                '\\' => out.extend_from_slice(b"\\\\"),
+                '\u{8}' => out.extend_from_slice(b"\\b"),
+                '\t' => out.extend_from_slice(b"\\t"),
+                '\r' => out.extend_from_slice(b"\\r"),
+                '\n' => out.extend_from_slice(b"\\n"),
+                '\u{c}' => out.extend_from_slice(b"\\f"),
+                _ if c32 < 0x20 || c32 == 0x7F => push_u_escape(&mut out, c32),
+                _ if c32 >= 0x80 && ascii_only => {
+                    if c32 <= 0xFFFF {
+                        push_u_escape(&mut out, c32);
+                    } else {
+                        let c = c32 - 0x10000;
+                        push_u_escape(&mut out, 0xD800 | ((c & 0xFFC00) >> 10));
+                        push_u_escape(&mut out, 0xDC00 | (c & 0x003FF));
+                    }
+                }
+                _ => {
+                    let mut b = [0u8; 4];
+                    out.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
+                }
+            }
+        }
+        out.push(b'"');
+        out
+    }
+
+    #[test]
+    fn string_escaping_matches_the_character_loop() {
+        // Characters around every boundary the word-at-a-time scan tests.
+        let alphabet: Vec<char> = (0u32..0x82)
+            .chain([
+                0x1F, 0x20, 0x21, 0x22, 0x5C, 0x7E, 0x7F, 0xFF, 0x100, 0x7FF, 0x800,
+            ])
+            .chain([0xFFFD, 0xFFFF, 0x10000, 0x1F600, 0x10FFFF])
+            .filter_map(char::from_u32)
+            .collect();
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..20_000 {
+            let len = (next() % 40) as usize;
+            // Mostly plain text, so long clean runs occur.
+            let s: String = (0..len)
+                .map(|_| {
+                    let r = next();
+                    if r % 4 == 0 {
+                        alphabet[(r >> 8) as usize % alphabet.len()]
+                    } else {
+                        (b'a' + (r >> 8) as u8 % 26) as char
+                    }
+                })
+                .collect();
+            for ascii in [false, true] {
+                let mut out = Vec::new();
+                write_json_string(&s, ascii, &mut out);
+                assert_eq!(out, reference(&s, ascii), "{s:?} ascii={ascii}");
+            }
+        }
+    }
 }
