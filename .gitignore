@@ -25,3 +25,6 @@ tests/jq_compat/results.md
 
 # Compat test cache (external tool results)
 tests/jq_compat/.cache/
+
+# Agent worktrees (Claude Code)
+.claude/worktrees/
