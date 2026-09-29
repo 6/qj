@@ -259,7 +259,12 @@ pub(crate) fn inputs(
         };
         match r.below(20) {
             0 => {
-                names.push(format!("missing{i}"));
+                // Fails to open: no such file, or permission denied.
+                let n = format!("missing{i}");
+                if r.chance(1, 2) {
+                    files.push((n.clone().into(), super::MemFile::Missing(libc::EACCES)));
+                }
+                names.push(n);
             }
             1 => {
                 let n = format!("dir{i}");

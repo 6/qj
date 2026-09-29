@@ -57,7 +57,7 @@ impl RecordWorker for JqWorker {
         let mut ret = JQ_OK_NO_OUTPUT;
         *self.position.borrow_mut() = (meta.filename.map(Value::from), meta.line);
         self.jq.start(value, 0);
-        while let Some(r) = self.jq.next() {
+        for r in self.jq.by_ref() {
             match r {
                 Ok(v) => {
                     ret = if matches!(v, Value::Null | Value::Bool(false)) {
@@ -330,7 +330,7 @@ fn run_shared(program: &str, null_input: bool, paths: &[OsString]) -> (Vec<u8>, 
     let mut process = |jq: &mut Jq, v: Value, out: &mut Vec<u8>, err: &mut Vec<u8>| -> i32 {
         let mut ret = JQ_OK_NO_OUTPUT;
         jq.start(v, 0);
-        while let Some(r) = jq.next() {
+        for r in jq.by_ref() {
             match r {
                 Ok(v) => {
                     ret = if matches!(v, Value::Null | Value::Bool(false)) {
