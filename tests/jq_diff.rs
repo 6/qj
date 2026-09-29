@@ -29,7 +29,8 @@
 //!   `tests/jq_compat/diff_baseline_<os>.txt` elsewhere).
 //! - `JQ_DIFF_UPDATE_BASELINE=1`: rewrite the baseline from this run.
 //! - `JQ_DIFF_JQ`, `JQ_DIFF_QJ`: binaries (default: `jq` on PATH, cargo's qj).
-//! - `JQ_DIFF_TIMEOUT` (seconds, default 10), `JQ_DIFF_JOBS` (parallelism).
+//! - `JQ_DIFF_TIMEOUT` (seconds, default 10), `JQ_DIFF_MEM_MB` (resident
+//!   memory cap per process, default 2048), `JQ_DIFF_JOBS` (parallelism).
 //!
 //! The test fails when a case in the baseline drops to a lower level. Full
 //! details of every non-passing case are written to
@@ -79,6 +80,7 @@ struct Config {
     baseline: PathBuf,
     update_baseline: bool,
     timeout: Duration,
+    max_rss: u64,
     jobs: usize,
     jq: Option<PathBuf>,
     qj: PathBuf,
@@ -129,6 +131,10 @@ impl Config {
             })
             .transpose()?
             .unwrap_or(10.0);
+        let mem_mb = env_nonempty("JQ_DIFF_MEM_MB")
+            .map(|m| m.parse::<u64>().map_err(|e| format!("JQ_DIFF_MEM_MB: {e}")))
+            .transpose()?
+            .unwrap_or(2048);
         let jobs = env_nonempty("JQ_DIFF_JOBS")
             .map(|j| j.parse::<usize>().map_err(|e| format!("JQ_DIFF_JOBS: {e}")))
             .transpose()?
@@ -145,6 +151,7 @@ impl Config {
             baseline,
             update_baseline: env_nonempty("JQ_DIFF_UPDATE_BASELINE").is_some_and(|v| v != "0"),
             timeout: Duration::from_secs_f64(timeout),
+            max_rss: mem_mb << 20,
             jobs: jobs.max(1),
             jq: env_nonempty("JQ_DIFF_JQ").map(PathBuf::from),
             qj: env_nonempty("JQ_DIFF_QJ")
@@ -241,6 +248,7 @@ struct Ctx<'a> {
     work: &'a Path,
     env: Vec<(String, String)>,
     timeout: Duration,
+    max_rss: u64,
 }
 
 fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, Vec<u8>) {
@@ -253,6 +261,7 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
         stdin: job.inv.stdin.as_deref(),
         timeout: ctx.timeout,
         max_output: MAX_OUTPUT,
+        max_rss: ctx.max_rss,
     })
     .unwrap_or_else(|e| panic!("{}: {e}", job.id));
     let normalized = compare::normalize_stderr(&out.stderr);
@@ -281,7 +290,9 @@ fn run_job(ctx: &Ctx, cache: &cache::Cache, key: &str, jq: &Path, qj: &Path, job
             o
         }
     };
-    if let exec::Status::Timeout | exec::Status::OutputLimit = jq_obs.status {
+    if let exec::Status::Timeout | exec::Status::OutputLimit | exec::Status::MemoryLimit =
+        jq_obs.status
+    {
         return Outcome {
             verdict: compare::classify(&jq_obs, &jq_obs),
             detail: None,
@@ -544,6 +555,7 @@ fn jq_diff() {
         fixtures: fixtures.hex(),
         timeout_ms: cfg.timeout.as_millis() as u64,
         max_output: MAX_OUTPUT,
+        max_rss: cfg.max_rss,
     };
     let cache_path = root().join("tests/jq_compat/.cache/jq_diff.json");
     let cache = cache::Cache::load(&cache_path, header);
@@ -552,6 +564,7 @@ fn jq_diff() {
         work: &work,
         env,
         timeout: cfg.timeout,
+        max_rss: cfg.max_rss,
     };
     let keys: Vec<String> = jobs.iter().map(|j| j.inv.key(&cfg.extra_env)).collect();
     let pool = rayon::ThreadPoolBuilder::new()

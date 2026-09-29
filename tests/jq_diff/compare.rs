@@ -151,8 +151,8 @@ impl Level {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Level(Level),
-    /// The case can't be judged: jq itself timed out or overflowed the
-    /// output cap.
+    /// The case can't be judged: jq itself timed out or hit the output or
+    /// memory cap.
     Skipped(&'static str),
 }
 
@@ -160,6 +160,7 @@ pub fn classify(jq: &Observed, qj: &Observed) -> Verdict {
     match jq.status {
         Status::Timeout => return Verdict::Skipped("jq timeout"),
         Status::OutputLimit => return Verdict::Skipped("jq output limit"),
+        Status::MemoryLimit => return Verdict::Skipped("jq memory limit"),
         _ => {}
     }
     if jq.status != qj.status || !jq.stdout.same(&qj.stdout) {
@@ -227,6 +228,15 @@ mod tests {
         assert_eq!(
             classify(&hang, &obs(Status::Exit(0), "", "")),
             Verdict::Skipped("jq timeout")
+        );
+        let hog = obs(Status::MemoryLimit, "", "");
+        assert_eq!(
+            classify(&obs(Status::Exit(0), "", ""), &hog),
+            Verdict::Level(Level::Fail)
+        );
+        assert_eq!(
+            classify(&hog, &obs(Status::Exit(0), "", "")),
+            Verdict::Skipped("jq memory limit")
         );
     }
 

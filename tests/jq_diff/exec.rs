@@ -1,4 +1,4 @@
-//! Running one tool invocation with a timeout and output caps.
+//! Running one tool invocation with a timeout, output caps and a memory cap.
 
 use std::io::{Read, Write};
 use std::os::unix::process::ExitStatusExt;
@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Status {
@@ -17,6 +17,8 @@ pub enum Status {
     Timeout,
     /// stdout or stderr exceeded the capture limit; the process was killed.
     OutputLimit,
+    /// Resident memory exceeded the limit; the process was killed.
+    MemoryLimit,
 }
 
 impl std::fmt::Display for Status {
@@ -26,6 +28,7 @@ impl std::fmt::Display for Status {
             Status::Signal(s) => write!(f, "signal {s}"),
             Status::Timeout => write!(f, "timeout"),
             Status::OutputLimit => write!(f, "output limit exceeded"),
+            Status::MemoryLimit => write!(f, "memory limit exceeded"),
         }
     }
 }
@@ -40,6 +43,10 @@ pub struct Spec<'a> {
     pub stdin: Option<&'a [u8]>,
     pub timeout: Duration,
     pub max_output: usize,
+    /// Kill the process when its resident set exceeds this many bytes. The
+    /// machine is shared, and some divergences (e.g. `.[1e9] = 5`) make a
+    /// tool allocate without bound.
+    pub max_rss: u64,
 }
 
 pub struct Output {
@@ -51,6 +58,42 @@ pub struct Output {
 /// Stdin up to this size is written before reading output: it always fits in
 /// the pipe buffer, so the write cannot block. Larger stdin gets a thread.
 const INLINE_STDIN: usize = 8 * 1024;
+
+/// How often the watchdog samples the child's resident memory. Most
+/// invocations finish before the first sample.
+const RSS_POLL: Duration = Duration::from_millis(25);
+
+/// Resident set size of a live (or not yet reaped) process.
+#[cfg(target_os = "macos")]
+fn rss_bytes(pid: u32) -> Option<u64> {
+    let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // SAFETY: `info` is a valid, writable buffer of `size` bytes.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTASKINFO,
+            0,
+            (&mut info as *mut libc::proc_taskinfo).cast(),
+            size,
+        )
+    };
+    (n == size).then_some(info.pti_resident_size)
+}
+
+#[cfg(target_os = "linux")]
+fn rss_bytes(pid: u32) -> Option<u64> {
+    let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // SAFETY: sysconf has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    Some(pages * u64::try_from(page).ok()?)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn rss_bytes(_pid: u32) -> Option<u64> {
+    None
+}
 
 fn kill(child: &Mutex<Child>) {
     if let Ok(mut c) = child.lock() {
@@ -99,21 +142,40 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let stdin_pipe = child.stdin.take();
+    let pid = child.id();
     let child = Arc::new(Mutex::new(child));
     let timed_out = Arc::new(AtomicBool::new(false));
     let over = Arc::new(AtomicBool::new(false));
+    let mem_over = Arc::new(AtomicBool::new(false));
 
-    // The watchdog kills the child at the deadline. It is joined before the
-    // child is reaped, so it can never signal a recycled pid.
+    // The watchdog kills the child at the deadline or when it uses too much
+    // memory. It is joined before the child is reaped, so it can never look
+    // at or signal a recycled pid.
     let (cancel, cancelled) = mpsc::channel::<()>();
     let watchdog = {
         let child = Arc::clone(&child);
         let timed_out = Arc::clone(&timed_out);
-        let timeout = spec.timeout;
+        let mem_over = Arc::clone(&mem_over);
+        let deadline = Instant::now() + spec.timeout;
+        let max_rss = spec.max_rss;
         thread::spawn(move || {
-            if let Err(RecvTimeoutError::Timeout) = cancelled.recv_timeout(timeout) {
-                timed_out.store(true, Ordering::SeqCst);
-                kill(&child);
+            loop {
+                let now = Instant::now();
+                if now >= deadline {
+                    timed_out.store(true, Ordering::SeqCst);
+                    kill(&child);
+                    return;
+                }
+                match cancelled.recv_timeout(RSS_POLL.min(deadline - now)) {
+                    Err(RecvTimeoutError::Timeout) => {
+                        if rss_bytes(pid).is_some_and(|rss| rss > max_rss) {
+                            mem_over.store(true, Ordering::SeqCst);
+                            kill(&child);
+                            return;
+                        }
+                    }
+                    _ => return,
+                }
             }
         })
     };
@@ -152,7 +214,9 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
         .map_err(|_| "child mutex poisoned".to_string())?
         .wait()
         .map_err(|e| format!("wait failed: {e}"))?;
-    let status = if timed_out.load(Ordering::SeqCst) {
+    let status = if mem_over.load(Ordering::SeqCst) {
+        Status::MemoryLimit
+    } else if timed_out.load(Ordering::SeqCst) {
         Status::Timeout
     } else if over.load(Ordering::SeqCst) {
         Status::OutputLimit
@@ -182,6 +246,7 @@ mod tests {
             stdin,
             timeout: Duration::from_millis(timeout_ms),
             max_output: cap,
+            max_rss: 1 << 30,
         })
         .unwrap()
     }
@@ -215,6 +280,27 @@ mod tests {
     }
 
     #[test]
+    fn memory_limit_kills() {
+        // perl is on every macOS and Linux CI image; grow to ~400 MB.
+        let args = vec![
+            "-e".to_string(),
+            "$x = 'a' x 400_000_000; sleep 5".to_string(),
+        ];
+        let o = run(&Spec {
+            bin: Path::new("/usr/bin/perl"),
+            args: &args,
+            cwd: Path::new("/"),
+            env: &[],
+            stdin: None,
+            timeout: Duration::from_secs(10),
+            max_output: 1 << 16,
+            max_rss: 100 << 20,
+        })
+        .unwrap();
+        assert_eq!(o.status, Status::MemoryLimit);
+    }
+
+    #[test]
     fn signal_is_reported() {
         let o = sh("kill -SEGV $$", None, 5000, 1 << 16);
         assert_eq!(o.status, Status::Signal(11));
@@ -230,6 +316,7 @@ mod tests {
             stdin: None,
             timeout: Duration::from_secs(5),
             max_output: 1 << 16,
+            max_rss: 1 << 30,
         })
         .unwrap();
         // Command orders variables by name; both tools see the same order.

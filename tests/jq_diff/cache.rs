@@ -21,6 +21,7 @@ pub struct Header {
     pub fixtures: String,
     pub timeout_ms: u64,
     pub max_output: usize,
+    pub max_rss: u64,
 }
 
 pub const SCHEMA: u32 = 1;
@@ -115,6 +116,7 @@ mod tests {
             fixtures: "f".into(),
             timeout_ms: 10,
             max_output: 1,
+            max_rss: 1,
         }
     }
 
