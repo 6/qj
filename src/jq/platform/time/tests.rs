@@ -775,6 +775,96 @@ fn set_tm_wday_and_yday() {
     );
 }
 
+/// The date cases of jq 1.8.1's `jq.test` and `man.test`, evaluated through the
+/// primitives the way `builtin.jq` composes them (`fromdate` is
+/// `strptime("%Y-%m-%dT%H:%M:%SZ") | mktime`, `todate` is `strftime` of that format).
+#[test]
+fn upstream_date_cases() {
+    let _s = serial();
+    let iso = "%Y-%m-%dT%H:%M:%SZ";
+    let fields = |p: &Parsed| p.tm.map(Some);
+    let broken = |xs: &[f64]| arr(xs);
+
+    assert_eq!(
+        strftime_c(
+            TimeInput::Array(&broken(&[2015.0, 2.0, 5.0, 23.0, 51.0, 47.0, 4.0, 63.0])),
+            iso
+        )
+        .as_deref(),
+        Ok("2015-03-05T23:51:47Z")
+    );
+    assert_eq!(
+        strftime_c(TimeInput::Number(1435677542.822351), "%A, %B %d, %Y").as_deref(),
+        Ok("Tuesday, June 30, 2015")
+    );
+    assert_eq!(
+        strftime_c(TimeInput::Array(&broken(&[2024.0, 2.0, 15.0])), iso).as_deref(),
+        Ok("2024-03-15T00:00:00Z")
+    );
+    assert_eq!(
+        mktime(TimeInput::Array(&broken(&[2024.0, 8.0, 21.0]))),
+        Ok(1726876800.0)
+    );
+    assert_bt(
+        gmtime(TimeInput::Number(1425599507.0)).unwrap(),
+        [2015.0, 2.0, 5.0, 23.0, 51.0, 47.0, 4.0, 63.0],
+    );
+
+    // ["a",1,2,3,4,5,6,7]
+    let bad: Vec<Option<f64>> = std::iter::once(None)
+        .chain((1..8).map(|i| Some(i as f64)))
+        .collect();
+    assert_eq!(
+        strftime(TimeInput::Array(&bad), Some(iso)),
+        Err(msg("strftime/1 requires parsed datetime inputs"))
+    );
+    assert_eq!(
+        strflocaltime(TimeInput::Array(&bad), Some(iso)),
+        Err(msg("strflocaltime/1 requires parsed datetime inputs"))
+    );
+    assert_eq!(
+        mktime(TimeInput::Array(&bad)),
+        Err(msg("mktime requires parsed datetime inputs"))
+    );
+    // oss-fuzz #67403: `0 | strftime([])`, `0 | strflocaltime({})`.
+    assert_eq!(
+        strftime(TimeInput::Number(0.0), None),
+        Err(msg("strftime/1 requires a string format"))
+    );
+    assert_eq!(
+        strflocaltime(TimeInput::Number(0.0), None),
+        Err(msg("strflocaltime/1 requires a string format"))
+    );
+
+    let p = strptime_c("2015-03-05T23:51:47Z", iso).unwrap();
+    assert_eq!(p, parsed([2015.0, 2.0, 5.0, 23.0, 51.0, 47.0, 4.0, 63.0]));
+    assert_eq!(mktime(TimeInput::Array(&fields(&p))), Ok(1425599507.0));
+    let p = strptime_c("2025-06-07T08:09:10", "%FT%T").unwrap();
+    assert_eq!(p, parsed([2025.0, 5.0, 7.0, 8.0, 9.0, 10.0, 6.0, 157.0]));
+    assert_eq!(mktime(TimeInput::Array(&fields(&p))), Ok(1749283750.0));
+
+    // "Check day-of-week and day of year computations (should trip an assert if this
+    // fails)": every day from 1970-03-01 for 67 years through strftime and strptime.
+    let start = strptime_c("1970-03-01T01:02:03Z", iso).unwrap();
+    let start = mktime(TimeInput::Array(&fields(&start))).unwrap();
+    let mut last = None;
+    for day in 0..365 * 67 {
+        let t = start + 86400.0 * day as f64;
+        let s = strftime_c(TimeInput::Number(t), iso).unwrap();
+        last = Some(strptime_c(&s, iso).unwrap_or_else(|e| panic!("{s}: {e}")));
+    }
+    assert_eq!(
+        last,
+        Some(parsed([2037.0, 1.0, 11.0, 1.0, 2.0, 3.0, 3.0, 41.0]))
+    );
+
+    // CVE-2025-49014 regression: `0 | strflocaltime("")`.
+    assert_eq!(
+        strflocaltime_c(TimeInput::Number(0.0), "").as_deref(),
+        Ok("")
+    );
+}
+
 #[test]
 fn now_is_the_current_time() {
     let expected = std::time::SystemTime::now()

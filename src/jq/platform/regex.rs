@@ -336,21 +336,31 @@ fn compile(pattern: &str, options: u32) -> Result<Compiled, Error> {
 const CACHE_LIMIT: usize = 256;
 
 thread_local! {
-    static CACHE: RefCell<HashMap<(String, u32), Rc<Compiled>>> = RefCell::new(HashMap::new());
+    /// options -> pattern -> regex (two levels so a hit doesn't allocate a key).
+    static CACHE: RefCell<HashMap<u32, HashMap<String, Rc<Compiled>>>> =
+        RefCell::new(HashMap::new());
 }
 
 fn compile_cached(pattern: &str, options: u32) -> Result<Rc<Compiled>, Error> {
-    let key = (pattern.to_owned(), options);
-    if let Some(re) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
+    let hit = CACHE.with(|c| {
+        c.borrow()
+            .get(&options)
+            .and_then(|by_pattern| by_pattern.get(pattern))
+            .cloned()
+    });
+    if let Some(re) = hit {
         return Ok(re);
     }
     let re = Rc::new(compile(pattern, options)?);
     CACHE.with(|c| {
         let mut cache = c.borrow_mut();
-        if cache.len() >= CACHE_LIMIT {
+        if cache.values().map(HashMap::len).sum::<usize>() >= CACHE_LIMIT {
             cache.clear();
         }
-        cache.insert(key, re.clone());
+        cache
+            .entry(options)
+            .or_default()
+            .insert(pattern.to_owned(), re.clone());
     });
     Ok(re)
 }
