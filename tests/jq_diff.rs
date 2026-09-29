@@ -178,6 +178,27 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// Cases run with a cleared environment, which breaks version-manager shims
+/// (mise's `jq` shim is the `mise` binary and needs mise's environment). When
+/// `jq` on PATH resolves to something not named `jq`, ask mise for the real
+/// binary.
+fn resolve_shim(jq: PathBuf) -> PathBuf {
+    let real = std::fs::canonicalize(&jq).unwrap_or_else(|_| jq.clone());
+    if real.file_name().is_some_and(|n| n == "mise") {
+        let out = std::process::Command::new(&real)
+            .args(["which", "jq"])
+            .current_dir(root())
+            .output();
+        if let Ok(out) = out {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if out.status.success() && !path.is_empty() {
+                return PathBuf::from(path);
+            }
+        }
+    }
+    jq
+}
+
 /// The environment both tools run with (plus any case-specific variables).
 fn base_env(work: &Path) -> Vec<(String, String)> {
     vec![
@@ -511,7 +532,11 @@ fn jq_diff() {
     let started = Instant::now();
     let cfg = Config::from_env().unwrap_or_else(|e| panic!("jq_diff: {e}"));
 
-    let Some(jq) = cfg.jq.clone().or_else(|| find_on_path("jq")) else {
+    let Some(jq) = cfg
+        .jq
+        .clone()
+        .or_else(|| find_on_path("jq").map(resolve_shim))
+    else {
         say!("jq_diff: skipped: jq not found on PATH (set JQ_DIFF_JQ)");
         return;
     };
@@ -633,9 +658,10 @@ fn jq_diff() {
     );
     say!("{}", scoreboard(&jobs, &outcomes));
     say!(
-        "details: {}\n         {}",
+        "details: {}\n         {}\n         {}",
         work.join("report.txt").display(),
-        work.join("results.tsv").display()
+        work.join("results.tsv").display(),
+        work.join("baseline_candidate.txt").display()
     );
 
     // Ratchet.
@@ -664,9 +690,14 @@ fn jq_diff() {
         Err(_) => None,
     };
 
+    // What the baseline would become from this run, written on every run
+    // (e.g. for CI to publish a baseline for its platform).
+    let new = baseline::update(old.as_deref().unwrap_or(&[]), &current, !cfg.complete());
+    let rendered = baseline::render(&new);
+    let _ = std::fs::write(work.join("baseline_candidate.txt"), &rendered);
+
     if cfg.update_baseline {
-        let new = baseline::update(old.as_deref().unwrap_or(&[]), &current, !cfg.complete());
-        std::fs::write(&cfg.baseline, baseline::render(&new)).expect("write baseline");
+        std::fs::write(&cfg.baseline, &rendered).expect("write baseline");
         let passing = new.iter().filter(|e| e.level == Level::Pass).count();
         say!(
             "\njq_diff: wrote {rel_baseline}: {} entries ({passing} pass, {} stdout)",
@@ -679,7 +710,7 @@ fn jq_diff() {
     let Some(old) = old else {
         say!(
             "\njq_diff: no baseline at {rel_baseline}; nothing to ratchet against.\n\
-             Create it with JQ_DIFF_UPDATE_BASELINE=1."
+             Create it with JQ_DIFF_UPDATE_BASELINE=1, or commit baseline_candidate.txt."
         );
         return;
     };
