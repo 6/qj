@@ -142,8 +142,12 @@ fn run_jq(case: &Case, trace: bool) -> (Option<String>, Outcome) {
         if let Some(m) = l.strip_prefix("jq: parse error: ") {
             return Some(format!("parse error: {m}"));
         }
+        // "jq: error (at <pos>): <msg>" or "jq: error (at <pos>) (not a string): <v>"
         let (_, r) = l.strip_prefix("jq: error (at ")?.split_once(')')?;
-        Some(r.strip_prefix(": ").unwrap_or(r).trim_start().to_string())
+        Some(match r.strip_prefix(": ") {
+            Some(m) => m.to_string(),
+            None => r.strip_prefix(' ').unwrap_or(r).to_string(),
+        })
     });
     (
         Some(disasm.to_string()),
@@ -156,14 +160,19 @@ fn run_jq(case: &Case, trace: bool) -> (Option<String>, Outcome) {
 }
 
 /// The rest of the input values, as `input`/`inputs` see them.
-struct Inputs(std::collections::VecDeque<Result<Value, Error>>);
+/// (jq reads a test's one-line stdin in one chunk: `input_line_number` is the number
+/// of newlines in it, and `input_filename` is `"<stdin>"`.)
+struct Inputs(std::collections::VecDeque<Result<Value, Error>>, usize);
 
 impl InputSource for Inputs {
     fn next_input(&mut self) -> Option<Result<Value, Error>> {
         self.0.pop_front()
     }
     fn current_filename(&self) -> Option<Value> {
-        Some(Value::Null)
+        Some(Value::from("<stdin>"))
+    }
+    fn current_line(&self) -> Value {
+        Value::from(self.1)
     }
 }
 
@@ -196,7 +205,8 @@ fn run_vm(bc: Rc<Bytecode>, case: &Case, trace: bool) -> Outcome {
     }
     let mut exit = 0;
     let mut error = None;
-    jq.set_input(Some(Box::new(Inputs(values))));
+    let lines = text.bytes().filter(|&b| b == b'\n').count();
+    jq.set_input(Some(Box::new(Inputs(values, lines))));
     loop {
         let next = jq.take_input().and_then(|mut i| {
             let v = i.next_input();

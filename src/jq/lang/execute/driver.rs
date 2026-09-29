@@ -90,7 +90,8 @@ impl InputSource for Inputs {
         self.0.borrow_mut().pop_front()
     }
     fn current_filename(&self) -> Option<Value> {
-        Some(Value::Null)
+        // util.c names standard input "<stdin>".
+        Some(Value::from("<stdin>"))
     }
 }
 
