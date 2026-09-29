@@ -243,7 +243,7 @@ impl FileData {
 }
 
 /// Position bookkeeping within the current input.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FilePos {
     /// Absolute parse position (fast path), or the start of the chunk last
     /// fed to jq's parser.
@@ -1162,9 +1162,15 @@ impl InputReader {
         Some(Cut {
             generation: self.generation,
             pos: self.fp.pos,
-            nl: self.fp.nl,
             line_start: self.fp.line_start,
         })
+    }
+
+    /// Newlines before the reader's position in the current input (its
+    /// `input_line_number` bookkeeping; for the engine, when it is idle at
+    /// a job's start).
+    pub(crate) fn newlines_read(&self) -> u64 {
+        self.fp.nl
     }
 
     /// The complete lines of the current input from `at` (at or after the
@@ -1219,7 +1225,8 @@ impl InputReader {
         if end - start < min && !(small_rest && cur.eof && end == avail) {
             return None;
         }
-        let lines = memchr::memchr_iter(b'\n', cur.slice(start, end)).count() as u64;
+        // (The job's worker counts its newlines: this thread only looks at
+        // the bytes around job boundaries.)
         let (data, base) = match &cur.kind {
             DataKind::Whole(b) => (b.clone(), 0),
             DataKind::Stream { buf, .. } => {
@@ -1234,7 +1241,6 @@ impl InputReader {
             base,
             start,
             end,
-            nl: at.nl,
             line_start: at.line_start,
             generation: at.generation,
             raw: self.opts.raw,
@@ -1242,7 +1248,6 @@ impl InputReader {
         let next = Cut {
             generation: at.generation,
             pos: end,
-            nl: at.nl + lines,
             line_start: end,
         };
         Some((window, next))
@@ -1260,6 +1265,34 @@ impl InputReader {
     /// processed by the engine: move past them as the fast path would have.
     pub(crate) fn commit(&mut self, upto: usize) {
         self.advance(upto, true);
+    }
+
+    /// [`InputReader::commit`] of a whole job, which ends just after a
+    /// newline at `end` and holds `lines` newlines from the reader's
+    /// position on (its worker counted them): no second scan of its bytes.
+    pub(crate) fn commit_job(&mut self, end: usize, lines: u64) {
+        let from = self.fp.pos;
+        if end <= from || lines == 0 {
+            return self.advance(end, true);
+        }
+        #[cfg(debug_assertions)]
+        let expected = {
+            let (fp, pline, pcol) = (self.fp, self.pline, self.pcol);
+            self.advance(end, true);
+            let e = (self.fp, self.pline, self.pcol);
+            (self.fp, self.pline, self.pcol) = (fp, pline, pcol);
+            e
+        };
+        self.fp.pos = end;
+        self.fp.nl += lines;
+        self.fp.line_start = end;
+        self.pline = self.pline.wrapping_add(lines as i32);
+        self.pcol = 0;
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            (self.fp, self.pline, self.pcol) == expected,
+            "commit_job disagrees with advance"
+        );
     }
 
     /// After records were read one at a time from a window's line: whether
@@ -1323,8 +1356,6 @@ pub(crate) struct Window {
     pub(crate) start: usize,
     /// Just after a newline.
     pub(crate) end: usize,
-    /// Newlines before `start` in this input.
-    pub(crate) nl: u64,
     /// Start of the line containing `start`.
     pub(crate) line_start: usize,
     /// Which input (see [`InputReader::catch_up`]).
@@ -1339,8 +1370,6 @@ pub(crate) struct Window {
 pub(crate) struct Cut {
     pub(crate) generation: u64,
     pub(crate) pos: usize,
-    /// Newlines before `pos`.
-    pub(crate) nl: u64,
     /// Start of the line containing `pos`.
     pub(crate) line_start: usize,
 }

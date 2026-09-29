@@ -278,8 +278,6 @@ struct Job {
     base: usize,
     start: usize,
     end: usize,
-    /// Newlines before `start` in this input.
-    nl: u64,
     /// Start of the line containing `start`.
     line_start: usize,
     raw: bool,
@@ -304,8 +302,9 @@ struct JobResult {
 }
 
 enum FromWorker {
-    /// Phase 1 done: whether every line was taken.
-    Parsed { id: u64, complete: bool },
+    /// Phase 1 done: whether every line was taken, and how many newlines
+    /// the job holds (the calling thread doesn't count them).
+    Parsed { id: u64, complete: bool, lines: u64 },
     /// Phase 2 done.
     Done { id: u64, result: JobResult },
     /// The program panicked on this job.
@@ -324,12 +323,14 @@ struct Board {
 
 #[derive(Default)]
 struct BoardState {
-    decisions: HashMap<u64, bool>,
+    /// `Some(n)`: go, the job starting after `n` newlines of its input
+    /// (for `input_line_number`); `None`: cancelled.
+    decisions: HashMap<u64, Option<u64>>,
     closed: bool,
 }
 
 impl Board {
-    fn decide(&self, id: u64, go: bool) {
+    fn decide(&self, id: u64, go: Option<u64>) {
         self.state.lock().expect("board").decisions.insert(id, go);
         self.cv.notify_all();
     }
@@ -343,15 +344,15 @@ impl Board {
         self.state.lock().expect("board").closed
     }
 
-    /// Waits for job `id`'s decision (`false` once the board is closed).
-    fn wait(&self, id: u64) -> bool {
+    /// Waits for job `id`'s decision (cancelled once the board is closed).
+    fn wait(&self, id: u64) -> Option<u64> {
         let mut st = self.state.lock().expect("board");
         loop {
             if let Some(go) = st.decisions.remove(&id) {
                 return go;
             }
             if st.closed {
-                return false;
+                return None;
             }
             st = self.cv.wait(st).expect("board");
         }
@@ -515,14 +516,21 @@ fn worker_thread<F: WorkerFactory>(
                 continue;
             }
         };
-        let failed_at = parsed.failed_at;
-        let complete = failed_at.is_none();
-        if msgs.send(FromWorker::Parsed { id, complete }).is_err() {
+        let complete = parsed.failed_at.is_none();
+        let lines = parsed.lines;
+        if msgs
+            .send(FromWorker::Parsed {
+                id,
+                complete,
+                lines,
+            })
+            .is_err()
+        {
             return;
         }
-        if !board.wait(id) {
+        let Some(start_nl) = board.wait(id) else {
             continue; // cancelled
-        }
+        };
         // Phase 2: the program, on values that are known to be records.
         let filename = job.filename.as_deref();
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -531,6 +539,7 @@ fn worker_thread<F: WorkerFactory>(
                 failed_at,
                 out: tape_out,
                 marks: tape_marks,
+                ..
             } = parsed;
             if items.iter().all(|i| matches!(i, Item::Done { .. })) {
                 // All written in phase 1.
@@ -570,7 +579,10 @@ fn worker_thread<F: WorkerFactory>(
             for item in items {
                 let status = match item {
                     Item::Value(value, line) => {
-                        let meta = RecordMeta { filename, line };
+                        let meta = RecordMeta {
+                            filename,
+                            line: start_nl + line,
+                        };
                         let status = w.process(value, &meta, &mut r.out, &mut r.err);
                         w.take_marks(&mut r.marks);
                         status
@@ -616,7 +628,8 @@ fn worker_thread<F: WorkerFactory>(
 
 /// A record of a job after phase 1.
 enum Item {
-    /// Its value and `input_line_number`, for phase 2.
+    /// Its value and `input_line_number` (counted from the job's start:
+    /// phase 2 adds the newlines before it), for phase 2.
     Value(Value, u64),
     /// Written by the job's [`RecordTape`]: where its output and marks end
     /// in [`ParsedJob::out`] and [`ParsedJob::marks`], and its status.
@@ -635,11 +648,13 @@ struct ParsedJob {
     /// Output of the records a [`RecordTape`] wrote.
     out: Vec<u8>,
     marks: Vec<(usize, usize)>,
+    /// Newlines in the job (in the lines it took).
+    lines: u64,
 }
 
-/// Phase 1: the values (with their `input_line_number`) of a job's lines, or
-/// their output if `tape` takes them, up to the first line the fast path
-/// wouldn't take.
+/// Phase 1: the values (with their `input_line_number` from the job's
+/// start) of a job's lines, or their output if `tape` takes them, up to the
+/// first line the fast path wouldn't take.
 fn parse_job<'t>(
     simd: &mut SimdParser,
     job: &Job,
@@ -651,9 +666,11 @@ fn parse_job<'t>(
         failed_at: None,
         out: Vec::new(),
         marks: Vec::new(),
+        lines: 0,
     };
     let mut a = job.start;
-    let mut nl = job.nl;
+    // (Counted from the job's start.)
+    let mut nl = 0;
     let mut ls = job.line_start;
     while a < job.end {
         let b = a
@@ -691,6 +708,7 @@ fn parse_job<'t>(
         a = b;
         ls = b;
     }
+    p.lines = nl;
     p
 }
 
@@ -751,8 +769,12 @@ struct Slot {
     generation: u64,
     /// Phase 1 reported: whether every line was taken.
     complete: Option<bool>,
-    /// Confirmed and told to run the program.
+    /// Phase 1 reported: the job's newlines.
+    lines: Option<u64>,
+    /// Confirmed and told to run the program (and the newlines before the
+    /// job, which confirming it determines).
     go: bool,
+    start_nl: Option<u64>,
     result: Option<JobResult>,
 }
 
@@ -814,7 +836,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         }
         while !self.queue.is_empty() {
             let s = self.queue.pop_front().expect("non-empty");
-            self.board.decide(s.id, false);
+            self.board.decide(s.id, None);
         }
     }
 
@@ -833,10 +855,12 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
     /// The reader is idle at the front job's start: confirm it, and hand
     /// over its results once they're in.
     fn front_reached(&mut self) -> ControlFlow<()> {
+        let nl = self.reader.newlines_read();
         let front = self.queue.front_mut().expect("non-empty");
         if !front.go {
             front.go = true;
-            self.board.decide(front.id, true);
+            front.start_nl = Some(nl);
+            self.board.decide(front.id, Some(nl));
             self.next_go = front.id + 1;
             self.confirm_chain();
         }
@@ -884,7 +908,13 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         }
         // Everything before the line the worker didn't take was consumed
         // like the fast path would; the reader reads on from there.
-        self.reader.commit(r.failed_at.unwrap_or(slot.end));
+        match r.failed_at {
+            // (The worker counted the job's newlines.)
+            None => self
+                .reader
+                .commit_job(slot.end, slot.lines.expect("parsed")),
+            Some(at) => self.reader.commit(at),
+        }
         if r.failed_at.is_some() {
             // Read that line now: a job cut from here would stop at it again.
             return self.sequential();
@@ -895,7 +925,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
     fn cancel_front(&mut self) {
         let s = self.queue.pop_front().expect("non-empty");
         self.in_flight -= s.end - s.start;
-        self.board.decide(s.id, false);
+        self.board.decide(s.id, None);
         self.stats.discarded_jobs += 1;
     }
 
@@ -916,9 +946,12 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
             if !(prev.go && prev.complete == Some(true)) {
                 return;
             }
+            // It starts where the previous job ends.
+            let nl = prev.start_nl.expect("confirmed") + prev.lines.expect("parsed");
             let s = &mut self.queue[i];
             s.go = true;
-            self.board.decide(s.id, true);
+            s.start_nl = Some(nl);
+            self.board.decide(s.id, Some(nl));
             self.next_go = s.id + 1;
         }
     }
@@ -934,9 +967,14 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
 
     fn absorb(&mut self, m: FromWorker) {
         match m {
-            FromWorker::Parsed { id, complete } => {
+            FromWorker::Parsed {
+                id,
+                complete,
+                lines,
+            } => {
                 if let Some(s) = self.slot(id) {
                     s.complete = Some(complete);
+                    s.lines = Some(lines);
                     self.confirm_chain();
                 }
             }
@@ -1001,7 +1039,6 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 base: w.base,
                 start: w.start,
                 end: w.end,
-                nl: w.nl,
                 line_start: w.line_start,
                 raw: w.raw,
                 filename: self.reader.filename_text().map(Arc::from),
@@ -1015,7 +1052,9 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 end: w.end,
                 generation: w.generation,
                 complete: None,
+                lines: None,
                 go: false,
+                start_nl: None,
                 result: None,
             });
             self.in_flight += w.end - w.start;
