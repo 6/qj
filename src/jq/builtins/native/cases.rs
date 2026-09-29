@@ -228,6 +228,28 @@ impl Gen {
 
     /// A probe around a native call `n`.
     fn probe(&mut self, n: &str) -> String {
+        // Reference lifetimes: `$$$$v` moves a variable out, and `reduce` moves its
+        // state into the update, so a slice of fresh storage is uniquely owned there
+        // unless something (like a suspended fork point of the native's definition)
+        // still holds it; a write past its end then brings back stale elements.
+        const VIEW: &str = "[., ., ., .][0:2]";
+        match self.r.below(30) {
+            22 => return format!("{VIEW} as $v | $v | {n} | $$$$v | .[3] = 9"),
+            23 => return format!("{VIEW} | reduce ({n}) as $j (.; .[3] = 9)"),
+            24 => {
+                return format!("{VIEW} | {n} | if type == \"array\" then .[3] = 9 else . end");
+            }
+            25 => return format!("{VIEW} as $v | $v | [{n}] | $$$$v | .[3] = 9"),
+            26 => return format!("{VIEW} as $v | $v | last({n}) | $$$$v | .[3] = 9"),
+            27 => return format!("{VIEW} as $v | $v | first({n}) | $$$$v | .[3] = 9"),
+            28 => {
+                return format!(
+                    "[{VIEW}, .] | {n} | if type == \"array\" then .[length + 1] = 0 else . end"
+                );
+            }
+            29 => return format!("[{VIEW}, .] | reduce ({n}) as $j (.; .[0][3] = 9)"),
+            _ => {}
+        }
         match self.r.below(22) {
             0 => format!("[{n}]"),
             1 => n.to_string(),

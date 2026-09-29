@@ -11,7 +11,7 @@
 //!   explode | map( if 97 <= . and . <= 122 then . - 32  else . end) | implode;
 //! ```
 
-use super::cannot_iterate;
+use super::{Hold, cannot_iterate};
 use crate::jq::builtins::binops::binop_plus;
 use crate::jq::builtins::general::tostring;
 use crate::jq::lang::execute::Jq;
@@ -24,14 +24,24 @@ use crate::jq::value::{Error, Str, Value};
 /// The accumulator is updated in place, where jq's copies it (its subexpressions hold
 /// references), so this is linear where jq is quadratic; strings have no views, so
 /// only the time differs.
+///
+/// jq returns a joined string from `reduce ... // ""` with the `//`'s fork point still
+/// on the stack, holding join's input until the caller backtracks (so a slice of a
+/// uniquely owned array stays shared meanwhile): the native holds it too. (The `""`
+/// of an empty input comes from the `//`'s second branch, with nothing left held.)
 pub(super) fn join(vm: &mut Jq, input: Value, x: Closure, c: ConstView<'_>) -> Outcome {
-    match vm.pure_arg(x, &input) {
-        Some(x) => join_with(input, x, c).into(),
-        None => Outcome::Fallback(input),
+    let Some(x) = vm.pure_arg(x, &input) else {
+        return Outcome::Fallback(input);
+    };
+    match join_with(&input, x, c) {
+        Ok(Some(v)) => Outcome::Yield(v, Box::new(Hold(input))),
+        Ok(None) => Outcome::Value(c.get(2).clone()),
+        Err(e) => e.into(),
     }
 }
 
-fn join_with(input: Value, x: Value, c: ConstView<'_>) -> Result<Value, Stop> {
+/// The reduce's result, if it isn't `null` (the input had elements).
+fn join_with(input: &Value, x: Value, c: ConstView<'_>) -> Result<Option<Value>, Stop> {
     let mut acc = Value::Null;
     let mut step = |i: &Value| -> Result<(), Stop> {
         // `A + B`: B (the element's text) is evaluated first, then A.
@@ -48,7 +58,7 @@ fn join_with(input: Value, x: Value, c: ConstView<'_>) -> Result<Value, Stop> {
         acc = binop_plus(a, b)?;
         Ok(())
     };
-    match &input {
+    match input {
         Value::Array(a) => {
             for i in a.iter() {
                 step(i)?;
@@ -59,13 +69,9 @@ fn join_with(input: Value, x: Value, c: ConstView<'_>) -> Result<Value, Stop> {
                 step(i)?;
             }
         }
-        _ => return Err(cannot_iterate(&input)),
+        _ => return Err(cannot_iterate(input)),
     }
-    Ok(if acc.is_truthy() {
-        acc
-    } else {
-        c.get(2).clone()
-    })
+    Ok(acc.is_truthy().then_some(acc))
 }
 
 /// `ascii_downcase` (`lo..=hi` is `A..=Z`) or `ascii_upcase` (`a..=z`): `explode`'s

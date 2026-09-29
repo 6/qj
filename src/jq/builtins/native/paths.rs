@@ -58,17 +58,24 @@ fn restore(p: &mut Array, len: usize) {
 }
 
 /// The traversal state shared by the three: `jq->path` and the containers on it.
+///
+/// Containers are held as long as jq's fork points hold them, since that decides
+/// whether a caller can update them in place: `.[]?`'s fork point holds its container
+/// until it enters the last child, and in `tostream`'s `r` the fork point of `,` holds
+/// each node until its second branch (after its children), so `hold_last` is set there.
 struct Walker {
     p: Array,
     stack: Vec<Level>,
+    hold_last: bool,
 }
 
 impl Walker {
     /// `path(...)` starts with a fresh `[]` (`PATH_BEGIN`).
-    fn new() -> Walker {
+    fn new(hold_last: bool) -> Walker {
         Walker {
             p: Array::new(),
             stack: Vec::new(),
+            hold_last,
         }
     }
 
@@ -77,6 +84,11 @@ impl Walker {
     fn enter(&mut self, node: Value) -> Value {
         let n = children(&node);
         let (k, c) = child(&node, 0);
+        let node = if n == 1 && !self.hold_last {
+            Value::Null
+        } else {
+            node
+        };
         self.stack.push(Level { node, i: 0, n });
         self.p.push(k);
         c
@@ -86,11 +98,15 @@ impl Walker {
     /// restores its length and enters the next child. `None` when no container has
     /// children left.
     fn next_sibling(&mut self) -> Option<Value> {
+        let hold_last = self.hold_last;
         loop {
             let top = self.stack.last_mut()?;
             if top.i + 1 < top.n {
                 top.i += 1;
                 let (k, c) = child(&top.node, top.i);
+                if top.i + 1 == top.n && !hold_last {
+                    top.node = Value::Null;
+                }
                 let d = self.stack.len() - 1;
                 restore(&mut self.p, d);
                 self.p.push(k);
@@ -111,7 +127,7 @@ impl Walker {
 /// `paths`: the root's path `[]` is dropped by `select(length > 0)`, and the fork point
 /// of the root's `,` restores length 0 (a fresh `[]`) before `.[]?` runs on it.
 pub(super) fn paths0(input: Value) -> Outcome {
-    let mut w = Walker::new();
+    let mut w = Walker::new(false);
     restore(&mut w.p, 0);
     if children(&input) == 0 {
         return Outcome::Empty;
@@ -160,7 +176,7 @@ impl Resume for Paths0 {
 /// `r`'s `,`, restored once `node_filter` is exhausted.
 pub(super) fn paths1(vm: &mut Jq, input: Value, f: Closure) -> Outcome {
     let g = Box::new(Paths1 {
-        w: Walker::new(),
+        w: Walker::new(false),
         node: input,
         f,
         sub: None,
@@ -262,8 +278,7 @@ impl Resume for Paths1 {
 /// for a container whose last child is `k`, each collected into the definition's `[]`.
 pub(super) fn tostream(input: Value, c: ConstView<'_>) -> Outcome {
     let mut g = Box::new(Tostream {
-        w: Walker::new(),
-        node: Value::Null,
+        w: Walker::new(true),
         leaf: c.get(0).clone(),
         closing: c.get(1).clone(),
     });
@@ -273,8 +288,6 @@ pub(super) fn tostream(input: Value, c: ConstView<'_>) -> Outcome {
 
 struct Tostream {
     w: Walker,
-    /// The node whose event was yielded last.
-    node: Value,
     /// `[$p, .]`'s `[]`.
     leaf: Value,
     /// `[$p+$q]`'s `[]`.
@@ -318,7 +331,6 @@ impl Tostream {
             a.push(Value::Array(q));
             a
         };
-        self.node = node;
         Value::Array(ev)
     }
 }
@@ -331,7 +343,6 @@ impl Resume for Tostream {
         if d == 0 {
             return Outcome::Empty;
         }
-        self.node = Value::Null;
         restore(&mut self.w.p, d - 1);
         let top = self.w.stack.last_mut().expect("parent");
         let v = if top.i + 1 < top.n {

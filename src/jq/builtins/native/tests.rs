@@ -247,6 +247,75 @@ fn edge_cases_match_the_definitions() {
     assert!(calls > 1000, "natives ran only {calls} times");
 }
 
+/// Natives whose reference lifetimes the probes of [`lifetimes_match_the_definitions`]
+/// check.
+///
+/// (No `?`: a `try` holds its input itself, which would hide a native's early release.)
+const LIFETIME_NATIVES: &[&str] = &[
+    "to_entries",
+    "from_entries",
+    "with_entries(.)",
+    "walk(.)",
+    "paths",
+    "paths(true)",
+    "tostream",
+    "ascii_downcase",
+    "([.[] | tostring] | join(\",\"))",
+    "join(\",\")",
+    "join(null)",
+    "(.[0] |= .)",
+    "(.[0] = 1)",
+    "(.[1:] = [])",
+    "map_values(.)",
+    ".. |= .",
+    "(.[] |= empty)",
+    "((.. | strings) |= empty)",
+    "((.. | numbers) |= first(.[]?))",
+    "(.[0] = tostring)",
+    "(.[0] = (1, 2))",
+    "(.[0] = .[0])",
+    "((.[0:1]) | paths)",
+    "((.[0:1]) | paths(true))",
+    "((.[0:1]) | tostream)",
+];
+
+/// Where jq's definition still holds a value (in a suspended fork point) when an output
+/// reaches the caller, the native must too, and must not hold it longer: a slice of
+/// fresh storage is uniquely owned once `$$$$v` moves the variable out or `reduce`
+/// moves its state into the update, and then a write past its end brings back stale
+/// elements. `[., ., ., .][0:2]` is such a slice (its storage has room for 6, so `.[3] = 9` writes in place when unique).
+#[test]
+fn lifetimes_match_the_definitions() {
+    const PROBES: &[&str] = &[
+        "V as $v | $v | N | $$$$v | .[3] = 9",
+        "V | reduce (N) as $j (.; .[3] = 9)",
+        "V | N | if type == \"array\" then .[3] = 9 else . end",
+        "V as $v | $v | [N] | $$$$v | .[3] = 9",
+        "V as $v | $v | last(N) | $$$$v | .[3] = 9",
+        "V as $v | $v | first(N) | $$$$v | .[3] = 9",
+        "[V, .] | N | if type == \"array\" then .[length + 1] = 0 else . end",
+        "[V, .] | reduce (N) as $j (.; .[0][3] = 9)",
+        "[V] | reduce (N) as $j (.; .[0][3] = 9)",
+        "{a: V} | reduce (N) as $j (.; .a[3] = 9)",
+    ];
+    let mut calls = 0;
+    for n in LIFETIME_NATIVES {
+        for probe in PROBES {
+            let program = probe.replace('V', "[., ., ., .][0:2]").replace('N', n);
+            for input in [
+                "\"a\"",
+                "[1]",
+                "{\"key\":\"k\",\"value\":[2]}",
+                "null",
+                "[\"a\",1,[\"b\"]]",
+            ] {
+                calls += check(&program, input);
+            }
+        }
+    }
+    assert!(calls > 100, "natives ran only {calls} times");
+}
+
 /// Generated programs, bounded so they are safe to run in process (see `cases.rs`); the
 /// long, unbounded run is out of process (`tests/native_diff.rs`).
 #[test]

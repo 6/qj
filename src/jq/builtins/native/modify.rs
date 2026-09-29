@@ -59,7 +59,12 @@ pub(super) fn modify(
         // `delpaths([])` returns its input.
         return Ok(root);
     }
-    Ok(root.delpaths(&Value::from(dels))?)
+    // `$dot[0] | delpaths($dot[1])`: `$dot` still holds the state, so delpaths works on
+    // a shared value (a uniquely owned array would be changed in place).
+    let held = root.clone();
+    let r = root.delpaths(&Value::from(dels));
+    drop(held);
+    Ok(r?)
 }
 
 /// The reduce body for path `p`.
@@ -145,6 +150,13 @@ impl Assign {
         let Some((s, v)) = r else {
             return Outcome::Empty;
         };
+        // jq keeps the input alive (below `value`'s fork points) only while `value` has
+        // fork points left; after its last output the reduce owns it (and may update a
+        // uniquely owned array in place).
+        if vm.sub_idle(&s) {
+            vm.sub_finish(s);
+            return assign_one(vm, self.input, self.paths, self.path_fn, v).into();
+        }
         match assign_one(vm, self.input.clone(), self.paths, self.path_fn, v) {
             Ok(x) => {
                 self.sub = Some(s);

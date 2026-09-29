@@ -47,7 +47,7 @@ mod cases;
 mod tests;
 
 use crate::jq::lang::execute::Jq;
-use crate::jq::lang::execute::native::{Call, ConstRef, Outcome, Pool, Pools, Stop};
+use crate::jq::lang::execute::native::{Call, ConstRef, Outcome, Pool, Pools, Resume, Stop};
 use crate::jq::value::{Error, Value, dump_string_trunc};
 
 /// The `builtin.jq` definitions with a native implementation, plus helper marks for
@@ -197,6 +197,18 @@ fn cannot_iterate(v: &Value) -> Stop {
         dump_string_trunc(v, 15)
     ))
     .into()
+}
+
+/// A generator that has nothing more to produce, but holds values until backtracking
+/// reaches it: where jq's definition returns its value with fork points still on the
+/// stack, the values those keep alive stay shared until the caller backtracks (a
+/// uniquely owned array would be written in place, which jq can observe).
+struct Hold(#[allow(dead_code)] Value);
+
+impl Resume for Hold {
+    fn resume(self: Box<Self>, _vm: &mut Jq) -> Outcome {
+        Outcome::Empty
+    }
 }
 
 /// Runs native `id`.

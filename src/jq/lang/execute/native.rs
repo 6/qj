@@ -512,6 +512,19 @@ impl Jq {
         }
     }
 
+    /// Whether a suspended sub-run has no fork points left above its base: it can't
+    /// produce more, and (in jq) nothing of it holds values alive any more. Finish it
+    /// with [`Jq::sub_finish`].
+    pub(crate) fn sub_idle(&self, s: &Sub) -> bool {
+        self.fork_top == s.base
+    }
+
+    /// Ends a sub-run that is [`Jq::sub_idle`] (pops its base fork point).
+    pub(crate) fn sub_finish(&mut self, s: Sub) {
+        debug_assert!(self.sub_idle(&s));
+        self.sub_abandon(s);
+    }
+
     /// Ends a suspended sub-run the way jq's `break` does: an error unwinds its fork
     /// points (their handlers restore paths and propagate it) down to the base.
     pub(crate) fn sub_abandon(&mut self, s: Sub) {
