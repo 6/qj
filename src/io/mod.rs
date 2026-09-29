@@ -104,6 +104,8 @@
 //! multi-file inputs; live comparisons with the jq binary; the engine
 //! against the sequential reader; and real-pipe streaming tests.
 
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod parallel;
 pub mod reader;
 pub mod simd;

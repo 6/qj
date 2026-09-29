@@ -177,6 +177,32 @@ fn reader_matches_util_c() {
     run(0..600);
 }
 
+/// The fuzz target's check (`io::fuzzing`) over generated inputs, so the
+/// harness itself is exercised without cargo-fuzz.
+#[test]
+fn fuzz_harness_on_generated_inputs() {
+    for seed in 0..200u64 {
+        let mut rng = Rng(seed.wrapping_mul(0xA24BAED4963EE407) | 1);
+        let mut data = vec![
+            rng.below(256) as u8,
+            rng.below(256) as u8,
+            rng.below(256) as u8,
+        ];
+        data.extend(gen_input::stream(&mut rng));
+        crate::io::fuzzing::check_reader_equivalence(&data);
+    }
+    // And some raw byte soup.
+    for seed in 0..200u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9FB21C651E98DF25) | 1);
+        let n = rng.below(300);
+        let alphabet = b" \n\t\r[]{}:,\"\\01-e.tfnaul\x00\x1e\xef\xbb\xbf\xff";
+        let data: Vec<u8> = (0..n)
+            .map(|_| alphabet[rng.below(alphabet.len())])
+            .collect();
+        crate::io::fuzzing::check_reader_equivalence(&data);
+    }
+}
+
 /// On clean JSON the fast path does (nearly) all the work: jq's parser
 /// only sees a trailing top-level literal with no byte after it.
 #[test]
