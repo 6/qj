@@ -59,3 +59,22 @@ name = "run-tests-expected-nan-without-result"
 args = ["--run-tests"]
 stdin = "empty\nnull\nnan\n"
 note = "no result to compare with: no assertion, jq reports insufficient results"
+
+# jq_test.c sets no input callback, so input_line_number fails ("Unknown input
+# line number") and input_filename is null. qj answered 0.
+
+[[case]]
+name = "run-tests-input-line-number-fails"
+args = ["--run-tests"]
+stdin = "input_line_number\n[\"\",0]"
+note = "no result, so the test passes and jq goes on to its jq_state tests"
+
+[[case]]
+name = "run-tests-input-line-number-insufficient"
+args = ["--run-tests", "t.test"]
+files = { "t.test" = "input_line_number|$__loc__\n0\n0" }
+
+[[case]]
+name = "run-tests-input-builtins-without-input"
+args = ["--run-tests"]
+stdin = "try input_line_number catch .\nnull\n\"Unknown input line number\"\n\n[input_filename]\nnull\n[null]\n\ntry input catch .\nnull\n\"No more inputs\"\n"

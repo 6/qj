@@ -429,7 +429,7 @@ pub fn f_current_filename(host: &mut dyn Host, _input: Value, _args: &mut [Value
 
 /// `input_line_number` (nargs 1): port of builtin.c `f_current_line`.
 pub fn f_current_line(host: &mut dyn Host, _input: Value, _args: &mut [Value]) -> CResult {
-    Ok(host.current_line())
+    host.current_line()
 }
 
 /// `have_decnum` and `have_literal_numbers` (nargs 1): port of builtin.c

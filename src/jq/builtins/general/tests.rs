@@ -342,7 +342,7 @@ mod host {
         fn current_filename(&self) -> Option<Value> {
             self.inner.current_filename()
         }
-        fn current_line(&self) -> Value {
+        fn current_line(&self) -> CResult {
             self.inner.current_line()
         }
         fn path_append(&mut self, v: Value, p: Value, value_at_path: CResult) -> CResult {

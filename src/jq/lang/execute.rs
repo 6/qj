@@ -477,10 +477,12 @@ impl Host for Jq {
         self.input.as_ref()?.current_filename()
     }
 
-    fn current_line(&self) -> Value {
+    fn current_line(&self) -> CResult {
         match &self.input {
-            Some(i) => i.current_line(),
-            None => Value::from(0),
+            Some(i) => Ok(i.current_line()),
+            // jq_util_input_get_current_line when the input callback isn't util.c's
+            // (jq_test.c sets none).
+            None => Err(Error::msg("Unknown input line number")),
         }
     }
 

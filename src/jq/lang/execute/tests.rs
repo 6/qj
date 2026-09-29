@@ -428,6 +428,22 @@ fn halting() {
 }
 
 #[test]
+fn input_line_number_without_an_input_callback() {
+    // jq_util_input_get_current_line fails when the input callback isn't util.c's
+    // (jq_test.c, behind --run-tests, sets none); input_filename is then null.
+    // Found by tests/jq_fuzz: qj answered 0.
+    if !jq_ok() {
+        return;
+    }
+    for (_, bc) in bytecodes("[try input_line_number catch ., input_filename]") {
+        let mut jq = Jq::new(bc);
+        jq.start(Value::Null, 0);
+        let outs: Vec<String> = (&mut jq).map(|r| r.unwrap().to_json()).collect();
+        assert_eq!(outs, vec!["[\"Unknown input line number\",null]"]);
+    }
+}
+
+#[test]
 fn input_and_debug_callbacks() {
     if !jq_ok() {
         return;
