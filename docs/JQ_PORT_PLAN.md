@@ -259,6 +259,12 @@ interface scaffold before spawning it.
   - (c) raw NDJSON fast paths reintroduced only where canonical output and validity are
     proven;
   - (d) delete the old core, and rewrite the iai-callgrind regression bench for the new core.
+- 2026-09-29: **IO merged** (`e76d7b5`): simdjson tape → values with exact fallback, a
+  byte-exact util.c reader, mmap/streaming, and an ordered parallel engine on the default core.
+  NDJSON throughput is back to old-core levels on 18 threads (noisy sanity runs). Single-doc
+  JSON is still ~4x slower than the old passthroughs, and that's the target of the performance
+  phase. Programs using `now` now run sequentially (`4a098fb`). Started: CL (delete the old
+  core). FZ is still running.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
