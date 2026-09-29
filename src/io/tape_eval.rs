@@ -565,7 +565,9 @@ fn dump(
         return;
     }
     match v {
-        TVal::Node(n) => doc.print(*n, depth, layout, scratch, out),
+        TVal::Node(n) => {
+            doc.print(*n, depth, layout, scratch, out);
+        }
         TVal::Null => out.extend_from_slice(b"null"),
         TVal::Number(x) => {
             if x.is_nan() {

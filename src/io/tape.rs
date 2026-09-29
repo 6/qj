@@ -326,9 +326,10 @@ impl<'a> Doc<'a> {
                 i: n.i + 2,
                 si: n.si + 1,
             },
+            // (Wrapping: the keys of `for_each_key` have no cursor.)
             _ => Node {
                 i: n.i + 1,
-                si: n.si + 1,
+                si: n.si.wrapping_add(1),
             },
         }
     }
@@ -487,9 +488,27 @@ impl<'a> Doc<'a> {
     /// first appearance, each with its key's last value. `None` when the
     /// keys are distinct (the tape's order is jq's order).
     pub fn dedup_entries(&self, object: Node, scratch: &mut Scratch) -> Option<Vec<(Node, Node)>> {
+        if !self.may_have_duplicate_keys(object, scratch) {
+            return None;
+        }
+        let mut entries = scratch.take();
+        self.entries(object, &mut entries);
+        let n = entries.len();
+        self.dedup(&mut entries);
+        if entries.len() == n {
+            // Only hash collisions: distinct after all.
+            scratch.put(entries);
+            return None;
+        }
+        Some(entries)
+    }
+
+    /// Whether an object's keys may repeat: `false` means they're distinct;
+    /// `true` may be a hash collision.
+    pub fn may_have_duplicate_keys(&self, object: Node, scratch: &mut Scratch) -> bool {
         let n = self.count(object);
         if n <= 1 {
-            return None;
+            return false;
         }
         if n <= 8 {
             // Few keys: compare them pairwise.
@@ -500,14 +519,13 @@ impl<'a> Doc<'a> {
                 let s = self.str(k);
                 if keys[..idx].contains(&s) {
                     dup = true;
+                    return Err(()); // stop
                 }
                 keys[idx] = s;
                 idx += 1;
-                Ok::<(), ()>(())
+                Ok(())
             });
-            if !dup {
-                return None;
-            }
+            dup
         } else if n <= SEEN_SLOTS / 2 {
             // Hash the keys into a stamped open-addressing set.
             if scratch.seen.is_empty() {
@@ -538,33 +556,17 @@ impl<'a> Doc<'a> {
                     slot = (slot + 1) & (SEEN_SLOTS - 1);
                 }
             });
-            if !maybe_dup {
-                return None;
-            }
+            maybe_dup
+        } else {
+            true
         }
-        // jq's rule, the slow way.
-        let mut entries = scratch.take();
-        let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let _ = self.for_each_entry(object, |k, v| {
-            match index.get(self.str(k)) {
-                Some(&at) => entries[at].1 = v,
-                None => {
-                    index.insert(self.str(k), entries.len());
-                    entries.push((k, v));
-                }
-            }
-            Ok::<(), ()>(())
-        });
-        if entries.len() == n {
-            // Only hash collisions: distinct after all.
-            scratch.put(entries);
-            return None;
-        }
-        Some(entries)
     }
 
     /// Prints `n` (at nesting depth `depth`) as jq prints the value
     /// [`super::simd`] builds of it.
+    ///
+    /// Returns the node after `n` (what [`Doc::skip`] gives), so that
+    /// printing walks the tape once.
     pub fn print(
         &self,
         n: Node,
@@ -572,10 +574,10 @@ impl<'a> Doc<'a> {
         layout: &Layout,
         scratch: &mut Scratch,
         out: &mut Vec<u8>,
-    ) {
+    ) -> Node {
         if depth > PRINT_DEPTH {
             out.extend_from_slice(b"<skipped: too deep>");
-            return;
+            return self.skip(n);
         }
         let w = self.word(n);
         match tag(w) {
@@ -585,49 +587,61 @@ impl<'a> Doc<'a> {
             b'l' | b'u' | b'd' => self.write_number(n, out),
             b'"' => write_json_string(self.str(n), layout.ascii, out),
             b'[' => {
-                if self.count(n) == 0 {
+                let count = self.count(n);
+                if count == 0 {
                     out.extend_from_slice(b"[]");
-                    return;
+                    return self.after_close(n);
                 }
                 out.push(b'[');
-                let mut idx = 0;
-                let _ = self.for_each_element(n, |e| {
+                let mut e = Node {
+                    i: n.i + 1,
+                    si: n.si + 1,
+                };
+                for idx in 0..count {
+                    if idx != 0 {
+                        e.si += 1; // ','
+                    }
                     layout.before_element(idx, depth, out);
-                    idx += 1;
-                    self.print(e, depth + 1, layout, scratch, out);
-                    Ok::<(), ()>(())
-                });
+                    e = self.print(e, depth + 1, layout, scratch, out);
+                }
                 layout.before_close(depth, out);
                 out.push(b']');
+                // `e` is at the closing bracket.
+                return Node {
+                    i: e.i + 1,
+                    si: e.si + 1,
+                };
             }
             b'{' => {
-                if self.count(n) == 0 {
+                let count = self.count(n);
+                if count == 0 {
                     out.extend_from_slice(b"{}");
-                    return;
+                    return self.after_close(n);
                 }
                 out.push(b'{');
-                let dedup = self.dedup_entries(n, scratch);
-                if dedup.is_none() && !layout.sort_keys {
-                    let mut idx = 0;
-                    let _ = self.for_each_entry(n, |k, v| {
-                        layout.before_element(idx, depth, out);
-                        idx += 1;
-                        layout.key(self.str(k), out);
-                        self.print(v, depth + 1, layout, scratch, out);
-                        Ok::<(), ()>(())
-                    });
-                } else {
-                    let mut entries = match dedup {
-                        Some(e) => e,
-                        None => {
-                            let mut e = scratch.take();
-                            let _ = self.for_each_entry(n, |k, v| {
-                                e.push((k, v));
-                                Ok::<(), ()>(())
-                            });
-                            e
-                        }
+                let close;
+                if !layout.sort_keys && !self.may_have_duplicate_keys(n, scratch) {
+                    let mut k = Node {
+                        i: n.i + 1,
+                        si: n.si + 1,
                     };
+                    for idx in 0..count {
+                        if idx != 0 {
+                            k.si += 1; // ','
+                        }
+                        layout.before_element(idx, depth, out);
+                        layout.key(self.str(k), out);
+                        let v = Node {
+                            i: k.i + 1,
+                            si: k.si + 2, // the key and ':'
+                        };
+                        k = self.print(v, depth + 1, layout, scratch, out);
+                    }
+                    close = k;
+                } else {
+                    let mut entries = scratch.take();
+                    close = self.entries(n, &mut entries);
+                    self.dedup(&mut entries);
                     if layout.sort_keys {
                         entries.sort_by(|a, b| self.str(a.0).cmp(self.str(b.0)));
                     }
@@ -640,8 +654,63 @@ impl<'a> Doc<'a> {
                 }
                 layout.before_close(depth, out);
                 out.push(b'}');
+                return Node {
+                    i: close.i + 1,
+                    si: close.si + 1,
+                };
             }
             t => unreachable!("not a value on the tape: {t}"),
         }
+        self.skip(n)
+    }
+
+    /// The node after an empty container (its two brackets).
+    #[inline]
+    fn after_close(&self, n: Node) -> Node {
+        Node {
+            i: n.i + 2,
+            si: n.si + 2,
+        }
+    }
+
+    /// Appends the entries of an object *on the tape* to `into`, and
+    /// returns the node of its closing bracket.
+    fn entries(&self, object: Node, into: &mut Vec<(Node, Node)>) -> Node {
+        let n = self.count(object);
+        let mut k = Node {
+            i: object.i + 1,
+            si: object.si + 1,
+        };
+        for idx in 0..n {
+            if idx != 0 {
+                k.si += 1; // ','
+            }
+            let v = Node {
+                i: k.i + 1,
+                si: k.si + 2,
+            };
+            into.push((k, v));
+            k = self.skip(v);
+        }
+        k
+    }
+
+    /// jq's rule on an object's entries: the first position of each key,
+    /// with its last value.
+    fn dedup(&self, entries: &mut Vec<(Node, Node)>) {
+        let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut w = 0;
+        for r in 0..entries.len() {
+            let (k, v) = entries[r];
+            match index.get(self.str(k)) {
+                Some(&at) => entries[at].1 = v,
+                None => {
+                    index.insert(self.str(k), w);
+                    entries[w] = (k, v);
+                    w += 1;
+                }
+            }
+        }
+        entries.truncate(w);
     }
 }

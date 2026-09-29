@@ -260,6 +260,49 @@ fn escape_mask(w: u64) -> u64 {
         | zero_bytes(w ^ (0x7F * LO))
 }
 
+/// The index of the first byte at or after `i` that may need escaping
+/// (see [`NEEDS_ESCAPE`]; with `ascii_only` also non-ASCII bytes), or where
+/// fewer than 8 bytes are left (the caller looks at those one by one).
+#[inline]
+fn skip_plain(bytes: &[u8], mut i: usize, ascii_only: bool) -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        while i + 16 <= bytes.len() {
+            // SAFETY: NEON is part of the aarch64 baseline, and the load
+            // reads the 16 bytes at `i`, which are in bounds.
+            let mask = unsafe {
+                let v = vld1q_u8(bytes.as_ptr().add(i));
+                let control = vcltq_u8(v, vdupq_n_u8(0x20));
+                let quote = vceqq_u8(v, vdupq_n_u8(b'"'));
+                let backslash = vceqq_u8(v, vdupq_n_u8(b'\\'));
+                let del = vceqq_u8(v, vdupq_n_u8(0x7F));
+                let mut m = vorrq_u8(vorrq_u8(control, quote), vorrq_u8(backslash, del));
+                if ascii_only {
+                    m = vorrq_u8(m, vcgeq_u8(v, vdupq_n_u8(0x80)));
+                }
+                // Four bits per byte, in order.
+                let nibbles = vshrn_n_u16(vreinterpretq_u16_u8(m), 4);
+                vget_lane_u64(vreinterpret_u64_u8(nibbles), 0)
+            };
+            if mask != 0 {
+                return i + (mask.trailing_zeros() / 4) as usize;
+            }
+            i += 16;
+        }
+    }
+    let high = if ascii_only { HI } else { 0 };
+    while let Some(chunk) = bytes.get(i..i + 8) {
+        let w = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
+        let m = escape_mask(w) | (w & high);
+        if m != 0 {
+            return i + (m.trailing_zeros() / 8) as usize;
+        }
+        i += 8;
+    }
+    i
+}
+
 /// Port of `jvp_dump_string`: a quoted, escaped JSON string.
 pub fn write_json_string(s: &str, ascii_only: bool, out: &mut Vec<u8>) {
     let bytes = s.as_bytes();
@@ -267,19 +310,12 @@ pub fn write_json_string(s: &str, ascii_only: bool, out: &mut Vec<u8>) {
     out.push(b'"');
     let mut start = 0;
     let mut i = 0;
-    // With `ascii_only`, non-ASCII bytes need escaping too.
-    let high = if ascii_only { HI } else { 0 };
     while i < bytes.len() {
-        // Skip 8 bytes at a time while none needs escaping, then look at the
-        // first one that may.
-        if let Some(chunk) = bytes.get(i..i + 8) {
-            let w = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
-            let m = escape_mask(w) | (w & high);
-            if m == 0 {
-                i += 8;
-                continue;
-            }
-            i += (m.trailing_zeros() / 8) as usize;
+        // Skip the bytes that need no escaping, then look at the first one
+        // that may.
+        i = skip_plain(bytes, i, ascii_only);
+        if i >= bytes.len() {
+            break;
         }
         let b = bytes[i];
         if b < 0x80 {
@@ -647,7 +683,7 @@ mod tests {
             seed
         };
         for _ in 0..20_000 {
-            let len = (next() % 40) as usize;
+            let len = (next() % 120) as usize;
             // Mostly plain text, so long clean runs occur.
             let s: String = (0..len)
                 .map(|_| {

@@ -404,9 +404,11 @@ fn evaluates_programs_like_the_vm() {
 
 /// Containers of 2^24 - 1 elements or more, whose count simdjson saturates:
 /// counted by walking them, with the structural cursor exact after them
-/// (the `-0` after the big array is printed from its text).
+/// (the `-0` after the big array is printed from its text). The document is
+/// compact and canonical, so the expected outputs are known without building
+/// its value (which would take gigabytes): about 400 MB at most.
 #[test]
-#[ignore = "builds a 34 MB document; run with --release"]
+#[ignore = "parses a 34 MB document; run with --release"]
 fn huge_containers() {
     let n = (1 << 24) + 3;
     let mut text = Vec::with_capacity(2 * n + 64);
@@ -418,15 +420,39 @@ fn huge_containers() {
         text.push(b'0' + (i % 10) as u8);
     }
     text.extend_from_slice(b"],\"b\":-0,\"c\":[[1.50,-0]]}");
+    let mut padded = text.clone();
+    padded.resize(text.len() + crate::simdjson::padding(), 0);
     let mut simd = SimdParser::new();
-    let compact = [DumpOptions::default()];
-    assert!(check(&mut simd, &text, &compact));
-    for program in [".b", ".a | length", "length", ".c", "[.c[]]", "{b, c}"] {
-        assert_eq!(
-            check_eval(&mut simd, program, &text, &compact),
-            Outcome::Evaluated,
-            "{program}"
-        );
+    let layout = Layout::new(&DumpOptions::default()).expect("no colors");
+    let expected: [(&str, &[u8]); 7] = [
+        (".", &text),
+        (".b", b"-0"),
+        (".a | length", b"16777219"),
+        ("length", b"3"),
+        (".c", b"[[1.50,-0]]"),
+        ("[.c[]]", b"[[1.50,-0]]"),
+        ("{b, c}", b"{\"b\":-0,\"c\":[[1.50,-0]]}"),
+    ];
+    for (program, want) in expected {
+        let prog = TapeProgram::new(program.as_bytes()).expect("qualifies");
+        let got = simd
+            .parse_with(&padded, 0, text.len(), |p| {
+                let doc = p.doc();
+                let mut scratch = Scratch::default();
+                let mut results = Vec::new();
+                prog.eval(&doc, &mut scratch, &mut results)
+                    .expect("evaluates");
+                assert_eq!(results.len(), 1, "{program}");
+                let mut out = Vec::new();
+                Output {
+                    doc: &doc,
+                    val: &results[0],
+                }
+                .dump(&layout, &mut scratch, &mut out);
+                out
+            })
+            .expect("parses");
+        assert!(got == want, "{program}");
     }
 }
 
