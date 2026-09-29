@@ -539,9 +539,14 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
                 j += 1;
             }
             // Deviation: a NaN key is unequal to itself, so jq 1.8.1 never
-            // advances here and loops forever (`[1] | delpaths([[nan]])`
-            // hangs). Treat such a key as a group of one instead.
+            // advances here. It loops forever, appending the key to `delkeys`
+            // on every turn, so it also grows without bound
+            // (`[1] | delpaths([[nan]])` hangs). Treat such a key as a group
+            // of one instead — unless QJ_JQ_COMPAT asks for exactly jq.
             if j == i {
+                if crate::compat::exactly_jq() {
+                    crate::compat::spin_forever(&key);
+                }
                 j = i + 1;
             }
             // if i <= entry < j, then entry starts with key
