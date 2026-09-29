@@ -16,6 +16,7 @@
 //! only freed once every block allocated after it is gone, so its entries are then at
 //! the top of the arenas and are truncated with it.
 
+use super::native::Suspended;
 use crate::jq::value::Value;
 
 /// jq's `stack_ptr`: a block pointer, `0` meaning none.
@@ -26,7 +27,7 @@ pub(super) const NO_RETADDR: u32 = u32::MAX;
 
 /// `struct closure`: a function body plus the frame it closes over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Closure {
+pub(crate) struct Closure {
     /// The callee's function id (jq's `struct bytecode*`).
     pub func: u32,
     /// The closed frame (jq's `env`).
@@ -65,6 +66,9 @@ enum Block {
     Value(Value),
     Frame(Frame),
     Fork(ForkPoint),
+    /// A suspended native generator, on the data stack below its resume fork point
+    /// (like `RANGE`'s upper bound): see `native.rs`.
+    Native(Box<Suspended>),
 }
 
 struct Slot {
@@ -163,6 +167,35 @@ impl Stack {
                 _ => unreachable!("stack_popn on a non-value block"),
             }
         }
+    }
+
+    /// Pushes a suspended native generator on the data stack headed by `top`.
+    #[inline]
+    pub fn push_native(&mut self, top: StackPtr, s: Box<Suspended>) -> StackPtr {
+        self.push_block(top, Block::Native(s))
+    }
+
+    /// Pops the suspended native generator at `top`, which must be the last allocated
+    /// block (its resume fork point was just restored). Returns it and the new head.
+    #[inline]
+    pub fn pop_native(&mut self, top: StackPtr) -> (Box<Suspended>, StackPtr) {
+        debug_assert!(self.pop_will_free(top));
+        let slot = self.slots.pop().expect("non-empty stack");
+        match slot.block {
+            Block::Native(s) => (s, slot.next),
+            _ => unreachable!("pop_native on a non-native block"),
+        }
+    }
+
+    /// Drops the block `p` of the data stack (a value or a suspended native generator)
+    /// when it is the last allocated one, returning the new head (`stack_restore`'s
+    /// `jv_free(stack_pop(jq))`).
+    #[inline]
+    pub fn drop_data(&mut self, p: StackPtr) -> StackPtr {
+        debug_assert!(self.pop_will_free(p));
+        let slot = self.slots.pop().expect("non-empty stack");
+        debug_assert!(matches!(slot.block, Block::Value(_) | Block::Native(_)));
+        slot.next
     }
 
     /// The value in block `p` (`*(jv*)stack_block(s, p)`).

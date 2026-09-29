@@ -41,6 +41,8 @@ pub struct Options {
     pub trace: u32,
     /// Named arguments (`--arg`/`--argjson`): `$name` values.
     pub args: Vec<(String, Value)>,
+    /// Whether native builtins may run ([`Jq::set_natives`]).
+    pub natives: bool,
 }
 
 impl Default for Options {
@@ -51,6 +53,7 @@ impl Default for Options {
             lib_dirs: None,
             trace: 0,
             args: Vec::new(),
+            natives: true,
         }
     }
 }
@@ -139,6 +142,9 @@ pub fn run(program: &str, input: &[u8], opts: &Options) -> Output {
     };
     let mut jq = Jq::new(bc);
     jq.set_jq_attrs(&copts.attrs);
+    if !opts.natives {
+        jq.set_natives(false);
+    }
 
     let stdout = Sink::default();
     let stderr = Sink::default();

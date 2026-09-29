@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use super::native::NativeId;
 use super::{CFunction, function_list};
 use crate::jq::lang::ast::{FuncDef, ProgramBody};
 use crate::jq::lang::bytecode::OP_IS_CALL_PSEUDO;
@@ -224,7 +225,12 @@ pub fn builtins_bind(c: &mut Compiler, program: Block) -> Block {
                 let lf = *builtin_lf.get_or_insert_with(|| {
                     c.add_locfile(Rc::new(LocFile::new("<builtin>", builtin_jq().as_bytes())))
                 });
-                Lowerer::new(c, lf).lower_funcdef(jq_def(di))
+                let def = Lowerer::new(c, lf).lower_funcdef(jq_def(di));
+                let d = &table::JQ_DEFS[di];
+                if let Some(id) = NativeId::lookup(d.name, d.arity) {
+                    c.set_native(def, id.mark());
+                }
+                def
             }
             Binder::List => {
                 let list: Value = builtin_list()

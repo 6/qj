@@ -1,0 +1,217 @@
+//! Natives against their `builtin.jq` definitions, in process: every program runs
+//! twice, with natives and on the bytecode alone, and everything observable must be
+//! the same: outputs, the `debug`/`stderr` stream (the order of side effects), errors,
+//! halts and exit codes. Programs come from a hand-written list of edge cases and from
+//! a generator that wraps each native in probes for laziness, errors, labels, value
+//! identity (`path($x)` accepts only a `jv_identical` value) and array storage (writes
+//! past the end of a unique view bring back stale elements).
+
+use super::cases::Gen;
+use crate::jq::lang::execute::driver::{Options, Output, run};
+use crate::jq::lang::execute::native::CALLS;
+
+fn run_with(program: &str, input: &str, natives: bool) -> Output {
+    let opts = Options {
+        natives,
+        ..Options::default()
+    };
+    run(program, input.as_bytes(), &opts)
+}
+
+/// What a run shows, as text.
+fn show(o: &Output) -> String {
+    format!(
+        "stdout: {}\nstderr: {}\nerror: {:?}\ncompile: {:?}\nparse: {:?}\nhalted: {:?}\nexit: {}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+        o.error,
+        o.compile_error,
+        o.parse_error,
+        o.halted,
+        o.exit
+    )
+}
+
+/// Runs `program` both ways; panics with both results if they differ. Returns how many
+/// native calls ran.
+fn check(program: &str, input: &str) -> u64 {
+    let before = CALLS.with(|c| c.get());
+    let native = show(&run_with(program, input, true));
+    let calls = CALLS.with(|c| c.get()) - before;
+    let bytecode = show(&run_with(program, input, false));
+    assert_eq!(
+        native, bytecode,
+        "native vs bytecode differ\nprogram: {program}\ninput: {input}"
+    );
+    calls
+}
+
+/// Edge cases, each checked on every input of [`INPUTS`].
+const PROGRAMS: &[&str] = &[
+    // to_entries / from_entries / with_entries
+    "to_entries",
+    "to_entries | from_entries",
+    "from_entries",
+    "with_entries(.)",
+    "with_entries(empty)",
+    "with_entries(., .)",
+    "with_entries(.value |= tostring)",
+    "with_entries(.key |= ascii_upcase)",
+    "with_entries(select(.value != null))",
+    "with_entries(error)",
+    "with_entries(debug)",
+    "with_entries({key: (.key|tostring), value: 1})",
+    "with_entries(.key = null)",
+    "with_entries(.value)",
+    "with_entries(1)",
+    "[to_entries, from_entries] | .[0] as $a | .[1]",
+    "to_entries as $a | $a | path($a)",
+    "{\"a\":1,\"b\":2} | to_entries | (.[0] | keys_unsorted[0]) as $a | .[1] | keys_unsorted[0] | path($a)",
+    "[] | from_entries as $a | [] | from_entries | path($a)",
+    "from_entries as $a | from_entries | try path($a) catch \"E\"",
+    "to_entries | .[0:1] | .[3] = 1",
+    "from_entries | [label $f | try break $f catch .]",
+    "with_entries(first(label $x | ., break $x)) | [label $f | try break $f catch .]",
+    "[.[]? | from_entries?]",
+    "[.[]? | to_entries?]",
+    // walk
+    "walk(.)",
+    "walk(., .)",
+    "[walk(empty)]",
+    "walk(if type == \"object\" then empty else . end)",
+    "walk(if type == \"array\" then empty else . end)",
+    "walk(if type == \"number\" then . + 1 else . end)",
+    "walk(if type == \"string\" then ascii_downcase else . end)",
+    "walk(debug)",
+    "try walk(error) catch .",
+    "try walk(if type == \"number\" then error else . end) catch .",
+    "walk(tostring)",
+    "walk(length)",
+    "walk([.])",
+    "[walk(.[]?)]",
+    "walk(first(.[]?, .))",
+    "walk(.) | [label $f | try break $f catch .]",
+    "walk(label $x | try break $x catch .)",
+    "[[],[]] | walk(.) | .[0] as $a | .[1] | path($a)",
+    "walk(.) as $a | walk(.) | try path($a) catch \"E\"",
+    "walk(if type == \"array\" then .[0:1] else . end) | .. |= .",
+    "[walk(select(type != \"null\"))]",
+    "walk(input? // 0)",
+    "walk(if type == \"number\" then halt_error(1) else . end)",
+    "first(walk(., .))",
+    "[limit(1; walk(1, 2))]",
+    // paths / paths(f)
+    "[paths]",
+    "[paths(scalars)]",
+    "[paths(type == \"number\")]",
+    "[paths(..)]",
+    "[paths(empty)]",
+    "[paths(error)]",
+    "[paths(true, false, true)]",
+    "[paths(debug)]",
+    "[paths(input? // 1)]",
+    "try [paths(if length? == 0 then error else true end)] catch .",
+    "[limit(3; paths)]",
+    "first(paths)",
+    "[paths] | length",
+    "last(paths) | if type == \"array\" then .[length + 2] = 0 else . end",
+    "last(paths | select(length == 2)) | .[3] = 9",
+    "[paths | select(length == 2)] | .[1] | .[3] = 9",
+    "last(paths(scalars)) | .[length + 3] = 1",
+    "last(paths(type == \"object\")) | .[length + 3] = 1",
+    "[paths] | .[0] as $a | .[-1] | try path($a) catch \"E\"",
+    "[paths | .[0:1] | .[3] = 1]",
+    "paths | [label $q | try break $q catch .]",
+    "label $f | paths | ., break $f",
+    "[paths(path(..) | length > 1)]",
+    "[paths(paths)]",
+    "[paths(first(paths))]",
+    "try (paths | error) catch .",
+    "[paths | try error catch .]",
+    "[paths(label $l | ., break $l)]",
+    "[paths(. as $x | $x)]",
+    "reduce paths as $p (null; [$p, .])",
+    "[paths] | unique | length",
+    "path(paths)?",
+    "[path(..)]",
+    "[..]",
+    "[paths] as $p | [paths] | . == $p",
+    // tostream
+    "[tostream]",
+    "first(tostream)",
+    "[limit(2; tostream)]",
+    "[tostream] | length",
+    "last(tostream) | .[0] | .[length + 2] = 1",
+    "last(tostream) | .[length + 2] = 1",
+    "[tostream | .[0]] | map(.[length + 2] = 1)",
+    "[tostream | .[0] | .[0:1] | .[3] = 9]",
+    "fromstream(tostream)",
+    "[tostream] | .[0] as $a | .[-1] | try path($a) catch \"E\"",
+    "tostream | [label $q | try break $q catch .]",
+    "try (tostream | error) catch .",
+    "[tostream | select(length == 2)]",
+    "path(tostream)?",
+    // ascii_downcase / ascii_upcase
+    "ascii_downcase",
+    "ascii_upcase",
+    "[.[]? | ascii_downcase?]",
+    "try ascii_downcase catch .",
+    "(tostring | ascii_downcase) as $a | ascii_downcase? | try path($a) catch \"E\"",
+    // mixed, and ?// (natives that abandon closures fall back)
+    "walk(if type == \"object\" then with_entries(.key |= ascii_upcase) else . end)",
+    "[paths(type == \"array\")] | map(tostream)",
+    "walk(. as [$a] ?// $a | $a)",
+    "[paths(. as [$a] ?// $a | $a)]",
+    "to_entries | .[] as {key: $k} ?// $k | $k",
+    "[.[]? as [$a] ?// $a | $a] | walk(.)",
+    "[limit(2; paths)] | .[0] | tostream",
+    "def f: walk(if type == \"array\" then map(f) else . end); f",
+    "def w(f): walk(f); w(.) | w(tojson)",
+    "[recurse | tostream?]",
+    "[.. | paths?]",
+];
+
+const INPUTS: &[&str] = &[
+    "null",
+    "1",
+    "\"AbC\u{e9}Z\"",
+    "[]",
+    "{}",
+    "[1,[2,[3]],{\"a\":[]}]",
+    "{\"a\":1,\"b\":[2,{\"c\":3}],\"d\":{},\"e\":[]}",
+    "[{\"key\":\"a\",\"value\":1},{\"k\":\"b\",\"value\":2},{\"name\":\"c\",\"Value\":3}]",
+    "[{\"key\":\"a\",\"value\":1},{\"key\":\"a\",\"value\":2},{\"Key\":\"b\"}]",
+    "[{\"key\":1,\"value\":1}]",
+    "[{\"key\":false,\"name\":\"n\",\"value\":1}]",
+    "[null]",
+    "[[1,2]]",
+    "{\"x\":{\"key\":\"y\",\"value\":[1]}}",
+    "{\"A\":\"xY\",\"b\":\"Q\",\"c\":[\"Mm\",{\"D\":\"eF\"}]}",
+    "[[[[[]]]],{\"a\":{\"b\":{\"c\":{}}}}]",
+    "{\"x\":{\"a\":{\"b\":1},\"c\":2}}",
+];
+
+#[test]
+fn edge_cases_match_the_definitions() {
+    let mut calls = 0;
+    for p in PROGRAMS {
+        for i in INPUTS {
+            calls += check(p, i);
+        }
+    }
+    assert!(calls > 1000, "natives ran only {calls} times");
+}
+
+/// Generated programs, bounded so they are safe to run in process (see `cases.rs`); the
+/// long, unbounded run is out of process (`tests/native_diff.rs`).
+#[test]
+fn random_programs_match_the_definitions() {
+    let mut g = Gen::bounded(0x9E37_79B9_7F4A_7C15);
+    let n = 3000;
+    let mut calls = 0;
+    for _ in 0..n {
+        let (program, input) = g.case();
+        calls += check(&program, &input);
+    }
+    assert!(calls > n / 4, "natives ran only {calls} times");
+}

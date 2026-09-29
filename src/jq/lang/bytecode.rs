@@ -350,6 +350,10 @@ pub struct Bytecode {
     /// [`link_parents`]; unset for the top level.
     parent: OnceCell<Weak<Bytecode>>,
     pub debuginfo: DebugInfo,
+    /// Not jq's: for a builtin.jq definition that has a native implementation, its
+    /// [`NativeId`](crate::jq::builtins::native::NativeId) + 1, else 0. The VM may run
+    /// the native instead of `code` (see `execute/native.rs`); nothing else changes.
+    pub native: u16,
 }
 
 impl std::fmt::Debug for Bytecode {
@@ -397,6 +401,7 @@ impl Bytecode {
             subfunctions,
             parent: OnceCell::new(),
             debuginfo,
+            native: 0,
         }
     }
 
