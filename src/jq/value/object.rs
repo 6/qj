@@ -16,7 +16,36 @@ use indexmap::IndexMap;
 use super::{Str, Value};
 
 type Hasher = foldhash::fast::RandomState;
-type Map = IndexMap<Str, Value, Hasher>;
+
+/// The object payload. A newtype so that dropping deeply nested values is
+/// iterative (see `array::drop_values_iteratively`).
+#[derive(Clone, Default)]
+struct Map(IndexMap<Str, Value, Hasher>);
+
+impl std::ops::Deref for Map {
+    type Target = IndexMap<Str, Value, Hasher>;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Map {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Map {
+    fn drop(&mut self) {
+        if !self.0.values().any(super::array::owns_container) {
+            return; // plain drop is shallow
+        }
+        let mut values: Vec<Value> = self.0.drain(..).map(|(_, v)| v).collect();
+        super::array::drop_values_iteratively(&mut values);
+    }
+}
 
 /// A jq object value (`JV_KIND_OBJECT`).
 #[derive(Clone, Default)]
@@ -30,7 +59,17 @@ impl Object {
 
     /// An empty object with room for `n` keys.
     pub fn with_capacity(n: usize) -> Object {
-        Object(Rc::new(Map::with_capacity_and_hasher(n, Hasher::default())))
+        Object(Rc::new(Map(IndexMap::with_capacity_and_hasher(
+            n,
+            Hasher::default(),
+        ))))
+    }
+
+    /// Moves the values out (if uniquely owned) for iterative dropping.
+    pub(crate) fn drain_values_into(&mut self, out: &mut Vec<Value>) {
+        if let Some(m) = Rc::get_mut(&mut self.0) {
+            out.extend(m.0.drain(..).map(|(_, v)| v));
+        }
     }
 
     /// `jv_object_length`.

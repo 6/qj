@@ -39,6 +39,44 @@ struct Storage {
     alloc: usize,
 }
 
+impl Drop for Storage {
+    fn drop(&mut self) {
+        drop_values_iteratively(&mut self.items);
+    }
+}
+
+/// Whether dropping `v` would free a container (and so recurse).
+#[inline]
+pub(crate) fn owns_container(v: &Value) -> bool {
+    match v {
+        Value::Array(a) => Rc::strong_count(&a.storage) == 1,
+        Value::Object(o) => o.is_unique(),
+        _ => false,
+    }
+}
+
+/// Drops `items` without recursing into nested containers, so that deeply
+/// nested values (jq accepts 10000 levels of JSON, and programs can build
+/// deeper ones) cannot overflow the stack.
+pub(crate) fn drop_values_iteratively(items: &mut Vec<Value>) {
+    if !items.iter().any(owns_container) {
+        return; // plain drop is shallow
+    }
+    let mut stack = std::mem::take(items);
+    while let Some(mut v) = stack.pop() {
+        match &mut v {
+            Value::Array(a) => {
+                if let Some(st) = Rc::get_mut(&mut a.storage) {
+                    stack.append(&mut st.items);
+                }
+            }
+            Value::Object(o) => o.drain_values_into(&mut stack),
+            _ => {}
+        }
+        // `v` is now shallow (its contents, if we owned them, moved to `stack`).
+    }
+}
+
 /// A jq array value (`JV_KIND_ARRAY`).
 #[derive(Clone)]
 pub struct Array {

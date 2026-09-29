@@ -390,6 +390,10 @@ impl Literal {
         if self.inf {
             return sign * f64::INFINITY;
         }
+        if self.coeff.is_zero() {
+            // decNumberReduce turns any zero into (-)0, whatever its exponent.
+            return sign * 0.0;
+        }
         // Clinger's fast path: exact coefficient and exact power of ten.
         if let Coeff::Small(c) = self.coeff
             && c < (1u64 << 53)
@@ -848,6 +852,33 @@ mod tests {
         assert_eq!(
             lit("100000000000000000001").compare(&Number::from_f64(1e20)),
             Equal
+        );
+    }
+
+    #[test]
+    fn signed_zeros() {
+        // `jq -nc '[-0, (0|-.), -1*0] | map(copysign(1;.))'` => [1,1,-1]:
+        // negating a literal zero (decNumberMinus computes 0 - x) gives +0.
+        let zero = lit("0");
+        assert!(zero.negate().value().is_sign_positive());
+        assert_eq!(zero.negate().to_json_string(), "0");
+        assert!(Number::from_f64(-1.0 * 0.0).value().is_sign_negative());
+        // `echo '[-0,-0.0,0,-0e5]' | jq -c '[., map(-.), map(length)]'`
+        // => [[-0,-0.0,0,-0E+5],[0,0.0,0,0E+5],[0,0.0,0,0E+5]]
+        let nz = lit("-0");
+        assert!(nz.value().is_sign_negative());
+        assert_eq!(nz.to_json_string(), "-0");
+        assert_eq!(nz.negate().to_json_string(), "0");
+        assert!(nz.negate().value().is_sign_positive());
+        assert_eq!(nz.abs().to_json_string(), "0");
+        assert_eq!(lit("-0.0").negate().to_json_string(), "0.0");
+        assert_eq!(lit("-0e5").negate().to_json_string(), "0E+5");
+        assert_eq!(lit("-0e5").abs().to_json_string(), "0E+5");
+        // `. * 1` keeps the sign of the double.
+        assert!(
+            Number::from_f64(nz.value() * 1.0)
+                .value()
+                .is_sign_negative()
         );
     }
 

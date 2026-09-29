@@ -535,6 +535,12 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
         while j < paths.len() && path_at(j).get(start).is_some_and(|k| key.equal(k)) {
             j += 1;
         }
+        // Deviation: a NaN key is unequal to itself, so jq 1.8.1 never
+        // advances here and loops forever (`[1] | delpaths([[nan]])` hangs).
+        // Treat such a key as a group of one instead.
+        if j == i {
+            j = i + 1;
+        }
         // if i <= entry < j, then entry starts with key
         if delkey {
             // deleting this entire key, we don't care about any more specific deletions
