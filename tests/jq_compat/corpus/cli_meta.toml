@@ -28,3 +28,20 @@ stdin = "1"
 name = "unknown-short-option"
 args = ["-Z", "."]
 stdin = "1"
+
+[[case]]
+name = "usage-from-file-without-program"
+args = ["-f"]
+
+[[case]]
+name = "help-in-bundle"
+args = ["-nh"]
+
+[[case]]
+name = "help-before-unknown-option"
+args = ["-h", "--foo"]
+
+[[case]]
+name = "version-ignores-jq-colors"
+args = ["-V"]
+env = { JQ_COLORS = "garbage" }
