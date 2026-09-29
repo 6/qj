@@ -4,4 +4,4 @@
 mod bridge;
 mod ffi;
 
-pub use bridge::{Tape, TapeParser, pad_buffer, padding, tape_error};
+pub use bridge::{AllocError, Tape, TapeParser, pad_buffer, padding, tape_error};

@@ -578,7 +578,6 @@ dependencies = [
 name = "qj"
 version = "0.1.4"
 dependencies = [
- "anyhow",
  "base64",
  "cc",
  "clap",

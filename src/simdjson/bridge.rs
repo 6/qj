@@ -1,9 +1,19 @@
 //! Safe wrapper over the bridge: simdjson's DOM parser, whose tape `src/io`
 //! turns into jq values (`crate::io::simd`), and simdjson's padding rule.
 
-use anyhow::{Result, bail};
-
 use super::ffi::*;
+
+/// simdjson couldn't allocate a parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocError;
+
+impl std::fmt::Display for AllocError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("failed to create simdjson tape parser")
+    }
+}
+
+impl std::error::Error for AllocError {}
 
 /// The number of bytes simdjson may read past the end of a text
 /// (`SIMDJSON_PADDING`). Their contents don't matter.
@@ -78,11 +88,11 @@ impl<'a> Tape<'a> {
 }
 
 impl TapeParser {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Result<Self, AllocError> {
         // SAFETY: plain constructor; null means allocation failure.
         let ptr = unsafe { jx_tape_parser_new() };
         if ptr.is_null() {
-            bail!("failed to create simdjson tape parser");
+            return Err(AllocError);
         }
         Ok(Self { ptr })
     }

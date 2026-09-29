@@ -28,7 +28,6 @@ bench = ["dep:clap", "dep:serde_json"]
 [dependencies]
 clap = { version = "4", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-anyhow = "1"
 libc = "0.2"
 memchr = "2"
 itoa = "1"

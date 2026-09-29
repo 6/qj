@@ -1,10 +1,7 @@
-//! Transparent decompression for gzip and zstd compressed files.
-//!
-//! Detects compression by file extension (.gz → gzip, .zst/.zstd → zstd).
-//! Decompresses entire file to an in-memory buffer for further processing.
-
-use anyhow::{Context, Result};
-use std::io::Read;
+//! Transparent decompression for gzip and zstd compressed files (a qj
+//! extension): which inputs are compressed, by file extension (.gz/.gzip →
+//! gzip, .zst/.zstd → zstd). The readers decompress them as streams
+//! (`crate::io::source`, and `crate::cli::input` for `QJ_INPUT=util`).
 
 /// Returns true if the file path has a recognized compressed extension.
 pub fn is_compressed(path: &str) -> bool {
@@ -12,34 +9,6 @@ pub fn is_compressed(path: &str) -> bool {
         || path.ends_with(".gzip")
         || path.ends_with(".zst")
         || path.ends_with(".zstd")
-}
-
-/// Decompress a file to bytes based on its extension.
-///
-/// Panics if called on a file that isn't compressed (use `is_compressed` first).
-pub fn decompress_file(path: &str) -> Result<Vec<u8>> {
-    if path.ends_with(".gz") || path.ends_with(".gzip") {
-        let file =
-            std::fs::File::open(path).with_context(|| format!("failed to open file: {path}"))?;
-        let mut decoder = flate2::read::GzDecoder::new(file);
-        let mut buf = Vec::new();
-        decoder
-            .read_to_end(&mut buf)
-            .with_context(|| format!("failed to decompress gzip file: {path}"))?;
-        Ok(buf)
-    } else if path.ends_with(".zst") || path.ends_with(".zstd") {
-        let file =
-            std::fs::File::open(path).with_context(|| format!("failed to open file: {path}"))?;
-        let mut decoder = zstd::Decoder::new(file)
-            .with_context(|| format!("failed to initialize zstd decoder for: {path}"))?;
-        let mut buf = Vec::new();
-        decoder
-            .read_to_end(&mut buf)
-            .with_context(|| format!("failed to decompress zstd file: {path}"))?;
-        Ok(buf)
-    } else {
-        unreachable!("decompress_file called on non-compressed file: {path}")
-    }
 }
 
 #[cfg(test)]
