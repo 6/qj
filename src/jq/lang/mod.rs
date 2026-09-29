@@ -41,6 +41,7 @@
 //!   decoding and UTF-8 replacement rules.
 
 pub mod ast;
+pub mod bytecode;
 pub mod lexer;
 pub mod locfile;
 pub mod parser;
