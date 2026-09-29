@@ -20,8 +20,12 @@ Usage (from the repository root, after `cargo build --release`):
 target/jq_fuzz) divergences.jsonl (one minimized divergence per line,
 deduplicated across runs) and stats.json. Case K of seed S is reproducible:
 `run --seed S --start K --cases 1`. Modes: general, builtins, values, paths,
-control, regex, dates, cli, parse. Environment: JQ (default: jq on PATH, must
-be jq-1.8.1), QJ (default: target/release/qj).
+control, regex, dates, cli, parse, debug (--debug-trace, --debug-dump-disasm),
+runtests (--run-tests), progfile (multi-line -f programs), modules (-L, import,
+include, ~/.jq), env (TZ and other variables). `probe '{"args": [...],
+"stdin": "...", "files": {...}, "env": {...}}'` runs one invocation under both
+tools (`--diff` for a line diff). Environment: JQ (default: jq on PATH, must be
+jq-1.8.1), QJ (default: target/release/qj).
 
 Both tools run with a pinned environment (PATH, HOME, LC_ALL=C,
 TZ=America/New_York, PAGER=less). A case is skipped when jq times out or hits
@@ -51,6 +55,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True  # no __pycache__ in the source tree
 
 import gen  # noqa: E402
 import modes  # noqa: E402
@@ -256,6 +261,8 @@ class Case:
     def copy(self, **kw):
         c = Case(self.flags, self.prog, self.stdin, self.stdin_mode, self.files, self.file_args,
                  self.positional, self.env, self.prog_file)
+        if getattr(self, "raw_args", None) is not None:
+            c.raw_args = self.raw_args
         for k, v in kw.items():
             setattr(c, k, v)
         return c
@@ -274,6 +281,8 @@ class Case:
         if self.prog_file:
             files["prog.jq"] = prog.encode() + b"\n"
             args += ["-f", "prog.jq"]
+        elif getattr(self, "raw_args", None) is not None:
+            args += self.raw_args
         else:
             if prog.startswith("-"):
                 args.append("--")
@@ -315,10 +324,11 @@ def inv_from_json(j):
 
 
 # Everything a program could reference through the environment is pinned.
-def base_env(work):
+def base_env(home):
     return {
         "PATH": "/usr/bin:/bin",
-        "HOME": os.path.join(work, "home"),
+        # The case directory, so a case can provide ~/.jq.
+        "HOME": home,
         "LC_ALL": "C",
         "TZ": "America/New_York",
         "PAGER": "less",
@@ -348,7 +358,7 @@ class Runner:
                 f.write(content)
 
     def run_tool(self, tool, inv):
-        env = base_env(self.work)
+        env = base_env(self.casedir)
         env.update(inv["env"])
         self.runs += 1
         return run_proc([tool] + inv["args"], self.casedir, env, inv["stdin"], inv["stdin_mode"],
@@ -394,7 +404,8 @@ def verdict(j, q):
 
 MODES = [
     (30, "general"), (13, "builtins"), (8, "values"), (11, "paths"), (9, "control"),
-    (5, "regex"), (4, "dates"), (11, "cli"), (9, "parse"),
+    (5, "regex"), (4, "dates"), (11, "cli"), (9, "parse"), (4, "debug"), (2, "runtests"),
+    (4, "progfile"), (3, "modules"), (3, "env"),
 ]
 
 
@@ -418,7 +429,80 @@ def gen_case(r, only=None):
         return gen_parse(r)
     if mode == "cli":
         return gen_cli_case(r)
+    if mode == "debug":
+        return gen_debug_case(r)
+    if mode == "runtests":
+        return gen_runtests_case(r)
+    if mode == "progfile":
+        return gen_progfile_case(r)
+    if mode == "modules":
+        return gen_modules_case(r)
+    if mode == "env":
+        return gen_env_case(r)
     return gen_focused(r, mode)
+
+
+def small_input(r):
+    spec = gen.gen_input_bytes(r)
+    spec["docs"] = spec["docs"][:2]
+    return spec
+
+
+def gen_debug_case(r):
+    """--debug-dump-disasm / --debug-trace: the compiler's and VM's steps."""
+    flag = r.choice([["--debug-dump-disasm"], ["--debug-trace"], ["--debug-trace=all"],
+                     ["--debug-dump-disasm", "--debug-trace"]])
+    while True:
+        prog = gen.gen_program(r, depth=r.choice([1, 1, 2, 2, 3]))
+        text = gen.render(prog)
+        # `now`: the trace would show the clock. `$ARGS`: known divergence in
+        # its refcount (main.c's references to ARGS aren't mirrored yet).
+        if "now" not in text and "$ARGS" not in text:
+            break
+    return Case([["-c"], flag], prog, small_input(r) if r.random() < 0.8 else None)
+
+
+def gen_runtests_case(r):
+    content = modes.gen_runtests(r)
+    k = r.random()
+    if k < 0.7:
+        return Case([["--run-tests"]], "tests.txt", None, files={"tests.txt": content})
+    if k < 0.9:
+        # No file: the tests come from stdin.
+        c = Case([], "", content)
+        c.raw_args = ["--run-tests"]
+        return c
+    return Case([["-L", "mods"], ["--run-tests"]], "tests.txt", None,
+                files={"tests.txt": content, "mods/m.jq": b"def m: 1;\n"})
+
+
+def gen_progfile_case(r):
+    text = modes.multiline(r, gen.render(gen.gen_program(r, depth=r.choice([1, 2, 3]))))
+    spec = small_input(r) if r.random() < 0.85 else None
+    flags = simple_flags(r)
+    if r.random() < 0.75:
+        c = Case(flags + [["-f", "prog.jq"]], "", spec, files={"prog.jq": text.encode()})
+        c.raw_args = []
+        return c
+    return Case(flags, text, spec)
+
+
+def gen_modules_case(r):
+    files, lflag, prog = modes.gen_modules(r)
+    flags = simple_flags(r) + ([lflag] if lflag else [])
+    if r.random() < 0.15:
+        files[".jq"] = r.choice([b"def hello: \"hi\";\n", b"def m: 99;\n", b"1 +\n",
+                                 b'include "m";\n'])
+        prog = r.choice([prog, "hello", "m", "[hello, m]?"])
+    return Case(flags, prog, small_input(r) if r.random() < 0.3 else None, files=files)
+
+
+def gen_env_case(r):
+    env = modes.gen_env(r)
+    prog = r.choice(modes.ENV_PROGRAMS)
+    if r.random() < 0.5:
+        prog = r.choice(modes.ENV_INPUTS) + " | " + prog
+    return Case(simple_flags(r) + [["-n"]], prog, None, env=env)
 
 
 def simple_flags(r):
@@ -986,6 +1070,28 @@ def cmd_replay(a):
     print("%d of %d still diverge" % (still, len(list(idxs))))
 
 
+def cmd_probe(a):
+    """Run invocations given as JSON: {"args": [...], "stdin": "...", "files": {...}, "env": {...}}."""
+    jq = find_jq()
+    qj = os.path.abspath(os.environ.get("QJ") or os.path.join(ROOT, "target/release/qj"))
+    runner = Runner(jq, qj, os.path.join(os.path.abspath(a.out), "work", "probe"))
+    for i, spec in enumerate(a.specs):
+        inv = inv_from_json(dict({"stdin": None, "files": {}, "env": {}}, **json.loads(spec)))
+        j, q = runner.observe(inv, use_cache=False)
+        if a.diff:
+            import difflib
+            print("#%d %s sig=%s exit jq=%s qj=%s" % (i, json.dumps(inv["args"])[:200],
+                                                      verdict(j, q), j.status, q.status))
+            for name, x, y in (("stdout", j.stdout, q.stdout),
+                               ("stderr", normalize_stderr(j.stderr), normalize_stderr(q.stderr))):
+                for line in difflib.unified_diff(x.decode("utf-8", "replace").splitlines(),
+                                                 y.decode("utf-8", "replace").splitlines(),
+                                                 "jq " + name, "qj " + name, lineterm="", n=1):
+                    print("   " + line[:300])
+        else:
+            show(i, None, inv, j, q, verdict(j, q))
+
+
 def show(i, res, inv, j, q, sig):
     print("=" * 78)
     print("#%d sig=%s" % (i, sig))
@@ -1073,6 +1179,11 @@ def main():
     p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(fn=cmd_replay)
+    p = sub.add_parser("probe")
+    p.add_argument("specs", nargs="+")
+    p.add_argument("--diff", action="store_true", help="show a line diff of stdout and stderr")
+    p.add_argument("--out", default=default_out)
+    p.set_defaults(fn=cmd_probe)
     p = sub.add_parser("profile")
     p.add_argument("--cases", type=int, default=2000)
     p.add_argument("--start", type=int, default=0)

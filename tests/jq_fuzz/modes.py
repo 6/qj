@@ -392,3 +392,162 @@ CLI_PROGRAMS = [
     "\"a\\nb\"", "[\"a\\tb\"]", "-1", "1.0", "1e1000", "100000000000000000001", "[1.0, -0]",
     "nan", "[nan]", "{a: nan}", "infinite", "-infinite", "[infinite]",
 ]
+
+
+# -- multi-line programs (-f files): locfile line/column handling ---------------
+
+PROG_TOKEN_RE = re.compile(r'''
+    "(?:[^"\\]|\\.)*"
+  | \d+\.?\d*(?:[eE][+-]?\d+)? | \.\d+(?:[eE][+-]?\d+)?
+  | \$?[A-Za-z_][A-Za-z_0-9]*(?:::[A-Za-z_][A-Za-z_0-9]*)*
+  | @[A-Za-z0-9_]+
+  | \?// | //= | \|= | \+= | -= | \*= | /= | %= | == | != | <= | >= | // | \.\.
+  | \.[A-Za-z_][A-Za-z_0-9]*
+  | \S
+''', re.X)
+LAYOUT = ["\n", "\n", "\r\n", " # comment\n", "\t", "  ", "\n\t", " # c \\\n still comment\n",
+          "\n# é 😀\n", "\n\n", " #\n", "\r\n\t\t", " # trailing \\\r\n more\r\n", "\f", "\v"]
+
+
+def multiline(r, text):
+    """Insert newlines, tabs and comments between tokens of a program."""
+    toks = [(m.start(), m.end()) for m in PROG_TOKEN_RE.finditer(text)]
+    if len(toks) < 2:
+        return text + r.choice(["\n", "", " # end\n"])
+    cuts = sorted(r.sample(range(1, len(toks)), min(len(toks) - 1, r.randint(1, 5))))
+    out = []
+    prev = 0
+    for c in cuts:
+        pos = toks[c][0]
+        out.append(text[prev:pos])
+        out.append(r.choice(LAYOUT))
+        prev = pos
+    out.append(text[prev:])
+    s = "".join(out)
+    if r.random() < 0.3:
+        s = "# header comment\n" + s
+    if r.random() < 0.25:
+        # A syntax error somewhere past the first line.
+        pos = r.randint(len(s) // 2, len(s))
+        s = s[:pos] + r.choice([" |", " )", " ]", " }", " +", " $", " @", " .[", " \"",
+                                " reduce", " if", " 1 1", " as", " ;", " ?//"]) + s[pos:]
+    if r.random() < 0.2:
+        pos = r.randint(0, len(s))
+        s = s[:pos] + r.choice([" | $__loc__", ", $__loc__", " | [$__loc__]"]) + s[pos:]
+        if not s.startswith(("|", ",")):
+            pass
+    return s + r.choice(["\n", "", "\n\n", "\r\n", " "])
+
+
+# -- modules --------------------------------------------------------------------
+
+MODULE_DEFS = [
+    "def f: . + 1;", "def g(x): [x, x];", "def h($a): $a * 2;", "def k: \"k\";",
+    "def f: .a;", "def rec: if . > 3 then . else . + 1 | rec end;", "def two: 1, 2;",
+    "def f(x; $y): x + $y;", "def e: error(\"from module\");", "def loc: $__loc__;",
+    "def m: 1;", "def ms: [m, m];", "def f: 1; def f: 2;", "def g: f;",
+]
+MODULE_META = ['module {"name": "m"};', 'module {"version": 1, "x": [1, 2]};', 'module 1;',
+               'module {};', 'module {"search": "./"};', 'module {"a": .};']
+
+
+def gen_modules(r):
+    """Files for a module directory `mods/`, plus programs that use them."""
+    files = {}
+    names = r.sample(["m", "n", "lib", "a", "b"], r.randint(1, 3))
+    for i, name in enumerate(names):
+        body = []
+        if r.random() < 0.3:
+            body.append(r.choice(MODULE_META))
+        if i + 1 < len(names) and r.random() < 0.4:
+            dep = names[i + 1]
+            body.append(r.choice(['import "{d}" as {d};', 'include "{d}";',
+                                  'import "{d}" as ${d};']).format(d=dep))
+        if r.random() < 0.1:
+            body.append('import "%s" as self;' % name)  # cycle
+        body += r.sample(MODULE_DEFS, r.randint(1, 4))
+        if r.random() < 0.1:
+            body.append(r.choice(["def broken: ;", "def x: 1", ".", "1 +", "def: 1;"]))
+        text = "\n".join(body) + "\n"
+        where = r.choice(["mods/%s.jq", "mods/%s.jq", "mods/%s/%s.jq", "mods/%s/jq/main.jq"])
+        path = where % ((name, name) if where.count("%s") == 2 else (name,))
+        files[path] = text.encode()
+    if r.random() < 0.5:
+        files["mods/d.json"] = r.choice([b'{"x":1}', b"1 2 3", b"[]", b"", b"{", b'"s"\n',
+                                         b'{"a":[1,{"b":null}]}\n{"c":2}'])
+    uses = []
+    for name in names:
+        uses += ['import "%s" as %s; [%s::%s]' % (name, name, name, r.choice(["f", "g(.)", "k", "m", "ms", "two", "h(2)", "rec", "loc", "e", "nope"])),
+                 'include "%s"; [%s]' % (name, r.choice(["f", "g(1)", "k", "m", "two", "rec", "e", "loc", "nope"])),
+                 '"%s" | modulemeta' % name,
+                 'import "%s" as %s {search: "./"}; %s::m?' % (name, name, name),
+                 'import "%s" as $%s; $%s' % (name, name, name)]
+    uses += ['import "d" as $d; $d', 'import "d" as $d; $d::d', 'include "d"; .',
+             'import "nope" as n; 1', '"nope" | modulemeta', '"d" | modulemeta',
+             'import "m" as m; import "n" as m; 1', 'import "m" as $m; $m', '1 as $x | 2',
+             'import "m" as m {search: 1}; 1', 'import "m" as m {search: ["./", "../"]}; m::m',
+             'import "../mods/m" as m; m::m', 'import "m" as m; def f: m::f; f',
+             'include "m" {search: "./"}; m']
+    prog = r.choice(uses)
+    if r.random() < 0.3:
+        prog = prog + " | " + r.choice(["tojson", "length", ".[0]?", "keys?", "."])
+    lflag = r.choice([["-L", "mods"], ["-Lmods"], ["--library-path", "mods"], ["-L", "mods"],
+                      [], ["-L", "nowhere", "-L", "mods"], ["-L", "mods/m"]])
+    return files, lflag, prog
+
+
+# -- --run-tests files ------------------------------------------------------------
+
+
+def gen_runtests(r):
+    parts = []
+    if r.random() < 0.3:
+        parts.append("# a test file\n\n")
+    for _ in range(r.randint(1, 5)):
+        k = r.random()
+        prog = gen_program_text(r, r.choice([1, 1, 2]))
+        if k < 0.65:
+            inp = r.choice(VALUE_POOL + ["{\"a\":1,\"b\":[1,2]}", "[1,2,3]", "null"])
+            outs = [r.choice(VALUE_POOL) for _ in range(r.choice([0, 1, 1, 2]))]
+            parts.append("%s\n%s\n%s\n" % (prog, inp, "".join(o + "\n" for o in outs)))
+        elif k < 0.85:
+            msg = r.choice(["", "jq: error: x is not defined at <top-level>, line 1:\n",
+                            "syntax error\n"])
+            parts.append("%%%%FAIL\n%s\n%s" % (r.choice([prog, prog + " |", "{", "$x", ". as [$a] |"]), msg))
+        else:
+            parts.append("%%%%FAIL IGNORE MSG\n%s\nwhatever\n" % r.choice([prog, "{", "$undefined"]))
+        parts.append(r.choice(["\n", "\n", "# c\n", "\n\n"]))
+    if r.random() < 0.1:
+        parts.append(r.choice(["lonely program\n", "%%FAIL\n", ".\n"]))
+    return "".join(parts).encode()
+
+
+# -- environment ------------------------------------------------------------------
+
+TZS = ["UTC", "Asia/Kolkata", "Australia/Lord_Howe", "America/St_Johns", "Europe/London",
+       "Pacific/Chatham", "Foo/Bar", "", "EST5EDT", "<+0330>-3:30", "UTC0", ":America/New_York",
+       "America/New_York", "Asia/Tokyo", "Europe/Dublin", "Africa/Casablanca", "Etc/GMT+12",
+       "Pacific/Kiritimati", "America/Sao_Paulo", "Antarctica/Troll"]
+ENV_PROGRAMS = [
+    "$ENV | keys", "env | keys", "$ENV.X", "env.X", "[$ENV.TZ, env.TZ]", "$ENV | length",
+    "localtime | mktime", "gmtime | mktime", "localtime | todate", "strflocaltime(\"%c %Z %z\")",
+    "localtime | strftime(\"%Z %z %s\")", "gmtime | strflocaltime(\"%H %Z\")", "mktime?",
+    "todate", "[localtime, gmtime]", "strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime",
+    "localtime | .[8]?", "$ENV | tojson | length", "env | to_entries | map(.key) | sort",
+    "$ENV.EMPTY", "$ENV[\"É\"]", "[$ENV.A, $ENV.B]", "$__loc__", "input_filename",
+]
+ENV_INPUTS = ["0", "1425599621", "-1", "1e10", "1709251200", "1710054000", "1699164000",
+              "-62135596800", "\"2015-03-05T23:51:47Z\"", "[2015,2,5,23,51,47,4,63]", "86400.5",
+              "1719792000", "1735689599", "null"]
+
+
+def gen_env(r):
+    env = {}
+    if r.random() < 0.8:
+        env["TZ"] = r.choice(TZS)
+    for _ in range(r.choice([0, 1, 2])):
+        k, v = r.choice([("X", "1"), ("X", "a=b"), ("EMPTY", ""), ("É", "é"), ("A", "😀"),
+                         ("B", " spaced "), ("X", "\t"), ("LONG", "x" * 300), ("A", "[1]")])
+        env[k] = v
+    return env
+
