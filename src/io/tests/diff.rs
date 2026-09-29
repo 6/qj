@@ -177,6 +177,79 @@ fn reader_matches_util_c() {
     run(0..600);
 }
 
+/// Inputs over 64 KiB, where the reader first tries the whole rest of the
+/// input as one text: one large document, a large document followed by
+/// more texts, oddities in or after it, and texts spanning inputs.
+#[test]
+fn large_documents_match_util_c() {
+    let mut stats = ReaderStats::default();
+    for seed in 0..24u64 {
+        let mut rng = Rng(seed.wrapping_mul(0xE7037ED1A0B428DB) | 1);
+        let weird = [0, 0, 2, 10][seed as usize % 4];
+        let mut g = gen_input::Gen { r: &mut rng, weird };
+        let mut doc = b"[".to_vec();
+        let mut i = 0;
+        while doc.len() < 70_000 + (seed as usize % 5) * 20_000 {
+            if i > 0 {
+                doc.extend_from_slice(b",\n  ");
+            }
+            g.value(&mut doc, 1, seed % 2 == 0);
+            i += 1;
+        }
+        doc.extend_from_slice(b"\n]");
+        let mut data = doc;
+        match seed % 6 {
+            0 => data.extend_from_slice(b"\n"),
+            1 => data.extend_from_slice(b" 1 2\n{\"a\":[]}\n"),
+            2 => data.extend_from_slice(b"\n[1,2]]\n"),
+            3 => data.extend_from_slice(b"\n\"x\""),
+            4 => data.extend_from_slice(b" nan\n"),
+            _ => {}
+        }
+        let (names, files) = if seed % 3 == 2 {
+            // Split in the middle of the large document.
+            let cut = data.len() / 2;
+            (
+                vec!["a", "b"],
+                vec![
+                    ("a".into(), super::MemFile::Data(data[..cut].to_vec())),
+                    ("b".into(), super::MemFile::Data(data[cut..].to_vec())),
+                ],
+            )
+        } else {
+            (
+                vec!["a"],
+                vec![("a".into(), super::MemFile::Data(data.clone()))],
+            )
+        };
+        let mut reference =
+            RefInput::new(&names, files.clone(), false, false, ParseFlags::default());
+        let want = ref_events(&mut reference, LIMIT);
+        for delivery in [Delivery::Whole, Delivery::Stream { seed, max: 70_000 }] {
+            let (mut r, msgs) = mem_reader(
+                &names,
+                files.clone(),
+                ReaderOptions::default(),
+                delivery,
+                true,
+            );
+            let got = events(&mut r, &msgs, LIMIT);
+            assert!(
+                got == want,
+                "seed {seed} {delivery:?}\n  got:\n    {}\n  want:\n    {}",
+                describe(&got),
+                describe(&want)
+            );
+            let s = r.stats();
+            stats.fast_values += s.fast_values;
+            stats.parser_results += s.parser_results;
+            stats.handovers += s.handovers;
+        }
+    }
+    eprintln!("large documents: {stats:?}");
+    assert!(stats.fast_values > 20, "{stats:?}");
+}
+
 /// The fuzz target's check (`io::fuzzing`) over generated inputs, so the
 /// harness itself is exercised without cargo-fuzz.
 #[test]

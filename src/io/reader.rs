@@ -327,6 +327,8 @@ pub struct InputReader {
     /// The line (ending here) holds more than one text or a text that isn't
     /// valid JSON: find text ends by scanning, not by trying the line.
     no_line_try_until: usize,
+    /// Whether this input's rest was tried as a single text already.
+    tried_rest: bool,
     on_message: Box<dyn FnMut(InputMessage)>,
     stats: ReaderStats,
     /// Incremented for every input opened (see `catch_up`).
@@ -387,6 +389,7 @@ impl InputReader {
             fast,
             pending_scan: None,
             no_line_try_until: 0,
+            tried_rest: false,
             on_message: Box::new(default_message_sink),
             stats: ReaderStats::default(),
             generation: 0,
@@ -497,6 +500,7 @@ impl InputReader {
         self.jq_eof = false;
         self.pending_scan = None;
         self.no_line_try_until = 0;
+        self.tried_rest = false;
         self.filename = Some(if name == "-" {
             Str::from("<stdin>")
         } else {
@@ -855,7 +859,25 @@ impl InputReader {
             }
             // More than one text on this line, or a text spanning lines.
             self.no_line_try_until = line_end;
+            // A large input is often one document: try the whole rest once
+            // before scanning for the text's end.
+            if cur.eof && !self.tried_rest && cur.end - p >= 1 << 16 {
+                self.tried_rest = true;
+                let mut t = cur.end;
+                while t > p && matches!(cur.at(t - 1), b' ' | b'\t' | b'\r' | b'\n') {
+                    t -= 1;
+                }
+                if t > line_end
+                    && cur.at(t - 1) == close
+                    && let Ok(v) = self.simd.parse(cur.buf(), p - cur.base, t - cur.base)
+                {
+                    self.advance(t, true);
+                    self.current_line = self.emission_line(t - 1);
+                    return Fast::Value(v);
+                }
+            }
         }
+        let cur = self.cur.as_ref().expect("an open input");
         let mut scan = resumed.unwrap_or(ExtentScan {
             start: p,
             pos: p,
