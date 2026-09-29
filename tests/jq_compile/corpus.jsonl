@@ -301,3 +301,21 @@
 {"src": "g", "home": "modules/home2"}
 {"src": "import \"g\" as g {search: \"~/.jq\"}; g::g", "home": "modules/home2"}
 {"src": "import \"a\" as foo {search: \"~/\"}; foo::a", "home": "modules"}
+# --- this track's module fixtures (tests/jq_compile/modules, reached from tests/jq_compat) ---
+"import \"mainexpr\" as m {search: \"../jq_compile/modules\"}; ."
+"import \"loc\" as loc {search: \"../jq_compile/modules\"}; loc::loc, loc::both"
+"include \"loc\" {search: \"../jq_compile/modules\"}; both, here"
+"import \"loc\" as loc {search: \"../jq_compile/modules\"}; loc::_private"
+"import \"badsyntax\" as b {search: \"../jq_compile/modules\"}; ."
+"import \"missingdep\" as m {search: \"../jq_compile/modules\"}; ."
+"import \"bad\" as $b {search: \"../jq_compile/modules\"}; ."
+"import \"bad\" as $b {search: \"../jq_compile/modules\", optional: true}; ."
+"import \"multi\" as $m {search: \"../jq_compile/modules\"}; $m, $m::m"
+"import \"raw\" as $r {search: \"../jq_compile/modules\", raw: true}; $r"
+"import \"dir\" as d {search: \"../jq_compile/modules\"}; ."
+"import \"nested/inner\" as i {search: \"../jq_compile/modules\"}; i::here"
+"import \"inner\" as i {search: [\"../jq_compile/modules/nested\"]}; import \"loc\" as l {search: \"../jq_compile/modules\"}; [i::here, l::loc]"
+"import \"loc\" as loc {search: \"../jq_compile/modules\"}; import \"missingdep\" as m {search: \"../jq_compile/modules\"}; import \"badsyntax\" as b {search: \"../jq_compile/modules\"}; ."
+{"src": "import \"a\" as foo {search: \"~/x\"}; foo::a", "home": "<unset>"}
+{"src": "1", "home": "<unset>"}
+"import \"dotsearch\" as d {search: \"../jq_compile/modules\"}; d::here"

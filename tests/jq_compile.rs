@@ -104,8 +104,10 @@ impl Program {
     }
 
     /// The environment jq runs with.
+    /// The environment jq runs with (`"home": "<unset>"` leaves `HOME` out).
     fn env(&self) -> Vec<(String, String)> {
         ENV.iter()
+            .filter(|(k, _)| !(*k == "HOME" && self.home.as_deref() == Some("<unset>")))
             .map(|(k, v)| match (*k, &self.home) {
                 ("HOME", Some(h)) => (k.to_string(), compat_root().join(h).display().to_string()),
                 _ => (k.to_string(), v.to_string()),
@@ -378,8 +380,12 @@ fn compat_root() -> PathBuf {
     PathBuf::from(root.as_str().unwrap())
 }
 
+/// Machine-independent output: `realpath(tests/jq_compat)` is `$ROOT`, and
+/// `realpath(tests/jq_compile)` (this track's module fixtures) is `$C1`.
 fn normalize(s: &str) -> String {
+    let c1 = jq_realpath(Value::from(data_dir().to_str().unwrap()));
     s.replace(compat_root().to_str().unwrap(), "$ROOT")
+        .replace(c1.as_str().unwrap(), "$C1")
 }
 
 /// What main.c passes to `jq_compile_args` for `p`'s arguments (without
@@ -424,7 +430,10 @@ fn options(p: &Program) -> CompileOptions {
             lib_dirs: Value::from(vec![modules]),
             jq_origin: Value::from(dirname(jq_binary().to_str().unwrap()).as_str()),
             prog_origin: jq_realpath(Value::from(compat_dir().to_str().unwrap())),
-            home: Some(penv[0].1.clone()),
+            home: penv
+                .iter()
+                .find(|(k, _)| k == "HOME")
+                .map(|(_, v)| v.clone()),
         },
     }
 }
