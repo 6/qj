@@ -7,11 +7,14 @@
 //!
 //! - [`regex`]: the engine behind `_match_impl/3` (`f_match`), on the same Oniguruma
 //!   version jq 1.8.1 vendors.
+//! - [`time`]: `strptime`, `strftime`, `strflocaltime`, `mktime`, `gmtime`, `localtime`
+//!   and `now`, through libc like jq.
 //!
 //! Behavior is platform dependent in the same way jq's is (macOS libc vs glibc); each
 //! function documents the differences it knows about.
 
 pub mod regex;
+pub mod time;
 mod utf8;
 
 use std::fmt;
@@ -59,3 +62,41 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// C's implicit `double` to `long`/`time_t` conversion, as compilers emit it. It's
+/// undefined behavior in C for NaN and out-of-range values; what the hardware
+/// instruction does then is what jq does: aarch64's `fcvtzs` saturates and maps NaN to
+/// 0 (Rust's `as`), x86-64's `cvttsd2si` returns `i64::MIN` ("integer indefinite").
+pub(crate) fn c_double_to_i64(d: f64) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    if !(-9.223_372_036_854_775_808e18..9.223_372_036_854_775_808e18).contains(&d) {
+        return i64::MIN;
+    }
+    d as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn c_conversions_truncate_in_range() {
+        assert_eq!(c_double_to_i64(1.9), 1);
+        assert_eq!(c_double_to_i64(-1.9), -1);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn c_conversions_saturate_on_aarch64() {
+        assert_eq!(c_double_to_i64(f64::NAN), 0);
+        assert_eq!(c_double_to_i64(1e30), i64::MAX);
+        assert_eq!(c_double_to_i64(-1e30), i64::MIN);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn c_conversions_are_indefinite_on_x86_64() {
+        assert_eq!(c_double_to_i64(f64::NAN), i64::MIN);
+        assert_eq!(c_double_to_i64(1e30), i64::MIN);
+    }
+}

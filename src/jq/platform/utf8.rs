@@ -112,6 +112,14 @@ pub(crate) fn decode_length(b: u8) -> usize {
     }
 }
 
+/// The prefix of `s` before its first NUL: what C sees through `jv_string_value`.
+pub(crate) fn until_nul(s: &str) -> &str {
+    match s.find('\0') {
+        Some(i) => &s[..i],
+        None => s,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +164,12 @@ mod tests {
         assert_eq!(decode_length(0xF0), 4);
         // jq returns 4 for continuation bytes (it assumes a lead byte).
         assert_eq!(decode_length(0xA9), 4);
+    }
+
+    #[test]
+    fn until_nul_truncates() {
+        assert_eq!(until_nul("abc\0def"), "abc");
+        assert_eq!(until_nul("abc"), "abc");
+        assert_eq!(until_nul("\0"), "");
     }
 }
