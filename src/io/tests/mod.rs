@@ -11,6 +11,7 @@ mod reader;
 mod reference;
 mod simd;
 mod stream;
+mod vm;
 
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
