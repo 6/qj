@@ -8,8 +8,9 @@
 //! the `.test` files' expected-output lines are never used.
 //!
 //! Levels: `pass` (all three equal), `stdout` (stdout + exit code equal,
-//! stderr differs), `fail`. A case is skipped only when jq itself times out or
-//! hits the output or memory cap.
+//! stderr differs), `fail`. A case is skipped only when jq never finishes
+//! (timeout, or the output or memory cap) *and* neither does qj; a qj that
+//! answers where jq hangs is a `fail`.
 //!
 //! Case sources (see `tests/jq_diff/cases.rs` for modes):
 //! - `tests/jq_compat/*.test`: jq 1.8.1's own suites (`upstream/...`).
@@ -292,6 +293,7 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
         max_output: MAX_OUTPUT,
         max_rss: ctx.max_rss,
         merge: job.inv.merge,
+        close_fds: &job.inv.close_fds,
     })
     .unwrap_or_else(|e| panic!("{}: {e}", job.id));
     let elapsed = started.elapsed();
@@ -331,16 +333,8 @@ fn run_job(ctx: &Ctx, cache: &cache::Cache, key: &str, jq: &Path, qj: &Path, job
             (o, Some(t))
         }
     };
-    if let exec::Status::Timeout | exec::Status::OutputLimit | exec::Status::MemoryLimit =
-        jq_obs.status
-    {
-        return Outcome {
-            verdict: compare::classify(&jq_obs, &jq_obs),
-            detail: None,
-            jq_time,
-            qj_time: None,
-        };
-    }
+    // qj runs even when jq never finished: there is nothing to compare, but
+    // qj must not finish either (see `compare::classify`).
     let (qj_obs, qj_raw_err, qj_time) = observe(ctx, qj, job, true);
     let verdict = compare::classify(&jq_obs, &qj_obs);
     let detail = (verdict != Verdict::Level(Level::Pass)).then_some((jq_obs, qj_obs, qj_raw_err));

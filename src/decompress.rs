@@ -4,7 +4,13 @@
 //! (`crate::io::source`, and `crate::cli::input` for `QJ_INPUT=util`).
 
 /// Returns true if the file path has a recognized compressed extension.
+///
+/// Always false with `QJ_JQ_COMPAT=1`: jq has no decompression, and reads the
+/// bytes as they are (so a compressed file is a parse error).
 pub fn is_compressed(path: &str) -> bool {
+    if crate::compat::exactly_jq() {
+        return false;
+    }
     path.ends_with(".gz")
         || path.ends_with(".gzip")
         || path.ends_with(".zst")

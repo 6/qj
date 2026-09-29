@@ -71,6 +71,9 @@ pub struct Invocation {
     pub files: Vec<(String, Vec<u8>)>,
     /// Whether stderr goes where stdout goes (CLI cases with `merge`).
     pub merge: Merge,
+    /// Standard descriptors the tool starts with closed (CLI cases with
+    /// `close_fds`).
+    pub close_fds: Vec<i32>,
 }
 
 impl Invocation {
@@ -97,6 +100,9 @@ impl Invocation {
         // (Only when set, so that existing keys stay the same.)
         if let Some(name) = self.merge.name() {
             h.str("merge").str(name);
+        }
+        for fd in &self.close_fds {
+            h.str("close_fd").str(&fd.to_string());
         }
         h.hex()
     }
@@ -202,6 +208,7 @@ pub fn test_file_jobs(
                         cwd: String::new(),
                         files: Vec::new(),
                         merge: Merge::No,
+                        close_fds: Vec::new(),
                     },
                 });
             }
@@ -225,6 +232,7 @@ pub fn test_file_jobs(
                             cwd: String::new(),
                             files: Vec::new(),
                             merge: Merge::No,
+                            close_fds: Vec::new(),
                         },
                         _ => {
                             let (content, ext) = if mode == Mode::File {
@@ -240,6 +248,7 @@ pub fn test_file_jobs(
                                 cwd: String::new(),
                                 files: vec![(name, content)],
                                 merge: Merge::No,
+                                close_fds: Vec::new(),
                             }
                         }
                     };
@@ -283,6 +292,9 @@ pub fn cli_jobs(group: &str, origin_path: &str, cases: &[CliCase]) -> Vec<Job> {
             if let Some(name) = c.merge.name() {
                 h.str("merge").str(name);
             }
+            for fd in &c.close_fds {
+                h.str("close_fd").str(&fd.to_string());
+            }
             let dir = format!("cli/{}", &h.hex()[..16]);
             Job {
                 id: format!("{group}:{}:cli", c.name),
@@ -303,6 +315,7 @@ pub fn cli_jobs(group: &str, origin_path: &str, cases: &[CliCase]) -> Vec<Job> {
                         .collect(),
                     cwd: dir,
                     merge: c.merge,
+                    close_fds: c.close_fds.clone(),
                 },
             }
         })
@@ -463,6 +476,7 @@ mod tests {
             cwd: String::new(),
             files: vec![],
             merge: Merge::No,
+            close_fds: Vec::new(),
         };
         let k = inv.key(&[]);
         let mut other = inv.clone();

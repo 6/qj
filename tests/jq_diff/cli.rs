@@ -10,6 +10,8 @@
 //! stdin = "1 2 3"                      # optional; see `Content` below
 //! files = { "a.json" = '{"a":1}' }     # optional; written into the case's cwd
 //! env = { NO_COLOR = "1" }             # optional; added to the base environment
+//! close_fds = [1]                      # optional: standard descriptors the tool
+//!                                      # starts with closed (`>&-`, `<&-`, `2>&-`)
 //! merge = "file"                       # optional: stderr into stdout's regular
 //!                                      # file (`>out 2>&1`), or "pipe" (`2>&1 |`);
 //!                                      # the stream is compared as stdout, with
@@ -87,6 +89,9 @@ pub struct CaseDef {
     /// `"file"` or `"pipe"`: stderr goes where stdout goes (see `Merge`).
     #[serde(default)]
     pub merge: Option<String>,
+    /// Standard descriptors (0, 1, 2) the tool starts with closed.
+    #[serde(default)]
+    pub close_fds: Vec<i32>,
     /// Free-form note for humans; not used by the harness.
     #[serde(default)]
     #[allow(dead_code)]
@@ -108,6 +113,9 @@ pub struct SweepDef {
     /// `"file"` or `"pipe"`: stderr goes where stdout goes (see `Merge`).
     #[serde(default)]
     pub merge: Option<String>,
+    /// Standard descriptors (0, 1, 2) the tool starts with closed.
+    #[serde(default)]
+    pub close_fds: Vec<i32>,
     /// Free-form note for humans; not used by the harness.
     #[serde(default)]
     #[allow(dead_code)]
@@ -136,6 +144,16 @@ pub struct CliCase {
     /// The program, when known (sweeps), for display.
     pub program: Option<String>,
     pub merge: Merge,
+    /// Standard descriptors the tool starts with closed.
+    pub close_fds: Vec<i32>,
+}
+
+/// Only 0, 1 and 2 can be closed: anything else is the harness's own.
+fn check_close_fds(fds: &[i32]) -> Result<Vec<i32>, String> {
+    if let Some(bad) = fds.iter().find(|f| !(0..=2).contains(*f)) {
+        return Err(format!("close_fds: {bad} is not a standard descriptor"));
+    }
+    Ok(fds.to_vec())
 }
 
 fn merge_mode(merge: &Option<String>) -> Result<Merge, String> {
@@ -202,6 +220,7 @@ pub fn parse(toml_src: &str, base: &Path) -> Result<Vec<CliCase>, String> {
             env,
             program: None,
             merge: merge_mode(&c.merge).map_err(|e| format!("{}: {e}", c.name))?,
+            close_fds: check_close_fds(&c.close_fds).map_err(|e| format!("{}: {e}", c.name))?,
         });
     }
     for s in &file.sweep {
@@ -236,6 +255,8 @@ pub fn parse(toml_src: &str, base: &Path) -> Result<Vec<CliCase>, String> {
                     env: env.clone(),
                     program: Some(program.clone()),
                     merge: merge_mode(&s.merge).map_err(|e| format!("{}: {e}", s.name))?,
+                    close_fds: check_close_fds(&s.close_fds)
+                        .map_err(|e| format!("{}: {e}", s.name))?,
                 });
             }
         }
@@ -292,6 +313,15 @@ variants = { c = ["-c", "{program}", "f"], p = ["{program}"] }
         assert_eq!(names, vec!["s/c/0", "s/c/1", "s/p/0", "s/p/1"]);
         assert_eq!(cases[1].args, vec!["-c", ".b", "f"]);
         assert_eq!(cases[1].program.as_deref(), Some(".b"));
+    }
+
+    #[test]
+    fn parses_close_fds() {
+        let src = "[[case]]\nname = \"a\"\nargs = [\"-n\", \"1\"]\nclose_fds = [1, 2]\n";
+        let cases = parse(src, Path::new("/")).unwrap();
+        assert_eq!(cases[0].close_fds, vec![1, 2]);
+        let bad = "[[case]]\nname = \"a\"\nargs = []\nclose_fds = [3]\n";
+        assert!(parse(bad, Path::new("/")).is_err());
     }
 
     #[test]
