@@ -9,8 +9,8 @@ for raw (-R) input are here too.
 
 import re
 
-from gen import (A, E, FLAGS, FMTS, Q, REGEXES, T, Gen, gen_input_bytes, input_to_bytes, jstr,
-                 lf, render)
+from gen import (A, E, FLAGS, FMTS, Q, RARE_STRS, REGEXES, T, Gen, gen_input_bytes, gen_value,
+                 input_to_bytes, jstr, lf, render, ser)
 
 # jq 1.8.1 `builtins`, plus internal helpers that programs can call.
 ALL_BUILTINS = """IN/1 IN/2 INDEX/1 INDEX/2 JOIN/2 JOIN/3 JOIN/4 abs/0 acos/0 acosh/0 add/0 add/1 all/0
@@ -520,6 +520,106 @@ def gen_runtests(r):
     if r.random() < 0.1:
         parts.append(r.choice(["lonely program\n", "%%FAIL\n", ".\n"]))
     return "".join(parts).encode()
+
+
+# -- bulk inputs: qj's parallel record engine -------------------------------------
+
+# Programs that keep records independent (the engine runs them on worker
+# threads), and a few that force the sequential reader.
+BULK_PROGRAMS = [
+    ".", ".a", ".a?", ".[]?", "keys?", "select(.a? > 1)", "select(type == \"object\")",
+    "tostring", "tojson", "length?", "type", ".a |= (. // 0) + 1?", "[.[]?] | length",
+    "input_filename", "input_line_number", "[input_filename, input_line_number]",
+    "if type == \"number\" and . > 50 then error(\"big\") else . end", "error?", "try error catch .",
+    "(.a? // .) | tostring", ".. | numbers?", "paths?", "[paths?] | length", "to_entries?",
+    "del(.a?)", "{b: .a?}", "select(.c? != null)", ".[0]?", "@json", "@text", "@csv?", "@sh?",
+    "values", "not", "empty", "if . == null then empty else . end", "-(.a? // 0)?",
+    ". as $x | $x", "[., .]", "(., .)", "tostream", "$ENV.PAGER", "env.TZ", "splits(\"a\")?",
+    "ascii_downcase?", "has(\"a\")?", "map_values(. + 1)?", "with_entries(.value |= tostring)?",
+    "[.[]?|numbers] | add", "walk(if type == \"number\" then . + 1 else . end)",
+    "if .a? == 1 then halt_error else . end", "input? // \"none\"", "$__loc__", "[., input?]",
+    "label $f | ., break $f", "first(inputs)?", "debug | .a?", "stderr | empty",
+]
+BULK_LINES = [b"", b"  ", b"\t", b"nan", b"1 2", b"[1,\n2]", b'"\xff"', b'{"a":nan}', b"-0",
+              b"1e1000", b"100000000000000000001", b'{"a":1,"a":2}',
+              b"[]", b"{}", b"null", b"true", b'"x"', b"0.10", b"1E2", b"\r"]
+BULK_ERRORS = [b"\xef\xbb\xbf{}", b"{", b"}", b"[1,]", b"tru", b"nul", b"{\"a\" 1}", b"1.2.3", b"]", b"'x'", b"\x00"]
+
+
+def fast_path_ok(text):
+    """Whether qj's simdjson fast path takes this text (strict RFC 8259 JSON,
+    valid UTF-8, no lone surrogates, numbers within double range): only such
+    records keep a job on the parallel engine's workers."""
+    import json
+    import math
+
+    def num(x):
+        f = float(x)
+        if math.isinf(f):
+            raise ValueError(x)
+        return f
+
+    def integer(x):
+        # simdjson's big-integer error: outside int64/uint64.
+        if not -(1 << 63) <= int(x) < (1 << 64):
+            raise ValueError(x)
+        return int(x)
+
+    def no_const(x):
+        raise ValueError(x)
+
+    def clean(v):
+        if isinstance(v, str):
+            return not any("\ud800" <= c <= "\udfff" for c in v)
+        if isinstance(v, list):
+            return all(clean(x) for x in v)
+        if isinstance(v, dict):
+            return all(clean(k) and clean(x) for k, x in v.items())
+        return True
+    try:
+        v = json.loads(text.decode("utf-8"), parse_float=num, parse_int=integer,
+                       parse_constant=no_const)
+    except ValueError:
+        return False
+    return clean(v)
+
+
+def gen_bulk_spec(r):
+    """A large NDJSON-like input (64 KB to about 3 MB) as a spec of documents."""
+    target = r.choice([70 << 10, 100 << 10, 300 << 10, 1 << 20, 3 << 20])
+    docs = []
+    size = 0
+    clean = r.random() < 0.6
+    p_pretty = r.choice([0, 0, 0.02, 0.1]) if not clean else r.choice([0, 0, 0.001])
+    p_odd = r.choice([0, 0.01, 0.03]) if not clean else r.choice([0, 0, 0.001])
+    p_long = r.choice([0, 0, 0.002])
+    error_at = r.choice([None, None, None, r.random()])
+    while size < target:
+        k = r.random()
+        if error_at is not None and size > error_at * target:
+            docs.append(("raw", r.choice(BULK_ERRORS)))
+            error_at = None
+            continue
+        if k < p_odd:
+            d = ("raw", r.choice(BULK_LINES))
+        elif k < p_odd + p_pretty:
+            d = ("raw", ser(gen_value(r, 2), "pretty", r))
+            if any(bad in d[1] for bad in RARE_STRS):
+                continue
+        elif k < p_odd + p_pretty + p_long:
+            d = ("raw", b'{"s":"' + b"x" * r.choice([4000, 4095, 4096, 5000, 70000]) + b'"}')
+        else:
+            d = gen_value(r, r.choice([0, 1, 2, 2, 3]))
+            text = ser(d, "compact", r)
+            if any(bad in text for bad in RARE_STRS):
+                continue  # lone surrogates are parse errors: only where intended
+            if clean and not fast_path_ok(text):
+                continue
+        docs.append(d)
+        size += len(ser(d, "compact", r)) + 1
+    return {"docs": docs, "style": "compact",
+            "sep": r.choice([b"\n", b"\n", b"\n", b"\r\n", b"\n\n"]),
+            "trail": r.choice([b"\n", b"\n", b""]), "seed": r.randrange(1 << 30)}
 
 
 # -- environment ------------------------------------------------------------------

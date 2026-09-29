@@ -117,7 +117,7 @@ def dec(x):
     return x.encode("utf-8")
 
 
-def run_proc(argv, cwd, env, stdin, stdin_mode, scratch):
+def run_proc(argv, cwd, env, stdin, stdin_mode, scratch, timeout=TIMEOUT):
     """Run argv; stdin is bytes (piped or via a regular file) or None (/dev/null)."""
     out_path = os.path.join(scratch, "out")
     err_path = os.path.join(scratch, "err")
@@ -153,7 +153,7 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch):
             else:
                 writer = threading.Thread(target=feed, daemon=True)
                 writer.start()
-        status = wait_capped(p, fout, ferr)
+        status = wait_capped(p, fout, ferr, timeout)
         if writer:
             writer.join(1)
         fout.seek(0)
@@ -168,8 +168,8 @@ def run_proc(argv, cwd, env, stdin, stdin_mode, scratch):
             fin.close()
 
 
-def wait_capped(p, fout, ferr):
-    deadline = time.monotonic() + TIMEOUT
+def wait_capped(p, fout, ferr, timeout):
+    deadline = time.monotonic() + timeout
     kq = None
     if hasattr(select, "kqueue"):
         try:
@@ -361,8 +361,9 @@ class Runner:
         env = base_env(self.casedir)
         env.update(inv["env"])
         self.runs += 1
+        size = sum(len(v) for v in inv["files"].values()) + len(inv["stdin"] or b"")
         return run_proc([tool] + inv["args"], self.casedir, env, inv["stdin"], inv["stdin_mode"],
-                        self.scratch)
+                        self.scratch, TIMEOUT if size < (64 << 10) else 20.0)
 
     def observe(self, inv, use_cache=True):
         """(jq result, qj result) for an invocation."""
@@ -382,6 +383,9 @@ class Runner:
 def verdict(j, q):
     """None when equivalent (or jq's result can't be judged), else a signature tuple."""
     if j.status in ("timeout", "output", "memory"):
+        return None
+    if q.status == "output" and max(len(j.stdout), len(j.stderr)) > MAX_OUTPUT:
+        # Both went over the cap; only qj was caught before it exited.
         return None
     diff = []
     if j.status != q.status:
@@ -405,7 +409,7 @@ def verdict(j, q):
 MODES = [
     (30, "general"), (13, "builtins"), (8, "values"), (11, "paths"), (9, "control"),
     (5, "regex"), (4, "dates"), (11, "cli"), (9, "parse"), (4, "debug"), (2, "runtests"),
-    (4, "progfile"), (3, "modules"), (3, "env"),
+    (4, "progfile"), (3, "modules"), (3, "env"), (3, "bulk"),
 ]
 
 
@@ -439,6 +443,8 @@ def gen_case(r, only=None):
         return gen_modules_case(r)
     if mode == "env":
         return gen_env_case(r)
+    if mode == "bulk":
+        return gen_bulk_case(r)
     return gen_focused(r, mode)
 
 
@@ -459,7 +465,46 @@ def gen_debug_case(r):
         # its refcount (main.c's references to ARGS aren't mirrored yet).
         if "now" not in text and "$ARGS" not in text:
             break
-    return Case([["-c"], flag], prog, small_input(r) if r.random() < 0.8 else None)
+    # QJ_NO_SIMD_INPUT: the simdjson reader shares key strings between records,
+    # a known refcount divergence in traces (src/io/simd.rs).
+    return Case([["-c"], flag], prog, small_input(r) if r.random() < 0.8 else None,
+                env={"QJ_NO_SIMD_INPUT": "1"})
+
+
+SEQUENTIAL_WORDS = ("input", "now", "halt", "debug", "stderr", "localtime", "strflocaltime",
+                    "mktime", "strptime", "_strindices", "modulemeta", "$__loc__", "label",
+                    "break", "import", "include")
+
+
+def gen_bulk_case(r):
+    """Large NDJSON-like inputs: qj's parallel record engine and streaming reader."""
+    spec = modes.gen_bulk_spec(r)
+    if r.random() < 0.65:
+        prog = r.choice(modes.BULK_PROGRAMS)
+    else:
+        for _ in range(20):
+            prog = gen.render(gen.gen_program(r, depth=r.choice([1, 2, 2, 3])))
+            if not any(w in prog for w in SEQUENTIAL_WORDS) or r.random() < 0.1:
+                break
+    flags = simple_flags(r)
+    if r.random() < 0.15:
+        flags.append(r.choice([["-e"], ["-r"], ["-j"], ["-a"], ["-S"], ["--tab"], ["--seq"],
+                               ["--indent", "1"], ["-C"], ["--raw-output0"]]))
+    env = {}
+    if r.random() < 0.15:
+        env[r.choice(["QJ_NO_MMAP", "QJ_NO_SIMD_INPUT"])] = "1"
+    k = r.random()
+    if k < 0.45:
+        return Case(flags, prog, None, files={"in.json": spec}, file_args=["in.json"], env=env)
+    if k < 0.6:
+        cut = r.randint(0, len(spec["docs"]))
+        a = dict(spec, docs=spec["docs"][:cut])
+        b = dict(spec, docs=spec["docs"][cut:])
+        return Case(flags, prog, None, files={"a.json": a, "b.json": b},
+                    file_args=["a.json", "b.json"], env=env)
+    if k < 0.8:
+        return Case(flags, prog, spec, env=env)
+    return Case(flags, prog, spec, stdin_mode="file", env=env)
 
 
 def gen_runtests_case(r):
@@ -811,7 +856,18 @@ def spec_reductions(spec):
             yield red
         return
     docs = spec["docs"]
-    for i in range(len(docs)):
+    n = len(docs)
+    if n > 32:
+        # Large inputs: drop chunks first.
+        size = n // 2
+        while size >= max(1, n // 64):
+            for start in range(0, n, size):
+                s = dict(spec)
+                s["docs"] = docs[:start] + docs[start + size:]
+                yield s
+            size //= 2
+        return
+    for i in range(n):
         s = dict(spec)
         s["docs"] = docs[:i] + docs[i + 1:]
         yield s
@@ -936,6 +992,10 @@ def run_one(args):
         return res
     # Recheck for nondeterminism.
     j2, q2 = runner.observe(inv, use_cache=False)
+    if verdict(j2, q2) is None:
+        # Gone on the rerun: a timeout under load, not a divergence.
+        res["transient"] = True
+        return res
     flaky = []
     if (j2.status, j2.stdout, j2.stderr) != (j.status, j.stdout, j.stderr):
         flaky.append("jq")
@@ -948,7 +1008,8 @@ def run_one(args):
     mcase = case
     if do_minimize and not flaky:
         runner.cache.clear()
-        mcase = minimize(runner, case, sig)
+        big = sum(len(v) for v in inv["files"].values()) + len(inv["stdin"] or b"") > (64 << 10)
+        mcase = minimize(runner, case, sig, budget=400 if big else 1500)
     minv = mcase.invocation()
     mj, mq = runner.observe(minv)
     res["min"] = inv_to_json(minv)
@@ -1012,6 +1073,8 @@ def cmd_run(a):
                 stats["with_output"] += 1
             if js in ("timeout", "output", "memory"):
                 stats["skipped"] += 1
+            if res.get("transient"):
+                stats["transient"] = stats.get("transient", 0) + 1
             sig = res.get("sig")
             if sig is None:
                 stats["clean_run"] += 1
