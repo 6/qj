@@ -11,6 +11,7 @@ mod reader;
 mod reference;
 mod simd;
 mod stream;
+mod tape;
 mod vm;
 
 use std::cell::RefCell;

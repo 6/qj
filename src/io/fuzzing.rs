@@ -288,3 +288,135 @@ pub fn check_reader_equivalence(data: &[u8]) {
         seq.errors
     );
 }
+
+/// Programs for [`check_tape_equivalence`]: every construct the tape
+/// evaluator takes, in combinations.
+pub const TAPE_PROGRAMS: &[&str] = &[
+    ".",
+    ".a",
+    ".a.b",
+    ".b.a",
+    ".[\"a\"]",
+    ".[]",
+    ".[].a",
+    ".a[]",
+    ".[][]",
+    ".[] | .[] | .a",
+    "length",
+    ".a | length",
+    ".[] | length",
+    "keys",
+    "keys_unsorted",
+    ".[] | keys",
+    "[.[]]",
+    "[.[] | .a]",
+    "map(.a)",
+    "map(length)",
+    "map(keys_unsorted)",
+    "map({a, b})",
+    "{a, b: .b.c}",
+    "{a: [.[]], b: {c: .a}}",
+    "{a} | .[]",
+    "select(.a == 1)",
+    "select(.a == -1)",
+    "select(.a != \"a\")",
+    "select(.a == null)",
+    "select(.a == false)",
+    "select(.b)",
+    ".[] | select(.a == 1.0) | .b",
+    "map(select(.a))",
+    "select(length == 1)",
+    "[.[] | select(. == 0)]",
+];
+
+/// The tape evaluator (`super::tape_eval`) against the VM: `data[0]` picks
+/// a program from [`TAPE_PROGRAMS`], `data[1]` the output layout, and the
+/// rest is the input. Where the VM raises an error the evaluator must
+/// decline; where it doesn't decline, its outputs must print exactly as the
+/// VM's.
+pub fn check_tape_equivalence(data: &[u8]) {
+    use super::simd::SimdParser;
+    use super::tape::{Layout, Scratch};
+    use super::tape_eval::{Output, TapeProgram};
+    use crate::jq::lang::execute::Jq;
+    use crate::jq::lang::{CompileOptions, jq_compile_args};
+    use crate::jq::value::Indent;
+    use crate::jq::value::print::dump_to_vec;
+
+    let [p, opts, text @ ..] = data else {
+        return;
+    };
+    let program = TAPE_PROGRAMS[*p as usize % TAPE_PROGRAMS.len()];
+    let dump = DumpOptions {
+        indent: match opts % 4 {
+            0 => Indent::Compact,
+            1 => Indent::Spaces(2),
+            2 => Indent::Tab,
+            _ => Indent::Spaces(opts / 4 % 8),
+        },
+        sort_keys: opts & 0x40 != 0,
+        ascii: opts & 0x80 != 0,
+        colors: None,
+    };
+    let mut padded = text.to_vec();
+    padded.resize(text.len() + crate::simdjson::padding(), 0);
+    let mut simd = SimdParser::new();
+    let Ok(value) = simd.parse(&padded, 0, text.len()) else {
+        return;
+    };
+    let bc = jq_compile_args(program.as_bytes(), &CompileOptions::new(".")).expect("compiles");
+    let mut jq = Jq::new(bc);
+    jq.start(value, 0);
+    let mut want = Vec::new();
+    let mut vm_failed = false;
+    for r in jq.by_ref() {
+        match r {
+            Ok(v) => want.push(v),
+            Err(_) => {
+                vm_failed = true;
+                break;
+            }
+        }
+    }
+    let prog = TapeProgram::new(program.as_bytes()).expect("qualifies");
+    let layout = Layout::new(&dump).expect("no colors");
+    let got = simd
+        .parse_with(&padded, 0, text.len(), |p| {
+            let doc = p.doc();
+            let mut scratch = Scratch::default();
+            let mut results = Vec::new();
+            prog.eval(&doc, &mut scratch, &mut results).ok()?;
+            Some(
+                results
+                    .iter()
+                    .map(|val| {
+                        let o = Output { doc: &doc, val };
+                        let mut out = Vec::new();
+                        o.dump(&layout, &mut scratch, &mut out);
+                        (out, o.is_null_or_false(), o.as_str().map(str::to_owned))
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .expect("parsed before");
+    let Some(got) = got else {
+        return; // declined: the VM runs instead
+    };
+    assert!(
+        !vm_failed,
+        "{program}: jq errors, the tape evaluator doesn't"
+    );
+    assert_eq!(got.len(), want.len(), "{program}: output count");
+    for (w, (g, null_or_false, s)) in want.iter().zip(got) {
+        let mut wd = Vec::new();
+        dump_to_vec(w, &dump, &mut wd);
+        assert!(
+            wd == g,
+            "{program} ({dump:?}): got {:?}, want {:?}",
+            String::from_utf8_lossy(&g),
+            String::from_utf8_lossy(&wd)
+        );
+        assert_eq!(null_or_false, matches!(w, Value::Null | Value::Bool(false)));
+        assert_eq!(s.as_deref(), w.as_str());
+    }
+}

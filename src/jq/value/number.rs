@@ -755,7 +755,7 @@ impl Number {
 
     /// `jv_get_refcnt`: references to a literal's allocation; 1 for a
     /// native double (not allocated in jq). An inline literal's count isn't
-    /// tracked (see [`Repr::Int`]).
+    /// tracked (see `Repr::Int`).
     pub fn refcount(&self) -> usize {
         match &self.0 {
             Repr::Native(_) | Repr::Int { .. } => 1,

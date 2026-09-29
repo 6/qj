@@ -10,10 +10,10 @@
 //!
 //! The entries live in one vector, in iteration order. Most objects are
 //! small and are searched linearly; an object with more than
-//! [`LINEAR_MAX`] keys gets a hash index over its entries once it has been
-//! searched a few times ([`INDEX_AFTER`]), so objects that are only built
+//! `LINEAR_MAX` keys gets a hash index over its entries once it has been
+//! searched a few times (`INDEX_AFTER`), so objects that are only built
 //! and printed (or read once) never pay for one. Keys cache their hash
-//! ([`Str::key_hash`]), so indexing an object whose keys are shared with
+//! (`Str::key_hash`), so indexing an object whose keys are shared with
 //! other objects (as parsed keys are) hashes nothing.
 
 use std::cell::{Cell, OnceCell};

@@ -30,7 +30,7 @@ always did), and RSS from one extra run.
 
 --check first compares every tool's stdout and exit status with jq's (the
 port must match byte for byte; the old core may not). --filter picks
-workloads by id substring.
+workloads by id substrings (comma separated).
 """
 
 import argparse
@@ -412,7 +412,8 @@ def main():
         return
 
     tools = args.tools.split(",")
-    workloads = [(s, w) for s in suites for w in SUITES[s] if args.filter in w[0]]
+    filters = args.filter.split(",")
+    workloads = [(s, w) for s in suites for w in SUITES[s] if any(f in w[0] for f in filters)]
     needed = {w[3].removeprefix("pipe:") for _, w in workloads if w[3]}
     ensure_data(needed)
 
