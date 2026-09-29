@@ -14,6 +14,7 @@ native double (`. * 1`), which is how arithmetic results reach builtins.
 
 import json
 import os
+import random as random_module
 import re
 import subprocess
 import sys
@@ -29,9 +30,14 @@ NAT = (
 )
 
 
-def run(args, inp=b""):
+def run(args, inp=b"", timeout=None):
+    """Runs jq; a timeout gives return code None."""
     env = {k: v for k, v in os.environ.items() if k not in ("JQ_COLORS", "NO_COLOR")}
-    p = subprocess.run([JQ] + args, input=inp, capture_output=True, env=env)
+    try:
+        p = subprocess.run([JQ] + args, input=inp, capture_output=True, env=env,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return e.stdout or b"", e.stderr or b"", None
     return p.stdout, p.stderr, p.returncode
 
 
@@ -47,30 +53,47 @@ class Cases:
         self.seen.add(key)
         self.cases.append({"f": f, "in": inp, "args": list(args), "native": native})
 
+    @staticmethod
+    def _batch(f, nargs, cases, timeout):
+        """jq's output lines for `cases`, or None if jq crashed or hung."""
+        params = ["$a", "$b"][:nargs]
+        call = f + ("(" + "; ".join(params) + ")" if nargs else "")
+        prog = (
+            NAT
+            + ".[] | (if .[0] then .[1:] | nat else .[1:] end) as [$in, $a, $b]"
+            + f" | $in | try [0, {call}] catch [1, .]"
+        )
+        doc = "[" + ",".join(
+            "[" + ",".join(["true" if c["native"] else "false", c["in"]] + c["args"]) + "]"
+            for c in cases
+        ) + "]"
+        out, err, rc = run(["-c", prog], doc.encode(), timeout)
+        lines = out.decode().split("\n")
+        if rc != 0 or lines[-1] != "" or len(lines) - 1 != len(cases):
+            return None
+        return lines[:-1]
+
     def run(self):
-        """Fills in "out" for every case, one jq process per (function, arity)."""
+        """Fills in "out" for every case, one jq process per (function, arity). Cases
+        on which jq itself crashes or hangs (it fails assertions and loops forever on
+        some inputs) are dropped and listed on stderr."""
         groups = {}
         for c in self.cases:
             groups.setdefault((c["f"], len(c["args"])), []).append(c)
         for (f, nargs), cases in groups.items():
-            params = ["$a", "$b"][:nargs]
-            call = f + ("(" + "; ".join(params) + ")" if nargs else "")
-            prog = (
-                NAT
-                + ".[] | (if .[0] then .[1:] | nat else .[1:] end) as [$in, $a, $b]"
-                + f" | $in | try [0, {call}] catch [1, .]"
-            )
-            doc = "[" + ",".join(
-                "[" + ",".join(["true" if c["native"] else "false", c["in"]] + c["args"]) + "]"
-                for c in cases
-            ) + "]"
-            out, err, rc = run(["-c", prog], doc.encode())
-            lines = out.decode().split("\n")
-            if rc != 0 or lines[-1] != "" or len(lines) - 1 != len(cases):
-                raise SystemExit(f"{f}/{nargs}: rc={rc} {len(lines) - 1} outputs for "
-                                 f"{len(cases)} cases\n{err.decode()}")
+            lines = self._batch(f, nargs, cases, 120)
+            if lines is None:
+                # Find the culprits one case at a time.
+                lines = []
+                for c in cases:
+                    one = self._batch(f, nargs, [c], 5)
+                    if one is None:
+                        print(f"skipped (jq crashes or hangs): {c['in']} | {f}"
+                              f"({'; '.join(c['args'])})", file=sys.stderr)
+                    lines.append(None if one is None else one[0])
             for c, line in zip(cases, lines):
                 c["out"] = line
+        self.cases = [c for c in self.cases if c["out"] is not None]
 
     def write(self, name):
         self.run()
@@ -393,8 +416,96 @@ def gen_format():
     c.write("b1_format.json")
 
 
+# ------------------------------------------------------------------- random
+
+RAND_NUMBERS = ["0", "-0", "1", "2", "-1", "1.0", "1.000", "0.5", "-2.5", "1e2", "10", "3",
+                "100000000000000000001", "1e1000", "nan", "7", "1.5e-3"]
+RAND_STRINGS = ["", "a", "b", "ab", "ba", "A", "é", "a b", "\u0000", "a,b", "\"", "k"]
+RAND_KEYS = ["a", "b", "c", "", "é", "aa", "B"]
+
+
+def rand_scalar(rng):
+    k = rng.random()
+    if k < 0.1:
+        return rng.choice(["null", "true", "false"])
+    if k < 0.6:
+        return rng.choice(RAND_NUMBERS)
+    return js(rng.choice(RAND_STRINGS))
+
+
+def rand_elements(rng, depth):
+    """The element texts of a random array."""
+    n = rng.choice([0, 1, 2, 3, 3, 4, 5, 9])
+    return [rand_value(rng, depth - 1) for _ in range(n)]
+
+
+def rand_value(rng, depth):
+    r = rng.random()
+    if depth <= 0 or r < 0.45:
+        return rand_scalar(rng)
+    if r < 0.75:
+        return "[" + ",".join(rand_elements(rng, depth)) + "]"
+    n = rng.choice([0, 1, 2, 3, 4])
+    return "{" + ",".join(js(rng.choice(RAND_KEYS)) + ":" + rand_value(rng, depth - 1)
+                          for _ in range(n)) + "}"
+
+
+def rand_key(rng, allow_nan=True):
+    k = rng.random()
+    if k < 0.4:
+        return js(rng.choice(RAND_KEYS))
+    if k < 0.8:
+        return rng.choice(["0", "1", "2", "-1", "-2", "5", "0.5", "-0", "1.9"])
+    if k < 0.9:
+        s = rng.choice(["null", "0", "1", "-1", "-2", "0.5", "5"])
+        e = rng.choice(["null", "1", "2", "-1", "10", "1.5"])
+        return "{\"start\":%s,\"end\":%s}" % (s, e)
+    return rng.choice(["null", "true", "[0]", "{}"] + (["nan"] if allow_nan else []))
+
+
+def rand_path(rng, allow_nan=True):
+    n = rng.choice([0, 1, 1, 2, 2, 3])
+    return "[" + ",".join(rand_key(rng, allow_nan) for _ in range(n)) + "]"
+
+
+def gen_random():
+    """Seeded random operands for the builtins whose logic lives mostly in the value
+    layer (paths, containment, ordering), where hand-picked cases run out.
+
+    `delpaths` gets no NaN keys: jq 1.8.1 loops forever on them (`[1] | delpaths([[nan]])`
+    hangs), and the port deliberately doesn't."""
+    rng = random_module.Random(20260929)
+    c = Cases()
+    for i in range(180):
+        v = rand_value(rng, 3 if i % 4 == 0 else 2)
+        w = rand_value(rng, 2)
+        for f in ["sort", "unique", "min", "max", "keys", "length", "tojson"]:
+            c.add(f, v)
+        c.add("contains", v, w)
+        c.add("contains", v, v)
+        c.add("has", v, rand_key(rng))
+        c.add("getpath", v, rand_path(rng))
+        c.add("setpath", v, rand_path(rng), w)
+        c.add("delpaths", v, "[" + ",".join(rand_path(rng, allow_nan=False)
+                                            for _ in range(rng.choice([1, 2, 3]))) + "]")
+        c.add("bsearch", v, w)
+        op = rng.choice(["_plus", "_minus", "_multiply", "_equal", "_less", "_greatereq"])
+        c.add(op, "null", v, w)
+        elems = rand_elements(rng, 2)
+        arr = "[" + ",".join(elems) + "]"
+        for fmt in ["csv", "tsv", "sh"]:
+            c.add("format", arr, js(fmt))
+        keys = "[" + ",".join(rand_value(rng, 1) for _ in elems) + "]"
+        for f in ["_sort_by_impl", "_group_by_impl", "_unique_by_impl", "_min_by_impl",
+                  "_max_by_impl"]:
+            c.add(f, arr, keys)
+        c.add("bsearch", arr, rand_value(rng, 1))
+    c.write("b1_random.json")
+
+
 if __name__ == "__main__":
     gen_binops()
     gen_general()
     gen_strings()
     gen_format()
+    gen_random()

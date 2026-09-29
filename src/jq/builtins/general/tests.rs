@@ -121,6 +121,11 @@ fn fixture_format() {
     run_fixture("b1_format.json", include_str!("../testdata/b1_format.json"));
 }
 
+#[test]
+fn fixture_random() {
+    run_fixture("b1_random.json", include_str!("../testdata/b1_random.json"));
+}
+
 // ---------------------------------------------------------------- host-dependent builtins
 //
 // These builtins talk to the interpreter through `Host`, so they are exercised with a
