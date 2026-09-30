@@ -1024,9 +1024,24 @@ impl InputReader {
             // More than one text on this line, or a text spanning lines.
             self.no_line_try_until = line_end;
             // A large input is often one document: try the whole rest once
-            // before scanning for the text's end.
+            // before scanning for the text's end. Unless the text ends within
+            // the first 1/1024 of the rest (texts one after another, or a
+            // text spanning lines among NDJSON): the parse would read all of
+            // the rest, only to fail, and leave a mapped input resident.
+            // (Scanning finds the end of a valid text exactly, so this parses
+            // what trying the rest would have: that text alone.)
             if cur.eof && !self.tried_rest && cur.end - p >= 1 << 16 {
                 self.tried_rest = true;
+                let mut probe = ExtentScan {
+                    start: p,
+                    pos: p,
+                    depth: 0,
+                    in_string: false,
+                };
+                if let Some(e) = scan_extent(cur, &mut probe, p + (cur.end - p) / 1024) {
+                    self.pending_scan = None;
+                    return self.fast_text(p, e);
+                }
                 let mut t = cur.end;
                 while t > p && matches!(cur.at(t - 1), b' ' | b'\t' | b'\r' | b'\n') {
                     t -= 1;

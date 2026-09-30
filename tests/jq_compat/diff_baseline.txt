@@ -28264,6 +28264,15 @@ pass corpus/reduce_foreach_gen.test:157:compact 1df9c4aae0b9
 pass corpus/reduce_foreach_gen.test:157:file 1df9c4aae0b9
 pass corpus/reduce_foreach_gen.test:157:ndjson 1df9c4aae0b9
 pass corpus/reduce_foreach_gen.test:157:pretty 1df9c4aae0b9
+pass corpus/release.toml:concatenated/bf/0:cli d491c2879957
+pass corpus/release.toml:concatenated/bf/1:cli 914f55450e1e
+pass corpus/release.toml:concatenated/bf/2:cli f4509a5b845b
+pass corpus/release.toml:concatenated/both/0:cli 055c6b9aa47d
+pass corpus/release.toml:concatenated/both/1:cli 0a10c779aca6
+pass corpus/release.toml:concatenated/both/2:cli 586305243c09
+pass corpus/release.toml:concatenated/p/0:cli ce6b90512dd2
+pass corpus/release.toml:concatenated/p/1:cli 27ae605b9a25
+pass corpus/release.toml:concatenated/p/2:cli 22eadec9953f
 pass corpus/release.toml:sequential/c/0:cli 8b1e80fd30e2
 pass corpus/release.toml:sequential/c/1:cli 8ae588dcf4af
 pass corpus/release.toml:sequential/c/2:cli ca4485e9ceac

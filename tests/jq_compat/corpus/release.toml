@@ -140,3 +140,36 @@ programs = [
   "reduce inputs as $x (0; . + 1)",
   ".id?, (input | .id?)",
 ]
+
+[[sweep]]
+name = "concatenated"
+note = "Pretty-printed texts one after another: the first ends early (so the rest isn't tried as one document), or is 6 KB (tried, and fails)"
+env = { QJ_RELEASE_STEP = "1", QJ_WINDOW_SIZE = "16K" }
+files = { "p.json" = { repeat = [
+  ['''{
+  "id": 1,
+  "type": "PushEvent",
+  "actor": {
+    "login": "alice",
+    "n": [1.50, -0, 1e2]
+  }
+}
+[
+  1,
+  {"id": 2, "s": "é ☃"}
+] "str" 3
+''', 3000],
+] }, "big-first.json" = { repeat = [
+  ["[\n", 1], ["  {\"id\": 0, \"v\": [1, 2, 3]},\n", 200], ["  {}\n]\n", 1],
+  ['''{
+  "id": 4,
+  "actor": {"login": "bob"}
+}
+''', 5000],
+] } }
+variants = { p = ["-c", "{program}", "p.json"], bf = ["-c", "{program}", "big-first.json"], both = ["{program}", "p.json", "big-first.json"] }
+programs = [
+  ".",
+  ".id?",
+  "[.id?, input_line_number]",
+]
