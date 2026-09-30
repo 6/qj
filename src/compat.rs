@@ -181,41 +181,37 @@ pub enum Site {
 
 impl Site {
     /// The bytes of stack a level of this recursion costs, and the bytes
-    /// that are gone before it starts.
+    /// that are gone before any of them starts ([`RESERVED_BYTES`]).
     ///
     /// The frame bytes are exact: the deepest value jq survives is linear in
     /// `ulimit -s` with this slope, over every limit measured (1 MB to 16 MB).
-    /// The reserved bytes are what is left over, at the *worst* of the call
-    /// sites measured, plus a margin ([`STACK_MARGIN`]).
     const fn model(self) -> (u64, u64) {
         // macOS/arm64 (jq's release binary, built by Apple clang), bisected
         // with the programs in `docs/COMPATIBILITY.md` at `ulimit -s` 1024,
-        // 2048, 4096, 8176 and 16384 KB. `reserved` is
-        // `stack - (deepest + 1) * frame` at the worst call site, rounded up,
-        // plus STACK_MARGIN.
+        // 2048, 4096, 8176 and 16384 KB.
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let (frame, measured) = match self {
-            Site::Free => (64, 3520),
-            Site::Compare => (128, 4096),
-            Site::Contains => (176, 3840),
-            Site::Merge => (112, 3616),
-            Site::Setpath => (144, 3808),
-            Site::Delpaths => (240, 3664),
+        let frame = match self {
+            Site::Free => 64,
+            Site::Compare => 128,
+            Site::Contains => 176,
+            Site::Merge => 112,
+            Site::Setpath => 144,
+            Site::Delpaths => 240,
         };
         // Linux/x86-64 (jq's release binary, built by gcc), bisected the same
         // way at 1024, 4096, 8192 and 16384 KB with the stack randomization
         // off, so that the thresholds are deterministic; STACK_MARGIN then
         // covers the randomization.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let (frame, measured) = match self {
-            Site::Free => (48, 1856),
-            Site::Compare => (144, 3856),
-            Site::Contains => (176, 2128),
-            Site::Merge => (128, 2304),
-            Site::Setpath => (160, 2176),
-            Site::Delpaths => (240, 2224),
+        let frame = match self {
+            Site::Free => 48,
+            Site::Compare => 144,
+            Site::Contains => 176,
+            Site::Merge => 128,
+            Site::Setpath => 160,
+            Site::Delpaths => 240,
         };
-        (frame, measured + STACK_MARGIN)
+        (frame, RESERVED_BYTES)
     }
 
     /// How deep jq's recursion can go here before its stack runs out, in the
@@ -247,6 +243,26 @@ const STACK_MARGIN: u64 = 6144;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const STACK_MARGIN: u64 = 8384;
 
+/// Bytes of stack that are gone before any of these recursions starts: what
+/// the start of the stack takes where the bisections measured the most of it
+/// (`jv_cmp` from `sort`, 4,096 bytes on macOS and 3,856 on Linux), plus
+/// [`STACK_MARGIN`].
+///
+/// One number for every site, rather than each site's own measurement, so that
+/// a recursion jq drives from inside another ([`Descent`]) is charged the
+/// margin once. Charged twice it would run out where jq still has the margin's
+/// worth of stack, and qj would die where jq answers. The cost is that a site
+/// whose base is smaller than the worst one loses a few more levels: at most
+/// 576 bytes on macOS and 2,000 on Linux, which is 9 and 42 levels of
+/// `jv_free`.
+const RESERVED_BYTES: u64 = WORST_BASE_BYTES + STACK_MARGIN;
+
+/// The most any site's base cost measured (`jv_cmp` called from `sort_cmp`).
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const WORST_BASE_BYTES: u64 = 4096;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const WORST_BASE_BYTES: u64 = 3856;
+
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is
 /// the value's nesting depth plus one for the scalar at the bottom.
@@ -257,17 +273,17 @@ const STACK_MARGIN: u64 = 8384;
 ///
 /// | `ulimit -s` | deepest `n` jq survives | this model |
 /// |---|---:|---:|
-/// | 1024 KB | 16,328 | 16,232 |
-/// | 4096 KB | 65,480 | 65,384 |
-/// | 8176 KB (this machine's default) | 130,760 | 130,664 |
-/// | 16384 KB | 262,088 | 261,992 |
+/// | 1024 KB | 16,328 | 16,223 |
+/// | 4096 KB | 65,480 | 65,375 |
+/// | 8176 KB (this machine's default) | 130,760 | 130,655 |
+/// | 16384 KB | 262,088 | 261,983 |
 ///
 /// The threshold is exactly linear in the stack size, and the model sits
-/// [`STACK_MARGIN`] below it — 96 levels here — because argv and the
-/// environment sit on top of jq's stack and take about a level per 64 bytes:
-/// with an interactive shell's environment jq survives 130,664 at the default
-/// limit rather than 130,760. Erring short means qj never survives where jq
-/// dies.
+/// [`RESERVED_BYTES`] below it — 105 levels here, of which 96 are
+/// [`STACK_MARGIN`] — because argv and the environment sit on top of jq's
+/// stack and take about a level per 64 bytes: with an interactive shell's
+/// environment jq survives 130,664 at the default limit rather than 130,760.
+/// Erring short means qj never survives where jq dies.
 ///
 /// Which operation frees the value shifts jq's threshold by a frame or two
 /// as well (130,760 through a builtin such as `length`, 130,763 from
@@ -281,8 +297,8 @@ const STACK_MARGIN: u64 = 8384;
 /// threshold is 21,806 at 1024 KB, 87,342 at 4096 KB, 174,723 at 8192 KB and
 /// 349,486 at 16384 KB; sampling 10 runs per depth with it on, jq survived
 /// every run up to about 160 levels below that and no run above it. The model
-/// takes the whole 8 KB, so it lands at or below the bottom of that window
-/// (21,631 / 87,167 / 174,548 / 349,311): qj never survives where jq dies,
+/// takes the whole 8 KB, so it lands below the bottom of that window
+/// (21,589 / 87,125 / 174,506 / 349,269): qj never survives where jq dies,
 /// and inside the window it dies where jq only sometimes does.
 ///
 /// Other targets use the macOS model, unmeasured.
@@ -322,10 +338,7 @@ fn free_frames(items: &[Value]) -> u64 {
 /// doesn't, before any of the value is freed and with jq's buffered output
 /// lost.
 pub fn freeing_iteratively(items: &[Value], native_frames: u64) {
-    if !exactly_jq() {
-        return;
-    }
-    let Some(budget) = free_frame_budget() else {
+    let Some(budget) = budget_of(Site::Free) else {
         return;
     };
     if native_frames + free_frames(items) > budget {
@@ -337,8 +350,20 @@ pub fn freeing_iteratively(items: &[Value], native_frames: u64) {
 // The hooks: jq's other recursions
 // ---------------------------------------------------------------------------
 
-/// The budget of `site`, or `None` when nothing can overflow (compat mode is
-/// off, or the stack is unlimited).
+thread_local! {
+    /// Bytes of jq's stack an outer recursion is holding while an inner one
+    /// runs — see [`Descent`]. Zero except inside one.
+    static OUTER_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The budget of `site` here, or `None` when nothing can overflow (compat mode
+/// is off, or the stack is unlimited).
+///
+/// "Here" is what makes this different from [`Site::frame_budget`]: jq runs
+/// some of these recursions from inside another one (`delpaths_sorted` frees a
+/// value and compares path elements a level at a time, `jv_object_merge_
+/// recursive` frees the value it replaces), and the stack the outer one holds
+/// is gone from the inner one's budget.
 ///
 /// Inlined into every hook, so that a run that isn't compat mode does one
 /// load of the cached flag and nothing else.
@@ -347,7 +372,10 @@ fn budget_of(site: Site) -> Option<u64> {
     if !exactly_jq() {
         return None;
     }
-    site.frame_budget()
+    let bytes = stack_limit_bytes()?;
+    let (frame, reserved) = site.model();
+    let outer = OUTER_BYTES.with(std::cell::Cell::get);
+    Some(bytes.saturating_sub(reserved.saturating_add(outer)) / frame)
 }
 
 /// Hook for `src/jq/value/deep.rs`: `jv_equal(a, b)`.
@@ -395,26 +423,57 @@ pub fn merging(a: &Object, b: &Object) {
     }
 }
 
-/// A recursion qj walks with a loop, where jq recurses once per level: the
-/// budget, if compat mode can ever make it run out.
+/// A recursion qj walks with a loop, where jq recurses once per level.
 ///
 /// The caller counts its levels from 1, as the measurements do, and calls
-/// [`Descent::level`] before each one. `None` costs nothing per level.
-pub struct Descent(Option<u64>);
+/// [`Descent::at`] with the level it is working at, which dies when jq's stack
+/// would have run out — and records how much of the stack jq holds there, so
+/// that a recursion driven from inside this one (freeing a value, comparing
+/// two path elements) gets the smaller budget jq has left.
+///
+/// Outside compat mode it holds nothing and every call is a branch on `None`.
+pub struct Descent {
+    /// `(bytes a level, levels this recursion has)`, or `None` outside compat
+    /// mode and where jq cannot overflow.
+    model: Option<(u64, u64)>,
+    /// What an outer recursion was holding when this one started.
+    outer: u64,
+}
 
 impl Descent {
-    /// The budget of `site` in compat mode, else nothing.
+    /// jq is entering this recursion: work out its budget here.
     #[inline]
     pub fn new(site: Site) -> Descent {
-        Descent(budget_of(site))
+        let Some(budget) = budget_of(site) else {
+            return Descent {
+                model: None,
+                outer: 0,
+            };
+        };
+        Descent {
+            model: Some((site.model().0, budget)),
+            outer: OUTER_BYTES.with(std::cell::Cell::get),
+        }
     }
 
-    /// jq is about to enter frame number `level` of this recursion: die if
-    /// its stack has run out.
+    /// jq is `level` frames into this recursion: die if its stack has run out,
+    /// and leave the stack those frames hold to the recursions this level
+    /// drives.
     #[inline]
-    pub fn level(&self, level: u64) {
-        if self.0.is_some_and(|budget| level > budget) {
-            die_of_stack_overflow();
+    pub fn at(&self, level: u64) {
+        if let Some((frame, budget)) = self.model {
+            if level > budget {
+                die_of_stack_overflow();
+            }
+            OUTER_BYTES.with(|b| b.set(self.outer + level * frame));
+        }
+    }
+}
+
+impl Drop for Descent {
+    fn drop(&mut self) {
+        if self.model.is_some() {
+            OUTER_BYTES.with(|b| b.set(self.outer));
         }
     }
 }
@@ -443,66 +502,88 @@ mod tests {
     }
 
     /// Every site's model against the depths bisected from the jq 1.8.1
-    /// binary on macOS/arm64, at the worst of the call sites measured (see
-    /// `docs/COMPATIBILITY.md` for the programs and the full tables).
+    /// binary, at the worst of the call sites measured (see
+    /// `docs/COMPATIBILITY.md` for the programs and the full tables), with the
+    /// bytes each site's base cost measured.
     ///
-    /// The model is [`STACK_MARGIN`] short of jq, which is what keeps qj from
-    /// surviving where jq dies, so each row checks that it is short and by
-    /// how little.
-    #[test]
+    /// `(site, bytes a level, base bytes, deepest n jq survives at each of the
+    /// stack limits in [`LIMITS`])`.
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    fn stack_models_match_the_measurements() {
-        // (site, bytes a level, deepest n jq survives at 1024, 2048, 4096,
-        //  8176 and 16384 KB)
-        let jq: &[(Site, u64, [u64; 5])] = &[
-            (Site::Free, 64, [16_328, 32_712, 65_480, 130_760, 262_088]),
-            (Site::Compare, 128, [8_159, 16_351, 32_735, 65_375, 131_039]),
-            (Site::Contains, 176, [5_935, 11_893, 23_809, 47_547, 95_303]),
-            (Site::Merge, 112, [9_329, 18_692, 37_416, 74_719, 149_764]),
-            (Site::Setpath, 144, [7_255, 14_537, 29_101, 58_114, 116_481]),
-            (Site::Delpaths, 240, [4_353, 8_722, 17_460, 34_868, 69_889]),
-        ];
-        for &(site, frame, measured) in jq {
-            assert_eq!(site.model().0, frame, "{site:?}: bytes a level");
-            for (kb, jq) in [1024, 2048, 4096, 8176, 16384].iter().zip(measured) {
-                let model = deepest(site, *kb);
-                assert!(model <= jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
-                // Only the margin, and the rounding of one level, apart.
-                let short = (jq - model) * frame;
-                assert!(
-                    short >= STACK_MARGIN && short < STACK_MARGIN + 2 * frame,
-                    "{site:?} at {kb} KB: {model} is {short} B below jq's {jq}"
-                );
-            }
-        }
-    }
+    const LIMITS: &[u64] = &[1024, 2048, 4096, 8176, 16384];
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    const MEASURED: &[(Site, u64, u64, &[u64])] = &[
+        (
+            Site::Free,
+            64,
+            3520,
+            &[16_328, 32_712, 65_480, 130_760, 262_088],
+        ),
+        (
+            Site::Compare,
+            128,
+            4096,
+            &[8_159, 16_351, 32_735, 65_375, 131_039],
+        ),
+        (
+            Site::Contains,
+            176,
+            3840,
+            &[5_935, 11_893, 23_809, 47_547, 95_303],
+        ),
+        (
+            Site::Merge,
+            112,
+            3616,
+            &[9_329, 18_692, 37_416, 74_719, 149_764],
+        ),
+        (
+            Site::Setpath,
+            144,
+            3808,
+            &[7_255, 14_537, 29_101, 58_114, 116_481],
+        ),
+        (
+            Site::Delpaths,
+            240,
+            3664,
+            &[4_353, 8_722, 17_460, 34_868, 69_889],
+        ),
+    ];
 
-    /// On Linux/x86-64 the kernel's randomization of the initial stack
-    /// pointer moves jq's threshold from run to run (see
-    /// [`free_frame_budget`]), so the bisections switch it off and the models
-    /// sit a whole 8 KB below them: at or under the bottom of jq's window.
-    #[test]
+    /// On Linux/x86-64 the kernel's randomization of the initial stack pointer
+    /// moves jq's threshold from run to run (see [`free_frame_budget`]), so
+    /// the bisections switch it off (`setarch -R`) and [`STACK_MARGIN`] covers
+    /// the whole 8 KB: the models sit at or under the bottom of jq's window.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    const LIMITS: &[u64] = &[1024, 4096, 8192, 16384];
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    const MEASURED: &[(Site, u64, u64, &[u64])] = &[
+        (Site::Free, 48, 1856, &[21_806, 87_342, 174_723, 349_486]),
+        (Site::Compare, 144, 3856, &[7_254, 29_100, 58_227, 116_481]),
+        (Site::Contains, 176, 2128, &[5_945, 23_819, 47_650, 95_312]),
+        (Site::Merge, 128, 2304, &[8_173, 32_749, 65_517, 131_053]),
+        (Site::Setpath, 160, 2176, &[6_539, 26_200, 52_415, 104_843]),
+        (Site::Delpaths, 240, 2224, &[4_359, 17_466, 34_943, 69_895]),
+    ];
+
+    /// Each model is short of jq by the margin, plus what this site's base
+    /// cost is below the worst one, plus the rounding of a level — which is
+    /// what keeps qj from surviving where jq dies.
+    #[test]
     fn stack_models_match_the_measurements() {
-        // (site, bytes a level, deepest n jq survives at 1024, 4096, 8192 and
-        //  16384 KB with `setarch -R`)
-        let jq: &[(Site, u64, [u64; 4])] = &[
-            (Site::Free, 48, [21_806, 87_342, 174_723, 349_486]),
-            (Site::Compare, 144, [7_254, 29_100, 58_227, 116_481]),
-            (Site::Contains, 176, [5_945, 23_819, 47_650, 95_312]),
-            (Site::Merge, 128, [8_173, 32_749, 65_517, 131_053]),
-            (Site::Setpath, 160, [6_539, 26_200, 52_415, 104_843]),
-            (Site::Delpaths, 240, [4_359, 17_466, 34_943, 69_895]),
-        ];
-        for &(site, frame, measured) in jq {
+        for &(site, frame, base, measured) in MEASURED {
             assert_eq!(site.model().0, frame, "{site:?}: bytes a level");
-            for (kb, jq) in [1024, 4096, 8192, 16384].iter().zip(measured) {
+            assert!(base <= WORST_BASE_BYTES, "{site:?}: base above the worst");
+            let allowance = STACK_MARGIN + (WORST_BASE_BYTES - base);
+            for (kb, jq) in LIMITS.iter().zip(measured) {
                 let model = deepest(site, *kb);
-                assert!(model <= jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
+                assert!(model <= *jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
                 let short = (jq - model) * frame;
                 assert!(
-                    short >= STACK_MARGIN && short < STACK_MARGIN + 2 * frame,
-                    "{site:?} at {kb} KB: {model} is {short} B below jq's {jq}"
+                    short >= allowance && short < allowance + 2 * frame,
+                    "{site:?} at {kb} KB: {model} is {short} B below jq's {jq}, \
+                     not {allowance}..{}",
+                    allowance + 2 * frame
                 );
             }
         }

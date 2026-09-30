@@ -388,6 +388,51 @@ fn comparisons_that_jq_answers_without_recursing_do_not_crash() {
     }
 }
 
+/// jq compares path elements and frees values from inside `delpaths_sorted`,
+/// with the frames for the levels above still on the stack, so the same value
+/// kills it sooner the deeper the paths go. The depth that survives at the top
+/// level must die a thousand levels down.
+#[test]
+fn a_recursion_inside_another_gets_the_stack_that_is_left() {
+    let (Some(compare), Some(delpaths)) =
+        (Site::Compare.frame_budget(), Site::Delpaths.frame_budget())
+    else {
+        return;
+    };
+    // 1,000 `delpaths_sorted` frames cost this many levels of comparison.
+    let prefix = 1000;
+    assert!(prefix < delpaths / 2, "{prefix} levels should fit");
+    // Two paths that share a prefix of zeros and end in a deep value, so the
+    // comparison that groups them runs `prefix + 1` levels down. (Deleting a
+    // value at an array index is an error, which is what `catch` is for; jq
+    // compares the keys first.)
+    let program = |depth: u64| {
+        let v = deep(depth, false);
+        format!(
+            "({v}) as $a | ({v}) as $b | (reduce range({prefix}) as $i ([1]; [.])) as $v | $v \
+             | try delpaths([[range({prefix})|0] + [$a], [range({prefix})|0] + [$b]]) catch \"err\""
+        )
+    };
+    // Inside the comparison's own budget, and past what is left of it that far
+    // into `delpaths`: a `delpaths_sorted` frame costs more than a `jv_cmp`
+    // one, so `prefix` levels of it cost more than `prefix` levels of
+    // comparison.
+    let between = compare - prefix;
+    let deeper = run(true, &["-nc", &program(between)]);
+    assert_eq!(
+        signal(&deeper),
+        Some(libc::SIGSEGV),
+        "{:?} {}",
+        deeper.status,
+        stderr(&deeper)
+    );
+    // The same comparison at the top level answers.
+    let shallow = format!("({0}) as $a | ({0}) as $b | $a == $b", deep(between, false));
+    let o = run(true, &["-nc", &shallow]);
+    assert_eq!(code(&o), Some(0), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "true\n");
+}
+
 /// `jv_getpath` is jq's one path recursion that is a tail call, which both
 /// release compilers turn into a loop: no path is long enough to overflow it,
 /// however small the stack.

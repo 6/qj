@@ -46,14 +46,14 @@ statically):
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 36,254 | 36,243 |
-| **Total** | **39,157** | **39,146** |
+| qj's corpus | 36,259 | 36,248 |
+| **Total** | **39,162** | **39,151** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
 them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
 required is that qj not finish either. Across modes, the counts are 15,483 compact, 6,529
-pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,055 command-line cases. The
+pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,060 command-line cases. The
 command-line cases include some that merge stdout and stderr into one file or pipe,
 checking that output and error messages interleave exactly as jq's stdio buffering
 interleaves them, and some that start the tool with standard descriptors closed
@@ -233,12 +233,12 @@ On macOS/arm64, bisected against jq's release binary at `ulimit -s` 1024, 2048, 
 
 | site | bytes a level | deepest jq survives | qj, `QJ_JQ_COMPAT=1` |
 |---|--:|--:|--:|
-| `jv_free` | 64 | 130,760 | 130,664 |
+| `jv_free` | 64 | 130,760 | 130,655 |
 | `jv_equal` / `jv_cmp` | 128 | 65,375 | 65,327 |
-| `jv_contains` | 176 | 47,547 | 47,511 |
-| `jv_object_merge_recursive` | 112 | 74,719 | 74,664 |
-| `jv_setpath` | 144 | 58,114 | 58,070 |
-| `delpaths_sorted` | 240 | 34,868 | 34,842 |
+| `jv_contains` | 176 | 47,547 | 47,510 |
+| `jv_object_merge_recursive` | 112 | 74,719 | 74,659 |
+| `jv_setpath` | 144 | 58,114 | 58,068 |
+| `delpaths_sorted` | 240 | 34,868 | 34,840 |
 
 On Linux/x86-64 (jq's release binary, built by gcc), bisected at 1024, 4096, 8192 and
 16384 KB with the kernel's stack randomization off (`setarch -R`), which is what makes
@@ -246,15 +246,15 @@ the numbers repeatable. The last two columns are the 16 MB of GitHub's runners:
 
 | site | bytes a level | deepest jq survives | qj, `QJ_JQ_COMPAT=1` |
 |---|--:|--:|--:|
-| `jv_free` | 48 | 349,486 | 349,311 |
+| `jv_free` | 48 | 349,486 | 349,269 |
 | `jv_equal` / `jv_cmp` | 144 | 116,481 | 116,422 |
-| `jv_contains` | 176 | 95,312 | 95,264 |
-| `jv_object_merge_recursive` | 128 | 131,053 | 131,003 |
-| `jv_setpath` | 160 | 104,843 | 104,791 |
-| `delpaths_sorted` | 240 | 69,895 | 69,860 |
+| `jv_contains` | 176 | 95,312 | 95,254 |
+| `jv_object_merge_recursive` | 128 | 131,053 | 130,975 |
+| `jv_setpath` | 160 | 104,843 | 104,780 |
+| `delpaths_sorted` | 240 | 69,895 | 69,853 |
 
-The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is why qj's threshold is
-26 to 98 levels below jq's. What it covers is different on each:
+The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
+threshold is 28 to 217 levels below jq's. What it covers is different on each:
 
 - **macOS: the environment.** argv and the environment sit on top of jq's stack, so its
   threshold drops by about a level per 64 bytes of them — `jv_free` reaches 130,760 in
@@ -267,8 +267,17 @@ The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is why qj's thre
   The model takes the whole 8 KB, so it lands at or below the bottom of that window:
   inside it, qj dies where jq only sometimes does.
 
-Two smaller reasons the two can't agree to the last frame, both jq's:
+Three smaller reasons the two can't agree to the last frame:
 
+- **One reserve for every site.** jq drives some of these recursions from *inside*
+  another: `delpaths_sorted` compares path elements and frees values a level at a time,
+  and `jv_object_merge_recursive` frees the value it replaces. qj charges the inner
+  recursion the stack the outer one holds, so the same value kills it sooner the deeper
+  the paths go — two paths ending in a value 64,000 levels deep are compared fine at the
+  top and kill jq (and qj) a thousand `delpaths` levels down. For that to work the margin
+  has to be charged once, not once per recursion, so every site reserves what the *worst*
+  site's base cost measured (`jv_cmp` from `sort`) rather than its own. That costs the
+  other sites up to 576 bytes on macOS and 2,000 on Linux — 9 and 42 levels of `jv_free`.
 - which call site reaches the recursion shifts it by a frame or two — `jv_free` reaches
   130,760 through a builtin such as `length`, 130,763 from `main.c`'s output path and
   130,757 through `tojson`; `jv_cmp` 65,379 through `==` and 65,375 through `sort`. Each
@@ -301,8 +310,15 @@ of the values:
 `tests/compat_mode.rs` tests that size their depths from `ulimit -s`.
 
 The sites are independent, which is observable: at the default limit on macOS a value
-nested between 65,328 and 130,664 levels deep kills jq (and qj) while it is compared and
+nested between 65,328 and 130,655 levels deep kills jq (and qj) while it is compared and
 not while it is freed, so `$a == $b` dies where `$a | length` answers.
+
+The whole emulation is checked against the jq binary the same way it was measured: for
+every shape that drives one of the six recursions — 23 of them, from `==` to `bsearch` to
+`del` — the deepest value each tool survives is bisected at several stack limits, and
+qj's is never above jq's, and never more than the margin's worth of levels below it (28
+to 98 at 1 MB and 256 KB on macOS). Shapes where jq's traversal stops early agree at every
+depth.
 
 ## Numbers
 

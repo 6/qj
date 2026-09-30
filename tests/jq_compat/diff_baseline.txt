@@ -11226,11 +11226,14 @@ pass corpus/compat_mode.toml:contains-past-every-model:cli e83d29bb4f21
 pass corpus/compat_mode.toml:contains-shallow:cli 5931caf0022b
 pass corpus/compat_mode.toml:debug-timing-is-unknown:cli 1e9f2d59d52a
 pass corpus/compat_mode.toml:deep-input-hits-the-parser-limit:cli ca83b699c07f
+pass corpus/compat_mode.toml:deep-path-element-compared-inside-delpaths:cli 254b1a797614
 pass corpus/compat_mode.toml:deep-value-discarded:cli 426d24bd3cfc
 pass corpus/compat_mode.toml:deep-value-freed-by-a-builtin-past-16mb:cli 9e20405992ef
 pass corpus/compat_mode.toml:deep-value-freed-by-a-builtin:cli 187e7092a3ca
+pass corpus/compat_mode.toml:deep-value-freed-inside-delpaths:cli c86e470f58c9
 pass corpus/compat_mode.toml:deep-value-printed-past-16mb:cli 378a0cf611e1
 pass corpus/compat_mode.toml:deep-value-printed:cli 570d68c19572
+pass corpus/compat_mode.toml:deep-value-replaced-inside-a-merge:cli 83e9ba7366ed
 pass corpus/compat_mode.toml:delpaths-slice-error-still-errors:cli 76e30d5295f4
 pass corpus/compat_mode.toml:delpaths-still-works:cli 3ea739640717
 pass corpus/compat_mode.toml:delpaths-with-a-path-past-every-model:cli 29a55d6d3bf2
@@ -11276,6 +11279,8 @@ pass corpus/compat_mode.toml:run-tests-take-without-a-count:cli d34949d0f545
 pass corpus/compat_mode.toml:setpath-with-a-path-past-every-model:cli 248cad05e205
 pass corpus/compat_mode.toml:setpath-with-a-path-past-the-8mb-model:cli 4969d1b5393a
 pass corpus/compat_mode.toml:setpath-with-a-short-path:cli 4cf8488be421
+pass corpus/compat_mode.toml:shallow-path-element-compared-inside-delpaths:cli 9450bc181c5e
+pass corpus/compat_mode.toml:shallow-value-freed-inside-delpaths:cli f89b2a00d232
 pass corpus/compat_mode.toml:sort-past-every-model:cli 30ccc1c5a1c4
 pass corpus/compat_mode.toml:sort-shallow:cli 5b9f7fe228ec
 pass corpus/compat_mode.toml:sorting-one-value-with-itself-has-no-shortcut:cli e553bc768f30

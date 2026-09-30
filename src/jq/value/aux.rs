@@ -365,7 +365,7 @@ fn setpath_rec(root: Value, path: &[Value], value: Value) -> Result<Value, Error
     let mut parents: Vec<(Value, &Value)> = Vec::with_capacity(path.len());
     let mut cur = root;
     for (level, pathcurr) in path.iter().enumerate() {
-        descent.level(level as u64 + 1);
+        descent.at(level as u64 + 1);
         if matches!(pathcurr, Value::Object(_)) {
             // Assignment to slice -- dunno yet how to avoid the extra copy
             let sub = cur.get(pathcurr)?;
@@ -381,10 +381,13 @@ fn setpath_rec(root: Value, path: &[Value], value: Value) -> Result<Value, Error
         }
     }
     // The innermost call, the one that returns `value` for an empty path.
-    descent.level(path.len() as u64 + 1);
+    descent.at(path.len() as u64 + 1);
     let mut v = value;
     drop(cur);
     while let Some((parent, key)) = parents.pop() {
+        // jq stores each level's result on the way back out of the recursion,
+        // so its stack shrinks a frame at a time here.
+        descent.at(parents.len() as u64 + 1);
         v = parent.set(key, v)?;
     }
     Ok(v)
@@ -521,7 +524,7 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
     // QJ_JQ_COMPAT=1: jq recurses once per level of the paths it groups, and
     // dies when they go deeper than its C stack allows.
     let descent = crate::compat::Descent::new(crate::compat::Site::Delpaths);
-    descent.level(1);
+    descent.at(1);
     let mut stack = vec![Frame {
         object,
         paths,
@@ -532,6 +535,10 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
     }];
     let mut returned: Option<Value> = None;
     loop {
+        // Everything this level does — comparing path elements, deleting keys,
+        // storing a child's result — happens with jq's frames for the levels
+        // above it still on the stack.
+        descent.at(stack.len() as u64);
         let f = stack.last_mut().expect("a frame is active");
         if let Some((key, j)) = f.resume.take() {
             let newsubobject = returned.take().expect("child result");
@@ -588,7 +595,7 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
             break;
         }
         if let Some(child) = descend {
-            descent.level(stack.len() as u64 + 1);
+            descent.at(stack.len() as u64 + 1);
             stack.push(child);
             continue;
         }

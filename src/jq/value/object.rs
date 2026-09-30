@@ -351,6 +351,9 @@ impl Object {
             /// The key this frame's result is stored under in its parent.
             key: Option<Str>,
         }
+        // QJ_JQ_COMPAT=1: jq replaces a key's value at each level, freeing the
+        // old one with the frames above it still on the stack.
+        let descent = crate::compat::Descent::new(crate::compat::Site::Merge);
         let mut stack = vec![Frame {
             target: std::mem::take(self),
             other,
@@ -358,6 +361,7 @@ impl Object {
             key: None,
         }];
         loop {
+            descent.at(stack.len() as u64);
             let top = stack.last_mut().expect("a frame is active");
             if let Some((k, v)) = top.other.get_index(top.i) {
                 top.i += 1;
