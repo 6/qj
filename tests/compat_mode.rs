@@ -33,6 +33,33 @@ fn run(compat: bool, args: &[&str]) -> Output {
     run_in(Path::new("."), compat, args)
 }
 
+/// [`run_in`] with the child's `RLIMIT_STACK` set to `stack_kb`, so that a test
+/// can reach a stack-overflow threshold without a huge value or a huge chain of
+/// modules.
+///
+/// The limit is set by a shell rather than by `Command::pre_exec`, because
+/// Darwin refuses `setrlimit(RLIMIT_STACK)` in a process forked from a
+/// multi-threaded one (`EINVAL`), which every test harness is. `exec` keeps
+/// argv, so qj sees exactly the arguments below.
+fn run_stack(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Output {
+    let script = format!("ulimit -s {stack_kb}; ulimit -c 0; exec \"$0\" \"$@\"");
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(script)
+        .arg(env!("CARGO_BIN_EXE_qj"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if compat {
+        cmd.env(qj::compat::ENV_VAR, "1");
+    } else {
+        cmd.env_remove(qj::compat::ENV_VAR);
+    }
+    cmd.output().expect("failed to run qj")
+}
+
 fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
@@ -158,6 +185,97 @@ fn a_module_import_cycle_is_an_error_by_default_and_a_segfault_in_compat_mode() 
     assert_eq!(stderr(&compat), "");
 }
 
+/// A directory with `n` modules, each importing the next, and the program that
+/// enters the chain: `m0` imports `m1` … imports `m{n-1}`, which imports
+/// nothing. `f` is defined in every one of them, so the chain is also bound and
+/// referenced end to end.
+fn module_chain(n: u64) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for i in 0..n {
+        let body = if i + 1 < n {
+            format!("import \"m{}\" as m;\ndef f: 1;\n", i + 1)
+        } else {
+            "def f: 1;\n".to_string()
+        };
+        std::fs::write(dir.path().join(format!("m{i}.jq")), body).expect("write module");
+    }
+    (dir, "include \"m0\"; f".to_string())
+}
+
+/// A small stack, so that a chain long enough to reach jq's threshold is a few
+/// hundred modules rather than twenty thousand. qj's own recursion over one
+/// module's syntax needs far less than this.
+const SMALL_STACK_KB: u64 = 256;
+
+/// jq's `load_library` and `process_dependencies` call each other once per
+/// module, so a long enough chain of imports overflows its stack. qj links with
+/// a loop, so by default it answers however long the chain is — including
+/// chains far past the threshold where jq dies, and on a stack far too small
+/// for jq to get there.
+#[test]
+fn a_long_module_chain_works_by_default() {
+    let budget = Site::Modules.frame_budget_at(SMALL_STACK_KB * 1024, 0);
+    // Twice what jq could do on this stack, to show the loop has no threshold
+    // of its own.
+    for n in [1, 2, budget + budget / 2, budget * 2] {
+        let (dir, prog) = module_chain(n);
+        let o = run_stack(
+            dir.path(),
+            false,
+            SMALL_STACK_KB,
+            &["-nc", "-L", ".", &prog],
+        );
+        assert_eq!(code(&o), Some(0), "{n} modules: {}", stderr(&o));
+        assert_eq!(stdout(&o), "1\n", "{n} modules");
+    }
+    // And a long chain on the stack the test process has.
+    let (dir, prog) = module_chain(3000);
+    let o = run_in(dir.path(), false, &["-nc", "-L", ".", &prog]);
+    assert_eq!(code(&o), Some(0), "3000 modules: {}", stderr(&o));
+    assert_eq!(stdout(&o), "1\n");
+}
+
+/// In compat mode the same chain dies where jq's stack runs out: one module
+/// short of the budget answers, one past it is a `SIGSEGV`. Checked on the
+/// small stack, and at the stack the test process has.
+#[test]
+fn a_long_module_chain_segfaults_in_compat_mode() {
+    // Two small limits: enough to show the threshold follows `ulimit -s`, and
+    // short enough that the chains are hundreds of modules, not thousands.
+    for stack in [SMALL_STACK_KB * 1024, 1024 * 1024] {
+        let budget = Site::Modules.frame_budget_at(stack, 0);
+        assert!(
+            budget > 100,
+            "implausible module budget {budget} at {stack}"
+        );
+        // The chain runs `n` modules below `load_program`'s own frame, so the
+        // deepest chain that fits is `budget - 1`.
+        for (n, dies) in [(budget - 1, false), (budget, true)] {
+            let (dir, prog) = module_chain(n);
+            let args = &["-nc", "-L", ".", prog.as_str()];
+            let o = run_stack(dir.path(), true, stack / 1024, args);
+            if dies {
+                assert_eq!(
+                    signal(&o),
+                    Some(libc::SIGSEGV),
+                    "{n} modules at {stack} B: should crash ({:?}, {})",
+                    o.status,
+                    stderr(&o)
+                );
+                assert_eq!(stdout(&o), "", "{n} modules at {stack} B");
+            } else {
+                assert_eq!(
+                    code(&o),
+                    Some(0),
+                    "{n} modules at {stack} B: {}",
+                    stderr(&o)
+                );
+                assert_eq!(stdout(&o), "1\n", "{n} modules at {stack} B");
+            }
+        }
+    }
+}
+
 #[test]
 fn a_module_imported_twice_is_not_a_cycle() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -263,6 +381,8 @@ fn program(site: Site, n: u64) -> String {
             "({}) as $x | [$x] | delpaths([[0] + [range({n})|0]]) | length",
             deep(n + 2, false)
         ),
+        // A chain of imports needs files, so it has its own test.
+        Site::Modules => unreachable!("Site::Modules needs a module tree"),
     }
 }
 

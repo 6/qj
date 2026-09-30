@@ -7,6 +7,17 @@
 //! module that is a directory is "error loading data file", and a missing module
 //! stops the search at once (`process_dependencies` returns 1, whatever was
 //! reported before).
+//!
+//! # Depth
+//!
+//! jq's `load_library` and `process_dependencies` call each other, once per module
+//! in a chain of imports, so a long enough chain overflows its stack: about 416
+//! bytes a module, which is some 20,000 of them at the usual 8 MB. qj's frames are
+//! bigger (it parses the module inside them), so it used to die at about 7,700 —
+//! a crash where jq answers. [`process_dependencies`] is now the loop the two
+//! functions make, with their locals in [`Frame`]s, so the chain costs heap and
+//! qj handles every chain jq does and more. `QJ_JQ_COMPAT=1` dies at jq's depth
+//! instead ([`crate::compat::Site::Modules`]).
 
 use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
@@ -322,8 +333,63 @@ fn is_true(o: &Object, key: &str) -> bool {
     matches!(o.get(key), Some(Value::Bool(true)))
 }
 
+/// One `process_dependencies` call, with the `load_library` call that owns it:
+/// their locals, so that the two can run as a loop rather than by recursing
+/// (see the module docs).
+struct Frame {
+    /// `load_library`'s state for the module whose imports these are, or `None`
+    /// for the program `load_program` is linking.
+    module: Option<Module>,
+    /// jq's `bk`: the block whose imports these are. Binding a library
+    /// resolves names in its instructions and gives the same block back, so
+    /// this never changes — as in jq, where `bk` is never written back to
+    /// `*src_block`.
+    block: Block,
+    /// `lib_origin`: where to resolve these imports from.
+    lib_origin: Value,
+    /// The imports, in the order jq handles them: last first, because the
+    /// bindings go in reverse.
+    deps: Vec<Value>,
+    /// How many of `deps` are done.
+    next: usize,
+    /// `process_dependencies`' own error count.
+    nerrors: usize,
+    /// The import this frame is waiting for, and how to bind it.
+    pending: Option<Pending>,
+}
+
+/// `load_library`'s locals for a module whose imports are being processed.
+struct Module {
+    lib_path: String,
+    /// The parsed module: `block_bind_self` and `lib_state` get it once its
+    /// own imports are done.
+    program: Block,
+}
+
+/// The import a frame descended into, and how its definitions get bound when
+/// they come back.
+struct Pending {
+    as_str: Option<String>,
+}
+
+/// What the part of `load_library` before the recursion produced: either an
+/// answer, or a module whose imports have to be processed first.
+enum Loaded {
+    Done(usize, Block),
+    /// The module, its imports, and the origin to resolve them from.
+    Descend(Module, Vec<Value>, Value),
+}
+
 /// `process_dependencies`: resolves, loads and binds the imports at the start of
 /// `src_block` (removing them), last import first.
+///
+/// This is jq's `process_dependencies` and `load_library` as one loop over a
+/// stack of [`Frame`]s, in jq's order: a frame walks its imports last first;
+/// each one is either resolved from `lib_state`, loaded without recursing (a
+/// data import, or an error), or descended into, which suspends the frame until
+/// the module's own imports are done. A frame that runs out of imports is the
+/// `load_library` epilogue for its module: bind its definitions to each other,
+/// record it in `lib_state`, and hand its block to the frame that asked for it.
 fn process_dependencies(
     c: &mut Compiler,
     attrs: &JqAttrs,
@@ -332,103 +398,171 @@ fn process_dependencies(
     src_block: &mut Block,
     lib_state: &mut LibState,
 ) -> usize {
+    // QJ_JQ_COMPAT=1: jq recurses once per module, and dies when a chain is
+    // longer than its C stack allows.
+    let descent = crate::compat::Descent::new(crate::compat::Site::Modules);
+    // The imports come off the block before `bk` is taken from it, as in jq.
     let deps = c.block_take_imports(src_block);
-    let mut bk = *src_block;
-    let mut nerrors = 0;
-
-    // XXX This is a backward jv_array_foreach because bindings go in reverse
-    for dep in deps.iter().rev() {
-        let Value::Object(dep) = dep else {
-            continue;
-        };
-        let is_data = is_true(dep, "is_data");
-        let raw = is_true(dep, "raw");
-        let optional = is_true(dep, "optional");
-        let relpath = match dep.get("relpath") {
-            Some(Value::String(s)) => validate_relpath(s.as_str()),
-            _ => Err("Module path must be a string".into()),
-        };
-        let as_str = dep.get("as").and_then(|v| v.as_str()).map(str::to_string);
-        let search = default_search(attrs, dep.get("search"));
-
-        let resolved = find_lib(
-            attrs,
-            relpath,
-            &search,
-            if is_data { ".json" } else { ".jq" },
-            jq_origin,
-            lib_origin,
-        );
-        let resolved = match resolved {
-            Ok(r) => r,
-            Err(emsg) => {
-                if optional {
-                    continue;
-                }
-                c.report(format!("jq: error: {}\n", cstr(&emsg)));
-                return 1;
-            }
-        };
-
-        if is_data {
-            // Can't reuse data libs because the wrong name is bound
-            let (n, dep_def_block) = load_library(
-                c,
-                attrs,
-                resolved,
-                is_data,
-                raw,
-                optional,
-                as_str.as_deref(),
-                lib_state,
-            );
-            nerrors += n;
-            if nerrors == 0 {
-                // Bind as both $data::data and $data for backward compatibility vs
-                // common sense
-                bk = c.block_bind_library(dep_def_block, bk, OP_IS_CALL_PSEUDO, as_str.as_deref());
-                bk = c.block_bind_library(dep_def_block, bk, OP_IS_CALL_PSEUDO, None);
-            }
-        } else if let Some(idx) = lib_state.names.iter().position(|n| *n == resolved) {
-            // Bind the library to the program
-            let defs = lib_state.defs[idx];
-            bk = c.block_bind_library(defs, bk, OP_IS_CALL_PSEUDO, as_str.as_deref());
-        } else {
-            // Not found. Add it to the table before binding.
-            let (n, dep_def_block) = load_library(
-                c,
-                attrs,
-                resolved,
-                is_data,
-                raw,
-                optional,
-                as_str.as_deref(),
-                lib_state,
-            );
-            nerrors += n;
-            if nerrors == 0 {
-                // Bind the library to the program
-                bk = c.block_bind_library(dep_def_block, bk, OP_IS_CALL_PSEUDO, as_str.as_deref());
+    let mut stack = vec![Frame {
+        module: None,
+        block: *src_block,
+        lib_origin: lib_origin.clone(),
+        deps,
+        next: 0,
+        nerrors: 0,
+        pending: None,
+    }];
+    // The definitions of the module a frame just finished, for its parent.
+    let mut returned: Option<(usize, Block)> = None;
+    loop {
+        descent.at(stack.len() as u64);
+        let top = stack.len() - 1;
+        // Back from `load_library`: `nerrors += ...`, then bind.
+        if let Some((n, dep_def_block)) = returned.take() {
+            let Pending { as_str } = stack[top].pending.take().expect("a suspended frame");
+            stack[top].nerrors += n;
+            if stack[top].nerrors == 0 {
+                let bk = stack[top].block;
+                let as_ = as_str.as_deref();
+                stack[top].block = c.block_bind_library(dep_def_block, bk, OP_IS_CALL_PSEUDO, as_);
             }
         }
+
+        // XXX This is a backward jv_array_foreach because bindings go in reverse
+        let mut descend = None;
+        while stack[top].next < stack[top].deps.len() {
+            let i = stack[top].deps.len() - 1 - stack[top].next;
+            stack[top].next += 1;
+            let Value::Object(dep) = stack[top].deps[i].clone() else {
+                continue;
+            };
+            let is_data = is_true(&dep, "is_data");
+            let raw = is_true(&dep, "raw");
+            let optional = is_true(&dep, "optional");
+            let relpath = match dep.get("relpath") {
+                Some(Value::String(s)) => validate_relpath(s.as_str()),
+                _ => Err("Module path must be a string".into()),
+            };
+            let as_str = dep.get("as").and_then(|v| v.as_str()).map(str::to_string);
+            let search = default_search(attrs, dep.get("search"));
+
+            let resolved = find_lib(
+                attrs,
+                relpath,
+                &search,
+                if is_data { ".json" } else { ".jq" },
+                jq_origin,
+                &stack[top].lib_origin,
+            );
+            let resolved = match resolved {
+                Ok(r) => r,
+                Err(emsg) => {
+                    if optional {
+                        continue;
+                    }
+                    c.report(format!("jq: error: {}\n", cstr(&emsg)));
+                    // This frame returns 1, whatever it had counted before.
+                    stack[top].nerrors = usize::MAX;
+                    break;
+                }
+            };
+
+            // Can't reuse data libs because the wrong name is bound
+            let loaded = (!is_data)
+                .then(|| lib_state.names.iter().position(|n| *n == resolved))
+                .flatten();
+            if let Some(idx) = loaded {
+                // Bind the library to the program
+                let defs = lib_state.defs[idx];
+                let bk = stack[top].block;
+                stack[top].block =
+                    c.block_bind_library(defs, bk, OP_IS_CALL_PSEUDO, as_str.as_deref());
+                continue;
+            }
+            // Not found. Add it to the table before binding.
+            match load_library(
+                c,
+                resolved,
+                is_data,
+                raw,
+                optional,
+                as_str.as_deref(),
+                lib_state,
+            ) {
+                Loaded::Done(n, dep_def_block) => {
+                    stack[top].nerrors += n;
+                    if stack[top].nerrors == 0 {
+                        let bk = stack[top].block;
+                        let as_ = as_str.as_deref();
+                        stack[top].block =
+                            c.block_bind_library(dep_def_block, bk, OP_IS_CALL_PSEUDO, as_);
+                        if is_data {
+                            // Bind as both $data::data and $data for backward
+                            // compatibility vs common sense
+                            let bk = stack[top].block;
+                            stack[top].block =
+                                c.block_bind_library(dep_def_block, bk, OP_IS_CALL_PSEUDO, None);
+                        }
+                    }
+                }
+                Loaded::Descend(module, deps, origin) => {
+                    stack[top].pending = Some(Pending { as_str });
+                    descend = Some(Frame {
+                        block: module.program,
+                        module: Some(module),
+                        lib_origin: origin,
+                        deps,
+                        next: 0,
+                        nerrors: 0,
+                        pending: None,
+                    });
+                    break;
+                }
+            }
+        }
+        if let Some(child) = descend {
+            lib_state
+                .loading
+                .push(child.module.as_ref().expect("a module").lib_path.clone());
+            stack.push(child);
+            continue;
+        }
+
+        // This frame is done: the rest of `load_library`, for its module.
+        let frame = stack.pop().expect("a frame is active");
+        let mut nerrors = frame.nerrors;
+        if nerrors == usize::MAX {
+            nerrors = 1;
+        }
+        let Some(module) = frame.module else {
+            debug_assert!(stack.is_empty());
+            return nerrors;
+        };
+        lib_state.loading.pop();
+        let program = c.block_bind_self(module.program, OP_IS_CALL_PSEUDO);
+        lib_state.names.push(module.lib_path);
+        lib_state.defs.push(program);
+        returned = Some((nerrors, program));
     }
-    let _ = bk;
-    nerrors
 }
 
-/// `load_library`: loads the module (or data file) at `lib_path` into `lib_state`,
-/// returning the error count and its definitions.
-#[allow(clippy::too_many_arguments)]
+/// `load_library` up to its recursion: reads the file and, for a code module,
+/// parses it. A module with imports of its own comes back as
+/// [`Loaded::Descend`], for [`process_dependencies`] to go into; everything
+/// else is [`Loaded::Done`], with the error count and the definitions.
+///
+/// The module is recorded in `lib_state` by the caller, after its imports are
+/// loaded — which is why a module that imports itself makes jq recurse until
+/// its stack overflows.
 fn load_library(
     c: &mut Compiler,
-    attrs: &JqAttrs,
     lib_path: String,
     is_data: bool,
     raw: bool,
     optional: bool,
     as_: Option<&str>,
     lib_state: &mut LibState,
-) -> (usize, Block) {
+) -> Loaded {
     let mut nerrors = 0;
     // A module already being loaded is importing itself, directly or through
     // others; jq recurses here until its stack overflows.
@@ -440,7 +574,7 @@ fn load_library(
             "jq: error: {} imports itself (import cycle)\n",
             cstr(&lib_path)
         ));
-        return (1, Block::NOOP);
+        return Loaded::Done(1, Block::NOOP);
     }
     // `jv_load_file(path, 0)` parses JSON only for (non-raw) data imports.
     let data = load_file(cstr(&lib_path), !is_data || raw);
@@ -458,7 +592,8 @@ fn load_library(
                 ));
                 nerrors += 1;
             }
-            return (nerrors, Block::NOOP);
+            // jq's `goto out`: nothing is recorded in lib_state.
+            return Loaded::Done(nerrors, Block::NOOP);
         }
         // import "foo" as $bar;
         Ok(data) if is_data => c.gen_const_global(data, as_.unwrap_or("")),
@@ -470,30 +605,24 @@ fn load_library(
             };
             let lf = c.add_locfile(Rc::new(LocFile::new(&lib_path, &text)));
             match jq_parse_library(c, lf) {
+                // jq skips both the imports and block_bind_self when the
+                // module doesn't parse, but still records it.
                 Err(n) => {
                     nerrors += n;
                     Block::NOOP
                 }
-                Ok(mut program) => {
+                Ok(program) => {
+                    let mut program = program;
+                    let deps = c.block_take_imports(&mut program);
                     let lib_origin = Value::from(dirname(&lib_path));
-                    lib_state.loading.push(lib_path.clone());
-                    nerrors += process_dependencies(
-                        c,
-                        attrs,
-                        &attrs.jq_origin,
-                        &lib_origin,
-                        &mut program,
-                        lib_state,
-                    );
-                    lib_state.loading.pop();
-                    c.block_bind_self(program, OP_IS_CALL_PSEUDO)
+                    return Loaded::Descend(Module { lib_path, program }, deps, lib_origin);
                 }
             }
         }
     };
     lib_state.names.push(lib_path);
     lib_state.defs.push(program);
-    (nerrors, program)
+    Loaded::Done(nerrors, program)
 }
 
 /// `load_module_meta` (`modulemeta`): the module's metadata object plus `deps` (its
