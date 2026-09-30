@@ -58,7 +58,7 @@ struct TestLocale(libc::locale_t);
 
 impl Drop for TestLocale {
     fn drop(&mut self) {
-        // SAFETY: created by newlocale below.
+        // SAFETY: created by newlocale below, never null.
         unsafe { libc::freelocale(self.0) };
     }
 }
@@ -68,7 +68,10 @@ fn locale(name: &str) -> Option<TestLocale> {
     let name = CString::new(name).unwrap();
     // SAFETY: plain allocation.
     let loc = unsafe { libc::newlocale(libc::LC_ALL_MASK, name.as_ptr(), ptr::null_mut()) };
-    (!loc.is_null()).then_some(TestLocale(loc))
+    // Lazily: a `TestLocale(null)` built and dropped here would call
+    // `freelocale(NULL)`, which glibc doesn't allow (it segfaults), and most
+    // Linux systems lack the locales these tests ask for.
+    (!loc.is_null()).then(|| TestLocale(loc))
 }
 
 fn c_locale() -> TestLocale {
