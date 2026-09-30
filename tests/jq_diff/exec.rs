@@ -141,8 +141,19 @@ fn rss_bytes(_pid: u32) -> Option<u64> {
     None
 }
 
+/// Kill the child and everything it started. The child leads its own process
+/// group ([`run`] sets `process_group(0)`), so `killpg` reaches any helper it
+/// forked — e.g. `sh -c 'yes'` that outlived a plain `kill` and kept writing
+/// to a deleted merged tempfile, filling the disk. `Child::kill` as well, in
+/// case the group wasn't set.
 fn kill(child: &Mutex<Child>) {
     if let Ok(mut c) = child.lock() {
+        // SAFETY: killpg sends a signal to a process group; a negative or
+        // recycled pgid at worst signals nothing (the child is reaped only
+        // after the watchdog is joined, so its pid can't be reused yet).
+        unsafe {
+            libc::killpg(c.id() as libc::pid_t, libc::SIGKILL);
+        }
         let _ = c.kill();
     }
 }
@@ -206,6 +217,9 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
         .current_dir(spec.cwd)
         .env_clear()
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
+        // The child leads its own process group, so [`kill`] can `killpg`
+        // everything it starts (a `sh -c 'yes'` grandchild, a worker jq).
+        .process_group(0)
         .stdin(if spec.stdin.is_some() {
             Stdio::piped()
         } else {
