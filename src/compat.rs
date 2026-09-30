@@ -438,11 +438,12 @@ const COMPILE_BASE_BYTES: u64 = 1856;
 /// jq survives is 113 at 32 KB of stack, 177 at 48 KB and 241 at 64 KB, which
 /// is 256 bytes a level over a base of 3,584. (The steps are 16 KB because
 /// that is the page size on arm64 macOS, which `RLIMIT_STACK` is rounded up
-/// to.)
+/// to.) On Linux it is 304 bytes a level over a base of 1,696: 101 levels at
+/// 32 KB, 155 at 48 KB, 209 at 64 KB and 235 at 72 KB.
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const PRINT_BASE_BYTES: u64 = 3584;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const PRINT_BASE_BYTES: u64 = 4432;
+const PRINT_BASE_BYTES: u64 = 1696;
 
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is

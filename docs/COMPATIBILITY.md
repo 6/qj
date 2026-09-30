@@ -274,7 +274,7 @@ which run inside `yyparse` — 5,616 bytes of arrays on macOS, 5,696 on Linux �
 | `load_library` (modules) | 12,000 / 8,304 | `find_lib`, the file, and `yyparse`'s arrays for the module |
 | `block_bind_subblock_inner` | 8,976 / 7,536 | `load_program` → `jq_parse` → `yyparse` → the action |
 | `compile` / `expand_call_arglist` | 3,552 / 1,856 | `jq_compile_args` → `block_compile` |
-| `jv_dump_term` | 3,584 / 4,432 | `main`'s output path |
+| `jv_dump_term` | 3,584 / 1,696 | `main`'s output path |
 
 On macOS/arm64, bisected against jq's release binary at `ulimit -s` 1024, 2048, 4096,
 8176 and 16384 KB (the compiler's sites at 128, 256, 384, 512, 576, 1024 and 2048 KB, and
@@ -311,8 +311,8 @@ in brackets:
 | `delpaths_sorted` | 240 | 69,895 | 69,852 |
 | `load_library` (modules) | 464 | 36,139 | 36,117 |
 | `block_bind_subblock_inner` (nested `select`, at 256 KB) | 112 | 1,136 | 1,099 |
-| `compile` (nested `def`, at 256 KB) | 224 | 1,160 | 1,122 |
-| `jv_dump_term` (at 64 KB) | 304 | (measured on CI) | |
+| `compile` (nested `def`, at 256 KB) | 224 | 1,160 | 1,113 |
+| `jv_dump_term` (at 64 KB) | 304 | 209 | 181 |
 
 The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
 threshold is 29 to 218 levels below jq's. What it covers is different on each:
