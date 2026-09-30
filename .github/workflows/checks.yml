@@ -58,10 +58,30 @@ jobs:
       - name: Compat suites
         if: matrix.os == 'ubuntu-24.04'
         run: |
-          # Strict differential run against jq 1.8.1, ratcheting against
-          # tests/jq_compat/diff_baseline_linux.txt. After a fix, record the
-          # gains from the jq-diff-linux artifact's baseline_candidate.txt.
+          # Strict differential runs against jq 1.8.1, both scoreboards: qj as
+          # it is (ratcheting against tests/jq_compat/diff_baseline_linux.txt)
+          # and QJ_JQ_COMPAT=1 with nothing normalized (against
+          # diff_baseline_compat_linux.txt). After a fix, record the gains
+          # from the jq-diff-linux artifact's baseline_candidate.txt files.
           JQ_DIFF_JQ="$(mise which jq)" cargo test --release jq_diff -- --ignored
+
+      - name: Compat scoreboard (macOS)
+        if: matrix.os == 'macos-26'
+        run: |
+          # QJ_JQ_COMPAT=1 against jq's macOS release binary, nothing
+          # normalized, ratcheting against tests/jq_compat/diff_baseline_compat.txt.
+          JQ_DIFF_JQ="$(mise which jq)" cargo test --release jq_diff_compat -- --ignored
+
+      - name: Upload jq_diff results (macOS)
+        if: always() && matrix.os == 'macos-26'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jq-diff-compat-macos
+          path: |
+            target/tmp/jq_diff/compat/report.txt
+            target/tmp/jq_diff/compat/results.tsv
+            target/tmp/jq_diff/compat/baseline_candidate.txt
+          if-no-files-found: ignore
 
       - name: Upload jq_diff results
         if: always() && matrix.os == 'ubuntu-24.04'
@@ -72,6 +92,9 @@ jobs:
             target/tmp/jq_diff/report.txt
             target/tmp/jq_diff/results.tsv
             target/tmp/jq_diff/baseline_candidate.txt
+            target/tmp/jq_diff/compat/report.txt
+            target/tmp/jq_diff/compat/results.tsv
+            target/tmp/jq_diff/compat/baseline_candidate.txt
           if-no-files-found: ignore
 
       - name: Check benchmarks compile

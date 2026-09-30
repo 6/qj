@@ -24,7 +24,7 @@ pub struct Header {
     pub max_rss: u64,
 }
 
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheFile {

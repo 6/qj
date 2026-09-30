@@ -78,8 +78,9 @@ pub struct Invocation {
 
 impl Invocation {
     /// Cache key: everything that can influence the tool's behavior, apart
-    /// from the global state covered by the cache header.
-    pub fn key(&self, extra_env: &[(String, String)]) -> String {
+    /// from the global state covered by the cache header. `arg0` is the
+    /// scoreboard's `argv[0]`, when it isn't the binary's path.
+    pub fn key(&self, extra_env: &[(String, String)], arg0: Option<&str>) -> String {
         let mut h = Fnv128::new();
         h.str("jq_diff-invocation-v1");
         h.field(&(self.args.len() as u64).to_le_bytes());
@@ -103,6 +104,9 @@ impl Invocation {
         }
         for fd in &self.close_fds {
             h.str("close_fd").str(&fd.to_string());
+        }
+        if let Some(arg0) = arg0 {
+            h.str("arg0").str(arg0);
         }
         h.hex()
     }
@@ -478,22 +482,23 @@ mod tests {
             merge: Merge::No,
             close_fds: Vec::new(),
         };
-        let k = inv.key(&[]);
+        let k = inv.key(&[], None);
         let mut other = inv.clone();
         other.stdin = None;
-        assert_ne!(k, other.key(&[]));
+        assert_ne!(k, other.key(&[], None));
         let mut other = inv.clone();
         other.args = vec!["-c .".into()];
-        assert_ne!(k, other.key(&[]));
-        assert_ne!(k, inv.key(&[("QJ_CORE".into(), "old".into())]));
+        assert_ne!(k, other.key(&[], None));
+        assert_ne!(k, inv.key(&[("QJ_CORE".into(), "old".into())], None));
         let mut other = inv.clone();
         other.files = vec![("in/x".into(), b"1".to_vec())];
-        assert_ne!(k, other.key(&[]));
+        assert_ne!(k, other.key(&[], None));
         for merge in [Merge::File, Merge::Pipe] {
             let mut other = inv.clone();
             other.merge = merge;
-            assert_ne!(k, other.key(&[]));
+            assert_ne!(k, other.key(&[], None));
         }
-        assert_eq!(k, inv.clone().key(&[]));
+        assert_ne!(k, inv.key(&[], Some("jq")));
+        assert_eq!(k, inv.clone().key(&[], None));
     }
 }

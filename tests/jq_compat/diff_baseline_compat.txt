@@ -11214,10 +11214,16 @@ pass corpus/cli_io.toml:trace-error:cli 3f230a18607b
 pass corpus/cli_io.toml:trace-input:cli abefae74dcd7
 pass corpus/cli_io.toml:trace:cli f7e6a07fdf0f
 pass corpus/cli_io.toml:unbuffered:cli 840f7d5decab
+pass corpus/cli_meta.toml:help-before-unknown-option:cli 4c83e04e9e9a
+pass corpus/cli_meta.toml:help-in-bundle:cli a744326df58b
+pass corpus/cli_meta.toml:help-long:cli 3d06dc9dd7c9
+pass corpus/cli_meta.toml:help-short:cli 9058f358510c
 pass corpus/cli_meta.toml:unknown-short-option:cli 443e2590b560
-stdout corpus/cli_meta.toml:usage-from-file-without-program:cli 45b4910d97b2
+pass corpus/cli_meta.toml:usage-from-file-without-program:cli 45b4910d97b2
 pass corpus/cli_meta.toml:usage-no-args:cli 415c8cf51fea
 pass corpus/cli_meta.toml:usage-no-program-with-stdin:cli 84218da9c76f
+pass corpus/cli_meta.toml:version-ignores-jq-colors:cli 38e79c0eac87
+pass corpus/cli_meta.toml:version:cli b641fb5865a7
 pass corpus/compat_mode.toml:a-file-really-called-star-json:cli 06921205b523
 pass corpus/compat_mode.toml:array-subtraction-past-the-8mb-comparison-model:cli 7319cd5dd48c
 pass corpus/compat_mode.toml:assignment-through-a-path-past-every-model:cli d9cba6f4ae7b
