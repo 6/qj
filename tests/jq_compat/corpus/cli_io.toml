@@ -715,7 +715,7 @@ files = { "nul-only" = { b64 = "AA==" }, "nul-lead" = { b64 = "AGMA" }, "nul-lea
 
 [[sweep]]
 name = "file.long4094.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "long4094"] }
 files = { "long4094" = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] } }
 
@@ -805,7 +805,7 @@ files = { "long4094" = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] } }
 
 [[sweep]]
 name = "stdin.long4094.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] }
 
@@ -847,7 +847,7 @@ stdin = { repeat = [["\"", 1], ["a", 4092], ["\"\n", 1]] }
 
 [[sweep]]
 name = "file.long4095.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "long4095"] }
 files = { "long4095" = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] } }
 
@@ -937,7 +937,7 @@ files = { "long4095" = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] } }
 
 [[sweep]]
 name = "stdin.long4095.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] }
 
@@ -979,7 +979,7 @@ stdin = { repeat = [["\"", 1], ["a", 4093], ["\"\n", 1]] }
 
 [[sweep]]
 name = "file.long4096.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "long4096"] }
 files = { "long4096" = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] } }
 
@@ -1069,7 +1069,7 @@ files = { "long4096" = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] } }
 
 [[sweep]]
 name = "stdin.long4096.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] }
 
@@ -1111,7 +1111,7 @@ stdin = { repeat = [["\"", 1], ["a", 4094], ["\"\n", 1]] }
 
 [[sweep]]
 name = "file.long8191.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "long8191"] }
 files = { "long8191" = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] } }
 
@@ -1201,7 +1201,7 @@ files = { "long8191" = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] } }
 
 [[sweep]]
 name = "stdin.long8191.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] }
 
@@ -1243,7 +1243,7 @@ stdin = { repeat = [["\"", 1], ["a", 8189], ["\"\n", 1]] }
 
 [[sweep]]
 name = "file.long4095-nonl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "long4095-nonl"] }
 files = { "long4095-nonl" = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] } }
 
@@ -1333,7 +1333,7 @@ files = { "long4095-nonl" = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] } }
 
 [[sweep]]
 name = "stdin.long4095-nonl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] }
 
@@ -1375,7 +1375,7 @@ stdin = { repeat = [["\"", 1], ["a", 4093], ["\"", 1]] }
 
 [[sweep]]
 name = "file.long4096-nonl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "long4096-nonl"] }
 files = { "long4096-nonl" = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] } }
 
@@ -1465,7 +1465,7 @@ files = { "long4096-nonl" = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] } }
 
 [[sweep]]
 name = "stdin.long4096-nonl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] }
 
@@ -1507,7 +1507,7 @@ stdin = { repeat = [["\"", 1], ["a", 4094], ["\"", 1]] }
 
 [[sweep]]
 name = "file.straddle.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "straddle"] }
 files = { "straddle" = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] } }
 
@@ -1597,7 +1597,7 @@ files = { "straddle" = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] } 
 
 [[sweep]]
 name = "stdin.straddle.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] }
 
@@ -1639,7 +1639,7 @@ stdin = { repeat = [["\"", 1], ["a", 4093], ["é€b\"\n", 1]] }
 
 [[sweep]]
 name = "file.straddle-raw.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "straddle-raw"] }
 files = { "straddle-raw" = { repeat = [["a", 4094], ["€\n", 1]] } }
 
@@ -1729,7 +1729,7 @@ files = { "straddle-raw" = { repeat = [["a", 4094], ["€\n", 1]] } }
 
 [[sweep]]
 name = "stdin.straddle-raw.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["a", 4094], ["€\n", 1]] }
 
@@ -1771,7 +1771,7 @@ stdin = { repeat = [["a", 4094], ["€\n", 1]] }
 
 [[sweep]]
 name = "file.array-4095.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "array-4095"] }
 files = { "array-4095" = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] } }
 
@@ -1861,7 +1861,7 @@ files = { "array-4095" = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] } }
 
 [[sweep]]
 name = "stdin.array-4095.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] }
 
@@ -1903,7 +1903,7 @@ stdin = { repeat = [["[", 1], ["1,", 2046], ["1]\n", 1]] }
 
 [[sweep]]
 name = "file.nul-nonl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "nul-nonl"] }
 files = { "nul-nonl" = { b64 = "MSAyADMgNA==" } }
 
@@ -1993,7 +1993,7 @@ files = { "nul-nonl" = { b64 = "MSAyADMgNA==" } }
 
 [[sweep]]
 name = "stdin.nul-nonl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "MSAyADMgNA==" }
 
@@ -2035,7 +2035,7 @@ stdin = { b64 = "MSAyADMgNA==" }
 
 [[sweep]]
 name = "file.nul-nl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "nul-nl"] }
 files = { "nul-nl" = { b64 = "MSAyADMgNAo1Cg==" } }
 
@@ -2125,7 +2125,7 @@ files = { "nul-nl" = { b64 = "MSAyADMgNAo1Cg==" } }
 
 [[sweep]]
 name = "stdin.nul-nl.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "MSAyADMgNAo1Cg==" }
 
@@ -2167,7 +2167,7 @@ stdin = { b64 = "MSAyADMgNAo1Cg==" }
 
 [[sweep]]
 name = "file.nul-end.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "nul-end"] }
 files = { "nul-end" = { b64 = "WzEsMl0A" } }
 
@@ -2257,7 +2257,7 @@ files = { "nul-end" = { b64 = "WzEsMl0A" } }
 
 [[sweep]]
 name = "stdin.nul-end.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "WzEsMl0A" }
 
@@ -2299,7 +2299,7 @@ stdin = { b64 = "WzEsMl0A" }
 
 [[sweep]]
 name = "file.nul-raw.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "nul-raw"] }
 files = { "nul-raw" = { b64 = "YQBiCmMAZA==" } }
 
@@ -2389,7 +2389,7 @@ files = { "nul-raw" = { b64 = "YQBiCmMAZA==" } }
 
 [[sweep]]
 name = "stdin.nul-raw.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "YQBiCmMAZA==" }
 
@@ -2431,7 +2431,7 @@ stdin = { b64 = "YQBiCmMAZA==" }
 
 [[sweep]]
 name = "file.bom.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "bom"] }
 files = { "bom" = { b64 = "77u/eyJhIjoxfQoyCg==" } }
 
@@ -2521,7 +2521,7 @@ files = { "bom" = { b64 = "77u/eyJhIjoxfQoyCg==" } }
 
 [[sweep]]
 name = "stdin.bom.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "77u/eyJhIjoxfQoyCg==" }
 
@@ -2563,7 +2563,7 @@ stdin = { b64 = "77u/eyJhIjoxfQoyCg==" }
 
 [[sweep]]
 name = "file.bad-bom.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "bad-bom"] }
 files = { "bad-bom" = { b64 = "77t7ImEiOjF9Cg==" } }
 
@@ -2653,7 +2653,7 @@ files = { "bad-bom" = { b64 = "77t7ImEiOjF9Cg==" } }
 
 [[sweep]]
 name = "stdin.bad-bom.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "77t7ImEiOjF9Cg==" }
 
@@ -2695,7 +2695,7 @@ stdin = { b64 = "77t7ImEiOjF9Cg==" }
 
 [[sweep]]
 name = "file.bad-utf8.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "bad-utf8"] }
 files = { "bad-utf8" = { b64 = "Iv/+Igoi4oIiCg==" } }
 
@@ -2785,7 +2785,7 @@ files = { "bad-utf8" = { b64 = "Iv/+Igoi4oIiCg==" } }
 
 [[sweep]]
 name = "stdin.bad-utf8.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "Iv/+Igoi4oIiCg==" }
 
@@ -2827,7 +2827,7 @@ stdin = { b64 = "Iv/+Igoi4oIiCg==" }
 
 [[sweep]]
 name = "file.bad-utf8-raw.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "bad-utf8-raw"] }
 files = { "bad-utf8-raw" = { b64 = "YWL/Y2QK4oIK" } }
 
@@ -2917,7 +2917,7 @@ files = { "bad-utf8-raw" = { b64 = "YWL/Y2QK4oIK" } }
 
 [[sweep]]
 name = "stdin.bad-utf8-raw.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "YWL/Y2QK4oIK" }
 
@@ -2959,7 +2959,7 @@ stdin = { b64 = "YWL/Y2QK4oIK" }
 
 [[sweep]]
 name = "file.num-eof.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "num-eof"] }
 files = { "num-eof" = "123" }
 
@@ -3049,7 +3049,7 @@ files = { "num-eof" = "123" }
 
 [[sweep]]
 name = "stdin.num-eof.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "123"
 
@@ -3091,7 +3091,7 @@ stdin = "123"
 
 [[sweep]]
 name = "file.num-eof-ws.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "num-eof-ws"] }
 files = { "num-eof-ws" = "123 " }
 
@@ -3181,7 +3181,7 @@ files = { "num-eof-ws" = "123 " }
 
 [[sweep]]
 name = "stdin.num-eof-ws.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "123 "
 
@@ -3223,7 +3223,7 @@ stdin = "123 "
 
 [[sweep]]
 name = "file.empty.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "empty"] }
 files = { "empty" = "" }
 
@@ -3313,7 +3313,7 @@ files = { "empty" = "" }
 
 [[sweep]]
 name = "stdin.empty.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = ""
 
@@ -3355,7 +3355,7 @@ stdin = ""
 
 [[sweep]]
 name = "file.ws-only.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "ws-only"] }
 files = { "ws-only" = "  \n\n " }
 
@@ -3445,7 +3445,7 @@ files = { "ws-only" = "  \n\n " }
 
 [[sweep]]
 name = "stdin.ws-only.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "  \n\n "
 
@@ -3487,7 +3487,7 @@ stdin = "  \n\n "
 
 [[sweep]]
 name = "file.crlf.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "crlf"] }
 files = { "crlf" = "a\r\nb\r\n" }
 
@@ -3577,7 +3577,7 @@ files = { "crlf" = "a\r\nb\r\n" }
 
 [[sweep]]
 name = "stdin.crlf.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "a\r\nb\r\n"
 
@@ -3619,7 +3619,7 @@ stdin = "a\r\nb\r\n"
 
 [[sweep]]
 name = "file.multi-line-value.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "multi-line-value"] }
 files = { "multi-line-value" = "1\n2\n{\"a\":\n3\n}\n4\n" }
 
@@ -3709,7 +3709,7 @@ files = { "multi-line-value" = "1\n2\n{\"a\":\n3\n}\n4\n" }
 
 [[sweep]]
 name = "stdin.multi-line-value.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "1\n2\n{\"a\":\n3\n}\n4\n"
 
@@ -3751,7 +3751,7 @@ stdin = "1\n2\n{\"a\":\n3\n}\n4\n"
 
 [[sweep]]
 name = "file.error-mid-line.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "error-mid-line"] }
 files = { "error-mid-line" = "1 2 } 3 4\n5\n" }
 
@@ -3841,7 +3841,7 @@ files = { "error-mid-line" = "1 2 } 3 4\n5\n" }
 
 [[sweep]]
 name = "stdin.error-mid-line.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "1 2 } 3 4\n5\n"
 
@@ -3883,7 +3883,7 @@ stdin = "1 2 } 3 4\n5\n"
 
 [[sweep]]
 name = "file.error-then-lines.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "error-then-lines"] }
 files = { "error-then-lines" = "[1,\n}\n[2]\n\"x\n3\n" }
 
@@ -3973,7 +3973,7 @@ files = { "error-then-lines" = "[1,\n}\n[2]\n\"x\n3\n" }
 
 [[sweep]]
 name = "stdin.error-then-lines.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "[1,\n}\n[2]\n\"x\n3\n"
 
@@ -4015,7 +4015,7 @@ stdin = "[1,\n}\n[2]\n\"x\n3\n"
 
 [[sweep]]
 name = "file.unterminated.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "unterminated"] }
 files = { "unterminated" = "{\"a\":[1,2" }
 
@@ -4105,7 +4105,7 @@ files = { "unterminated" = "{\"a\":[1,2" }
 
 [[sweep]]
 name = "stdin.unterminated.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "{\"a\":[1,2"
 
@@ -4147,7 +4147,7 @@ stdin = "{\"a\":[1,2"
 
 [[sweep]]
 name = "file.seq.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "seq"] }
 files = { "seq" = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" } }
 
@@ -4237,7 +4237,7 @@ files = { "seq" = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" } }
 
 [[sweep]]
 name = "stdin.seq.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" }
 
@@ -4279,7 +4279,7 @@ stdin = { b64 = "HjEKHlsyXQoeeyJhIjozfQo=" }
 
 [[sweep]]
 name = "file.seq-bad.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "seq-bad"] }
 files = { "seq-bad" = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" } }
 
@@ -4369,7 +4369,7 @@ files = { "seq-bad" = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" } }
 
 [[sweep]]
 name = "stdin.seq-bad.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" }
 
@@ -4411,7 +4411,7 @@ stdin = { b64 = "HjEKHlsyCh57ImEiOjN9Ch40" }
 
 [[sweep]]
 name = "file.seq-bad-object.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "seq-bad-object"] }
 files = { "seq-bad-object" = { b64 = "HjEKHlsyfQoeMwo=" } }
 
@@ -4501,7 +4501,7 @@ files = { "seq-bad-object" = { b64 = "HjEKHlsyfQoeMwo=" } }
 
 [[sweep]]
 name = "stdin.seq-bad-object.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "HjEKHlsyfQoeMwo=" }
 
@@ -4543,7 +4543,7 @@ stdin = { b64 = "HjEKHlsyfQoeMwo=" }
 
 [[sweep]]
 name = "file.seq-trunc.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "seq-trunc"] }
 files = { "seq-trunc" = { b64 = "HjEyMw==" } }
 
@@ -4633,7 +4633,7 @@ files = { "seq-trunc" = { b64 = "HjEyMw==" } }
 
 [[sweep]]
 name = "stdin.seq-trunc.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { b64 = "HjEyMw==" }
 
@@ -4675,7 +4675,7 @@ stdin = { b64 = "HjEyMw==" }
 
 [[sweep]]
 name = "file.seq-no-rs.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "seq-no-rs"] }
 files = { "seq-no-rs" = "1 2\n" }
 
@@ -4765,7 +4765,7 @@ files = { "seq-no-rs" = "1 2\n" }
 
 [[sweep]]
 name = "stdin.seq-no-rs.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "1 2\n"
 
@@ -4807,7 +4807,7 @@ stdin = "1 2\n"
 
 [[sweep]]
 name = "file.seq-long.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "seq-long"] }
 files = { "seq-long" = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x", 1], ["y", 5000], ["\n\u001e5\n", 1]] } }
 
@@ -4897,7 +4897,7 @@ files = { "seq-long" = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x
 
 [[sweep]]
 name = "stdin.seq-long.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x", 1], ["y", 5000], ["\n\u001e5\n", 1]] }
 
@@ -4939,7 +4939,7 @@ stdin = { repeat = [["\u001e[", 1], ["1,", 3000], ["1]\n\u001e\"x", 1], ["y", 50
 
 [[sweep]]
 name = "file.stream-bad.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "stream-bad"] }
 files = { "stream-bad" = "[1,{\"a\":2},[3]\n" }
 
@@ -5029,7 +5029,7 @@ files = { "stream-bad" = "[1,{\"a\":2},[3]\n" }
 
 [[sweep]]
 name = "stdin.stream-bad.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "[1,{\"a\":2},[3]\n"
 
@@ -5071,7 +5071,7 @@ stdin = "[1,{\"a\":2},[3]\n"
 
 [[sweep]]
 name = "file.stream-ok.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "stream-ok"] }
 files = { "stream-ok" = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n" }
 
@@ -5161,7 +5161,7 @@ files = { "stream-ok" = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n" }
 
 [[sweep]]
 name = "stdin.stream-ok.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n"
 
@@ -5203,7 +5203,7 @@ stdin = "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}\n[]\n{}\n3\n"
 
 [[sweep]]
 name = "file.stream-long-error.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "stream-long-error"] }
 files = { "stream-long-error" = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n", 1]] } }
 
@@ -5293,7 +5293,7 @@ files = { "stream-long-error" = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n"
 
 [[sweep]]
 name = "stdin.stream-long-error.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n", 1]] }
 
@@ -5335,7 +5335,7 @@ stdin = { repeat = [["[", 1], ["1,", 3000], ["x]\n[5]\n", 1]] }
 
 [[sweep]]
 name = "file.deep.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "deep"] }
 files = { "deep" = { repeat = [["[", 300], ["]", 300], ["\n", 1]] } }
 
@@ -5425,7 +5425,7 @@ files = { "deep" = { repeat = [["[", 300], ["]", 300], ["\n", 1]] } }
 
 [[sweep]]
 name = "stdin.deep.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = { repeat = [["[", 300], ["]", 300], ["\n", 1]] }
 
@@ -5467,7 +5467,7 @@ stdin = { repeat = [["[", 300], ["]", 300], ["\n", 1]] }
 
 [[sweep]]
 name = "file.strings.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { f = ["-c", "{program}", "strings"] }
 files = { "strings" = "\"a\" \"b\\u0000c\" \"d\"\n" }
 
@@ -5557,7 +5557,7 @@ files = { "strings" = "\"a\" \"b\\u0000c\" \"d\"\n" }
 
 [[sweep]]
 name = "stdin.strings.c"
-programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]"]
+programs = [".", "[., input_filename, input_line_number]", "[., (try input catch \"E\")]", "type"]
 variants = { s = ["-c", "{program}"] }
 stdin = "\"a\" \"b\\u0000c\" \"d\"\n"
 

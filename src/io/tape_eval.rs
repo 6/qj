@@ -2,19 +2,19 @@
 //!
 //! A program made only of paths (`.a.b`, `."a"`, `.["a"]`, and `.a?`),
 //! iteration (`.[]`, `.[]?`), pipes, `length`, `keys`, `keys_unsorted`,
-//! `add` (of numbers and nulls: other sums decline), array collection
-//! (`[...]`, `map(...)`), object construction with constant
+//! `type`, `add` (of numbers and nulls: other sums decline), array
+//! collection (`[...]`, `map(...)`), object construction with constant
 //! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its
 //! comparison with a constant (`select(.type == "PushEvent")`,
-//! `select(.n > 0)`), combined with `and`, `or` and `not`, and of
-//! definitions without parameters of such programs (inlined where they're
-//! called, as jq resolves the calls), has outputs that are fully determined
-//! by its input, and can be computed on the tape ([`super::tape`]). Those
-//! outputs are what the jq VM would produce
+//! `select(.n > 0)`, `select(.a | type == "object")`), combined with `and`,
+//! `or` and `not`, and of definitions without parameters of such programs
+//! (inlined where they're called, as jq resolves the calls), has outputs
+//! that are fully determined by its input, and can be computed on the tape
+//! ([`super::tape`]). Those outputs are what the jq VM would produce
 //! on the value the builder makes of the input: every step follows the
 //! builtin or opcode it stands for (`jv_get` on objects, `EACH`,
-//! `INDEX_OPT`, `EACH_OPT`, `f_length`, `f_keys`, `jv_equal`, `jv_cmp`, ...),
-//! and duplicate keys follow jq's rule.
+//! `INDEX_OPT`, `EACH_OPT`, `f_length`, `f_keys`, `f_type`, `jv_equal`,
+//! `jv_cmp`, ...), and duplicate keys follow jq's rule.
 //!
 //! Anything else is [`Decline`]d: an error in jq (`.a` on a number, `length`
 //! of a boolean, ...), or a document the tape view can't handle. The caller
@@ -34,7 +34,7 @@ use std::cmp::Ordering;
 use crate::jq::lang::ast::{self, BinOp, DictPairKind, Literal, NodeKind, ProgramBody};
 use crate::jq::lang::parser::{NoHooks, parse};
 use crate::jq::value::Number;
-use crate::jq::value::print::DumpSink;
+use crate::jq::value::print::{DumpSink, write_json_string};
 
 use super::tape::{Doc, Layout, Node, NodeKind as Kind, Scratch};
 
@@ -77,6 +77,8 @@ enum Expr {
     /// builtin.jq's `def add(f): reduce f as $x (null; . + $x);` (and
     /// `add` for `add(.[])`), for sums of numbers (and nulls).
     Add(Box<Expr>),
+    /// `type`: `f_type`, the name of the value's kind.
+    Type,
 }
 
 /// A condition of `select`.
@@ -90,6 +92,8 @@ enum Cond {
     Or(Box<Cond>, Box<Cond>),
     /// `A | not`.
     Not(Box<Cond>),
+    /// `x | C` for a single-valued `x`: `C` on its output.
+    Pipe(Box<Expr>, Box<Cond>),
 }
 
 #[derive(Debug)]
@@ -127,6 +131,8 @@ pub enum TVal<'p> {
     Null,
     /// A computed number (`length`, `keys` of an array).
     Number(Number),
+    /// A computed string (`type`'s kind names).
+    Str(&'p str),
     /// A collected array.
     Array(Vec<TVal<'p>>),
     /// A constructed object: distinct keys, in order.
@@ -267,6 +273,7 @@ fn convert<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> O
             // builtin.jq: `def add: add(.[]);`
             ("add", []) => Expr::Add(Box::new(Expr::Each(Box::new(Expr::Identity)))),
             ("add", [f]) => Expr::Add(Box::new(convert(f, scope, budget)?)),
+            ("type", []) => Expr::Type,
             _ => return None,
         },
         NodeKind::Array(Some(e)) => Expr::Collect(Box::new(convert(e, scope, budget)?)),
@@ -354,6 +361,10 @@ fn cond<'a>(f: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Opti
             }
             return Some(c);
         }
+        // `x | C` (`select(.a | type == "object")`): C on x's one output.
+        let x = single_expr(x, scope, budget)?;
+        let c = cond(y, scope, budget)?;
+        return Some(Cond::Pipe(Box::new(x), Box::new(c)));
     }
     if let NodeKind::Binary { op, lhs, rhs } = &f.kind {
         match op {
@@ -424,7 +435,12 @@ fn order_op(op: BinOp) -> Option<fn(Ordering) -> bool> {
 /// Whether `e` always has exactly one output (unless it's an error).
 fn single(e: &Expr) -> bool {
     match e {
-        Expr::Identity | Expr::Length | Expr::Keys { .. } | Expr::Collect(_) | Expr::Add(_) => true,
+        Expr::Identity
+        | Expr::Length
+        | Expr::Keys { .. }
+        | Expr::Collect(_)
+        | Expr::Add(_)
+        | Expr::Type => true,
         Expr::Index(t, _) => single(t),
         Expr::Pipe(a, b) => single(a) && single(b),
         Expr::Object(entries) => entries.iter().all(|(_, e)| single(e)),
@@ -480,6 +496,18 @@ fn kind_rank(kind: Kind) -> u8 {
         Kind::String => 4,
         Kind::Array => 5,
         Kind::Object => 6,
+    }
+}
+
+/// `jv_kind_name`, which `f_type` returns.
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Null => "null",
+        Kind::False | Kind::True => "boolean",
+        Kind::Number => "number",
+        Kind::String => "string",
+        Kind::Array => "array",
+        Kind::Object => "object",
     }
 }
 
@@ -617,6 +645,19 @@ impl Eval<'_, '_> {
                 })?;
                 emit(acc)
             }
+            Expr::Type => emit(TVal::Str(kind_name(self.kind(&input)))),
+        }
+    }
+
+    /// The kind of a value.
+    fn kind(&self, v: &TVal<'_>) -> Kind {
+        match v {
+            TVal::Node(n) => self.doc.kind(*n),
+            TVal::Null => Kind::Null,
+            TVal::Number(_) => Kind::Number,
+            TVal::Str(_) => Kind::String,
+            TVal::Array(_) => Kind::Array,
+            TVal::Object(_) => Kind::Object,
         }
     }
 
@@ -681,18 +722,14 @@ impl Eval<'_, '_> {
                 .into_iter()
                 .find(|(k, _)| *k == key)
                 .map_or(TVal::Null, |(_, v)| v)),
-            TVal::Number(_) | TVal::Array(_) => Err(Decline),
+            TVal::Number(_) | TVal::Str(_) | TVal::Array(_) => Err(Decline),
         }
     }
 
     /// Whether `EACH` iterates `v` (an array or an object) rather than
     /// raising an error.
     fn iterable(&self, v: &TVal<'_>) -> bool {
-        match v {
-            TVal::Node(n) => matches!(self.doc.kind(*n), Kind::Array | Kind::Object),
-            TVal::Array(_) | TVal::Object(_) => true,
-            TVal::Null | TVal::Number(_) => false,
-        }
+        matches!(self.kind(v), Kind::Array | Kind::Object)
     }
 
     /// `EACH` on a value.
@@ -727,7 +764,7 @@ impl Eval<'_, '_> {
                 }
                 Ok(())
             }
-            TVal::Null | TVal::Number(_) => Err(Decline),
+            TVal::Null | TVal::Number(_) | TVal::Str(_) => Err(Decline),
         }
     }
 
@@ -749,6 +786,7 @@ impl Eval<'_, '_> {
             },
             TVal::Null => TVal::Number(Number::from_f64(0.0)),
             TVal::Number(x) => TVal::Number(x.abs()),
+            TVal::Str(s) => count(s.chars().count()),
             TVal::Array(items) => count(items.len()),
             TVal::Object(entries) => count(entries.len()),
         })
@@ -802,17 +840,17 @@ impl Eval<'_, '_> {
             Cond::And(a, b) => self.cond(a, input)? && self.cond(b, input)?,
             Cond::Or(a, b) => self.cond(a, input)? || self.cond(b, input)?,
             Cond::Not(a) => !self.cond(a, input)?,
+            Cond::Pipe(x, c) => {
+                let v = self.single(x, input.clone())?;
+                self.cond(c, &v)?
+            }
         })
     }
 
     fn test(&self, v: &TVal<'_>, test: &Test) -> bool {
         let doc = self.doc;
         match test {
-            Test::Truthy => match v {
-                TVal::Node(n) => !matches!(doc.kind(*n), Kind::Null | Kind::False),
-                TVal::Null => false,
-                _ => true,
-            },
+            Test::Truthy => !matches!(self.kind(v), Kind::Null | Kind::False),
             Test::Equal(c) | Test::NotEqual(c) => {
                 let eq = match v {
                     TVal::Node(n) => {
@@ -826,6 +864,7 @@ impl Eval<'_, '_> {
                     }
                     TVal::Null => matches!(c, Const::Null),
                     TVal::Number(x) => c.equals(Kind::Number, || x.clone(), ""),
+                    TVal::Str(s) => c.equals(Kind::String, || unreachable!(), s),
                     // A container is never equal to a scalar.
                     TVal::Array(_) | TVal::Object(_) => false,
                 };
@@ -844,6 +883,7 @@ impl Eval<'_, '_> {
                     }
                     TVal::Null => c.order(Kind::Null, || unreachable!(), ""),
                     TVal::Number(x) => c.order(Kind::Number, || x.clone(), ""),
+                    TVal::Str(s) => c.order(Kind::String, || unreachable!(), s),
                     TVal::Array(_) => c.order(Kind::Array, || unreachable!(), ""),
                     TVal::Object(_) => c.order(Kind::Object, || unreachable!(), ""),
                 };
@@ -864,6 +904,7 @@ impl Output<'_, '_> {
     pub fn as_str(&self) -> Option<&str> {
         match self.val {
             TVal::Node(n) if self.doc.kind(*n) == Kind::String => Some(self.doc.str(*n)),
+            TVal::Str(s) => Some(s),
             _ => None,
         }
     }
@@ -907,6 +948,7 @@ fn dump<S: DumpSink>(
                 x.write_json(sink.buf());
             }
         }
+        TVal::Str(s) => write_json_string(s, layout.ascii(), sink.buf()),
         TVal::Array(items) => {
             if items.is_empty() {
                 sink.buf().extend_from_slice(b"[]");

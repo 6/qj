@@ -1,9 +1,9 @@
 # Programs qj evaluates on simdjson's tape, without building values
 # (src/io/tape_eval.rs): paths, `.[]`, pipes, `length`, `keys`,
-# `keys_unsorted`, `add`, `[...]`, `map`, `{...}` with constant keys, `select`
-# on truthiness or comparison with a constant (with and, or, not), `.a?`,
-# `.[]?`, and definitions without parameters (inlined, shadowing builtins as
-# in jq). Their output
+# `keys_unsorted`, `type`, `add`, `[...]`, `map`, `{...}` with constant keys,
+# `select` on truthiness or comparison with a constant (with and, or, not,
+# and `x | cond`), `.a?`, `.[]?`, and definitions without parameters
+# (inlined, shadowing builtins as in jq). Their output
 # must be jq's for every output option (the tape printer re-implements jq's
 # layout), on single documents and on NDJSON (the parallel engine's workers
 # and the calling thread run them), and when an input declines the shortcut
@@ -14,6 +14,11 @@
 #   number spellings, big integers, escapes, control characters in keys;
 # - tape_multi.json: documents one per line, one spanning two lines, arrays,
 #   a string, empty containers (some programs error on some of them);
+# - tape_types.json: documents of every kind, top-level scalars among them,
+#   with edge values: NaN and infinity literals and numbers out of simdjson's
+#   range (those documents take jq's parser and the VM), -0, subnormals, the
+#   smallest normal and the largest double, escapes, duplicate keys, empty
+#   and nested containers;
 # - adv3.ndjson: see ndjson.toml.
 
 [[sweep]]
@@ -105,6 +110,21 @@ programs = [
   "{n: add(.arr[]? | .a)}",
   "def add: .k1; add",
   "def f: .; def g: f | f; def h: g | g; def i: h | h; def j: i | i; def k: j | j; def l: k | k; def m: l | l; m | .s",
+  "type",
+  ".a | type",
+  "map(type)",
+  ".[] | type",
+  ".arr | map(type)",
+  ".arr[] | .b | type",
+  "{t: type, a: (.a | type), s: (.s | type), b: (.b | type), c: (.c | type)}",
+  ".s | type | length",
+  "[.arr[] | type] | add",
+  "select(type == \"object\") | .k1",
+  ".arr[] | select(.a | type == \"number\")",
+  '.arr[] | select(.b | type == "string" or type == "array")',
+  ".arr[] | select(.a | length > 0)",
+  'def is_str: type == "string"; [.[] | select(is_str)]',
+  "def type: length; [.[] | type]",
 ]
 
 [[sweep]]
@@ -151,6 +171,12 @@ programs = [
   "add",
   "map(.a) | add",
   "[.[] | length] | add",
+  "type",
+  "map(type)",
+  ".a | type",
+  "[.[] | type]",
+  'select(type == "object")',
+  'select(.a | type == "object")',
 ]
 
 [[sweep]]
@@ -159,6 +185,52 @@ note = "The same through stdin"
 stdin = { path = "data/tape_multi.json" }
 variants = { c = ["-c", "{program}"], pretty = ["{program}"] }
 programs = [".", ".a", ".[]", "length", "keys", "{a, b}", "select(.a == 1)"]
+
+[[sweep]]
+name = "tape-types"
+note = "type on documents of every kind, some of which take jq's parser (NaN, infinities, numbers simdjson rejects)"
+files = { "tape_types.json" = { path = "data/tape_types.json" } }
+variants = { c = ["-c", "{program}", "tape_types.json"], pretty = ["{program}", "tape_types.json"], raw = ["-r", "{program}", "tape_types.json"], join = ["-j", "{program}", "tape_types.json"], ascii = ["-ac", "{program}", "tape_types.json"], asciiraw = ["-ar", "{program}", "tape_types.json"], sorted = ["-S", "{program}", "tape_types.json"], tab = ["--tab", "{program}", "tape_types.json"], exit = ["-e", "-c", "{program}", "tape_types.json"], color = ["-C", "-c", "{program}", "tape_types.json"], seq = ["--seq", "-c", "{program}", "tape_types.json"], twice = ["-c", "{program}", "tape_types.json", "tape_types.json"] }
+programs = [
+  ".",
+  "type",
+  "map(type)",
+  ".[] | type",
+  "[.[]? | type]",
+  "{t: type, n: (.n | type), b: (.b | type)}",
+  ".s | type",
+  ".mix | map(type)",
+  "type | length",
+  "map(type) | add",
+  "def kind: type; [.[]? | kind]",
+  'select(type == "string")',
+  'select(type == "number" or type == "boolean")',
+  'select(.d | type == "array")',
+  "map(type) | debug",
+  "[.[]? | type | debug]",
+]
+
+[[sweep]]
+name = "tape-types-stdin"
+note = "The same through stdin"
+stdin = { path = "data/tape_types.json" }
+variants = { c = ["-c", "{program}"], raw = ["-r", "{program}"] }
+programs = ["type", "map(type)", 'select(.a | type == "number")']
+
+[[sweep]]
+name = "tape-types-compat"
+note = "QJ_JQ_COMPAT=1 (exactly jq) with programs the tape evaluates"
+env = { QJ_JQ_COMPAT = "1" }
+files = { "tape_types.json" = { path = "data/tape_types.json" } }
+variants = { c = ["-c", "{program}", "tape_types.json"], raw = ["-r", "{program}", "tape_types.json"], exit = ["-e", "-c", "{program}", "tape_types.json"] }
+programs = ["type", "map(type)", 'select(type == "object") | .a']
+
+[[sweep]]
+name = "tape-types-trace"
+note = "--debug-trace (which prints every value's refcount) turns the tape off"
+stdin = '{"a":1,"b":[null,"x"]} [true] "s"'
+variants = { trace = ["-c", "--debug-trace", "{program}"], all = ["-c", "--debug-trace=all", "{program}"] }
+programs = ["type", "map(type)"]
 
 [[case]]
 name = "tape-deep"

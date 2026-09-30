@@ -98,6 +98,10 @@ const PROGRAMS: &[&str] = &[
     "[.arr[] | .a] | add",
     "add(.k1, .k2)",
     "[.[] | length] | add",
+    "type",
+    "map(type)",
+    "{t: (.a | type), s: (.s | type)}",
+    ".arr[] | select(.b | type != \"array\")",
 ];
 
 const OPTIONS: &[&[&str]] = &[
