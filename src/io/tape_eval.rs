@@ -5,10 +5,11 @@
 //! array collection (`[...]`, `map(...)`), object construction with constant
 //! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its
 //! comparison with a constant (`select(.type == "PushEvent")`,
-//! `select(.n > 0)`), and of definitions without parameters of such
-//! programs (inlined where they're called, as jq resolves the calls), has
-//! outputs that are fully determined by its input, and can be computed on
-//! the tape ([`super::tape`]). Those outputs are what the jq VM would produce
+//! `select(.n > 0)`), combined with `and`, `or` and `not`, and of
+//! definitions without parameters of such programs (inlined where they're
+//! called, as jq resolves the calls), has outputs that are fully determined
+//! by its input, and can be computed on the tape ([`super::tape`]). Those
+//! outputs are what the jq VM would produce
 //! on the value the builder makes of the input: every step follows the
 //! builtin or opcode it stands for (`jv_get` on objects, `EACH`,
 //! `INDEX_OPT`, `EACH_OPT`, `f_length`, `f_keys`, `jv_equal`, `jv_cmp`, ...),
@@ -70,9 +71,21 @@ enum Expr {
     Collect(Box<Expr>),
     /// `{k: E, ...}` with distinct constant keys and single-valued `E`s.
     Object(Vec<(String, Expr)>),
-    /// `select(E)` (truthiness) and `select(E == c)`, `select(E != c)` for
-    /// a single-valued `E` and a constant `c`.
-    Select(Box<Expr>, Test),
+    /// `select(C)`.
+    Select(Cond),
+}
+
+/// A condition of `select`.
+#[derive(Debug)]
+enum Cond {
+    /// A single-valued `E`'s truthiness, or its comparison with a constant.
+    Test(Box<Expr>, Test),
+    /// `A and B` (`B` only when `A` holds).
+    And(Box<Cond>, Box<Cond>),
+    /// `A or B` (`B` only when `A` doesn't hold).
+    Or(Box<Cond>, Box<Cond>),
+    /// `A | not`.
+    Not(Box<Cond>),
 }
 
 #[derive(Debug)]
@@ -283,59 +296,110 @@ fn convert<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> O
     })
 }
 
-/// `select(f)` for the tests handled here.
+/// `select(f)` for the conditions handled here.
 fn select<'a>(f: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Expr> {
-    // `select(f)` with `def f: ...;` is `select` of f's body.
+    Some(Expr::Select(cond(f, scope, budget)?))
+}
+
+/// `f` as a condition: its one output's truthiness.
+fn cond<'a>(f: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Cond> {
+    // A call of `def f: ...;` is f's body.
     if let NodeKind::Call { name, args, .. } = &f.kind
         && args.is_empty()
         && let Some((body, s)) = scope.find(name)
     {
         *budget = budget.checked_sub(1)?;
-        return select(body, s, budget);
+        return cond(body, s, budget);
     }
-    if let NodeKind::Binary {
-        op: op @ (BinOp::Eq | BinOp::Ne),
-        lhs,
-        rhs,
-    } = &f.kind
-    {
-        // The constant may be on either side (`==` is symmetric in jq).
-        let (e, c) = match (constant(lhs), constant(rhs)) {
-            (None, Some(c)) => (lhs, c),
-            (Some(c), None) => (rhs, c),
-            _ => return None,
-        };
-        let e = convert(e, scope, budget)?;
-        if !single(&e) {
-            return None;
+    // builtin.jq: `def not: if . then false else true end;`
+    let is_not = |n: &ast::Node| {
+        matches!(&n.kind, NodeKind::Call { name, args, .. }
+            if name == "not" && args.is_empty() && scope.find(name).is_none())
+    };
+    if is_not(f) {
+        let this = Cond::Test(Box::new(Expr::Identity), Test::Truthy);
+        return Some(Cond::Not(Box::new(this)));
+    }
+    if let NodeKind::Pipe(x, y) = &f.kind {
+        // `x | not | not ...` (pipes group to the right).
+        let mut nots = 0;
+        let mut rest = &**y;
+        loop {
+            match &rest.kind {
+                _ if is_not(rest) => {
+                    nots += 1;
+                    break;
+                }
+                NodeKind::Pipe(n, more) if is_not(n) => {
+                    nots += 1;
+                    rest = more;
+                }
+                _ => {
+                    nots = 0;
+                    break;
+                }
+            }
         }
-        let test = if *op == BinOp::Eq {
-            Test::Equal(c)
-        } else {
-            Test::NotEqual(c)
-        };
-        return Some(Expr::Select(Box::new(e), test));
-    }
-    if let NodeKind::Binary { op, lhs, rhs } = &f.kind
-        && let Some(accept) = order_op(*op)
-    {
-        // `c < E` is `E > c`.
-        let (e, c, flip) = match (constant(lhs), constant(rhs)) {
-            (None, Some(c)) => (lhs, c, false),
-            (Some(c), None) => (rhs, c, true),
-            _ => return None,
-        };
-        let e = convert(e, scope, budget)?;
-        if !single(&e) {
-            return None;
+        if nots > 0 {
+            let mut c = cond(x, scope, budget)?;
+            for _ in 0..nots {
+                c = Cond::Not(Box::new(c));
+            }
+            return Some(c);
         }
-        return Some(Expr::Select(Box::new(e), Test::Order { accept, flip, c }));
     }
-    let e = convert(f, scope, budget)?;
-    if !single(&e) {
-        return None;
+    if let NodeKind::Binary { op, lhs, rhs } = &f.kind {
+        match op {
+            // `a and b` is `if a then (if b then true else false) else
+            // false` (b only when a is true); `or` likewise.
+            BinOp::And => {
+                let a = cond(lhs, scope, budget)?;
+                let b = cond(rhs, scope, budget)?;
+                return Some(Cond::And(Box::new(a), Box::new(b)));
+            }
+            BinOp::Or => {
+                let a = cond(lhs, scope, budget)?;
+                let b = cond(rhs, scope, budget)?;
+                return Some(Cond::Or(Box::new(a), Box::new(b)));
+            }
+            BinOp::Eq | BinOp::Ne => {
+                // The constant may be on either side (`==` is symmetric).
+                let (e, c) = match (constant(lhs), constant(rhs)) {
+                    (None, Some(c)) => (lhs, c),
+                    (Some(c), None) => (rhs, c),
+                    _ => return None,
+                };
+                let e = single_expr(e, scope, budget)?;
+                let test = if *op == BinOp::Eq {
+                    Test::Equal(c)
+                } else {
+                    Test::NotEqual(c)
+                };
+                return Some(Cond::Test(Box::new(e), test));
+            }
+            _ => {
+                let accept = order_op(*op)?;
+                // `c < E` is `E > c`.
+                let (e, c, flip) = match (constant(lhs), constant(rhs)) {
+                    (None, Some(c)) => (lhs, c, false),
+                    (Some(c), None) => (rhs, c, true),
+                    _ => return None,
+                };
+                let e = single_expr(e, scope, budget)?;
+                let test = Test::Order { accept, flip, c };
+                return Some(Cond::Test(Box::new(e), test));
+            }
+        }
     }
-    Some(Expr::Select(Box::new(e), Test::Truthy))
+    let e = single_expr(f, scope, budget)?;
+    Some(Cond::Test(Box::new(e), Test::Truthy))
+}
+
+/// `n` converted, if it always has exactly one output (unless it's an
+/// error).
+fn single_expr<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Expr> {
+    let e = convert(n, scope, budget)?;
+    single(&e).then_some(e)
 }
 
 /// For `<`, `<=`, `>`, `>=`: which results of `jv_cmp(lhs, rhs)` make it
@@ -530,9 +594,8 @@ impl Eval<'_, '_> {
                 }
                 emit(TVal::Object(out))
             }
-            Expr::Select(e, test) => {
-                let v = self.single(e, input.clone())?;
-                if self.test(&v, test) {
+            Expr::Select(c) => {
+                if self.cond(c, &input)? {
                     emit(input)
                 } else {
                     Ok(())
@@ -682,6 +745,20 @@ impl Eval<'_, '_> {
             }
             _ => Err(Decline),
         }
+    }
+
+    /// Whether a condition holds for `input` (evaluating as jq's `and`,
+    /// `or` and `not` do: the right side only when the left doesn't decide).
+    fn cond<'p>(&self, c: &'p Cond, input: &TVal<'p>) -> Result<bool, Decline> {
+        Ok(match c {
+            Cond::Test(e, test) => {
+                let v = self.single(e, input.clone())?;
+                self.test(&v, test)
+            }
+            Cond::And(a, b) => self.cond(a, input)? && self.cond(b, input)?,
+            Cond::Or(a, b) => self.cond(a, input)? || self.cond(b, input)?,
+            Cond::Not(a) => !self.cond(a, input)?,
+        })
     }
 
     fn test(&self, v: &TVal<'_>, test: &Test) -> bool {

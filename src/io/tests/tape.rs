@@ -307,6 +307,22 @@ const PROGRAMS: &[&str] = &[
     "map(select(. > 1))",
     "[.[] | select(. <= \"a\")]",
     "def big: .a > 1; select(big)",
+    "select(.a and .b)",
+    "select(.a or .b)",
+    "select(.a | not)",
+    "select(not)",
+    "map(select(not))",
+    "select(.a == 1 and .b != null)",
+    "select(.a == 1 or .a == 2)",
+    "select((.a | not) and .b)",
+    "select(.a > 1 and .a < 3)",
+    ".[] | select(.a or .b == 1)",
+    "def not: .a; select(not)",
+    "select(.a == 1 | not)",
+    "select(.a and .a.b)",
+    "select(.a or .a.b)",
+    "select(.a | not | not)",
+    "select(.b and .c and .a)",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

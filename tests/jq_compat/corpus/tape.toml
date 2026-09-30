@@ -1,8 +1,9 @@
 # Programs qj evaluates on simdjson's tape, without building values
 # (src/io/tape_eval.rs): paths, `.[]`, pipes, `length`, `keys`,
 # `keys_unsorted`, `[...]`, `map`, `{...}` with constant keys, `select`
-# on truthiness or comparison with a constant, `.a?`, `.[]?`, and definitions
-# without parameters (inlined, shadowing builtins as in jq). Their output
+# on truthiness or comparison with a constant (with and, or, not), `.a?`,
+# `.[]?`, and definitions without parameters (inlined, shadowing builtins as
+# in jq). Their output
 # must be jq's for every output option (the tape printer re-implements jq's
 # layout), on single documents and on NDJSON (the parallel engine's workers
 # and the calling thread run them), and when an input declines the shortcut
@@ -88,6 +89,14 @@ programs = [
   ".a.b[] | select(. < 12345678901234567891)",
   ".a.b[] | select(. <= -0)",
   "[.[] | select(length > 1)] | length",
+  ".arr[] | select(.a == 1 and .b != null)",
+  '.arr[] | select(.a == "x" or .b == 2)',
+  ".arr[] | select(.b | not)",
+  ".arr[] | select(.a and (.b | not))",
+  ".arr[] | select(.a and .a.x)",
+  ".arr[] | select(.a or .a.x)",
+  ".arr[] | select(.a | not | not)",
+  "def not: .b; .arr[] | select(not)",
   "def f: .; def g: f | f; def h: g | g; def i: h | h; def j: i | i; def k: j | j; def l: k | k; def m: l | l; m | .s",
 ]
 
@@ -128,6 +137,10 @@ programs = [
   "select(.a <= 1)",
   'select(.a >= "x")',
   "select(.b < true)",
+  "select(.a == 1 and .b)",
+  "select(.a or .b)",
+  "select(.a | not)",
+  "select(.a and .a.b)",
 ]
 
 [[sweep]]
