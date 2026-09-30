@@ -339,6 +339,157 @@ fn op_uses(op: &Op, r: Reg) -> bool {
     }
 }
 
+/// An op of an inlined direct region (see `Compiler::inline`), for the region it goes
+/// in: registers through `map`, op indices after `base`, `SUBEXP` levels below
+/// `nest`, and variables: the callee's level `l` (1 is its closure's environment, the
+/// frame `call_level` levels up from the caller's) is the caller's
+/// `call_level + l - 1`, which a direct caller can't have at 0. `vars0` is set for a
+/// variable of the caller's own frame.
+fn remap(
+    op: Op,
+    map: &[Reg; MAX_REGS],
+    base: u32,
+    call_level: u16,
+    nest: i32,
+    mode: Mode,
+    vars0: &mut bool,
+) -> Option<Op> {
+    let m = |r: Reg| if r == NO_REG { NO_REG } else { map[r as usize] };
+    let mut lv = |l: u16| -> Option<u16> {
+        debug_assert!(l >= 1, "a direct region's variable at level 0");
+        let n = call_level.checked_add(l)?.checked_sub(1)?;
+        if n == 0 {
+            if mode == Mode::Direct {
+                return None;
+            }
+            *vars0 = true;
+        }
+        Some(n)
+    };
+    Some(match op {
+        // A direct region has no stack under its input.
+        Op::Pop { .. } | Op::PopN { .. } | Op::Exit => return None,
+        Op::Clone { dst, src } => Op::Clone {
+            dst: m(dst),
+            src: m(src),
+        },
+        Op::Move { dst, src } => Op::Move {
+            dst: m(dst),
+            src: m(src),
+        },
+        Op::Swap { a, b } => Op::Swap { a: m(a), b: m(b) },
+        Op::Drop { r } => Op::Drop { r: m(r) },
+        Op::Const { dst, k } => Op::Const { dst: m(dst), k },
+        Op::LoadV { dst, level, idx } => Op::LoadV {
+            dst: m(dst),
+            level: lv(level)?,
+            idx,
+        },
+        Op::LoadVN { dst, level, idx } => Op::LoadVN {
+            dst: m(dst),
+            level: lv(level)?,
+            idx,
+        },
+        Op::StoreV { src, level, idx } => Op::StoreV {
+            src: m(src),
+            level: lv(level)?,
+            idx,
+        },
+        Op::StoreK { k, level, idx } => Op::StoreK {
+            k,
+            level: lv(level)?,
+            idx,
+        },
+        Op::Append { src, level, idx } => Op::Append {
+            src: m(src),
+            level: lv(level)?,
+            idx,
+        },
+        Op::Call {
+            dst,
+            cf,
+            nargs,
+            input,
+            args,
+        } => Op::Call {
+            dst: m(dst),
+            cf,
+            nargs,
+            input: m(input),
+            args: [m(args[0]), m(args[1]), m(args[2])],
+        },
+        Op::Binop {
+            dst,
+            kind,
+            input,
+            a,
+            b,
+        } => Op::Binop {
+            dst: m(dst),
+            kind,
+            input: m(input),
+            a: m(a),
+            b: m(b),
+        },
+        Op::BinopK {
+            dst,
+            kind,
+            input,
+            r,
+            k,
+            kfirst,
+        } => Op::BinopK {
+            dst: m(dst),
+            kind,
+            input: m(input),
+            r: m(r),
+            k,
+            kfirst,
+        },
+        Op::Index {
+            dst,
+            t,
+            k,
+            opt,
+            level,
+        } => Op::Index {
+            dst: m(dst),
+            t: m(t),
+            k: m(k),
+            opt,
+            level: level + nest,
+        },
+        Op::IndexK {
+            dst,
+            t,
+            k,
+            opt,
+            level,
+        } => Op::IndexK {
+            dst: m(dst),
+            t: m(t),
+            k,
+            opt,
+            level: level + nest,
+        },
+        Op::Insert { obj, k, v } => Op::Insert {
+            obj: m(obj),
+            k: m(k),
+            v: m(v),
+        },
+        Op::GenLabel { dst } => Op::GenLabel { dst: m(dst) },
+        Op::JumpF { r, target } => Op::JumpF {
+            r: m(r),
+            target: target + base,
+        },
+        Op::Jump { target } => Op::Jump {
+            target: target + base,
+        },
+        Op::Backtrack => Op::Backtrack,
+        Op::ErrorK { k } => Op::ErrorK { k },
+    })
+}
+
 /// A compiled region (see the module docs).
 pub(super) struct Region {
     pub ops: Vec<Op>,
@@ -454,8 +605,9 @@ struct Clean {
 }
 
 /// Compiles one region (see [`compile`]).
-struct Compiler<'a> {
+struct Compiler<'a, 'c> {
     prog: &'a Program,
+    cache: &'c mut Cache,
     func: u32,
     mode: Mode,
     ops: Vec<Op>,
@@ -478,7 +630,7 @@ struct Compiler<'a> {
     block_start: usize,
 }
 
-impl<'a> Compiler<'a> {
+impl<'a, 'c> Compiler<'a, 'c> {
     fn alloc(&mut self) -> Option<Reg> {
         // Prefer the register of the new stack slot, so fewer moves canonicalize.
         let want = self.stack.len();
@@ -666,6 +818,52 @@ impl<'a> Compiler<'a> {
             .subfunctions
             .get((idx & !ARG_NEWCLOSURE) as usize)
             .copied()
+    }
+
+    /// Inlines direct region `d`, the body of a function without parameters that the
+    /// call at hand names statically (its frame is `level` levels up): the call pops its
+    /// input, then the body's ops run on the registers they are given, without a frame
+    /// (a region body's frame is freed by its RET before anything else runs), and its
+    /// output is pushed. `None` if the registers, the size, or a variable's level don't
+    /// fit.
+    fn inline(&mut self, d: u32, level: u16) -> Option<()> {
+        let callee = &self.cache.regions[d as usize];
+        let (ops, exit, nregs) = (callee.ops.clone(), callee.exit.clone(), callee.nregs);
+        if self.ops.len() + ops.len() > MAX_OPS {
+            return None;
+        }
+        let x = self.pop(false)?;
+        // The callee's registers: its input (0) is `x`, the others new.
+        let mut map = [NO_REG; MAX_REGS];
+        map[0] = x;
+        for m in map.iter_mut().take(nregs as usize).skip(1) {
+            *m = self.alloc()?;
+        }
+        let base = self.ops.len() as u32;
+        let (mode, nest) = (self.mode, self.level);
+        let mut vars0 = false;
+        for op in ops {
+            if let Op::Exit = op {
+                // (The last op: what follows the call comes next.)
+                continue;
+            }
+            let op = remap(op, &map, base, level, nest, mode, &mut vars0)?;
+            self.ops.push(op);
+        }
+        self.vars0 |= vars0;
+        let res = exit.first().map(|&r| map[r as usize]);
+        for &m in &map[..nregs as usize] {
+            if Some(m) != res {
+                self.release(m);
+            }
+        }
+        match res {
+            Some(r) => self.push(r),
+            // The callee always backtracks or raises.
+            None => self.live = false,
+        }
+        self.block_start = self.ops.len();
+        Some(())
     }
 
     /// Translates the instruction at `pc`. `None` if it can't be in a region.
@@ -915,20 +1113,32 @@ impl<'a> Compiler<'a> {
                 self.live = false;
             }
             CALL_JQ | TAIL_CALL_JQ => {
-                // Only calls of a function that just backtracks (`empty`): the call
-                // pops its input, then the callee's BACKTRACK unwinds everything
-                // (a tail call's frame included) as this one does.
-                let nclosures = imm(1);
-                let callee = self.static_callee(imm(2), imm(3))?;
-                let f = &self.prog.funcs[callee as usize];
-                if nclosures != 0 || self.prog.code[f.base as usize] != BACKTRACK as u16 {
+                // Calls without arguments of a function named statically.
+                let (nclosures, level) = (imm(1), imm(2));
+                let callee = self.static_callee(level, imm(3))?;
+                if nclosures != 0 {
                     return None;
                 }
-                let r = self.pop(false)?;
-                self.ops.push(Op::Drop { r });
-                self.release(r);
-                self.ops.push(Op::Backtrack);
-                self.live = false;
+                if self.prog.code[self.prog.funcs[callee as usize].base as usize]
+                    == BACKTRACK as u16
+                {
+                    // A function that just backtracks (`empty`): the call pops its
+                    // input, then the callee's BACKTRACK unwinds everything (a tail
+                    // call's frame included) as this one does.
+                    let r = self.pop(false)?;
+                    self.ops.push(Op::Drop { r });
+                    self.release(r);
+                    self.ops.push(Op::Backtrack);
+                    self.live = false;
+                    return Some(());
+                }
+                // A tail call pops the caller's frame first, which frees its locals:
+                // only in a direct region, whose frame has none.
+                if op == TAIL_CALL_JQ && self.mode == Mode::Loop {
+                    return None;
+                }
+                let d = self.cache.direct_of(self.prog, callee)?;
+                self.inline(d, level)?;
             }
             _ => return None,
         }
@@ -950,8 +1160,9 @@ impl<'a> Compiler<'a> {
 
 /// Compiles the longest region of function `func` starting at global pc `start`.
 /// Returns it and the number of instructions it covers.
-pub(super) fn compile(
+fn compile(
     prog: &Program,
+    cache: &mut Cache,
     func: u32,
     start: usize,
     mode: Mode,
@@ -960,6 +1171,7 @@ pub(super) fn compile(
     let end = f.base as usize + f.bc.code.len();
     let mut c = Compiler {
         prog,
+        cache,
         func,
         mode,
         ops: Vec::new(),
@@ -1063,20 +1275,80 @@ fn entry_points(code: &[u16], start: usize, end: usize) -> std::collections::Has
     out
 }
 
+/// The regions compiled so far, and each function's direct region, computed on
+/// demand: a region inlines the direct regions of the functions it calls.
+pub(super) struct Cache {
+    regions: Vec<Region>,
+    direct: Vec<Direct>,
+    /// How many direct regions are being compiled (inlining nests them).
+    depth: u32,
+}
+
+/// Whether a function's body is a direct region.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direct {
+    Unknown,
+    /// Being compiled (a function that calls itself isn't inlined into itself).
+    Busy,
+    No,
+    Yes(u32),
+}
+
+/// How deeply direct regions inline each other.
+const MAX_INLINE_DEPTH: u32 = 8;
+
+/// The most ops a region gets by inlining.
+const MAX_OPS: usize = 256;
+
+impl Cache {
+    fn full(&self) -> bool {
+        self.regions.len() >= (u16::MAX - REGION_BASE) as usize
+    }
+
+    /// The direct region of function `func`, compiling it if needed.
+    fn direct_of(&mut self, prog: &Program, func: u32) -> Option<u32> {
+        match self.direct[func as usize] {
+            Direct::Yes(d) => return Some(d),
+            Direct::No | Direct::Busy => return None,
+            Direct::Unknown => {}
+        }
+        let f = &prog.funcs[func as usize];
+        if f.native.is_some() || f.nclosures != 0 {
+            self.direct[func as usize] = Direct::No;
+            return None;
+        }
+        // (Too deep, or no room: maybe from somewhere else.)
+        if self.depth >= MAX_INLINE_DEPTH || self.full() {
+            return None;
+        }
+        self.direct[func as usize] = Direct::Busy;
+        self.depth += 1;
+        let r = compile(prog, self, func, f.base as usize, Mode::Direct);
+        self.depth -= 1;
+        match r {
+            Some((r, _)) if !self.full() => {
+                let d = self.regions.len() as u32;
+                self.regions.push(r);
+                self.direct[func as usize] = Direct::Yes(d);
+                Some(d)
+            }
+            _ => {
+                self.direct[func as usize] = Direct::No;
+                None
+            }
+        }
+    }
+}
+
 /// Builds `prog.regions`, `prog.fast_code` and each function's direct region.
 pub(super) fn optimize(prog: &mut Program) {
-    let mut regions = Vec::new();
-    let mut direct = vec![None; prog.funcs.len()];
+    let mut cache = Cache {
+        regions: Vec::new(),
+        direct: vec![Direct::Unknown; prog.funcs.len()],
+        depth: 0,
+    };
     for func in 0..prog.funcs.len() as u32 {
-        let f = &prog.funcs[func as usize];
-        if f.native.is_none()
-            && f.nclosures == 0
-            && regions.len() < (u16::MAX - REGION_BASE) as usize
-            && let Some((r, _)) = compile(prog, func, f.base as usize, Mode::Direct)
-        {
-            direct[func as usize] = Some(regions.len() as u32);
-            regions.push(r);
-        }
+        cache.direct_of(prog, func);
     }
     let mut fast = prog.code.clone();
     for func in 0..prog.funcs.len() {
@@ -1089,27 +1361,30 @@ pub(super) fn optimize(prog: &mut Program) {
         let mut pc = start;
         while pc < end {
             let len = bytecode_operation_length(&prog.code[pc..end]).max(1);
-            if regions.len() >= (u16::MAX - REGION_BASE) as usize {
+            if cache.full() {
                 break;
             }
             if (pc >= covered || entries.contains(&pc))
-                && let Some((r, n)) = compile(prog, func as u32, pc, Mode::Loop)
+                && let Some((r, n)) = compile(prog, &mut cache, func as u32, pc, Mode::Loop)
                 && n >= MIN_LOOP_INSTRS
+                && !cache.full()
             {
                 covered = covered.max(r.end as usize);
-                fast[pc] = REGION_BASE + regions.len() as u16;
-                regions.push(r);
+                fast[pc] = REGION_BASE + cache.regions.len() as u16;
+                cache.regions.push(r);
             }
             pc += len;
         }
     }
-    for (f, d) in prog.funcs.iter_mut().zip(direct) {
-        f.direct = d;
+    for (f, d) in prog.funcs.iter_mut().zip(&cache.direct) {
+        f.direct = match *d {
+            Direct::Yes(d) => Some(d),
+            _ => None,
+        };
     }
     prog.fast_code = fast;
-    prog.regions = regions;
+    prog.regions = cache.regions;
 }
-
 /// The regions of `prog`, as text (for looking at what the compiler made).
 #[cfg(test)]
 pub(super) fn dump(prog: &Program) -> String {

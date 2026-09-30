@@ -1785,938 +1785,1358 @@ def f(x): x as $v | $v + 1; f(.)
 def f(x): x as $v | $v + 1; f(.)
 null
 
-. as [$a, $b] | {a: $a, b: $b}
+def f: . + 1; def g: f * 2; [.[]? | g]
 [{"a":2},{"a":1}]
 
-. as [$a, $b] | {a: $a, b: $b}
+def f: . + 1; def g: f * 2; [.[]? | g]
 [null,false,0,""]
 
-. as [$a, $b] | {a: $a, b: $b}
+def f: . + 1; def g: f * 2; [.[]? | g]
 2.5
 
-. as [$a, $b] | {a: $a, b: $b}
+def f: . + 1; def g: f * 2; [.[]? | g]
 [[1],[2]]
+
+def f: not; [.[]? | select(f)]
+1
+
+def f: not; [.[]? | select(f)]
+[1,2,3]
+
+def f: not; [.[]? | select(f)]
+{"a":{"b":{"c":1}},"c":true}
+
+def f: not; [.[]? | select(f)]
+100000000000000000001
+
+[.[]? | select(. == 1 | not)]
+{"a":1,"b":2}
+
+[.[]? | select(. == 1 | not)]
+1.000
+
+[.[]? | select(. == 1 | not)]
+null
+
+[.[]? | select(. == 1 | not)]
+"a"
+
+. as $x | def f: $x; [.[]? | f]
+[null,false,0,""]
+
+. as $x | def f: $x; [.[]? | f]
+2.5
+
+. as $x | def f: $x; [.[]? | f]
+[[1],[2]]
+
+. as $x | def f: $x; [.[]? | f]
+[{"a":2},{"a":1}]
+
+. as $x | def f: [$x, .]; def g: . as $y | f; [.[]? | g]
+[1,2,3]
+
+. as $x | def f: [$x, .]; def g: . as $y | f; [.[]? | g]
+{"a":{"b":{"c":1}},"c":true}
+
+. as $x | def f: [$x, .]; def g: . as $y | f; [.[]? | g]
+100000000000000000001
+
+. as $x | def f: [$x, .]; def g: . as $y | f; [.[]? | g]
+1
+
+def f($a): def g: $a + .; g; f(1)?
+1.000
+
+def f($a): def g: $a + .; g; f(1)?
+null
+
+def f($a): def g: $a + .; g; f(1)?
+"a"
+
+def f($a): def g: $a + .; g; f(1)?
+{"a":1,"b":2}
+
+def f($a): def g: [$a, .]; [.[]? | g]; f(2)
+2.5
+
+def f($a): def g: [$a, .]; [.[]? | g]; f(2)
+[[1],[2]]
+
+def f($a): def g: [$a, .]; [.[]? | g]; f(2)
+[{"a":2},{"a":1}]
+
+def f($a): def g: [$a, .]; [.[]? | g]; f(2)
+[null,false,0,""]
+
+def f: def g: . + 1; g | g; f?
+{"a":{"b":{"c":1}},"c":true}
+
+def f: def g: . + 1; g | g; f?
+100000000000000000001
+
+def f: def g: . + 1; g | g; f?
+1
+
+def f: def g: . + 1; g | g; f?
+[1,2,3]
+
+def f: def g: .a?; g; [.[]? | f]
+null
+
+def f: def g: .a?; g; [.[]? | f]
+"a"
+
+def f: def g: .a?; g; [.[]? | f]
+{"a":1,"b":2}
+
+def f: def g: .a?; g; [.[]? | f]
+1.000
+
+reduce .[]? as $x (0; . + ($x | def f: . * 2; f)?)
+[[1],[2]]
+
+reduce .[]? as $x (0; . + ($x | def f: . * 2; f)?)
+[{"a":2},{"a":1}]
+
+reduce .[]? as $x (0; . + ($x | def f: . * 2; f)?)
+[null,false,0,""]
+
+reduce .[]? as $x (0; . + ($x | def f: . * 2; f)?)
+2.5
+
+def f: .a; path(f)?
+100000000000000000001
+
+def f: .a; path(f)?
+1
+
+def f: .a; path(f)?
+[1,2,3]
+
+def f: .a; path(f)?
+{"a":{"b":{"c":1}},"c":true}
+
+def f: .[0]; try path(f | f) catch "E"
+"a"
+
+def f: .[0]; try path(f | f) catch "E"
+{"a":1,"b":2}
+
+def f: .[0]; try path(f | f) catch "E"
+1.000
+
+def f: .[0]; try path(f | f) catch "E"
+null
+
+def f: if . then .a else .b end; try path(f) catch "E"
+[{"a":2},{"a":1}]
+
+def f: if . then .a else .b end; try path(f) catch "E"
+[null,false,0,""]
+
+def f: if . then .a else .b end; try path(f) catch "E"
+2.5
+
+def f: if . then .a else .b end; try path(f) catch "E"
+[[1],[2]]
+
+def f: . + 1; try path(f) catch "E"
+1
+
+def f: . + 1; try path(f) catch "E"
+[1,2,3]
+
+def f: . + 1; try path(f) catch "E"
+{"a":{"b":{"c":1}},"c":true}
+
+def f: . + 1; try path(f) catch "E"
+100000000000000000001
+
+def f: getpath(["a"]); try path(f) catch "E"
+{"a":1,"b":2}
+
+def f: getpath(["a"]); try path(f) catch "E"
+1.000
+
+def f: getpath(["a"]); try path(f) catch "E"
+null
+
+def f: getpath(["a"]); try path(f) catch "E"
+"a"
+
+def f: input; [f]?
+[null,false,0,""]
+
+def f: input; [f]?
+2.5
+
+def f: input; [f]?
+[[1],[2]]
+
+def f: input; [f]?
+[{"a":2},{"a":1}]
+
+def f: debug; [.[]? | f]
+[1,2,3]
+
+def f: debug; [.[]? | f]
+{"a":{"b":{"c":1}},"c":true}
+
+def f: debug; [.[]? | f]
+100000000000000000001
+
+def f: debug; [.[]? | f]
+1
+
+def f: error; try f catch .
+1.000
+
+def f: error; try f catch .
+null
+
+def f: error; try f catch .
+"a"
+
+def f: error; try f catch .
+{"a":1,"b":2}
+
+def f: error({"__jq":0}); [first(f)]
+2.5
+
+def f: error({"__jq":0}); [first(f)]
+[[1],[2]]
+
+def f: error({"__jq":0}); [first(f)]
+[{"a":2},{"a":1}]
+
+def f: error({"__jq":0}); [first(f)]
+[null,false,0,""]
+
+def f: $__loc__; [f, (1 | f)]
+{"a":{"b":{"c":1}},"c":true}
+
+def f: $__loc__; [f, (1 | f)]
+100000000000000000001
+
+def f: $__loc__; [f, (1 | f)]
+1
+
+def f: $__loc__; [f, (1 | f)]
+[1,2,3]
+
+def f: if . > 0 then . - 1 | f else . end; 3 | f
+null
+
+def f: if . > 0 then . - 1 | f else . end; 3 | f
+"a"
+
+def f: if . > 0 then . - 1 | f else . end; 3 | f
+{"a":1,"b":2}
+
+def f: if . > 0 then . - 1 | f else . end; 3 | f
+1.000
+
+def f: {a: ., b: (. | tostring)}; [.[]? | f]
+[[1],[2]]
+
+def f: {a: ., b: (. | tostring)}; [.[]? | f]
+[{"a":2},{"a":1}]
+
+def f: {a: ., b: (. | tostring)}; [.[]? | f]
+[null,false,0,""]
+
+def f: {a: ., b: (. | tostring)}; [.[]? | f]
+2.5
+
+def f: "<\(.)>"; [.[]? | f]
+100000000000000000001
+
+def f: "<\(.)>"; [.[]? | f]
+1
+
+def f: "<\(.)>"; [.[]? | f]
+[1,2,3]
+
+def f: "<\(.)>"; [.[]? | f]
+{"a":{"b":{"c":1}},"c":true}
+
+def e: empty; [.[]? | e, 1]
+"a"
+
+def e: empty; [.[]? | e, 1]
+{"a":1,"b":2}
+
+def e: empty; [.[]? | e, 1]
+1.000
+
+def e: empty; [.[]? | e, 1]
+null
+
+def f: .[]?; [f]
+[{"a":2},{"a":1}]
+
+def f: .[]?; [f]
+[null,false,0,""]
+
+def f: .[]?; [f]
+2.5
+
+def f: .[]?; [f]
+[[1],[2]]
+
+def f: . as [$a] | $a; [.[]? | f?]
+1
+
+def f: . as [$a] | $a; [.[]? | f?]
+[1,2,3]
+
+def f: . as [$a] | $a; [.[]? | f?]
+{"a":{"b":{"c":1}},"c":true}
+
+def f: . as [$a] | $a; [.[]? | f?]
+100000000000000000001
+
+def f: length?; [.[]? | select(f)]
+{"a":1,"b":2}
+
+def f: length?; [.[]? | select(f)]
+1.000
+
+def f: length?; [.[]? | select(f)]
+null
+
+def f: length?; [.[]? | select(f)]
+"a"
+
+def z: 0; def f: . + z; def g: f + z; [.[]? | g?]
+[null,false,0,""]
+
+def z: 0; def f: . + z; def g: f + z; [.[]? | g?]
+2.5
+
+def z: 0; def f: . + z; def g: f + z; [.[]? | g?]
+[[1],[2]]
+
+def z: 0; def f: . + z; def g: f + z; [.[]? | g?]
+[{"a":2},{"a":1}]
+
+def f: [., .][0:1]; [.[]? | f | .[3] = 1]
+[1,2,3]
+
+def f: [., .][0:1]; [.[]? | f | .[3] = 1]
+{"a":{"b":{"c":1}},"c":true}
+
+def f: [., .][0:1]; [.[]? | f | .[3] = 1]
+100000000000000000001
+
+def f: [., .][0:1]; [.[]? | f | .[3] = 1]
+1
+
+[.[]? as $v | def f: $v + .; 10 | f?]
+1.000
+
+[.[]? as $v | def f: $v + .; 10 | f?]
+null
+
+[.[]? as $v | def f: $v + .; 10 | f?]
+"a"
+
+[.[]? as $v | def f: $v + .; 10 | f?]
+{"a":1,"b":2}
+
+def f: . == 1; any(.[]?; f)
+2.5
+
+def f: . == 1; any(.[]?; f)
+[[1],[2]]
+
+def f: . == 1; any(.[]?; f)
+[{"a":2},{"a":1}]
+
+def f: . == 1; any(.[]?; f)
+[null,false,0,""]
+
+def f: tostring; map(f)?
+{"a":{"b":{"c":1}},"c":true}
+
+def f: tostring; map(f)?
+100000000000000000001
+
+def f: tostring; map(f)?
+1
+
+def f: tostring; map(f)?
+[1,2,3]
+
+def f: . * 2; .[]? |= f
+null
+
+def f: . * 2; .[]? |= f
+"a"
+
+def f: . * 2; .[]? |= f
+{"a":1,"b":2}
+
+def f: . * 2; .[]? |= f
+1.000
+
+def f: type == "number"; walk(if f then . + 1 else . end)
+[[1],[2]]
+
+def f: type == "number"; walk(if f then . + 1 else . end)
+[{"a":2},{"a":1}]
+
+def f: type == "number"; walk(if f then . + 1 else . end)
+[null,false,0,""]
+
+def f: type == "number"; walk(if f then . + 1 else . end)
+2.5
+
+def f: select(. != null); [.[]? | f]
+100000000000000000001
+
+def f: select(. != null); [.[]? | f]
+1
+
+def f: select(. != null); [.[]? | f]
+[1,2,3]
+
+def f: select(. != null); [.[]? | f]
+{"a":{"b":{"c":1}},"c":true}
+
+. as [$a, $b] | {a: $a, b: $b}
+"a"
+
+. as [$a, $b] | {a: $a, b: $b}
+{"a":1,"b":2}
+
+. as [$a, $b] | {a: $a, b: $b}
+1.000
+
+. as [$a, $b] | {a: $a, b: $b}
+null
 
 . as {a: $a} | $a
-1
+[{"a":2},{"a":1}]
 
 . as {a: $a} | $a
-[1,2,3]
+[null,false,0,""]
 
 . as {a: $a} | $a
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 . as {a: $a} | $a
-100000000000000000001
+[[1],[2]]
 
 [.[]? as [$a] ?// $a | $a]
-{"a":1,"b":2}
+1
 
 [.[]? as [$a] ?// $a | $a]
-1.000
+[1,2,3]
 
 [.[]? as [$a] ?// $a | $a]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [.[]? as [$a] ?// $a | $a]
-"a"
+100000000000000000001
 
 [.[]? as [$a] ?// $a | $a + 1]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [.[]? as [$a] ?// $a | $a + 1]
-2.5
+1.000
 
 [.[]? as [$a] ?// $a | $a + 1]
-[[1],[2]]
+null
 
 [.[]? as [$a] ?// $a | $a + 1]
-[{"a":2},{"a":1}]
+"a"
 
 [[1], 2] | first(.[] as [$x] ?// $x | $x)
-[1,2,3]
+[null,false,0,""]
 
 [[1], 2] | first(.[] as [$x] ?// $x | $x)
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [[1], 2] | first(.[] as [$x] ?// $x | $x)
-100000000000000000001
+[[1],[2]]
 
 [[1], 2] | first(.[] as [$x] ?// $x | $x)
-1
+[{"a":2},{"a":1}]
 
 (. | debug) + 1
-1.000
+[1,2,3]
 
 (. | debug) + 1
-null
+{"a":{"b":{"c":1}},"c":true}
 
 (. | debug) + 1
-"a"
+100000000000000000001
 
 (. | debug) + 1
-{"a":1,"b":2}
+1
 
 [.[]? | debug | . + 1]
-2.5
+1.000
 
 [.[]? | debug | . + 1]
-[[1],[2]]
+null
 
 [.[]? | debug | . + 1]
-[{"a":2},{"a":1}]
+"a"
 
 [.[]? | debug | . + 1]
-[null,false,0,""]
+{"a":1,"b":2}
 
 try (debug | stderr | . + 1) catch "E"
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 try (debug | stderr | . + 1) catch "E"
-100000000000000000001
+[[1],[2]]
 
 try (debug | stderr | . + 1) catch "E"
-1
+[{"a":2},{"a":1}]
 
 try (debug | stderr | . + 1) catch "E"
-[1,2,3]
+[null,false,0,""]
 
 (input? // 0) + 1
-null
+{"a":{"b":{"c":1}},"c":true}
 
 (input? // 0) + 1
-"a"
+100000000000000000001
 
 (input? // 0) + 1
-{"a":1,"b":2}
+1
 
 (input? // 0) + 1
-1.000
+[1,2,3]
 
 [.[]? | (input? // 0)]
-[[1],[2]]
+null
 
 [.[]? | (input? // 0)]
-[{"a":2},{"a":1}]
+"a"
 
 [.[]? | (input? // 0)]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [.[]? | (input? // 0)]
-2.5
+1.000
 
 if . == 1 then halt_error else . end
-100000000000000000001
+[[1],[2]]
 
 if . == 1 then halt_error else . end
-1
+[{"a":2},{"a":1}]
 
 if . == 1 then halt_error else . end
-[1,2,3]
+[null,false,0,""]
 
 if . == 1 then halt_error else . end
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 ("bye\n" | halt_error(3)), 1
-"a"
+100000000000000000001
 
 ("bye\n" | halt_error(3)), 1
-{"a":1,"b":2}
+1
 
 ("bye\n" | halt_error(3)), 1
-1.000
+[1,2,3]
 
 ("bye\n" | halt_error(3)), 1
-null
+{"a":{"b":{"c":1}},"c":true}
 
 first(.[]?) | [label $f | try break $f catch .]
-[{"a":2},{"a":1}]
+"a"
 
 first(.[]?) | [label $f | try break $f catch .]
-[null,false,0,""]
+{"a":1,"b":2}
 
 first(.[]?) | [label $f | try break $f catch .]
-2.5
+1.000
 
 first(.[]?) | [label $f | try break $f catch .]
-[[1],[2]]
+null
 
 [limit(2; .[]?)] | [label $f | try break $f catch .]
-1
+[{"a":2},{"a":1}]
 
 [limit(2; .[]?)] | [label $f | try break $f catch .]
-[1,2,3]
+[null,false,0,""]
 
 [limit(2; .[]?)] | [label $f | try break $f catch .]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [limit(2; .[]?)] | [label $f | try break $f catch .]
-100000000000000000001
+[[1],[2]]
 
 [., ., ., .][0:2] as $v | $v | . + [1] | $$$$v | .[3] = 9
-{"a":1,"b":2}
+1
 
 [., ., ., .][0:2] as $v | $v | . + [1] | $$$$v | .[3] = 9
-1.000
+[1,2,3]
 
 [., ., ., .][0:2] as $v | $v | . + [1] | $$$$v | .[3] = 9
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [., ., ., .][0:2] as $v | $v | . + [1] | $$$$v | .[3] = 9
-"a"
+100000000000000000001
 
 [., ., ., .][0:2] | reduce range(2) as $j (.; .[3] = 9)
-[null,false,0,""]
+{"a":1,"b":2}
 
 [., ., ., .][0:2] | reduce range(2) as $j (.; .[3] = 9)
-2.5
+1.000
 
 [., ., ., .][0:2] | reduce range(2) as $j (.; .[3] = 9)
-[[1],[2]]
+null
 
 [., ., ., .][0:2] | reduce range(2) as $j (.; .[3] = 9)
-[{"a":2},{"a":1}]
+"a"
 
 [., ., ., .][0:2] as $v | $v | (. | tostring) | $$$$v | .[3] = 9
-[1,2,3]
+[null,false,0,""]
 
 [., ., ., .][0:2] as $v | $v | (. | tostring) | $$$$v | .[3] = 9
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [., ., ., .][0:2] as $v | $v | (. | tostring) | $$$$v | .[3] = 9
-100000000000000000001
+[[1],[2]]
 
 [., ., ., .][0:2] as $v | $v | (. | tostring) | $$$$v | .[3] = 9
-1
+[{"a":2},{"a":1}]
 
 [1,2,3,4] | .[0:2] | . as $x | ($x | length) as $n | $x | .[3] = $n
-1.000
+[1,2,3]
 
 [1,2,3,4] | .[0:2] | . as $x | ($x | length) as $n | $x | .[3] = $n
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [1,2,3,4] | .[0:2] | . as $x | ($x | length) as $n | $x | .[3] = $n
-"a"
+100000000000000000001
 
 [1,2,3,4] | .[0:2] | . as $x | ($x | length) as $n | $x | .[3] = $n
-{"a":1,"b":2}
+1
 
 [range(4)+1] | .[0:2] | .[3] = 9
-2.5
+1.000
 
 [range(4)+1] | .[0:2] | .[3] = 9
-[[1],[2]]
+null
 
 [range(4)+1] | .[0:2] | .[3] = 9
-[{"a":2},{"a":1}]
+"a"
 
 [range(4)+1] | .[0:2] | .[3] = 9
-[null,false,0,""]
+{"a":1,"b":2}
 
 [., .] | .[0] as $a | .[1] | try path($a) catch "E"
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [., .] | .[0] as $a | .[1] | try path($a) catch "E"
-100000000000000000001
+[[1],[2]]
 
 [., .] | .[0] as $a | .[1] | try path($a) catch "E"
-1
+[{"a":2},{"a":1}]
 
 [., .] | .[0] as $a | .[1] | try path($a) catch "E"
-[1,2,3]
+[null,false,0,""]
 
 (. + 0) as $a | (. + 0) | try path($a) catch "E"
-null
+{"a":{"b":{"c":1}},"c":true}
 
 (. + 0) as $a | (. + 0) | try path($a) catch "E"
-"a"
+100000000000000000001
 
 (. + 0) as $a | (. + 0) | try path($a) catch "E"
-{"a":1,"b":2}
+1
 
 (. + 0) as $a | (. + 0) | try path($a) catch "E"
-1.000
+[1,2,3]
 
 . as $a | . | try path($a) catch "E"
-[[1],[2]]
+null
 
 . as $a | . | try path($a) catch "E"
-[{"a":2},{"a":1}]
+"a"
 
 . as $a | . | try path($a) catch "E"
-[null,false,0,""]
+{"a":1,"b":2}
 
 . as $a | . | try path($a) catch "E"
-2.5
+1.000
 
 [.[]? | {a: .}] | .[0] as $a | .[0] | try path($a) catch "E"
-100000000000000000001
+[[1],[2]]
 
 [.[]? | {a: .}] | .[0] as $a | .[0] | try path($a) catch "E"
-1
+[{"a":2},{"a":1}]
 
 [.[]? | {a: .}] | .[0] as $a | .[0] | try path($a) catch "E"
-[1,2,3]
+[null,false,0,""]
 
 [.[]? | {a: .}] | .[0] as $a | .[0] | try path($a) catch "E"
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [.[]? | select(. != null)]
-"a"
+100000000000000000001
 
 [.[]? | select(. != null)]
-{"a":1,"b":2}
+1
 
 [.[]? | select(. != null)]
-1.000
+[1,2,3]
 
 [.[]? | select(. != null)]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [.[]? | select(type == "number")]
-[{"a":2},{"a":1}]
+"a"
 
 [.[]? | select(type == "number")]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [.[]? | select(type == "number")]
-2.5
+1.000
 
 [.[]? | select(type == "number")]
-[[1],[2]]
+null
 
 [.[]? | select(.a?)]
-1
+[{"a":2},{"a":1}]
 
 [.[]? | select(.a?)]
-[1,2,3]
+[null,false,0,""]
 
 [.[]? | select(.a?)]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [.[]? | select(.a?)]
-100000000000000000001
+[[1],[2]]
 
 [.[]? | try select(. + 1 > 1) catch "E"]
-{"a":1,"b":2}
+1
 
 [.[]? | try select(. + 1 > 1) catch "E"]
-1.000
+[1,2,3]
 
 [.[]? | try select(. + 1 > 1) catch "E"]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [.[]? | try select(. + 1 > 1) catch "E"]
-"a"
+100000000000000000001
 
 [.[]? | select(., .)]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [.[]? | select(., .)]
-2.5
+1.000
 
 [.[]? | select(., .)]
-[[1],[2]]
+null
 
 [.[]? | select(., .)]
-[{"a":2},{"a":1}]
+"a"
 
 [.[]? | select(debug)]
-[1,2,3]
+[null,false,0,""]
 
 [.[]? | select(debug)]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [.[]? | select(debug)]
-100000000000000000001
+[[1],[2]]
 
 [.[]? | select(debug)]
-1
+[{"a":2},{"a":1}]
 
 [.[]? | select(input? // false)]
-1.000
+[1,2,3]
 
 [.[]? | select(input? // false)]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [.[]? | select(input? // false)]
-"a"
+100000000000000000001
 
 [.[]? | select(input? // false)]
-{"a":1,"b":2}
+1
 
 select(true) as $a | select(true) | try path($a) catch "E"
-2.5
+1.000
 
 select(true) as $a | select(true) | try path($a) catch "E"
-[[1],[2]]
+null
 
 select(true) as $a | select(true) | try path($a) catch "E"
-[{"a":2},{"a":1}]
+"a"
 
 select(true) as $a | select(true) | try path($a) catch "E"
-[null,false,0,""]
+{"a":1,"b":2}
 
 [., ., ., .][0:2] as $v | $v | select(true) | $$$$v | .[3] = 9
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [., ., ., .][0:2] as $v | $v | select(true) | $$$$v | .[3] = 9
-100000000000000000001
+[[1],[2]]
 
 [., ., ., .][0:2] as $v | $v | select(true) | $$$$v | .[3] = 9
-1
+[{"a":2},{"a":1}]
 
 [., ., ., .][0:2] as $v | $v | select(true) | $$$$v | .[3] = 9
-[1,2,3]
+[null,false,0,""]
 
 map(. + 1)?
-null
+{"a":{"b":{"c":1}},"c":true}
 
 map(. + 1)?
-"a"
+100000000000000000001
 
 map(. + 1)?
-{"a":1,"b":2}
+1
 
 map(. + 1)?
-1.000
+[1,2,3]
 
 map(.a?)?
-[[1],[2]]
+null
 
 map(.a?)?
-[{"a":2},{"a":1}]
+"a"
 
 map(.a?)?
-[null,false,0,""]
+{"a":1,"b":2}
 
 map(.a?)?
-2.5
+1.000
 
 map(tostring)?
-100000000000000000001
+[[1],[2]]
 
 map(tostring)?
-1
+[{"a":2},{"a":1}]
 
 map(tostring)?
-[1,2,3]
+[null,false,0,""]
 
 map(tostring)?
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 try map(error) catch .
-"a"
+100000000000000000001
 
 try map(error) catch .
-{"a":1,"b":2}
+1
 
 try map(error) catch .
-1.000
+[1,2,3]
 
 try map(error) catch .
-null
+{"a":{"b":{"c":1}},"c":true}
 
 try map(. * {}) catch .
-[{"a":2},{"a":1}]
+"a"
 
 try map(. * {}) catch .
-[null,false,0,""]
+{"a":1,"b":2}
 
 try map(. * {}) catch .
-2.5
+1.000
 
 try map(. * {}) catch .
-[[1],[2]]
+null
 
 map(select(. != null))?
-1
+[{"a":2},{"a":1}]
 
 map(select(. != null))?
-[1,2,3]
+[null,false,0,""]
 
 map(select(. != null))?
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 map(select(. != null))?
-100000000000000000001
+[[1],[2]]
 
 map(debug)?
-{"a":1,"b":2}
+1
 
 map(debug)?
-1.000
+[1,2,3]
 
 map(debug)?
-null
+{"a":{"b":{"c":1}},"c":true}
 
 map(debug)?
-"a"
+100000000000000000001
 
 map(.) as $a | map(.) | try path($a) catch "E"
-[null,false,0,""]
+{"a":1,"b":2}
 
 map(.) as $a | map(.) | try path($a) catch "E"
-2.5
+1.000
 
 map(.) as $a | map(.) | try path($a) catch "E"
-[[1],[2]]
+null
 
 map(.) as $a | map(.) | try path($a) catch "E"
-[{"a":2},{"a":1}]
+"a"
 
 [] | map(.) as $a | [] | map(.) | path($a)
-[1,2,3]
+[null,false,0,""]
 
 [] | map(.) as $a | [] | map(.) | path($a)
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [] | map(.) as $a | [] | map(.) | path($a)
-100000000000000000001
+[[1],[2]]
 
 [] | map(.) as $a | [] | map(.) | path($a)
-1
+[{"a":2},{"a":1}]
 
 [., ., ., .][0:2] | map(.) | .[3] = 9
-1.000
+[1,2,3]
 
 [., ., ., .][0:2] | map(.) | .[3] = 9
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [., ., ., .][0:2] | map(.) | .[3] = 9
-"a"
+100000000000000000001
 
 [., ., ., .][0:2] | map(.) | .[3] = 9
-{"a":1,"b":2}
+1
 
 [.[]? | [.] | map(. + [1])? | .[0:1] | .[3] = 1]
-2.5
+1.000
 
 [.[]? | [.] | map(. + [1])? | .[0:1] | .[3] = 1]
-[[1],[2]]
+null
 
 [.[]? | [.] | map(. + [1])? | .[0:1] | .[3] = 1]
-[{"a":2},{"a":1}]
+"a"
 
 [.[]? | [.] | map(. + [1])? | .[0:1] | .[3] = 1]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [limit(3; repeat(1))]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [limit(3; repeat(1))]
-100000000000000000001
+[[1],[2]]
 
 [limit(3; repeat(1))]
-1
+[{"a":2},{"a":1}]
 
 [limit(3; repeat(1))]
-[1,2,3]
+[null,false,0,""]
 
 [limit(3; repeat(. + 1))?]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [limit(3; repeat(. + 1))?]
-"a"
+100000000000000000001
 
 [limit(3; repeat(. + 1))?]
-{"a":1,"b":2}
+1
 
 [limit(3; repeat(. + 1))?]
-1.000
+[1,2,3]
 
 try [limit(3; repeat(error))] catch .
-[[1],[2]]
+null
 
 try [limit(3; repeat(error))] catch .
-[{"a":2},{"a":1}]
+"a"
 
 try [limit(3; repeat(error))] catch .
-[null,false,0,""]
+{"a":1,"b":2}
 
 try [limit(3; repeat(error))] catch .
-2.5
+1.000
 
 [limit(3; repeat(input))]
-100000000000000000001
+[[1],[2]]
 
 [limit(3; repeat(input))]
-1
+[{"a":2},{"a":1}]
 
 [limit(3; repeat(input))]
-[1,2,3]
+[null,false,0,""]
 
 [limit(3; repeat(input))]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 first(repeat(1)) | [label $f | try break $f catch .]
-"a"
+100000000000000000001
 
 first(repeat(1)) | [label $f | try break $f catch .]
-{"a":1,"b":2}
+1
 
 first(repeat(1)) | [label $f | try break $f catch .]
-1.000
+[1,2,3]
 
 first(repeat(1)) | [label $f | try break $f catch .]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [limit(2; repeat([.]))] | .[0] as $a | .[1] | try path($a) catch "E"
-[{"a":2},{"a":1}]
+"a"
 
 [limit(2; repeat([.]))] | .[0] as $a | .[1] | try path($a) catch "E"
-[null,false,0,""]
+{"a":1,"b":2}
 
 [limit(2; repeat([.]))] | .[0] as $a | .[1] | try path($a) catch "E"
-2.5
+1.000
 
 [limit(2; repeat([.]))] | .[0] as $a | .[1] | try path($a) catch "E"
-[[1],[2]]
+null
 
 [., ., ., .][0:2] as $v | $v | first(repeat(.)) | $$$$v | .[3] = 9
-1
+[{"a":2},{"a":1}]
 
 [., ., ., .][0:2] as $v | $v | first(repeat(.)) | $$$$v | .[3] = 9
-[1,2,3]
+[null,false,0,""]
 
 [., ., ., .][0:2] as $v | $v | first(repeat(.)) | $$$$v | .[3] = 9
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [., ., ., .][0:2] as $v | $v | first(repeat(.)) | $$$$v | .[3] = 9
-100000000000000000001
+[[1],[2]]
 
 [inputs]
-{"a":1,"b":2}
+1
 
 [inputs]
-1.000
+[1,2,3]
 
 [inputs]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [inputs]
-"a"
+100000000000000000001
 
 try [inputs, error("x")] catch .
-[null,false,0,""]
+{"a":1,"b":2}
 
 try [inputs, error("x")] catch .
-2.5
+1.000
 
 try [inputs, error("x")] catch .
-[[1],[2]]
+null
 
 try [inputs, error("x")] catch .
-[{"a":2},{"a":1}]
+"a"
 
 walk(if type == "number" then . * 10 else . end)
-[1,2,3]
+[null,false,0,""]
 
 walk(if type == "number" then . * 10 else . end)
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 walk(if type == "number" then . * 10 else . end)
-100000000000000000001
+[[1],[2]]
 
 walk(if type == "number" then . * 10 else . end)
-1
+[{"a":2},{"a":1}]
 
 [paths(type == "number")]
-1.000
+[1,2,3]
 
 [paths(type == "number")]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [paths(type == "number")]
-"a"
+100000000000000000001
 
 [paths(type == "number")]
-{"a":1,"b":2}
+1
 
 .[]? |= . + 1
-2.5
+1.000
 
 .[]? |= . + 1
-[[1],[2]]
+null
 
 .[]? |= . + 1
-[{"a":2},{"a":1}]
+"a"
 
 .[]? |= . + 1
-[null,false,0,""]
+{"a":1,"b":2}
 
 map_values(. // 0)?
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 map_values(. // 0)?
-100000000000000000001
+[[1],[2]]
 
 map_values(. // 0)?
-1
+[{"a":2},{"a":1}]
 
 map_values(. // 0)?
-[1,2,3]
+[null,false,0,""]
 
 with_entries(.value |= tostring)?
-null
+{"a":{"b":{"c":1}},"c":true}
 
 with_entries(.value |= tostring)?
-"a"
+100000000000000000001
 
 with_entries(.value |= tostring)?
-{"a":1,"b":2}
+1
 
 with_entries(.value |= tostring)?
-1.000
+[1,2,3]
 
 [.[]? | first(.a?)]
-[[1],[2]]
+null
 
 [.[]? | first(.a?)]
-[{"a":2},{"a":1}]
+"a"
 
 [.[]? | first(.a?)]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [.[]? | first(.a?)]
-2.5
+1.000
 
 any(.[]?; . == 1)
-100000000000000000001
+[[1],[2]]
 
 any(.[]?; . == 1)
-1
+[{"a":2},{"a":1}]
 
 any(.[]?; . == 1)
-[1,2,3]
+[null,false,0,""]
 
 any(.[]?; . == 1)
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 sort_by(.a)?
-"a"
+100000000000000000001
 
 sort_by(.a)?
-{"a":1,"b":2}
+1
 
 sort_by(.a)?
-1.000
+[1,2,3]
 
 sort_by(.a)?
-null
+{"a":{"b":{"c":1}},"c":true}
 
 group_by(.)? | map(length)
-[{"a":2},{"a":1}]
+"a"
 
 group_by(.)? | map(length)
-[null,false,0,""]
+{"a":1,"b":2}
 
 group_by(.)? | map(length)
-2.5
+1.000
 
 group_by(.)? | map(length)
-[[1],[2]]
+null
 
 [limit(2; .[]? | select(. != null))]
-1
+[{"a":2},{"a":1}]
 
 [limit(2; .[]? | select(. != null))]
-[1,2,3]
+[null,false,0,""]
 
 [limit(2; .[]? | select(. != null))]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [limit(2; .[]? | select(. != null))]
-100000000000000000001
+[[1],[2]]
 
 [first(error({"__jq":0}))]
-{"a":1,"b":2}
+1
 
 [first(error({"__jq":0}))]
-1.000
+[1,2,3]
 
 [first(error({"__jq":0}))]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [first(error({"__jq":0}))]
-"a"
+100000000000000000001
 
 [first(1, error({"__jq":0}))]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [first(1, error({"__jq":0}))]
-2.5
+1.000
 
 [first(1, error({"__jq":0}))]
-[[1],[2]]
+null
 
 [first(1, error({"__jq":0}))]
-[{"a":2},{"a":1}]
+"a"
 
 [isempty(error({"__jq":0}))]
-[1,2,3]
+[null,false,0,""]
 
 [isempty(error({"__jq":0}))]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [isempty(error({"__jq":0}))]
-100000000000000000001
+[[1],[2]]
 
 [isempty(error({"__jq":0}))]
-1
-
-[any(.[]?; error({"__jq":0}))]
-1.000
-
-[any(.[]?; error({"__jq":0}))]
-null
-
-[any(.[]?; error({"__jq":0}))]
-"a"
-
-[any(.[]?; error({"__jq":0}))]
-{"a":1,"b":2}
-
-[all(error({"__jq":0}); .)]
-2.5
-
-[all(error({"__jq":0}); .)]
-[[1],[2]]
-
-[all(error({"__jq":0}); .)]
 [{"a":2},{"a":1}]
 
+[any(.[]?; error({"__jq":0}))]
+[1,2,3]
+
+[any(.[]?; error({"__jq":0}))]
+{"a":{"b":{"c":1}},"c":true}
+
+[any(.[]?; error({"__jq":0}))]
+100000000000000000001
+
+[any(.[]?; error({"__jq":0}))]
+1
+
 [all(error({"__jq":0}); .)]
-[null,false,0,""]
-
-[IN(.[]?; error({"__jq":0}))]
-{"a":{"b":{"c":1}},"c":true}
-
-[IN(.[]?; error({"__jq":0}))]
-100000000000000000001
-
-[IN(.[]?; error({"__jq":0}))]
-1
-
-[IN(.[]?; error({"__jq":0}))]
-[1,2,3]
-
-[limit(3; .[]?, error({"__jq":0}))]
-null
-
-[limit(3; .[]?, error({"__jq":0}))]
-"a"
-
-[limit(3; .[]?, error({"__jq":0}))]
-{"a":1,"b":2}
-
-[limit(3; .[]?, error({"__jq":0}))]
 1.000
 
-[limit(3; .[]?, error({"__jq":1}))]
-[[1],[2]]
+[all(error({"__jq":0}); .)]
+null
 
-[limit(3; .[]?, error({"__jq":1}))]
-[{"a":2},{"a":1}]
+[all(error({"__jq":0}); .)]
+"a"
 
-[limit(3; .[]?, error({"__jq":1}))]
-[null,false,0,""]
+[all(error({"__jq":0}); .)]
+{"a":1,"b":2}
 
-[limit(3; .[]?, error({"__jq":1}))]
+[IN(.[]?; error({"__jq":0}))]
 2.5
 
-.a |= error({"__jq":0})
-100000000000000000001
-
-.a |= error({"__jq":0})
-1
-
-.a |= error({"__jq":0})
-[1,2,3]
-
-.a |= error({"__jq":0})
-{"a":{"b":{"c":1}},"c":true}
-
-(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
-"a"
-
-(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
-{"a":1,"b":2}
-
-(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
-1.000
-
-(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
-null
-
-.[]? |= (if . == 1 then error({"__jq":1}) else . end)
-[{"a":2},{"a":1}]
-
-.[]? |= (if . == 1 then error({"__jq":1}) else . end)
-[null,false,0,""]
-
-.[]? |= (if . == 1 then error({"__jq":1}) else . end)
-2.5
-
-.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+[IN(.[]?; error({"__jq":0}))]
 [[1],[2]]
 
-(.. | numbers) |= error({"__jq":0})
-1
-
-(.. | numbers) |= error({"__jq":0})
-[1,2,3]
-
-(.. | numbers) |= error({"__jq":0})
-{"a":{"b":{"c":1}},"c":true}
-
-(.. | numbers) |= error({"__jq":0})
-100000000000000000001
-
-walk(if type == "number" then error({"__jq":0}) else . end)
-{"a":1,"b":2}
-
-walk(if type == "number" then error({"__jq":0}) else . end)
-1.000
-
-walk(if type == "number" then error({"__jq":0}) else . end)
-null
-
-walk(if type == "number" then error({"__jq":0}) else . end)
-"a"
-
-walk(if type == "number" then error({"__jq":1}) else . end)
-[null,false,0,""]
-
-walk(if type == "number" then error({"__jq":1}) else . end)
-2.5
-
-walk(if type == "number" then error({"__jq":1}) else . end)
-[[1],[2]]
-
-walk(if type == "number" then error({"__jq":1}) else . end)
+[IN(.[]?; error({"__jq":0}))]
 [{"a":2},{"a":1}]
 
-walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
-[1,2,3]
+[IN(.[]?; error({"__jq":0}))]
+[null,false,0,""]
 
-walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+[limit(3; .[]?, error({"__jq":0}))]
 {"a":{"b":{"c":1}},"c":true}
 
-walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+[limit(3; .[]?, error({"__jq":0}))]
 100000000000000000001
 
-walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+[limit(3; .[]?, error({"__jq":0}))]
 1
 
-walk(if type == "object" then error({"__jq":1}) else . end)
-1.000
+[limit(3; .[]?, error({"__jq":0}))]
+[1,2,3]
 
-walk(if type == "object" then error({"__jq":1}) else . end)
+[limit(3; .[]?, error({"__jq":1}))]
 null
 
-walk(if type == "object" then error({"__jq":1}) else . end)
+[limit(3; .[]?, error({"__jq":1}))]
 "a"
 
-walk(if type == "object" then error({"__jq":1}) else . end)
+[limit(3; .[]?, error({"__jq":1}))]
 {"a":1,"b":2}
+
+[limit(3; .[]?, error({"__jq":1}))]
+1.000
+
+.a |= error({"__jq":0})
+[[1],[2]]
+
+.a |= error({"__jq":0})
+[{"a":2},{"a":1}]
+
+.a |= error({"__jq":0})
+[null,false,0,""]
+
+.a |= error({"__jq":0})
+2.5
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+100000000000000000001
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+1
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+[1,2,3]
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+{"a":{"b":{"c":1}},"c":true}
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+"a"
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+{"a":1,"b":2}
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+1.000
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+null
+
+(.. | numbers) |= error({"__jq":0})
+[{"a":2},{"a":1}]
+
+(.. | numbers) |= error({"__jq":0})
+[null,false,0,""]
+
+(.. | numbers) |= error({"__jq":0})
+2.5
+
+(.. | numbers) |= error({"__jq":0})
+[[1],[2]]
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+1
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+[1,2,3]
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+{"a":{"b":{"c":1}},"c":true}
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+100000000000000000001
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+{"a":1,"b":2}
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+1.000
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+null
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+"a"
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+[null,false,0,""]
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+2.5
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+[[1],[2]]
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+[{"a":2},{"a":1}]
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+[1,2,3]
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+{"a":{"b":{"c":1}},"c":true}
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+100000000000000000001
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+1
