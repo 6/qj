@@ -111,8 +111,11 @@ answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode
   layout, strings, structural indexes, error codes, buffer reuse and padding.
 - **Input layer tests:** `src/io/tests/` — the reader against a line-by-line port of `util.c`
   (with its 4096-byte `fgets` chunks) on generated adversarial inputs, against the jq binary,
-  streamed vs whole, and the parallel engine against the sequential reader. The long runs are
-  `#[ignore]`d (`cargo test --release --lib io:: -- --ignored`).
+  streamed vs whole, and the parallel engine against the sequential reader. Whole inputs there
+  are anonymous mappings the reader releases a page at a time (a stale read of released input
+  faults); `release.rs` checks the release itself, including jobs the engine cancelled while
+  their worker still reads them. The long runs are `#[ignore]`d
+  (`cargo test --release --lib io:: -- --ignored`).
 - **Cross-tool compat comparison** (`#[ignore]`, legacy): `tests/jq_compat_runner.rs` — runs
   jq.test against qj, jq, jaq, and gojq with the same arguments. Writes
   `tests/jq_compat/results.md`.
@@ -268,7 +271,17 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
 - `QJ_NO_MMAP=1` — stream regular files (and stdin redirected from a file) instead of
   memory-mapping them.
 - `QJ_WINDOW_SIZE=N` — at most N MB of input in flight in the parallel record engine (default:
-  threads × 8 MB, clamped to 16–128 MB).
+  threads × 8 MB, clamped to 16–128 MB); `NK` is N KB (for tests). Jobs are at most a
+  quarter of the window.
+- `QJ_NO_RELEASE=1` — keep memory-mapped input resident (A/B checks). By default the reader
+  gives back the pages of a mapped input that nothing can read anymore, in steps of 8 MB, so
+  residency stays near the window rather than the file size (see "Memory" in
+  `docs/LIMITATIONS.md`).
+- `QJ_RELEASE_STEP=N` — release mapped input in steps of N bytes instead; `1` releases every
+  page as soon as nothing can read it (tests: released pages are `PROT_NONE`, so a stale read
+  faults). Test mode: `QJ_RELEASE_STEP=1 QJ_WINDOW_SIZE=16K`, e.g. as
+  `JQ_DIFF_QJ_ENV="QJ_RELEASE_STEP=1 QJ_WINDOW_SIZE=16K" JQ_DIFF_BASELINE=target/tmp/none cargo test --release jq_diff -- --ignored`
+  (`corpus/release.toml` runs large-ish NDJSON that way in every jq_diff run).
 - `QJ_NO_SIMD_INPUT=1` — parse all input with the jq parser port instead of the simdjson fast
   path (A/B checks).
 - `QJ_INPUT=util` — read input with the CLI's plain `util.c` port instead of `src/io`'s reader
@@ -277,7 +290,8 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
   programs (paths, `.[]`, `.a?`, `.[]?`, `length`, `keys`, `map`, `add` of numbers, `{...}`,
   `def f: ...;`, `select(... == c and ...)`, `select(... > c)`) on simdjson's tape
   (`src/io/tape_eval.rs`; A/B checks).
-- `QJ_ENGINE_STATS=1` — after a parallel run, print the engine's counters to stderr.
+- `QJ_ENGINE_STATS=1` — after a parallel run, print the engine's counters to stderr (and how
+  many ranges of mapped input were released).
 - `QJ_NO_NATIVE=1` — run jq's bytecode definitions of builtin.jq functions instead of the exact
   native fast paths in `src/jq/builtins/native/` (A/B checks). Natives are also off under
   `--debug-trace`, while tracking paths, and with `QJ_JQ_COMPAT=1`.

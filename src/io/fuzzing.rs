@@ -11,7 +11,7 @@ use super::parallel::{
     self, DumpFactory, EngineOptions, RecordMeta, RecordSink, RecordWorker, WorkerFactory,
 };
 use super::reader::{InputReader, ReaderOptions};
-use super::source::{Opened, Opener};
+use super::source::{Mmap, Opened, Opener};
 use crate::jq::value::{DumpOptions, Error, Value};
 
 /// Strict structural identity: same kinds, same number literal text and
@@ -56,6 +56,9 @@ struct Split {
     files: Vec<(OsString, Arc<Vec<u8>>)>,
     /// `None`: whole; `Some(n)`: streamed in reads of 1..=n bytes.
     stream: Option<usize>,
+    /// Whole inputs come in releasable mappings (see [`Mmap::copy_of`]),
+    /// whose first page boundary falls within them.
+    mapped: bool,
     seed: u64,
     opened: u64,
 }
@@ -91,6 +94,13 @@ impl Opener for Split {
             return Err(io::Error::from_raw_os_error(2));
         };
         Ok(match self.stream {
+            None if self.mapped => {
+                let page = crate::io::source::page_size();
+                let at =
+                    1 + (self.seed.wrapping_mul(self.opened) as usize) % data.len().clamp(1, page);
+                let map = Mmap::copy_of(data, page - at).expect("anonymous mapping");
+                Opened::Whole(Arc::new(map))
+            }
             None => Opened::Whole(data.clone()),
             Some(max) => Opened::Stream {
                 reader: Box::new(Chunked {
@@ -203,31 +213,37 @@ pub fn check_reader_equivalence(data: &[u8]) {
         prev = c;
     }
     let names: Vec<OsString> = files.iter().map(|(n, _)| n.clone()).collect();
-    let reader = |stream: Option<usize>, fast: bool| {
+    // (Mapped inputs are released a page at a time, as soon as the reader
+    // can: reading released bytes faults.)
+    let reader = |stream: Option<usize>, fast: bool, mapped: bool| {
         let split = Split {
             files: files.clone(),
             stream,
+            mapped,
             seed: u64::from(cfg) + 1,
             opened: 0,
         };
         let mut r = InputReader::with_opener(names.clone(), opts, Box::new(split));
         r.set_message_sink(Box::new(|_| {}));
         r.set_fast_path(fast);
+        r.set_release_step(1);
         r
     };
     const LIMIT: usize = 1000;
-    let want = events(&mut reader(None, false), LIMIT);
-    for (stream, fast) in [
-        (None, true),
-        (Some(1 + cfg as usize % 7), true),
-        (Some(4096), false),
-        (Some(300), true),
+    let want = events(&mut reader(None, false, false), LIMIT);
+    for (stream, fast, mapped) in [
+        (None, true, false),
+        (None, true, true),
+        (None, false, true),
+        (Some(1 + cfg as usize % 7), true, false),
+        (Some(4096), false, false),
+        (Some(300), true, false),
     ] {
-        let got = events(&mut reader(stream, fast), LIMIT);
+        let got = events(&mut reader(stream, fast, mapped), LIMIT);
         let first = got.iter().zip(want.iter()).position(|(a, b)| !ev_eq(a, b));
         assert!(
             got.len() == want.len() && first.is_none(),
-            "stream={stream:?} fast={fast} differs at event {first:?}: {:?} vs {:?}",
+            "stream={stream:?} fast={fast} mapped={mapped} differs at event {first:?}: {:?} vs {:?}",
             first.map(|i| &got[i]),
             first.map(|i| &want[i])
         );
@@ -245,7 +261,7 @@ pub fn check_reader_equivalence(data: &[u8]) {
         statuses: Vec::new(),
         errors: Vec::new(),
     };
-    let mut r = reader(None, true);
+    let mut r = reader(None, true, false);
     let mut w = factory.new_worker();
     while r.failures() == 0 {
         match r.next() {
@@ -266,11 +282,6 @@ pub fn check_reader_equivalence(data: &[u8]) {
             None => break,
         }
     }
-    let mut par = Collect {
-        out: Vec::new(),
-        statuses: Vec::new(),
-        errors: Vec::new(),
-    };
     let engine = EngineOptions {
         threads: 2,
         window_bytes: 256 + cfg as usize * 16,
@@ -278,15 +289,27 @@ pub fn check_reader_equivalence(data: &[u8]) {
         max_job_bytes: 1 + cfg as usize,
         stack_size: 64 << 20,
     };
-    parallel::run(&mut reader(Some(100), true), &factory, &mut par, &engine);
-    assert!(
-        par.out == seq.out && par.statuses == seq.statuses && par.errors == seq.errors,
-        "engine differs: {:?} vs {:?}, errors {:?} vs {:?}",
-        String::from_utf8_lossy(&par.out),
-        String::from_utf8_lossy(&seq.out),
-        par.errors,
-        seq.errors
-    );
+    for (stream, mapped) in [(Some(100), false), (None, true)] {
+        let mut par = Collect {
+            out: Vec::new(),
+            statuses: Vec::new(),
+            errors: Vec::new(),
+        };
+        parallel::run(
+            &mut reader(stream, true, mapped),
+            &factory,
+            &mut par,
+            &engine,
+        );
+        assert!(
+            par.out == seq.out && par.statuses == seq.statuses && par.errors == seq.errors,
+            "engine (mapped={mapped}) differs: {:?} vs {:?}, errors {:?} vs {:?}",
+            String::from_utf8_lossy(&par.out),
+            String::from_utf8_lossy(&seq.out),
+            par.errors,
+            seq.errors
+        );
+    }
 }
 
 /// Programs for [`check_tape_equivalence`]: every construct the tape
