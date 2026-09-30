@@ -3,16 +3,16 @@
 //! A program made only of paths (`.a.b`, `."a"`, `.["a"]`, and `.a?`),
 //! iteration (`.[]`, `.[]?`), pipes, `length`, `keys`, `keys_unsorted`,
 //! array collection (`[...]`, `map(...)`), object construction with constant
-//! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its equality
-//! with a constant (`select(.type == "PushEvent")`), and of definitions
-//! without parameters of such programs (inlined where they're called, as
-//! jq resolves the calls), has outputs that are fully determined by its
-//! input, and can be computed on the tape
-//! ([`super::tape`]). Those outputs are what the jq VM would produce on the
-//! value the builder makes of the input: every step follows the builtin or
-//! opcode it stands for (`jv_get` on objects, `EACH`, `INDEX_OPT`,
-//! `EACH_OPT`, `f_length`, `f_keys`, `jv_equal`, ...), and duplicate keys
-//! follow jq's rule.
+//! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its
+//! comparison with a constant (`select(.type == "PushEvent")`,
+//! `select(.n > 0)`), and of definitions without parameters of such
+//! programs (inlined where they're called, as jq resolves the calls), has
+//! outputs that are fully determined by its input, and can be computed on
+//! the tape ([`super::tape`]). Those outputs are what the jq VM would produce
+//! on the value the builder makes of the input: every step follows the
+//! builtin or opcode it stands for (`jv_get` on objects, `EACH`,
+//! `INDEX_OPT`, `EACH_OPT`, `f_length`, `f_keys`, `jv_equal`, `jv_cmp`, ...),
+//! and duplicate keys follow jq's rule.
 //!
 //! Anything else is [`Decline`]d: an error in jq (`.a` on a number, `length`
 //! of a boolean, ...), or a document the tape view can't handle. The caller
@@ -27,6 +27,7 @@
 //! colored.
 
 use std::cell::RefCell;
+use std::cmp::Ordering;
 
 use crate::jq::lang::ast::{self, BinOp, DictPairKind, Literal, NodeKind, ProgramBody};
 use crate::jq::lang::parser::{NoHooks, parse};
@@ -79,6 +80,13 @@ enum Test {
     Truthy,
     Equal(Const),
     NotEqual(Const),
+    /// `E < c` and the other orderings: whether `accept` takes
+    /// `jv_cmp(E, c)` (reversed with `flip`, for `c < E`).
+    Order {
+        accept: fn(Ordering) -> bool,
+        flip: bool,
+        c: Const,
+    },
 }
 
 #[derive(Debug)]
@@ -308,11 +316,38 @@ fn select<'a>(f: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Op
         };
         return Some(Expr::Select(Box::new(e), test));
     }
+    if let NodeKind::Binary { op, lhs, rhs } = &f.kind
+        && let Some(accept) = order_op(*op)
+    {
+        // `c < E` is `E > c`.
+        let (e, c, flip) = match (constant(lhs), constant(rhs)) {
+            (None, Some(c)) => (lhs, c, false),
+            (Some(c), None) => (rhs, c, true),
+            _ => return None,
+        };
+        let e = convert(e, scope, budget)?;
+        if !single(&e) {
+            return None;
+        }
+        return Some(Expr::Select(Box::new(e), Test::Order { accept, flip, c }));
+    }
     let e = convert(f, scope, budget)?;
     if !single(&e) {
         return None;
     }
     Some(Expr::Select(Box::new(e), Test::Truthy))
+}
+
+/// For `<`, `<=`, `>`, `>=`: which results of `jv_cmp(lhs, rhs)` make it
+/// true (builtin.c's `order_cmp`).
+fn order_op(op: BinOp) -> Option<fn(Ordering) -> bool> {
+    Some(match op {
+        BinOp::Lt => Ordering::is_lt,
+        BinOp::Le => Ordering::is_le,
+        BinOp::Gt => Ordering::is_gt,
+        BinOp::Ge => Ordering::is_ge,
+        _ => return None,
+    })
 }
 
 /// Whether `e` always has exactly one output (unless it's an error).
@@ -363,7 +398,54 @@ fn const_string_lit(s: &ast::StringLit) -> Option<String> {
     s.constant_value()
 }
 
+/// jq's order of kinds (`jv_kind`'s): null < false < true < numbers <
+/// strings < arrays < objects.
+fn kind_rank(kind: Kind) -> u8 {
+    match kind {
+        Kind::Null => 0,
+        Kind::False => 1,
+        Kind::True => 2,
+        Kind::Number => 3,
+        Kind::String => 4,
+        Kind::Array => 5,
+        Kind::Object => 6,
+    }
+}
+
 impl Const {
+    fn kind(&self) -> Kind {
+        match self {
+            Const::Null => Kind::Null,
+            Const::False => Kind::False,
+            Const::True => Kind::True,
+            Const::Number(..) => Kind::Number,
+            Const::String(_) => Kind::String,
+        }
+    }
+
+    /// The literal jq's compiler makes of a number constant.
+    fn number(&self) -> Option<Number> {
+        let Const::Number(t, neg) = self else {
+            return None;
+        };
+        let c = Number::from_literal(t.as_bytes()).expect("checked");
+        Some(if *neg { c.negate() } else { c })
+    }
+
+    /// `jv_cmp(v, c)` for a value of `kind` (`number` gives it when it's a
+    /// number, `string` when it's a string): by kind, then numbers by
+    /// value (never NaN here: JSON has none, nor do constants or lengths)
+    /// and strings by their bytes.
+    fn order(&self, kind: Kind, number: impl FnOnce() -> Number, string: &str) -> Ordering {
+        kind_rank(kind)
+            .cmp(&kind_rank(self.kind()))
+            .then_with(|| match self {
+                Const::Number(..) => number().compare(&self.number().expect("a number")),
+                Const::String(s) => string.as_bytes().cmp(s.as_bytes()),
+                _ => Ordering::Equal,
+            })
+    }
+
     /// `jv_equal(v, c)` for a value of `kind` (`number` gives it when it's a
     /// number, `string` when it's a string).
     fn equals(&self, kind: Kind, number: impl FnOnce() -> Number, string: &str) -> bool {
@@ -627,6 +709,24 @@ impl Eval<'_, '_> {
                     TVal::Array(_) | TVal::Object(_) => false,
                 };
                 eq == matches!(test, Test::Equal(_))
+            }
+            Test::Order { accept, flip, c } => {
+                let ord = match v {
+                    TVal::Node(n) => {
+                        let kind = doc.kind(*n);
+                        let s = if kind == Kind::String {
+                            doc.str(*n)
+                        } else {
+                            ""
+                        };
+                        c.order(kind, || doc.number(*n), s)
+                    }
+                    TVal::Null => c.order(Kind::Null, || unreachable!(), ""),
+                    TVal::Number(x) => c.order(Kind::Number, || x.clone(), ""),
+                    TVal::Array(_) => c.order(Kind::Array, || unreachable!(), ""),
+                    TVal::Object(_) => c.order(Kind::Object, || unreachable!(), ""),
+                };
+                accept(if *flip { ord.reverse() } else { ord })
             }
         }
     }
