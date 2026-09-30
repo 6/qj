@@ -382,6 +382,17 @@ const PROGRAMS: &[&str] = &[
     "[., ., ., .][0:2] as $v | $v | first(repeat(.)) | $$$$v | .[3] = 9",
     "[inputs]",
     "try [inputs, error(\"x\")] catch .",
+    // `.[] |=` over a view: the first update copies (or writes in place), and a write
+    // past the end afterwards shows stale elements or not
+    "[., ., ., .][0:2] | (.[] |= .) | .[3] = 9",
+    "[., ., ., .][0:2] | (.[] |= 1) | .[3] = 9",
+    "[., ., ., .][0:2] as $v | $v | (.[] |= 1) | $$$$v | .[3] = 9",
+    "[range(4)] | .[0:2] | (.[] |= . + 1) | .[3] = 9",
+    "[range(4)] | .[0:2] as $v | $v | (.[] |= .) | .[3] = 9",
+    "[range(4)] | .[0:1] | (.[] |= [.]) | .[3] = 9",
+    "[[1,2,3,4][0:2]] | (.[] |= (.[0:1])) | .[0][3] = 9",
+    "{a: [1,2,3,4][0:2]} | (.[] |= .) | .a[3] = 9",
+    "[., .][0:1] | map_values(. // 0) | .[2] = 7",
     // an error equal to a native's own label: the label's handler swallows it
     "[first(error({\"__jq\":0}))]",
     "[first(1, error({\"__jq\":0}))]",

@@ -310,6 +310,12 @@ const NATIVE_PROGRAMS: &[&str] = &[
     "sort_by(.a)?",
     "group_by(.)? | map(length)",
     "[limit(2; .[]? | select(. != null))]",
+    // `.[] |=` over views: copies and in-place writes as in jq.
+    "[., ., ., .][0:2] | (.[] |= 1) | .[3] = 9",
+    "[., ., ., .][0:2] as $v | $v | (.[] |= 1) | $$$$v | .[3] = 9",
+    "[range(4)] | .[0:2] | (.[] |= . + 1) | .[3] = 9",
+    "[[1,2,3,4][0:2]] | (.[] |= (.[0:1])) | .[0][3] = 9",
+    "{a: [1,2,3,4][0:2]} | (.[] |= .) | .a[3] = 9",
     // An error equal to a native's own label is swallowed by the label's handler.
     "[first(error({\"__jq\":0}))]",
     "[first(1, error({\"__jq\":0}))]",

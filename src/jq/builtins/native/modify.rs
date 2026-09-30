@@ -60,7 +60,7 @@ pub(super) fn modify(
             // A slice.
             state.step(vm, Value::from(vec![k]), &update)?;
         } else {
-            state.step_key(vm, k, &update)?;
+            state.step_key(vm, k, &update, false)?;
         }
         return state.finish();
     }
@@ -103,7 +103,7 @@ fn modify_each(vm: &mut Jq, input: Value, opt: bool, update: &Update) -> Result<
         if is_array && i + 1 == n {
             held = None;
         }
-        state.step_key(vm, k, update)?;
+        state.step_key(vm, k, update, true)?;
     }
     drop(held);
     state.finish()
@@ -160,7 +160,12 @@ impl State {
     /// slice), without making the path: `getpath([k])` is `get(k)`, and
     /// `setpath([k]; u)` is `setpath_rec`'s `get(k)`, `set(k; null)`, a free of what the
     /// get returned, then `set(k; u)`. The path is only made if it is to be deleted.
-    fn step_key(&mut self, vm: &mut Jq, k: Value, update: &Update) -> Result<(), Stop> {
+    ///
+    /// `own`: `k` is one of the value's own keys (`.[]`'s), where that sequence leaves
+    /// exactly what `set(k; u)` does: it can't fail, whether the container is copied
+    /// (and into what storage) depends only on the container, and the old value at `k`
+    /// is freed either way, before anything else runs.
+    fn step_key(&mut self, vm: &mut Jq, k: Value, update: &Update, own: bool) -> Result<(), Stop> {
         let State::Pair { root, dels } = self else {
             return self.step(vm, Value::from(vec![k]), update);
         };
@@ -171,10 +176,14 @@ impl State {
             // setpath([0] + $p; $v)
             Ok(Some(u)) => {
                 let r = std::mem::take(root);
-                let subroot = r.get(&k)?;
-                let parent = r.set(&k, Value::Null)?;
-                drop(subroot);
-                *root = parent.set(&k, u)?;
+                *root = if own {
+                    r.set(&k, u)?
+                } else {
+                    let subroot = r.get(&k)?;
+                    let parent = r.set(&k, Value::Null)?;
+                    drop(subroot);
+                    parent.set(&k, u)?
+                };
             }
             // setpath([1, (.[1] | length)]; $p)
             Ok(None) => dels.push(Value::from(vec![k])),
