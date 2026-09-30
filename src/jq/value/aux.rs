@@ -358,9 +358,14 @@ impl std::ops::Index<&Str> for Object {
 /// (set to null) so the child can be updated in place; going back up the
 /// updated children are stored again, exactly as jq does.
 fn setpath_rec(root: Value, path: &[Value], value: Value) -> Result<Value, Error> {
+    // QJ_JQ_COMPAT=1: jq recurses once per path element, and dies when the
+    // path is longer than its C stack allows — at the element it reaches, so
+    // a path that errors first errors in both tools.
+    let descent = crate::compat::Descent::new(crate::compat::Site::Setpath);
     let mut parents: Vec<(Value, &Value)> = Vec::with_capacity(path.len());
     let mut cur = root;
-    for pathcurr in path {
+    for (level, pathcurr) in path.iter().enumerate() {
+        descent.level(level as u64 + 1);
         if matches!(pathcurr, Value::Object(_)) {
             // Assignment to slice -- dunno yet how to avoid the extra copy
             let sub = cur.get(pathcurr)?;
@@ -375,6 +380,8 @@ fn setpath_rec(root: Value, path: &[Value], value: Value) -> Result<Value, Error
             cur = subroot;
         }
     }
+    // The innermost call, the one that returns `value` for an empty path.
+    descent.level(path.len() as u64 + 1);
     let mut v = value;
     drop(cur);
     while let Some((parent, key)) = parents.pop() {
@@ -511,6 +518,10 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
             .get(start)
             .cloned()
     };
+    // QJ_JQ_COMPAT=1: jq recurses once per level of the paths it groups, and
+    // dies when they go deeper than its C stack allows.
+    let descent = crate::compat::Descent::new(crate::compat::Site::Delpaths);
+    descent.level(1);
     let mut stack = vec![Frame {
         object,
         paths,
@@ -577,6 +588,7 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
             break;
         }
         if let Some(child) = descend {
+            descent.level(stack.len() as u64 + 1);
             stack.push(child);
             continue;
         }

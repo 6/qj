@@ -338,6 +338,9 @@ impl Object {
     /// `jv_object_merge_recursive` (object `*`): nested objects present on
     /// both sides are merged recursively, anything else is replaced.
     pub fn merge_recursive(&mut self, other: &Object) {
+        // QJ_JQ_COMPAT=1: jq's recursion overflows its C stack when both
+        // sides nest objects deeper than it allows.
+        crate::compat::merging(self, other);
         // jq recurses once per level of nesting shared by both sides; this
         // keeps the recursion in an explicit stack (values can be 10000
         // levels deep) with the same order of updates.

@@ -19,6 +19,9 @@ const MAX_RECURSION: u32 = 48;
 
 /// `jv_equal`.
 pub(super) fn equal(a: &Value, b: &Value) -> bool {
+    // QJ_JQ_COMPAT=1: jq recurses, and dies when this comparison is deeper
+    // than its C stack allows.
+    crate::compat::comparing_equal(a, b);
     equal_rec(a, b, 0)
 }
 
@@ -106,6 +109,9 @@ fn equal_iter(a: &Value, b: &Value) -> bool {
 
 /// `jv_cmp`; with `total`, NaN == NaN (a consistent order for sorting).
 pub(super) fn compare(a: &Value, b: &Value, total: bool) -> Ordering {
+    // QJ_JQ_COMPAT=1: as in `equal`. jq's `sort_cmp` calls `jv_cmp` too, so
+    // the check belongs here rather than at each caller.
+    crate::compat::comparing_order(a, b);
     cmp_rec(a, b, total, 0)
 }
 
@@ -243,6 +249,9 @@ fn cmp_iter(a: &Value, b: &Value, total: bool) -> Ordering {
 
 /// `jv_contains`.
 pub(super) fn contains(a: &Value, b: &Value) -> bool {
+    // QJ_JQ_COMPAT=1: as in `equal`, with jq's search over the elements of an
+    // array (see `src/compat/depth.rs`).
+    crate::compat::containing(a, b);
     contains_rec(a, b, 0)
 }
 
