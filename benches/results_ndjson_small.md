@@ -1,16 +1,17 @@
 # GH Archive Benchmark
 
-> Generated: 2026-02-17T15:09:08Z on `Apple M4 Pro (48 GB)` (total time: 484s)
+> Generated: 2026-09-30T04:32:34Z on `Apple M5 Max (128 GB)` (total time: 415s)
 > 3 runs, 1 warmup via [hyperfine](https://github.com/sharkdp/hyperfine).
+> Tools: qj 0.1.4, jq-1.8.1, jaq 2.3.0, gojq 0.12.18 (rev: fa534a1/go1.25.4)
 
 ### NDJSON (gharchive.ndjson, 1.1GB, parallel processing)
 
 | Filter | **qj** | vs jq | qj (1T) | vs jq | jq | jaq | gojq |
 |--------|------:|------:|------:|------:|------:|------:|------:|
-| `'.actor.login'` | **76.8ms** | **95.1x** | 358.0ms | 20.4x | 7.31s | 2.77s | 6.66s |
-| `-c 'length'` | **100.2ms** | **71.4x** | 596.7ms | 12.0x | 7.15s | 2.67s | 6.53s |
-| `-c 'keys'` | **121.9ms** | **63.4x** | 755.5ms | 10.2x | 7.73s | 2.81s | 6.71s |
-| `-c 'select(.type == "PushEvent")'` | **93.6ms** | **136.5x** | 420.8ms | 30.4x | 12.78s | 3.48s | 7.69s |
-| `-c '{type, repo: .repo.name, actor: .actor.login}'` | **133.4ms** | **59.1x** | 775.0ms | 10.2x | 7.89s | 3.24s | 6.98s |
-| `-c '{type, commits: [.payload.commits[]?.message]}'` | **273.4ms** | **29.0x** | 1.66s | 4.8x | 7.94s | 3.11s | 6.87s |
+| `'.actor.login'` | **52.7ms** | **111.5x** | 434.1ms | 13.5x | 5.88s | 2.17s | 5.60s |
+| `-c 'length'` | **52.2ms** | **113.4x** | 434.9ms | 13.6x | 5.92s | 2.14s | 5.61s |
+| `-c 'keys'` | **54.7ms** | **119.6x** | 484.0ms | 13.5x | 6.54s | 2.24s | 5.90s |
+| `-c 'select(.type == "PushEvent")'` | **60.1ms** | **188.4x** | 556.2ms | 20.4x | 11.33s | 2.84s | 6.43s |
+| `-c '{type, repo: .repo.name, actor: .actor.login}'` | **55.4ms** | **121.0x** | 486.4ms | 13.8x | 6.70s | 2.61s | 5.87s |
+| `-c '{type, commits: [.payload.commits[]?.message]}'` | **57.9ms** | **117.0x** | 525.4ms | 12.9x | 6.78s | 2.51s | 5.93s |
 
