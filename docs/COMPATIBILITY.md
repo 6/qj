@@ -46,14 +46,14 @@ statically):
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 36,259 | 36,248 |
-| **Total** | **39,162** | **39,151** |
+| qj's corpus | 36,300 | 36,289 |
+| **Total** | **39,203** | **39,192** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
 them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
 required is that qj not finish either. Across modes, the counts are 15,483 compact, 6,529
-pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,060 command-line cases. The
+pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,101 command-line cases. The
 command-line cases include some that merge stdout and stderr into one file or pipe,
 checking that output and error messages interleave exactly as jq's stdio buffering
 interleaves them, and some that start the tool with standard descriptors closed
@@ -111,7 +111,7 @@ French messages and a Latin-1 locale for it.
   | a value or path that drives one of jq's other recursions past its stack: comparing (`==`, `<`, `sort`, `group_by`, `unique`, `min`, `max`, `bsearch`, `-`, `index`), `contains`/`inside`, object `*`, `setpath`/`=`/`\|=`, `delpaths`/`del` | SIGSEGV, at a depth of its own (each recursion has a different frame) | the answer | SIGSEGV at the same depth |
   | a module that imports itself, directly or through others | SIGSEGV | `qj: error: ... imports itself (import cycle)`, exit 3 | SIGSEGV |
   | a deeply nested *program*, below `ulimit -s` 2 MB (e.g. 4,990 nested `select(...)` at 1 MB) | SIGSEGV while compiling | the answer | the answer — not reproduced, see below |
-  | a chain of more than about 13,000 imported modules | SIGSEGV | qj's own stack runs out at 7,506 | SIGSEGV, but from qj's shallower limit |
+  | a chain of more than about 20,000 imported modules (8 MB stack; 18,000 on Linux) | SIGSEGV | the answer, however long the chain | SIGSEGV at the same depth |
   | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
   | `[1,2] \| try delpaths([[{}]]) catch .` | prints the error, then SIGSEGV | prints the error, exit 0 | prints the error, exit 0 |
   | `delpaths([[{"start":1}],[0]])` over two inputs, e.g. `[1] {}` | the first input's error, then `Assertion failed: (JVP_HAS_KIND(a, JV_KIND_STRING))` on the second, exit 134 | both inputs' errors, exit 5 | both inputs' errors, exit 5 |
@@ -184,6 +184,7 @@ stack. qj does all six with a loop, and compat mode reproduces each one's crash:
 | `delpaths_sorted` (`delpaths`, `del`) | the length of the paths, a level at a time | yes |
 | `jv_getpath` (`getpath`, `path`) | the length of the path | **not needed**: it is a tail call, and both release compilers turn it into a loop. `[range(1000000)\|0] as $p \| null \| getpath($p)` answers `null` at `ulimit -s 256` on macOS and on Linux |
 | `jv_dump_term` (the printer) | the nesting of the value, **capped at `MAX_PRINT_DEPTH` (256)**, below which it writes `<skipped: too deep>` | **cannot overflow** |
+| `load_library` ↔ `process_dependencies` (`linker.c`) | the length of a chain of `import`s or `include`s, one module a level | yes |
 
 The JSON parser is not in the list: `jv_parse` keeps its own stack on the heap and stops
 at `MAX_PARSING_DEPTH` (10,000), so input alone cannot drive any of these past 10,000
@@ -194,8 +195,8 @@ nested arrays dies in both tools at `ulimit -s 256`).
 **Over the program.** `compile.c`'s `block_bind_subblock_inner`, `block_free`/`inst_free`,
 `block_get_unbound_vars`, `block_mark_referenced`, `compile`, `count_cfunctions` and
 `expand_call_arglist`; `bytecode.c`'s `bytecode_free` and `dump_disassembly`;
-`execute.c`'s `optimize` and `ret_follows`; and `linker.c`'s `load_library` ↔
-`process_dependencies`. All of them are bounded by how deeply a *program* nests, which
+and `execute.c`'s `optimize` and `ret_follows`. All of them are bounded by how deeply a
+*program* nests, which
 bison's parser bounds in turn: at `YYMAXDEPTH` (10,000 parser stack entries) jq stops
 with `jq: error: memory exhausted`, which is 4,990 nested `select(...)`, 3,330 nested
 `def`s, 1,995 nested `def f(g):` or 9,990 nested `[`.
@@ -205,20 +206,29 @@ The deepest of those costs jq about 226 bytes a level on macOS and 234 on Linux
 overflow a stack of 2 MB or more**: jq survives 4,990 nested `select(...)` at
 `ulimit -s 2048` and dies at 1024. qj does not reproduce that crash, and this is the one
 exemption in compat mode's stack emulation: the bytes a level depend on which kind of
-nesting it is — 226 for `select(...)`, 177 for `def`s, and array and parenthesis nesting
-are cheap enough that jq survives 9,990 of them at 256 KB — so there is no single model,
-and approximating it would invent crashes where jq succeeds. Below 2 MB of stack, and
-only there, a deeply nested program crashes jq and not qj.
-
-The module chain (`load_library` ↔ `process_dependencies`) is the other one qj does not
-reproduce, for the opposite reason: **qj's linker runs out of stack first.** jq costs
-about 400–650 bytes per module imported (it survives 400 modules at 256 KB and dies at
-800), so it needs a chain of some 13,000–20,000 modules to die at 8 MB; qj dies at 7,506.
-A chain that long is not something to model — `import` cycles, which jq loops on
-forever, *are* reproduced (the table above).
+nesting it is — 226 for `select(...)`, 177 for nested `def`s, and parenthesis and pipe
+nesting is cheap enough that jq survives 9,990 of them at 256 KB, where 9,990 nested `[`
+kills it — so there is no single model, and approximating it would invent crashes where jq
+succeeds. Below 2 MB of stack, and only there, a deeply nested program crashes jq and not
+qj: over 19 nesting shapes × 3 depths × `ulimit -s` 256, 512, 1024 and 8176 KB, there is
+no case where qj crashes and jq answers, and 14 where jq crashes and qj answers.
 
 `jq_format_error` recurses through an invalid value inside an invalid value, which jq
 never nests more than a few deep.
+
+The module chain used to be the other exemption, for the opposite reason: qj mirrored jq's
+recursion and parsed each module inside it, so its frames were more than twice jq's and it
+died at 7,678 modules where jq answers — a `SIGSEGV` where jq succeeds, the worst kind of
+difference. `process_dependencies` is now the loop those two functions make, with their
+locals on the heap, so qj answers for every chain jq does and for chains twice as long; in
+compat mode it dies at jq's depth. `import` cycles, which make jq recurse forever, are
+reproduced there too (the table above).
+
+**One thing about long chains is jq's own, and qj reproduces it.** Past **4,096** modules,
+jq resolves a namespaced call 4,096 levels too shallow: a chain of `n` modules each
+defining `def f: 1 + m::f;` answers `n - 1` up to 4,095 and `n - 4097` from 4,096 on
+(`4,500` gives `404`). qj gives the same answer at every length, so it isn't a divergence
+— but it means a chain that long doesn't mean what it looks like in either tool.
 
 ### How exact the stack-overflow emulation is
 
@@ -227,6 +237,12 @@ Each site has its own frame, so each has its own threshold, and each is modelled
 survives is linear in `ulimit -s` with that slope at every limit measured. `reserved` is
 what is left over at the *worst* of the call sites measured, plus a margin that keeps qj
 from ever surviving where jq dies.
+
+The six recursions over values share one `reserved` (see below). The module chain has its
+own, because the level where its stack runs out is *parsing a module*, with bison's three
+`YYINITDEPTH` (200) arrays on the stack — 12,000 bytes against the 4,096 of the deepest
+value site on macOS, 8,304 against 3,856 on Linux — and folding that into the shared figure
+would cost `jv_free` 128 levels for nothing.
 
 On macOS/arm64, bisected against jq's release binary at `ulimit -s` 1024, 2048, 4096,
 8176 and 16384 KB. The last two columns are the default 8176 KB:
@@ -239,10 +255,11 @@ On macOS/arm64, bisected against jq's release binary at `ulimit -s` 1024, 2048, 
 | `jv_object_merge_recursive` | 112 | 74,719 | 74,659 |
 | `jv_setpath` | 144 | 58,114 | 58,067 |
 | `delpaths_sorted` | 240 | 34,868 | 34,839 |
+| `load_library` (modules) | 416 | 20,096 | 20,079 |
 
 On Linux/x86-64 (jq's release binary, built by gcc), bisected at 1024, 4096, 8192 and
-16384 KB with the kernel's stack randomization off (`setarch -R`), which is what makes
-the numbers repeatable. The last two columns are the 16 MB of GitHub's runners:
+16384 KB (the module chain also at 2048) with the kernel's stack randomization off
+(`setarch -R`), which is what makes the numbers repeatable. The last two columns are the 16 MB of GitHub's runners:
 
 | site | bytes a level | deepest jq survives | qj, `QJ_JQ_COMPAT=1` |
 |---|--:|--:|--:|
@@ -252,6 +269,7 @@ the numbers repeatable. The last two columns are the 16 MB of GitHub's runners:
 | `jv_object_merge_recursive` | 128 | 131,053 | 130,975 |
 | `jv_setpath` | 160 | 104,843 | 104,779 |
 | `delpaths_sorted` | 240 | 69,895 | 69,852 |
+| `load_library` (modules) | 464 | 36,139 | 36,119 |
 
 The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
 threshold is 29 to 218 levels below jq's. What it covers is different on each:
@@ -308,6 +326,9 @@ of the values:
   until one contains it, and the attempts that fail count as much as the one that works.
 - `jv_object_merge_recursive` descends only where the key holds an object on both sides.
 - `delpaths_sorted` groups the sorted paths and descends only as far as the value goes.
+- a module already loaded is bound from `lib_state` without being read again, so only the
+  chain jq actually descends counts: a diamond of four modules is three levels deep, not
+  four.
 
 `src/compat.rs` has the models and the unit tests, `src/compat/depth.rs` the traversals,
 `tests/jq_compat/corpus/compat_mode.toml` the differential cases, and
@@ -318,8 +339,9 @@ nested between 65,328 and 130,655 levels deep kills jq (and qj) while it is comp
 not while it is freed, so `$a == $b` dies where `$a | length` answers.
 
 The whole emulation is checked against the jq binary the same way it was measured: for
-every shape that drives one of the six recursions — 23 of them, from `==` to `bsearch` to
-`del` — the deepest value each tool survives is bisected at several stack limits, and
+every shape that drives one of the recursions — 24 of them, from `==` to `bsearch` to
+`del` to a chain of `import`s — the deepest value each tool survives is bisected at several
+stack limits, and
 qj's is never above jq's, and never more than the margin's worth of levels below it (29 to
 98 at 256 KB and 1 MB on macOS, 43 to 218 at 1, 8 and 16 MB on Linux). Below the
 threshold the two answer the same thing, and shapes where jq's traversal stops early agree

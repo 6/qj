@@ -210,7 +210,7 @@ impl Site {
             Site::Merge => (112, RESERVED_BYTES),
             Site::Setpath => (144, RESERVED_BYTES),
             Site::Delpaths => (240, RESERVED_BYTES),
-            Site::Modules => (416, 11904 + STACK_MARGIN),
+            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES + STACK_MARGIN),
         };
         // Linux/x86-64 (jq's release binary, built by gcc), bisected the same
         // way at 1024, 4096, 8192 and 16384 KB with the stack randomization
@@ -305,12 +305,19 @@ const WORST_BASE_BYTES: u64 = 4096;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const WORST_BASE_BYTES: u64 = 3856;
 
-/// [`Site::Modules`] on Linux/x86-64: bytes a module, and what the level where
-/// the stack runs out holds (measured, see `docs/COMPATIBILITY.md`).
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+/// [`Site::Modules`]: bytes of stack a module in a chain of imports costs jq,
+/// and what the level where the stack runs out holds — `find_lib`, reading the
+/// file, and above all bison's three `YYINITDEPTH` (200) arrays for parsing it.
+/// Measured on both platforms (see `docs/COMPATIBILITY.md`); nothing else jq
+/// recurses over has a base cost anywhere near this.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const MODULE_FRAME_BYTES: u64 = 416;
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const MODULE_BASE_BYTES: u64 = 12000;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const MODULE_BASE_BYTES: u64 = 11904;
+const MODULE_FRAME_BYTES: u64 = 464;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const MODULE_BASE_BYTES: u64 = 8304;
 
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is
@@ -594,6 +601,12 @@ mod tests {
             3664,
             &[4_353, 8_722, 17_460, 34_868, 69_889],
         ),
+        (
+            Site::Modules,
+            416,
+            12000,
+            &[2_491, 5_012, 10_053, 20_096, 40_300],
+        ),
     ];
 
     /// On Linux/x86-64 the kernel's randomization of the initial stack pointer
@@ -610,6 +623,7 @@ mod tests {
         (Site::Merge, 128, 2304, &[8_173, 32_749, 65_517, 131_053]),
         (Site::Setpath, 160, 2176, &[6_539, 26_200, 52_415, 104_843]),
         (Site::Delpaths, 240, 2224, &[4_359, 17_466, 34_943, 69_895]),
+        (Site::Modules, 464, 8304, &[2_241, 9_021, 18_060, 36_139]),
     ];
 
     /// Each model is short of jq by the margin, plus what this site's base
@@ -619,9 +633,13 @@ mod tests {
     fn stack_models_match_the_measurements() {
         for &(site, frame, base, measured) in MEASURED {
             assert_eq!(site.model().0, frame, "{site:?}: bytes a level");
-            assert!(base <= WORST_BASE_BYTES, "{site:?}: base above the worst");
-            let allowance =
-                STACK_MARGIN + (WORST_BASE_BYTES - base) + site.drives_others() as u64 * frame;
+            let reserved = site.model().1;
+            assert!(base <= reserved, "{site:?}: base above what it reserves");
+            // What the model holds back beyond this site's own base cost: the
+            // margin, what its base is below the figure it shares (nothing for
+            // `Modules`, which has its own), and the level a driving site
+            // gives up.
+            let allowance = (reserved - base) + site.drives_others() as u64 * frame;
             for (kb, jq) in LIMITS.iter().zip(measured) {
                 let model = deepest(site, *kb);
                 assert!(model <= *jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
@@ -643,6 +661,9 @@ mod tests {
         (Site::Delpaths, &[Site::Compare, Site::Free]),
         (Site::Setpath, &[Site::Free]),
         (Site::Merge, &[Site::Free]),
+        // `load_library` reads and parses a module at each level, and frees
+        // its text and the imports it took off it.
+        (Site::Modules, &[Site::Free]),
     ];
 
     /// At the deepest level a driving site allows, there has to be room for

@@ -314,15 +314,16 @@ Read by everything (`src/compat.rs`):
   hangs and turns off qj's own additions (glob expansion, `.gz`/`.zst` decompression,
   `--threads`/`--jsonl`/`--debug-timing`, which become jq's "Unknown option"). The crashes
   are a module import cycle (SIGSEGV), `delpaths` with a `nan` path element (hangs,
-  growing), and jq's C stack running out in any of its six recursions over values and
-  paths, each at its own depth: freeing (`jv_free`), comparing (`jv_equal`/`jv_cmp`, so
-  `==`, `<`, `sort`, `group_by`, `unique`, `min`, `max`, `bsearch`, `-`, `index`),
-  `contains`/`inside`, object `*`, `setpath`/`=`/`|=`, and `delpaths`/`del`. Only the
-  depth jq's own traversal reaches counts (`src/compat/depth.rs`). Natives, the VM's
+  growing), and jq's C stack running out in any of its seven recursions, each at its own
+  depth: freeing (`jv_free`), comparing (`jv_equal`/`jv_cmp`, so `==`, `<`, `sort`,
+  `group_by`, `unique`, `min`, `max`, `bsearch`, `-`, `index`), `contains`/`inside`,
+  object `*`, `setpath`/`=`/`|=`, `delpaths`/`del`, and a chain of `import`s
+  (`load_library`, about 20,000 modules at 8 MB). Only the depth jq's own traversal
+  reaches counts (`src/compat/depth.rs`). Natives, the VM's
   regions and tape evaluation are off here, so everything goes through the value layer.
   Parallel processing stays on, and qj's help/version text and `qj:` name stay qj's. Read
   once at start-up; set means anything but empty or `0`. `docs/COMPATIBILITY.md` has the
-  models per OS, the recursions that cannot overflow, and the two that aren't reproduced;
+  models per OS, the recursions that cannot overflow, and the one that isn't reproduced;
   `tests/jq_compat/corpus/compat_mode.toml` and `tests/compat_mode.rs` are the tests.
   (It used to make the old evaluator imitate jq's number precision, which is simply how qj
   behaves now, in every mode.)
