@@ -72,6 +72,8 @@ pub(super) fn disabled_by_env() -> bool {
 thread_local! {
     /// Native calls on this thread (tests check that natives really run).
     pub(crate) static CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Sub-runs started on this thread (tests check which closures natives don't run).
+    pub(crate) static SUB_RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// What a native produces (initially, or when resumed).
@@ -472,6 +474,8 @@ impl Jq {
         args: &[Closure],
         input: Value,
     ) -> Result<Option<(Sub, Value)>, Stop> {
+        #[cfg(test)]
+        SUB_RUNS.with(|c| c.set(c.get() + 1));
         let prog = self.prog.clone();
         let pos = (self.stk_top, self.curr_frame);
         self.stack_save(prog.subrun_base_pc as usize, pos);
@@ -695,6 +699,82 @@ impl Jq {
             };
         }
         None
+    }
+
+    /// The string `T` of the condition `type == "T"` (or `"T" == type`) at the start of
+    /// `code`, as jq compiles it: `PUSHK_UNDER "T"; SUBEXP_BEGIN; CALL_BUILTIN type;
+    /// SUBEXP_END; CALL_BUILTIN _equal` (the operands the other way round for
+    /// `"T" == type`). It leaves the boolean in place of its input, and can't fail or do
+    /// anything else (a program's own `type` or `==` would be a `CALL_JQ`).
+    fn type_eq_condition(&self, func: u32, code: &[u16]) -> Option<Value> {
+        use Opcode::*;
+        let prog = &*self.prog;
+        let is = |w: u16, op: Opcode| w == op as u16;
+        let cfunction = |nargs: u16, idx: u16, name: &str| {
+            prog.cfunctions
+                .get(idx as usize)
+                .is_some_and(|c| c.nargs == nargs as usize && c.name == name)
+        };
+        let k = match *code.get(..10)? {
+            [push, k, sb, call, 1, ty, se, eq_call, 3, eq]
+                if is(push, PUSHK_UNDER)
+                    && is(sb, SUBEXP_BEGIN)
+                    && is(call, CALL_BUILTIN)
+                    && is(se, SUBEXP_END)
+                    && is(eq_call, CALL_BUILTIN)
+                    && cfunction(1, ty, "type")
+                    && cfunction(3, eq, "_equal") =>
+            {
+                k
+            }
+            [sb, call, 1, ty, se, push, k, eq_call, 3, eq]
+                if is(sb, SUBEXP_BEGIN)
+                    && is(call, CALL_BUILTIN)
+                    && is(se, SUBEXP_END)
+                    && is(push, PUSHK_UNDER)
+                    && is(eq_call, CALL_BUILTIN)
+                    && cfunction(1, ty, "type")
+                    && cfunction(3, eq, "_equal") =>
+            {
+                k
+            }
+            _ => return None,
+        };
+        let k = prog.constants(func).get(k as usize)?;
+        k.as_str().is_some().then(|| k.clone())
+    }
+
+    /// The string `T` if closure `f` is `type == "T"` (or `"T" == type`): its one
+    /// output is whether its input's type is `T`, and running it does nothing else.
+    pub(crate) fn type_test_closure(&self, f: Closure) -> Option<Value> {
+        let code = &self.prog.funcs[f.func as usize].bc.code;
+        if code.len() != 11 || code[10] != Opcode::RET as u16 {
+            return None;
+        }
+        self.type_eq_condition(f.func, code)
+    }
+
+    /// The string `T` if closure `f` is `if type == "T" then A else . end` (or
+    /// `if "T" == type`, or without `else . `): on an input of another type its one
+    /// output is the input itself, and running it does nothing else (the condition,
+    /// then `JUMP_F` to `POP; RET`, leaving no fork points).
+    pub(crate) fn type_guard_closure(&self, f: Closure) -> Option<Value> {
+        use Opcode::*;
+        let code = &self.prog.funcs[f.func as usize].bc.code;
+        let is = |i: usize, op: Opcode| code.get(i) == Some(&(op as u16));
+        if !(is(0, DUP) && is(1, SUBEXP_BEGIN)) {
+            return None;
+        }
+        // `if`'s condition is a subexpression, then `SUBEXP_END; POP; JUMP_F else;
+        // POP; <then>`, and the else branch is `POP; RET`, the end of the function.
+        if !(is(12, SUBEXP_END) && is(13, POP) && is(14, JUMP_F) && is(16, POP)) {
+            return None;
+        }
+        let els = 16 + *code.get(15)? as usize;
+        if !(is(els, POP) && is(els + 1, RET) && code.len() == els + 2) {
+            return None;
+        }
+        self.type_eq_condition(f.func, &code[2..])
     }
 
     /// Whether closure `f` is `.[]` (`Some(false)`) or `.[]?` (`Some(true)`).

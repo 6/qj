@@ -8,7 +8,7 @@
 
 use super::cases::Gen;
 use crate::jq::lang::execute::driver::{Options, Output, run};
-use crate::jq::lang::execute::native::CALLS;
+use crate::jq::lang::execute::native::{CALLS, SUB_RUNS};
 
 fn run_with(program: &str, input: &str, natives: bool) -> Output {
     let opts = Options {
@@ -100,6 +100,24 @@ const PROGRAMS: &[&str] = &[
     "walk(if type == \"number\" then halt_error(1) else . end)",
     "first(walk(., .))",
     "[limit(1; walk(1, 2))]",
+    // walk(if type == "T" then A else . end): not run on nodes of other types
+    "walk(if type == \"boolean\" then not else . end)",
+    "walk(if type == \"string\" then ascii_downcase end)",
+    "walk(if \"number\" == type then . + 1 else . end)",
+    "walk(if type == \"object\" then del(.a) else . end)",
+    "[walk(if type == \"number\" then (., 1) else . end)]",
+    "walk(if type == \"nope\" then error else . end)",
+    "try walk(if type == \"array\" then error else . end) catch .",
+    "walk(if type == \"null\" then empty else . end)",
+    "def type: \"number\"; walk(if type == \"number\" then 1 else . end)",
+    "def _equal(a; b): true; walk(if type == \"number\" then 1 else . end)",
+    "walk(if type == \"boolean\" then not elif type == \"number\" then . + 1 else . end)",
+    "walk(if type == 1 then 2 else . end)",
+    "walk(if type == \"array\" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]",
+    "walk(if type == \"object\" then . else . end) | [label $f | try break $f catch .]",
+    "[[1],[2]] | walk(if type == \"string\" then . else . end) | .[0] as $a | .[1] | try path($a) catch \"E\"",
+    "walk(if type == \"array\" then .[0:1] else . end) | if type == \"array\" then .[3] = 9 else . end",
+    "walk(if type == \"string\" then . else . end) as $a | walk(.) | try path($a) catch \"E\"",
     // paths / paths(f)
     "[paths]",
     "[paths(scalars)]",
@@ -160,6 +178,14 @@ const PROGRAMS: &[&str] = &[
     "try (paths(scalars) | error) catch .",
     "[paths(scalars) | try error catch .]",
     "[paths(scalars)] | .[0] as $a | .[-1] | try path($a) catch \"E\"",
+    // paths(type == "T"): not run either
+    "[paths(\"string\" == type)]",
+    "[paths(type == \"nope\")]",
+    "[paths(type == 1)]",
+    "def type: \"array\"; [paths(type == \"array\")]",
+    "[paths(type == \"object\")] | .[0] as $a | .[-1] | try path($a) catch \"E\"",
+    "[paths(type == \"number\") | .[0:1] | .[3] = 1]",
+    "label $f | paths(type == \"array\") | ., break $f",
     // tostream
     "[tostream]",
     "first(tostream)",
@@ -354,6 +380,33 @@ fn paths_checks_type_filters_directly() {
     assert_eq!(check("[paths(numbers, empty)]", "[1,[2]]"), 5);
 }
 
+/// `walk` doesn't run `if type == "T" then A else . end` on nodes of other types, nor
+/// `paths` `type == "T"`: they start no sub-run there.
+#[test]
+fn natives_skip_type_guards() {
+    let sub_runs = |program: &str, input: &str| {
+        let before = SUB_RUNS.with(|c| c.get());
+        check(program, input);
+        SUB_RUNS.with(|c| c.get()) - before
+    };
+    let walk = "walk(if type == \"boolean\" then not else . end)";
+    assert_eq!(sub_runs(walk, "[1,[2],{\"a\":3}]"), 0);
+    // One per boolean (the root, an array, is skipped too).
+    assert_eq!(sub_runs(walk, "[true,[false],{\"a\":3}]"), 2);
+    assert_eq!(
+        sub_runs("[paths(type == \"number\")]", "[1,[2],{\"a\":3}]"),
+        0
+    );
+    assert_eq!(sub_runs("[paths(\"number\" == type)]", "[1,[2]]"), 0);
+    // Other closures run on every node below the root (5 here).
+    let elif = "walk(if type == \"boolean\" then not elif . then . else . end)";
+    assert_eq!(sub_runs(elif, "[1,[2],{\"a\":3}]"), 5);
+    assert_eq!(
+        sub_runs("[paths(type == \"number\" or false)]", "[1,[2]]"),
+        4
+    );
+}
+
 /// Natives whose reference lifetimes the probes of [`lifetimes_match_the_definitions`]
 /// check.
 ///
@@ -363,8 +416,10 @@ const LIFETIME_NATIVES: &[&str] = &[
     "from_entries",
     "with_entries(.)",
     "walk(.)",
+    "walk(if type == \"string\" then 1 else . end)",
     "paths",
     "paths(true)",
+    "paths(type == \"array\")",
     "paths(scalars)",
     "paths(values)",
     "tostream",

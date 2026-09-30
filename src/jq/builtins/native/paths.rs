@@ -149,23 +149,35 @@ impl Resume for Paths0 {
 /// base fork point is saved with the node's path length, so it is the fork point of
 /// `r`'s `,`, restored once `node_filter` is exhausted.
 ///
-/// `pred` is `node_filter`'s predicate when it is a type filter (`paths(scalars)`):
-/// its output is the node or nothing, and running it changes nothing else but that
-/// restore, so it isn't run.
-pub(super) fn paths1(
-    vm: &mut Jq,
-    input: Value,
-    f: Closure,
-    pred: Option<fn(&Value) -> bool>,
-) -> Outcome {
+/// `test` is set when `node_filter` is a type filter (`paths(scalars)`) or a type test
+/// (`paths(type == "number")`): its output is then known without running it, and
+/// running it changes nothing else but that restore, so it isn't run.
+pub(super) fn paths1(vm: &mut Jq, input: Value, f: Closure, test: Option<NodeTest>) -> Outcome {
     let g = Box::new(Paths1 {
         w: Walker::new(false),
         node: input,
         f,
-        pred,
+        test,
         sub: None,
     });
     g.filter(vm, true)
+}
+
+/// A `node_filter` that `paths(f)` doesn't run: whether its output on a node is truthy.
+pub(super) enum NodeTest {
+    /// A type filter (`scalars`, ...): its output is the node, if it passes.
+    Filter(fn(&Value) -> bool),
+    /// `type == "T"`: its output is whether the node's type is `T` (a string).
+    TypeIs(Value),
+}
+
+impl NodeTest {
+    fn truthy(&self, v: &Value) -> bool {
+        match self {
+            NodeTest::Filter(keep) => keep(v) && v.is_truthy(),
+            NodeTest::TypeIs(t) => t.as_str() == Some(v.kind_name()),
+        }
+    }
 }
 
 struct Paths1 {
@@ -173,8 +185,8 @@ struct Paths1 {
     /// The node `node_filter` runs on.
     node: Value,
     f: Closure,
-    /// `node_filter`'s predicate, if it is a type filter.
-    pred: Option<fn(&Value) -> bool>,
+    /// `node_filter`'s output, if it isn't run.
+    test: Option<NodeTest>,
     /// `node_filter`'s suspended run on `node`.
     sub: Option<Sub>,
 }
@@ -217,10 +229,13 @@ impl Paths1 {
         }
     }
 
-    /// [`Paths1::filter`] for a type filter: whether its output (the node) is truthy.
-    fn filter_pred(mut self: Box<Self>, pred: fn(&Value) -> bool, mut start: bool) -> Outcome {
+    /// [`Paths1::filter`] for a `node_filter` that isn't run.
+    fn filter_known(mut self: Box<Self>, mut start: bool) -> Outcome {
         loop {
-            if start && pred(&self.node) && self.node.is_truthy() && !self.w.stack.is_empty() {
+            let yields = start
+                && !self.w.stack.is_empty()
+                && self.test.as_ref().is_some_and(|t| t.truthy(&self.node));
+            if yields {
                 let v = self.w.path();
                 return Outcome::Yield(v, self);
             }
@@ -237,8 +252,8 @@ impl Paths1 {
     /// Runs `node_filter` (from the start on `node`, or resuming it) until it yields a
     /// truthy value for a non-root node, then moves on through the traversal.
     fn filter(mut self: Box<Self>, vm: &mut Jq, mut start: bool) -> Outcome {
-        if let Some(pred) = self.pred {
-            return self.filter_pred(pred, start);
+        if self.test.is_some() {
+            return self.filter_known(start);
         }
         loop {
             let outer = self.enter_filter(vm);

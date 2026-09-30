@@ -20,15 +20,38 @@
 //! The native computes the top-level `t` depth first with an explicit stack, running
 //! `f` on each inner node as the definition would, and then tail-calls `f` on it.
 //! Taking only the first output of `f` needs `break`, so it's off with `?//`.
+//!
+//! The usual `f`, `if type == "T" then A else . end`, isn't run on nodes of other
+//! types: there its one output is the node, and running it does nothing else.
 
 use crate::jq::lang::execute::Jq;
 use crate::jq::lang::execute::native::{Closure, ConstView, Outcome, Stop};
 use crate::jq::value::{Array, Object, Value};
 
 pub(super) fn walk(vm: &mut Jq, input: Value, f: Closure, c: ConstView<'_>) -> Outcome {
-    match transform(vm, input, f, c.get(0)) {
-        Ok(t) => Outcome::Call(f, t),
+    let f = Update {
+        f,
+        guard: vm.type_guard_closure(f),
+    };
+    match transform(vm, input, &f, c.get(0)) {
+        Ok(t) if f.skips(&t) => Outcome::Value(t),
+        Ok(t) => Outcome::Call(f.f, t),
         Err(s) => s.into(),
+    }
+}
+
+/// `f`, and the type it tests if it is `if type == "T" then A else . end`.
+struct Update {
+    f: Closure,
+    guard: Option<Value>,
+}
+
+impl Update {
+    /// Whether `f`'s only output on `v` is `v` itself, without running it.
+    fn skips(&self, v: &Value) -> bool {
+        self.guard
+            .as_ref()
+            .is_some_and(|t| t.as_str() != Some(v.kind_name()))
     }
 }
 
@@ -48,7 +71,7 @@ enum Frame {
 }
 
 /// `t` of `root`: `root` with `w` applied to its children.
-fn transform(vm: &mut Jq, root: Value, f: Closure, map_empty: &Value) -> Result<Value, Stop> {
+fn transform(vm: &mut Jq, root: Value, f: &Update, map_empty: &Value) -> Result<Value, Stop> {
     let mut stack: Vec<Frame> = Vec::new();
     let mut cur = root;
     loop {
@@ -89,10 +112,14 @@ fn transform(vm: &mut Jq, root: Value, f: Closure, map_empty: &Value) -> Result<
             };
             let next = match top {
                 Frame::Arr { src, i, out } => {
-                    vm.sub_each(f, t, |_, v| {
-                        out.push(v);
-                        Ok(())
-                    })?;
+                    if f.skips(&t) {
+                        out.push(t);
+                    } else {
+                        vm.sub_each(f.f, t, |_, v| {
+                            out.push(v);
+                            Ok(())
+                        })?;
+                    }
                     *i += 1;
                     src.get(*i).cloned()
                 }
@@ -102,7 +129,11 @@ fn transform(vm: &mut Jq, root: Value, f: Closure, map_empty: &Value) -> Result<
                     updates,
                     dels,
                 } => {
-                    let u = vm.sub_first(f, t)?;
+                    let u = if f.skips(&t) {
+                        Some(t)
+                    } else {
+                        vm.sub_first(f.f, t)?
+                    };
                     if u.is_none() {
                         // setpath([1, (.[1] | length)]; $p)
                         let (k, _) = src.get_index(*i).expect("walked key");

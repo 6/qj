@@ -354,8 +354,12 @@ pub(crate) fn call(id: NativeId, vm: &mut Jq, c: Call<'_>) -> Outcome {
         Walk => walk::walk(vm, c.input, c.args[0], c.consts),
         Paths0 => paths::paths0(c.input),
         Paths1 => {
-            let pred = vm.tail_callee_mark(c.args[0]).and_then(values::type_filter);
-            paths::paths1(vm, c.input, c.args[0], pred)
+            let f = c.args[0];
+            let test = match vm.tail_callee_mark(f).and_then(values::type_filter) {
+                Some(keep) => Some(paths::NodeTest::Filter(keep)),
+                None => vm.type_test_closure(f).map(paths::NodeTest::TypeIs),
+            };
+            paths::paths1(vm, c.input, f, test)
         }
         Tostream => paths::tostream(c.input, c.consts),
         AsciiDowncase => strings::ascii_case(c.input, b'A', b'Z').into(),

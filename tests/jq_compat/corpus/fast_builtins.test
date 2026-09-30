@@ -1285,6 +1285,438 @@ null
 [limit(1; walk(1, 2))]
 null
 
+T
+[1,[2,[3]],{"a":[]}]
+
+T
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+T
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+T
+{"x":{"a":{"b":1},"c":2}}
+
+T
+[]
+
+T
+{}
+
+T
+1
+
+T
+null
+
+walk(if type == "boolean" then not else . end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "boolean" then not else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "boolean" then not else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "boolean" then not else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "boolean" then not else . end)
+[]
+
+walk(if type == "boolean" then not else . end)
+{}
+
+walk(if type == "boolean" then not else . end)
+1
+
+walk(if type == "boolean" then not else . end)
+null
+
+walk(if type == "string" then ascii_downcase end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "string" then ascii_downcase end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "string" then ascii_downcase end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "string" then ascii_downcase end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "string" then ascii_downcase end)
+[]
+
+walk(if type == "string" then ascii_downcase end)
+{}
+
+walk(if type == "string" then ascii_downcase end)
+1
+
+walk(if type == "string" then ascii_downcase end)
+null
+
+walk(if "number" == type then . + 1 else . end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if "number" == type then . + 1 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if "number" == type then . + 1 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if "number" == type then . + 1 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if "number" == type then . + 1 else . end)
+[]
+
+walk(if "number" == type then . + 1 else . end)
+{}
+
+walk(if "number" == type then . + 1 else . end)
+1
+
+walk(if "number" == type then . + 1 else . end)
+null
+
+walk(if type == "object" then del(.a) else . end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "object" then del(.a) else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "object" then del(.a) else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "object" then del(.a) else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "object" then del(.a) else . end)
+[]
+
+walk(if type == "object" then del(.a) else . end)
+{}
+
+walk(if type == "object" then del(.a) else . end)
+1
+
+walk(if type == "object" then del(.a) else . end)
+null
+
+[walk(if type == "number" then (., 1) else . end)]
+[1,[2,[3]],{"a":[]}]
+
+[walk(if type == "number" then (., 1) else . end)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[walk(if type == "number" then (., 1) else . end)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[walk(if type == "number" then (., 1) else . end)]
+{"x":{"a":{"b":1},"c":2}}
+
+[walk(if type == "number" then (., 1) else . end)]
+[]
+
+[walk(if type == "number" then (., 1) else . end)]
+{}
+
+[walk(if type == "number" then (., 1) else . end)]
+1
+
+[walk(if type == "number" then (., 1) else . end)]
+null
+
+walk(if type == "nope" then error else . end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "nope" then error else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "nope" then error else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "nope" then error else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "nope" then error else . end)
+[]
+
+walk(if type == "nope" then error else . end)
+{}
+
+walk(if type == "nope" then error else . end)
+1
+
+walk(if type == "nope" then error else . end)
+null
+
+try walk(if type == "array" then error else . end) catch .
+[1,[2,[3]],{"a":[]}]
+
+try walk(if type == "array" then error else . end) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try walk(if type == "array" then error else . end) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try walk(if type == "array" then error else . end) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try walk(if type == "array" then error else . end) catch .
+[]
+
+try walk(if type == "array" then error else . end) catch .
+{}
+
+try walk(if type == "array" then error else . end) catch .
+1
+
+try walk(if type == "array" then error else . end) catch .
+null
+
+walk(if type == "null" then empty else . end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "null" then empty else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "null" then empty else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "null" then empty else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "null" then empty else . end)
+[]
+
+walk(if type == "null" then empty else . end)
+{}
+
+walk(if type == "null" then empty else . end)
+1
+
+walk(if type == "null" then empty else . end)
+null
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+[1,[2,[3]],{"a":[]}]
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+[]
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+{}
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+1
+
+def type: "number"; walk(if type == "number" then 1 else . end)
+null
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+[1,[2,[3]],{"a":[]}]
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+[]
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+{}
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+1
+
+def _equal(a; b): true; walk(if type == "number" then 1 else . end)
+null
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+[]
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+{}
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+1
+
+walk(if type == "boolean" then not elif type == "number" then . + 1 else . end)
+null
+
+walk(if type == 1 then 2 else . end)
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == 1 then 2 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == 1 then 2 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == 1 then 2 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == 1 then 2 else . end)
+[]
+
+walk(if type == 1 then 2 else . end)
+{}
+
+walk(if type == 1 then 2 else . end)
+1
+
+walk(if type == 1 then 2 else . end)
+null
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+[]
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+{}
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+1
+
+walk(if type == "array" then [label $l | .[] | ., break $l] else . end) | [label $f | try break $f catch .]
+null
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+[]
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+{}
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+1
+
+walk(if type == "object" then . else . end) | [label $f | try break $f catch .]
+null
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+[1,[2,[3]],{"a":[]}]
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+{"x":{"a":{"b":1},"c":2}}
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+[]
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+{}
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+1
+
+[[1],[2]] | walk(if type == "string" then . else . end) | .[0] as $a | .[1] | try path($a) catch "E"
+null
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+[]
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+{}
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+1
+
+walk(if type == "array" then .[0:1] else . end) | if type == "array" then .[3] = 9 else . end
+null
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+[1,[2,[3]],{"a":[]}]
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+{"x":{"a":{"b":1},"c":2}}
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+[]
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+{}
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+1
+
+walk(if type == "string" then . else . end) as $a | walk(.) | try path($a) catch "E"
+null
+
 [paths]
 [1,[2,[3]],{"a":[]}]
 
@@ -2675,6 +3107,174 @@ null
 1
 
 [paths(scalars)] | .[0] as $a | .[-1] | try path($a) catch "E"
+null
+
+[paths("string" == type)]
+[1,[2,[3]],{"a":[]}]
+
+[paths("string" == type)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[paths("string" == type)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[paths("string" == type)]
+{"x":{"a":{"b":1},"c":2}}
+
+[paths("string" == type)]
+[]
+
+[paths("string" == type)]
+{}
+
+[paths("string" == type)]
+1
+
+[paths("string" == type)]
+null
+
+[paths(type == "nope")]
+[1,[2,[3]],{"a":[]}]
+
+[paths(type == "nope")]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[paths(type == "nope")]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[paths(type == "nope")]
+{"x":{"a":{"b":1},"c":2}}
+
+[paths(type == "nope")]
+[]
+
+[paths(type == "nope")]
+{}
+
+[paths(type == "nope")]
+1
+
+[paths(type == "nope")]
+null
+
+[paths(type == 1)]
+[1,[2,[3]],{"a":[]}]
+
+[paths(type == 1)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[paths(type == 1)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[paths(type == 1)]
+{"x":{"a":{"b":1},"c":2}}
+
+[paths(type == 1)]
+[]
+
+[paths(type == 1)]
+{}
+
+[paths(type == 1)]
+1
+
+[paths(type == 1)]
+null
+
+def type: "array"; [paths(type == "array")]
+[1,[2,[3]],{"a":[]}]
+
+def type: "array"; [paths(type == "array")]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+def type: "array"; [paths(type == "array")]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+def type: "array"; [paths(type == "array")]
+{"x":{"a":{"b":1},"c":2}}
+
+def type: "array"; [paths(type == "array")]
+[]
+
+def type: "array"; [paths(type == "array")]
+{}
+
+def type: "array"; [paths(type == "array")]
+1
+
+def type: "array"; [paths(type == "array")]
+null
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+[1,[2,[3]],{"a":[]}]
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+{"x":{"a":{"b":1},"c":2}}
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+[]
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+{}
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+1
+
+[paths(type == "object")] | .[0] as $a | .[-1] | try path($a) catch "E"
+null
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+[1,[2,[3]],{"a":[]}]
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+{"x":{"a":{"b":1},"c":2}}
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+[]
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+{}
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+1
+
+[paths(type == "number") | .[0:1] | .[3] = 1]
+null
+
+label $f | paths(type == "array") | ., break $f
+[1,[2,[3]],{"a":[]}]
+
+label $f | paths(type == "array") | ., break $f
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+label $f | paths(type == "array") | ., break $f
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+label $f | paths(type == "array") | ., break $f
+{"x":{"a":{"b":1},"c":2}}
+
+label $f | paths(type == "array") | ., break $f
+[]
+
+label $f | paths(type == "array") | ., break $f
+{}
+
+label $f | paths(type == "array") | ., break $f
+1
+
+label $f | paths(type == "array") | ., break $f
 null
 
 [tostream]
@@ -6055,6 +6655,72 @@ null
 {a: [., ., ., .][0:2], b: .} | walk(.) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
+[., ., ., .][0:2] as $v | $v | walk(if type == "string" then 1 else . end) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | walk(if type == "string" then 1 else . end) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | walk(if type == "string" then 1 else . end) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | walk(if type == "string" then 1 else . end) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [walk(if type == "string" then 1 else . end)] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [walk(if type == "string" then 1 else . end)] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(walk(if type == "string" then 1 else . end)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(walk(if type == "string" then 1 else . end)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(walk(if type == "string" then 1 else . end)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(walk(if type == "string" then 1 else . end)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | walk(if type == "string" then 1 else . end) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | walk(if type == "string" then 1 else . end) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (walk(if type == "string" then 1 else . end)) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | walk(if type == "string" then 1 else . end) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | walk(if type == "string" then 1 else . end) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
 [., ., ., .][0:2] as $v | $v | paths | $$$$v | .[3] = 9
 ["a",1,["b"]]
 
@@ -6185,6 +6851,72 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2], b: .} | paths(true) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | paths(type == "array") | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | paths(type == "array") | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce (paths(type == "array")) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce (paths(type == "array")) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | paths(type == "array") | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | paths(type == "array") | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [paths(type == "array")] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [paths(type == "array")] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last(paths(type == "array")) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last(paths(type == "array")) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first(paths(type == "array")) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first(paths(type == "array")) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | paths(type == "array") | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | paths(type == "array") | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce (paths(type == "array")) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce (paths(type == "array")) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce (paths(type == "array")) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce (paths(type == "array")) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce (paths(type == "array")) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce (paths(type == "array")) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | paths(type == "array") | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | paths(type == "array") | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | paths(scalars) | $$$$v | .[3] = 9
