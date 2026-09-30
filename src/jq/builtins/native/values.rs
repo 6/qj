@@ -10,7 +10,7 @@
 //! def _flatten($x): reduce .[] as $i ([]; if $i | type == "array" and $x != 0 then . + ($i | _flatten($x-1)) else . + [$i] end);
 //! ```
 
-use super::{Level, cannot_iterate, child, children};
+use super::{Level, NativeId, cannot_iterate, child, children};
 use crate::jq::builtins::binops::{binop_minus, binop_plus};
 use crate::jq::lang::execute::Jq;
 use crate::jq::lang::execute::native::{Closure, ConstView, Outcome, Resume, Stop};
@@ -89,6 +89,23 @@ pub(super) fn select_if(input: Value, keep: fn(&Value) -> bool) -> Outcome {
     } else {
         Outcome::Empty
     }
+}
+
+/// The predicate of type filter `id` (`values` ... `scalars`).
+pub(super) fn type_filter(id: NativeId) -> Option<fn(&Value) -> bool> {
+    use NativeId::*;
+    Some(match id {
+        Values => is_value,
+        Nulls => is_null,
+        Booleans => is_boolean,
+        Numbers => is_number,
+        Strings => is_string,
+        Arrays => is_array,
+        Objects => is_object,
+        Iterables => is_iterable,
+        Scalars => is_scalar,
+        _ => return None,
+    })
 }
 
 pub(super) fn is_value(v: &Value) -> bool {

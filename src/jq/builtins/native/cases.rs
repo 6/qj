@@ -70,6 +70,15 @@ const SAFE_LEAVES: &[&str] = &[
     "$__loc__",
     "(.. |= .)",
     "(if type == \"array\" then .[0:1] else . end)",
+    "scalars",
+    "numbers",
+    "values",
+    "nulls",
+    "booleans",
+    "strings",
+    "arrays",
+    "objects",
+    "iterables",
 ];
 
 /// Leaves that can make values bigger.

@@ -148,11 +148,21 @@ impl Resume for Paths0 {
 /// yields the path, except the root's (dropped by `select(length > 0)`). The sub-run's
 /// base fork point is saved with the node's path length, so it is the fork point of
 /// `r`'s `,`, restored once `node_filter` is exhausted.
-pub(super) fn paths1(vm: &mut Jq, input: Value, f: Closure) -> Outcome {
+///
+/// `pred` is `node_filter`'s predicate when it is a type filter (`paths(scalars)`):
+/// its output is the node or nothing, and running it changes nothing else but that
+/// restore, so it isn't run.
+pub(super) fn paths1(
+    vm: &mut Jq,
+    input: Value,
+    f: Closure,
+    pred: Option<fn(&Value) -> bool>,
+) -> Outcome {
     let g = Box::new(Paths1 {
         w: Walker::new(false),
         node: input,
         f,
+        pred,
         sub: None,
     });
     g.filter(vm, true)
@@ -163,6 +173,8 @@ struct Paths1 {
     /// The node `node_filter` runs on.
     node: Value,
     f: Closure,
+    /// `node_filter`'s predicate, if it is a type filter.
+    pred: Option<fn(&Value) -> bool>,
     /// `node_filter`'s suspended run on `node`.
     sub: Option<Sub>,
 }
@@ -186,9 +198,48 @@ impl Paths1 {
         }
     }
 
+    /// Moves on from `node` through the traversal (`.[]?` on it): its first child, or
+    /// the next sibling. `false` at the end.
+    fn advance(&mut self) -> bool {
+        let node = std::mem::take(&mut self.node);
+        let next = if children(&node) > 0 {
+            Some(self.w.enter(node))
+        } else {
+            drop(node);
+            self.w.next_sibling()
+        };
+        match next {
+            Some(n) => {
+                self.node = n;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// [`Paths1::filter`] for a type filter: whether its output (the node) is truthy.
+    fn filter_pred(mut self: Box<Self>, pred: fn(&Value) -> bool, mut start: bool) -> Outcome {
+        loop {
+            if start && pred(&self.node) && self.node.is_truthy() && !self.w.stack.is_empty() {
+                let v = self.w.path();
+                return Outcome::Yield(v, self);
+            }
+            // The filter's base fork point restores the node's path length.
+            let d = self.w.p.len();
+            restore(&mut self.w.p, d);
+            if !self.advance() {
+                return Outcome::Empty;
+            }
+            start = true;
+        }
+    }
+
     /// Runs `node_filter` (from the start on `node`, or resuming it) until it yields a
     /// truthy value for a non-root node, then moves on through the traversal.
     fn filter(mut self: Box<Self>, vm: &mut Jq, mut start: bool) -> Outcome {
+        if let Some(pred) = self.pred {
+            return self.filter_pred(pred, start);
+        }
         loop {
             let outer = self.enter_filter(vm);
             let r = if start {
@@ -208,21 +259,10 @@ impl Paths1 {
                     }
                 }
                 Ok(None) => {
-                    // `.[]?` on the node: its first child, or the next sibling.
-                    let node = std::mem::take(&mut self.node);
-                    let next = if children(&node) > 0 {
-                        Some(self.w.enter(node))
-                    } else {
-                        drop(node);
-                        self.w.next_sibling()
-                    };
-                    match next {
-                        Some(n) => {
-                            self.node = n;
-                            start = true;
-                        }
-                        None => return Outcome::Empty,
+                    if !self.advance() {
+                        return Outcome::Empty;
                     }
+                    start = true;
                 }
             }
         }

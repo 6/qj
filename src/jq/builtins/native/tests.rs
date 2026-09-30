@@ -136,6 +136,30 @@ const PROGRAMS: &[&str] = &[
     "[path(..)]",
     "[..]",
     "[paths] as $p | [paths] | . == $p",
+    // paths(f) with a type filter (not run: its predicate is checked directly)
+    "[paths(numbers)]",
+    "[paths(values)]",
+    "[paths(nulls)]",
+    "[paths(booleans)]",
+    "[paths(strings)]",
+    "[paths(arrays)]",
+    "[paths(objects)]",
+    "[paths(iterables)]",
+    "def scalars: .; [paths(scalars)]",
+    "def numbers: empty; [paths(numbers), paths(scalars)]",
+    "def f(g): [paths(g)]; f(values)",
+    "def f(g): def h: [paths(g)]; h; f(scalars)",
+    "def f(g): def h(k): [paths(k)]; h(g); f(iterables)",
+    "[paths(scalars) | .[0:1] | .[3] = 1]",
+    "last(paths(iterables)) | .[length + 3] = 1",
+    "[paths(scalars)] | .[-1] | .[length] = 5",
+    "[limit(2; paths(scalars))] | .[0] | tostream",
+    "label $f | paths(values) | ., break $f",
+    "[paths(scalars)] as $p | [paths(scalars)] | . == $p",
+    "path(paths(scalars))?",
+    "try (paths(scalars) | error) catch .",
+    "[paths(scalars) | try error catch .]",
+    "[paths(scalars)] | .[0] as $a | .[-1] | try path($a) catch \"E\"",
     // tostream
     "[tostream]",
     "first(tostream)",
@@ -309,6 +333,27 @@ fn edge_cases_match_the_definitions() {
     assert!(calls > 1000, "natives ran only {calls} times");
 }
 
+/// `paths(f)` checks a type filter's predicate itself: the filter's native isn't
+/// called on every node (it would be, in a sub-run), only `paths` itself.
+#[test]
+fn paths_checks_type_filters_directly() {
+    for f in ["scalars", "numbers", "values", "iterables"] {
+        assert_eq!(
+            check(&format!("[paths({f})]"), "[1,[2],{\"a\":3}]"),
+            1,
+            "{f}"
+        );
+    }
+    // Closure parameters pass the argument's closure on.
+    assert_eq!(check("def f(g): [paths(g)]; f(scalars)", "[1,[2]]"), 1);
+    assert_eq!(
+        check("def f(g): def h: [paths(g)]; h; f(scalars)", "[1,[2]]"),
+        1
+    );
+    // Anything else runs: `numbers` on each of the 4 nodes, after `paths`.
+    assert_eq!(check("[paths(numbers, empty)]", "[1,[2]]"), 5);
+}
+
 /// Natives whose reference lifetimes the probes of [`lifetimes_match_the_definitions`]
 /// check.
 ///
@@ -320,6 +365,8 @@ const LIFETIME_NATIVES: &[&str] = &[
     "walk(.)",
     "paths",
     "paths(true)",
+    "paths(scalars)",
+    "paths(values)",
     "tostream",
     "ascii_downcase",
     "([.[] | tostring] | join(\",\"))",
@@ -338,6 +385,7 @@ const LIFETIME_NATIVES: &[&str] = &[
     "(.[0] = .[0])",
     "((.[0:1]) | paths)",
     "((.[0:1]) | paths(true))",
+    "((.[0:1]) | paths(scalars))",
     "((.[0:1]) | tostream)",
     "..",
     "(.. | arrays)",

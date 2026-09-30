@@ -353,7 +353,10 @@ pub(crate) fn call(id: NativeId, vm: &mut Jq, c: Call<'_>) -> Outcome {
         WithEntries => entries::with_entries(vm, c.input, c.args[0], c.consts).into(),
         Walk => walk::walk(vm, c.input, c.args[0], c.consts),
         Paths0 => paths::paths0(c.input),
-        Paths1 => paths::paths1(vm, c.input, c.args[0]),
+        Paths1 => {
+            let pred = vm.tail_callee_mark(c.args[0]).and_then(values::type_filter);
+            paths::paths1(vm, c.input, c.args[0], pred)
+        }
         Tostream => paths::tostream(c.input, c.consts),
         AsciiDowncase => strings::ascii_case(c.input, b'A', b'Z').into(),
         AsciiUpcase => strings::ascii_case(c.input, b'a', b'z').into(),

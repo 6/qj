@@ -47,7 +47,7 @@ use super::program::Program;
 pub(crate) use super::stack::Closure;
 use super::stack::StackPtr;
 use crate::jq::builtins::native::{self, NativeId};
-use crate::jq::lang::bytecode::Opcode;
+use crate::jq::lang::bytecode::{ARG_NEWCLOSURE, Opcode};
 use crate::jq::value::{Error, Value};
 
 /// How deeply natives may nest (each level is a Rust call of the interpreter loop);
@@ -656,6 +656,45 @@ impl Jq {
             }
             _ => None,
         }
+    }
+
+    /// The marked function a call of closure `f` runs, if `f` only calls it without
+    /// arguments (`TAIL_CALL_JQ g; RET`: how `paths(scalars)` passes `scalars`),
+    /// perhaps through more such closures (`def f(g): def h: paths(g); ...` passes a
+    /// closure that calls `g`). Each callee is resolved as `make_closure` would in its
+    /// caller's frame.
+    pub(crate) fn tail_callee_mark(&self, f: Closure) -> Option<NativeId> {
+        let prog = &*self.prog;
+        let mut f = f;
+        // Bounded: a function can call itself.
+        for _ in 0..8 {
+            let func = &prog.funcs[f.func as usize];
+            if func.mark.is_some() {
+                return func.mark;
+            }
+            let &[op, 0, level, idx, ret] = func.bc.code.as_slice() else {
+                return None;
+            };
+            // Level 0 is `f`'s own frame, which doesn't exist before the call.
+            if op != Opcode::TAIL_CALL_JQ as u16 || ret != Opcode::RET as u16 || level == 0 {
+                return None;
+            }
+            // `frame_get_level(level)` from `f`'s frame, whose env is `f.env`.
+            let mut env = f.env;
+            for _ in 1..level {
+                env = self.stk.frame(env).env;
+            }
+            let fr = self.stk.frame(env);
+            f = if idx & ARG_NEWCLOSURE != 0 {
+                let sub = prog.funcs[fr.func as usize]
+                    .subfunctions
+                    .get((idx & !ARG_NEWCLOSURE) as usize)?;
+                Closure { func: *sub, env }
+            } else {
+                *self.stk.closures.get(fr.closures as usize + idx as usize)?
+            };
+        }
+        None
     }
 
     /// Whether closure `f` is `.[]` (`Some(false)`) or `.[]?` (`Some(true)`).
