@@ -8425,3 +8425,86 @@ fn version_exits_zero() {
     assert_eq!(code, 0, "qj --version should exit 0");
     assert!(!stdout.is_empty(), "qj --version should produce output");
 }
+
+// ---------------------------------------------------------------------------
+// Module chains (linker.c)
+// ---------------------------------------------------------------------------
+
+/// A directory holding `n` modules, `m0` importing `m1` … importing `m{n-1}`.
+/// With `carry`, each module adds one to the next one's `f`, so the answer
+/// counts the whole chain; without it every `f` is `1`, so the answer is `1`
+/// however long the chain is.
+fn module_chain_dir(n: usize, carry: bool) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for i in 0..n {
+        let body = match (i + 1 < n, carry) {
+            (true, true) => format!("import \"m{}\" as m;\ndef f: 1 + m::f;\n", i + 1),
+            (true, false) => format!("import \"m{}\" as m;\ndef f: 1;\n", i + 1),
+            (false, true) => "def f: 0;\n".to_string(),
+            (false, false) => "def f: 1;\n".to_string(),
+        };
+        std::fs::write(dir.path().join(format!("m{i}.jq")), body).expect("write module");
+    }
+    dir
+}
+
+/// qj links a chain of imports with a loop where jq's `load_library` and
+/// `process_dependencies` recurse, so it answers for chains far longer than
+/// jq's stack allows. For every chain jq *can* do, the answer has to be jq's,
+/// and for a chain that carries a value through every module that is only
+/// right if each one is loaded once and bound in jq's order.
+///
+/// (Chains stay under 4,096 here: past that jq itself resolves `m::f` 4,096
+/// levels too shallow, which qj reproduces — see `docs/COMPATIBILITY.md`.)
+#[test]
+fn long_module_chains_match_jq() {
+    if !jq_available() {
+        return;
+    }
+    for n in [1usize, 2, 3, 40, 500, 3000] {
+        let dir = module_chain_dir(n, true);
+        let args = ["-nc", "-L", ".", "include \"m0\"; f"];
+        let qj = Command::new(env!("CARGO_BIN_EXE_qj"))
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to run qj");
+        let jq = Command::new("jq")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to run jq");
+        assert_eq!(
+            String::from_utf8_lossy(&qj.stdout).trim(),
+            (n - 1).to_string(),
+            "{n} modules: qj stderr {}",
+            String::from_utf8_lossy(&qj.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&qj.stdout),
+            String::from_utf8_lossy(&jq.stdout),
+            "{n} modules: stdout differs from jq"
+        );
+        assert_eq!(qj.status.code(), jq.status.code(), "{n} modules: exit code");
+    }
+}
+
+/// A chain longer than jq's stack allows (about 20,000 modules at 8 MB): jq
+/// dies of `SIGSEGV`, and qj gives the answer, as `docs/COMPATIBILITY.md`
+/// describes.
+#[test]
+fn a_module_chain_past_jqs_stack_still_works() {
+    let n = 30_000usize;
+    let dir = module_chain_dir(n, false);
+    let out = Command::new(env!("CARGO_BIN_EXE_qj"))
+        .args(["-nc", "-L", ".", "include \"m0\"; f"])
+        .current_dir(dir.path())
+        .output()
+        .expect("failed to run qj");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "1",
+        "{n} modules: stderr {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

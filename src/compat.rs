@@ -177,41 +177,56 @@ pub enum Site {
     /// `delpaths_sorted` (`delpaths`, `del`): the length of the paths, which
     /// jq walks a level at a time in groups.
     Delpaths,
+    /// `load_library` ↔ `process_dependencies` (`linker.c`): the length of a
+    /// chain of `import`s or `include`s, one module a level.
+    ///
+    /// The only site that isn't about values, and the one with much the
+    /// largest base cost: whichever module is being parsed when the stack runs
+    /// out has bison's three `YYINITDEPTH` (200) arrays on it, about 7 KB (see
+    /// [`Site::model`]).
+    Modules,
 }
 
 impl Site {
     /// The bytes of stack a level of this recursion costs, and the bytes
-    /// that are gone before any of them starts ([`RESERVED_BYTES`]).
+    /// that are gone before any of them starts.
     ///
     /// The frame bytes are exact: the deepest value jq survives is linear in
     /// `ulimit -s` with this slope, over every limit measured (1 MB to 16 MB).
+    /// The reserved bytes are [`RESERVED_BYTES`] for the six recursions over
+    /// values, which share one figure; [`Site::Modules`] has its own, because
+    /// what it holds at the level where the stack runs out — bison's parser
+    /// arrays for the module being read — is three times as much, and folding
+    /// that into the shared figure would cost every other site 128 levels.
     const fn model(self) -> (u64, u64) {
         // macOS/arm64 (jq's release binary, built by Apple clang), bisected
         // with the programs in `docs/COMPATIBILITY.md` at `ulimit -s` 1024,
         // 2048, 4096, 8176 and 16384 KB.
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let frame = match self {
-            Site::Free => 64,
-            Site::Compare => 128,
-            Site::Contains => 176,
-            Site::Merge => 112,
-            Site::Setpath => 144,
-            Site::Delpaths => 240,
+        let (frame, reserved) = match self {
+            Site::Free => (64, RESERVED_BYTES),
+            Site::Compare => (128, RESERVED_BYTES),
+            Site::Contains => (176, RESERVED_BYTES),
+            Site::Merge => (112, RESERVED_BYTES),
+            Site::Setpath => (144, RESERVED_BYTES),
+            Site::Delpaths => (240, RESERVED_BYTES),
+            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES + STACK_MARGIN),
         };
         // Linux/x86-64 (jq's release binary, built by gcc), bisected the same
         // way at 1024, 4096, 8192 and 16384 KB with the stack randomization
         // off, so that the thresholds are deterministic; STACK_MARGIN then
         // covers the randomization.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let frame = match self {
-            Site::Free => 48,
-            Site::Compare => 144,
-            Site::Contains => 176,
-            Site::Merge => 128,
-            Site::Setpath => 160,
-            Site::Delpaths => 240,
+        let (frame, reserved) = match self {
+            Site::Free => (48, RESERVED_BYTES),
+            Site::Compare => (144, RESERVED_BYTES),
+            Site::Contains => (176, RESERVED_BYTES),
+            Site::Merge => (128, RESERVED_BYTES),
+            Site::Setpath => (160, RESERVED_BYTES),
+            Site::Delpaths => (240, RESERVED_BYTES),
+            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES + STACK_MARGIN),
         };
-        (frame, RESERVED_BYTES)
+        (frame, reserved)
     }
 
     /// Whether jq drives other recursions from inside this one: comparing a
@@ -220,7 +235,10 @@ impl Site {
     /// whatever it does at the level it reaches still fits — its own frame is
     /// at least as big as theirs, so one level is enough.
     const fn drives_others(self) -> bool {
-        matches!(self, Site::Merge | Site::Setpath | Site::Delpaths)
+        matches!(
+            self,
+            Site::Merge | Site::Setpath | Site::Delpaths | Site::Modules
+        )
     }
 
     /// How deep jq's recursion can go here, from the start of the run, in the
@@ -233,10 +251,16 @@ impl Site {
     /// [`Site::frame_budget`] with `outer` bytes of the stack already held by
     /// a recursion this one runs inside.
     fn budget_below(self, outer: u64) -> Option<u64> {
-        let bytes = stack_limit_bytes()?;
+        Some(self.frame_budget_at(stack_limit_bytes()?, outer))
+    }
+
+    /// [`Site::frame_budget`] for a stack of `stack_bytes`, with `outer` bytes
+    /// of it already held. Public so that a test can size a value or a chain
+    /// of modules for a process it starts under a different `RLIMIT_STACK`.
+    pub fn frame_budget_at(self, stack_bytes: u64, outer: u64) -> u64 {
         let (frame, reserved) = self.model();
-        let levels = bytes.saturating_sub(reserved.saturating_add(outer)) / frame;
-        Some(levels.saturating_sub(self.drives_others() as u64))
+        let levels = stack_bytes.saturating_sub(reserved.saturating_add(outer)) / frame;
+        levels.saturating_sub(self.drives_others() as u64)
     }
 }
 
@@ -273,11 +297,27 @@ const STACK_MARGIN: u64 = 8384;
 /// `jv_free`.
 const RESERVED_BYTES: u64 = WORST_BASE_BYTES + STACK_MARGIN;
 
-/// The most any site's base cost measured (`jv_cmp` called from `sort_cmp`).
+/// The most any of the six value recursions' base cost measured (`jv_cmp`
+/// called from `sort_cmp`). [`Site::Modules`] is not one of them: see
+/// [`Site::model`].
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const WORST_BASE_BYTES: u64 = 4096;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const WORST_BASE_BYTES: u64 = 3856;
+
+/// [`Site::Modules`]: bytes of stack a module in a chain of imports costs jq,
+/// and what the level where the stack runs out holds — `find_lib`, reading the
+/// file, and above all bison's three `YYINITDEPTH` (200) arrays for parsing it.
+/// Measured on both platforms (see `docs/COMPATIBILITY.md`); nothing else jq
+/// recurses over has a base cost anywhere near this.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const MODULE_FRAME_BYTES: u64 = 416;
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const MODULE_BASE_BYTES: u64 = 12000;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const MODULE_FRAME_BYTES: u64 = 464;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const MODULE_BASE_BYTES: u64 = 8304;
 
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is
@@ -561,6 +601,12 @@ mod tests {
             3664,
             &[4_353, 8_722, 17_460, 34_868, 69_889],
         ),
+        (
+            Site::Modules,
+            416,
+            12000,
+            &[2_491, 5_012, 10_053, 20_096, 40_300],
+        ),
     ];
 
     /// On Linux/x86-64 the kernel's randomization of the initial stack pointer
@@ -577,6 +623,7 @@ mod tests {
         (Site::Merge, 128, 2304, &[8_173, 32_749, 65_517, 131_053]),
         (Site::Setpath, 160, 2176, &[6_539, 26_200, 52_415, 104_843]),
         (Site::Delpaths, 240, 2224, &[4_359, 17_466, 34_943, 69_895]),
+        (Site::Modules, 464, 8304, &[2_241, 9_021, 18_060, 36_139]),
     ];
 
     /// Each model is short of jq by the margin, plus what this site's base
@@ -586,9 +633,13 @@ mod tests {
     fn stack_models_match_the_measurements() {
         for &(site, frame, base, measured) in MEASURED {
             assert_eq!(site.model().0, frame, "{site:?}: bytes a level");
-            assert!(base <= WORST_BASE_BYTES, "{site:?}: base above the worst");
-            let allowance =
-                STACK_MARGIN + (WORST_BASE_BYTES - base) + site.drives_others() as u64 * frame;
+            let reserved = site.model().1;
+            assert!(base <= reserved, "{site:?}: base above what it reserves");
+            // What the model holds back beyond this site's own base cost: the
+            // margin, what its base is below the figure it shares (nothing for
+            // `Modules`, which has its own), and the level a driving site
+            // gives up.
+            let allowance = (reserved - base) + site.drives_others() as u64 * frame;
             for (kb, jq) in LIMITS.iter().zip(measured) {
                 let model = deepest(site, *kb);
                 assert!(model <= *jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
@@ -610,6 +661,9 @@ mod tests {
         (Site::Delpaths, &[Site::Compare, Site::Free]),
         (Site::Setpath, &[Site::Free]),
         (Site::Merge, &[Site::Free]),
+        // `load_library` reads and parses a module at each level, and frees
+        // its text and the imports it took off it.
+        (Site::Modules, &[Site::Free]),
     ];
 
     /// At the deepest level a driving site allows, there has to be room for
