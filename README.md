@@ -15,7 +15,7 @@ Benchmarked on M5 Max MacBook Pro:
 
 **Large JSON files.** qj is 5-18x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~5x faster.
 
-**Memory usage.** qj trades memory for speed, using a ~80–210 MB sliding window for a 3.4 GB file vs jq's ~6 MB.
+**Memory usage.** qj trades memory for speed, using a ~80–410 MB sliding window for a 3.4 GB file vs jq's ~6 MB.
 
 ## Quick start
 
