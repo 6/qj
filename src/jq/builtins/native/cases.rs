@@ -202,6 +202,28 @@ impl Gen {
         let chain = depth > 0;
         match self.r.below(if chain { 12 } else { 9 }) {
             // `..`, the type filters, add, flatten, first, limit, isempty, any/all, IN.
+            // select, map, repeat (natives for direct closures).
+            _ if self.r.below(4) == 0 => match self.r.below(5) {
+                0 => format!("[.[]? | select({f})]"),
+                1 => format!("select({f})"),
+                2 => format!("map({f})?"),
+                3 => format!("[.[]? | map({f})?]"),
+                // `repeat` of something that can be empty never ends (in jq too).
+                _ => format!(
+                    "[limit(3; repeat({}))]",
+                    self.r.pick(&[
+                        "1",
+                        ".",
+                        "tostring",
+                        "(. + 1)",
+                        "error",
+                        "[.]",
+                        "(.a? // 1)",
+                        "input",
+                        "(if . then 1 else 2 end)",
+                    ])
+                ),
+            },
             _ if self.r.below(3) == 0 => match self.r.below(20) {
                 0 => "[..]".to_string(),
                 1 => format!(

@@ -478,23 +478,18 @@ impl Jq {
         args: &[Closure],
         input: Value,
     ) -> Result<Option<(Sub, Value)>, Stop> {
+        // A closure whose body is a region runs without a frame or fork points (its
+        // jq run would leave nothing on the stack but the base; see `sub_idle`).
+        if args.is_empty()
+            && let Some(d) = self.direct(f)
+        {
+            return Ok(self
+                .eval_direct(d, f, input)?
+                .map(|v| (Sub { base: DIRECT }, v)));
+        }
         #[cfg(test)]
         SUB_RUNS.with(|c| c.set(c.get() + 1));
         let prog = self.prog.clone();
-        // A closure whose body is a region runs without a frame or fork points (its
-        // jq run would leave nothing on the stack but the base; see `sub_idle`).
-        if self.opt
-            && args.is_empty()
-            && let Some(d) = prog.funcs[f.func as usize].direct
-        {
-            return match self.run_direct(&prog, &prog.regions[d as usize], f.env, input) {
-                Some(v) => Ok(Some((Sub { base: DIRECT }, v))),
-                None => match self.error.take() {
-                    Some(e) => Err(Stop::Raise(e)),
-                    None => Ok(None),
-                },
-            };
-        }
         let pos = (self.stk_top, self.curr_frame);
         self.stack_save(prog.subrun_base_pc as usize, pos);
         let base = self.fork_top;
@@ -610,6 +605,45 @@ impl Jq {
             r = self.sub_next(s)?;
         }
         Ok(())
+    }
+
+    /// The direct region of closure `f`, if its body is one and the optimized code
+    /// runs (`region.rs`): `f` then has at most one output and no fork points, and
+    /// running it does nothing but its value operations (in jq's order), so natives
+    /// can evaluate it with [`Jq::eval_direct`] where the definition calls it.
+    #[inline]
+    pub(crate) fn direct(&self, f: Closure) -> Option<u32> {
+        if !self.opt {
+            return None;
+        }
+        self.prog.funcs[f.func as usize].direct
+    }
+
+    /// Runs direct region `d` of closure `f` (see [`Jq::direct`]) on `input`: its
+    /// output, `None` if it has none, or its error.
+    #[inline]
+    pub(crate) fn eval_direct(
+        &mut self,
+        d: u32,
+        f: Closure,
+        input: Value,
+    ) -> Result<Option<Value>, Stop> {
+        #[cfg(test)]
+        SUB_RUNS.with(|c| c.set(c.get() + 1));
+        let prog = self.prog.clone();
+        match self.run_direct(&prog, &prog.regions[d as usize], f.env, input) {
+            Some(v) => Ok(Some(v)),
+            None => match self.error.take() {
+                Some(e) => Err(Stop::Raise(e)),
+                None => Ok(None),
+            },
+        }
+    }
+
+    /// Whether direct region `d` always produces a value or raises an error (it never
+    /// backtracks without one).
+    pub(crate) fn direct_always_outputs(&self, d: u32) -> bool {
+        !self.prog.regions[d as usize].may_backtrack
     }
 
     /// The first output of `f` on `input` (the rest of the run is abandoned).

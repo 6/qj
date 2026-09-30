@@ -210,7 +210,9 @@ const PROGRAMS: &[&str] = &[
     // side effects: order of debug/stderr/input
     "(. | debug) + 1",
     "[.[]? | debug | . + 1]",
-    "debug | stderr | . + 1",
+    // (Caught: an error message right after `stderr` output would put qj's name
+    // mid-line, where jq_diff doesn't rewrite it.)
+    "try (debug | stderr | . + 1) catch \"E\"",
     "(input? // 0) + 1",
     "[.[]? | (input? // 0)]",
     "if . == 1 then halt_error else . end",
@@ -228,6 +230,50 @@ const PROGRAMS: &[&str] = &[
     "(. + 0) as $a | (. + 0) | try path($a) catch \"E\"",
     ". as $a | . | try path($a) catch \"E\"",
     "[.[]? | {a: .}] | .[0] as $a | .[0] | try path($a) catch \"E\"",
+];
+
+/// Natives that evaluate direct closures (`select`, `map`, `repeat`: `native/direct.rs`),
+/// and natives whose closures now run as direct regions, on containers.
+const NATIVE_PROGRAMS: &[&str] = &[
+    "[.[]? | select(. != null)]",
+    "[.[]? | select(type == \"number\")]",
+    "[.[]? | select(.a?)]",
+    "[.[]? | try select(. + 1 > 1) catch \"E\"]",
+    "[.[]? | select(., .)]",
+    "[.[]? | select(debug)]",
+    "[.[]? | select(input? // false)]",
+    "select(true) as $a | select(true) | try path($a) catch \"E\"",
+    "[., ., ., .][0:2] as $v | $v | select(true) | $$$$v | .[3] = 9",
+    "map(. + 1)?",
+    "map(.a?)?",
+    "map(tostring)?",
+    "try map(error) catch .",
+    "try map(. * {}) catch .",
+    "map(select(. != null))?",
+    "map(debug)?",
+    "map(.) as $a | map(.) | try path($a) catch \"E\"",
+    "[] | map(.) as $a | [] | map(.) | path($a)",
+    "[., ., ., .][0:2] | map(.) | .[3] = 9",
+    "[.[]? | [.] | map(. + [1])? | .[0:1] | .[3] = 1]",
+    "[limit(3; repeat(1))]",
+    "[limit(3; repeat(. + 1))?]",
+    "try [limit(3; repeat(error))] catch .",
+    "[limit(3; repeat(input))]",
+    "first(repeat(1)) | [label $f | try break $f catch .]",
+    "[limit(2; repeat([.]))] | .[0] as $a | .[1] | try path($a) catch \"E\"",
+    "[., ., ., .][0:2] as $v | $v | first(repeat(.)) | $$$$v | .[3] = 9",
+    "[inputs]",
+    "try [inputs, error(\"x\")] catch .",
+    "walk(if type == \"number\" then . * 10 else . end)",
+    "[paths(type == \"number\")]",
+    ".[]? |= . + 1",
+    "map_values(. // 0)?",
+    "with_entries(.value |= tostring)?",
+    "[.[]? | first(.a?)]",
+    "any(.[]?; . == 1)",
+    "sort_by(.a)?",
+    "group_by(.)? | map(length)",
+    "[limit(2; .[]? | select(. != null))]",
 ];
 
 const INPUTS: &[&str] = &[
@@ -248,7 +294,7 @@ const INPUTS: &[&str] = &[
 #[test]
 fn optimized_matches_original_on_edge_cases() {
     let (regions, direct) = (REGION_RUNS.with(|c| c.get()), DIRECT_RUNS.with(|c| c.get()));
-    for program in PROGRAMS {
+    for program in PROGRAMS.iter().chain(NATIVE_PROGRAMS) {
         for input in INPUTS {
             check(program, input, true);
             check(program, input, false);
@@ -298,6 +344,40 @@ fn optimized_matches_original_on_generated_programs() {
     assert!(outputs * 2 > n, "{outputs} of {n} had output");
     assert!(REGION_RUNS.with(|c| c.get()) - regions > n as u64);
     assert!(DIRECT_RUNS.with(|c| c.get()) - direct > n as u64);
+}
+
+/// Writes jq_diff's `corpus/vm_opt.test` from [`PROGRAMS`], each on four of
+/// [`INPUTS`] (run after changing them, then run jq_diff):
+///
+/// ```text
+/// cargo test --lib write_vm_opt_corpus -- --ignored
+/// ```
+#[test]
+#[ignore]
+fn write_vm_opt_corpus() {
+    let mut out = String::from(
+        "# The VM's optimized code (src/jq/lang/execute/region.rs): straight-line regions,\n\
+         # frameless calls of closures whose body is a region, natives evaluating such\n\
+         # closures (select, map, repeat), and the in-place RET and RANGE. Everything must\n\
+         # match jq exactly: values, errors and their order, side effects (debug, stderr,\n\
+         # input), labels, path expressions, value identity (path($x)) and array storage\n\
+         # (writing past the end of a view). Generated from the edge cases in\n\
+         # src/jq/lang/execute/opt_tests.rs (write_vm_opt_corpus).\n\
+         #\n\
+         # Format: jq's .test format without expected output lines: a program line, one\n\
+         # input line, and a blank line between cases.\n",
+    );
+    for (i, program) in PROGRAMS.iter().chain(NATIVE_PROGRAMS).enumerate() {
+        for j in 0..4 {
+            let input = INPUTS[(i * 5 + j * 3) % INPUTS.len()];
+            out.push_str(&format!("\n{program}\n{input}\n"));
+        }
+    }
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/jq_compat/corpus/vm_opt.test"
+    );
+    std::fs::write(path, out).unwrap();
 }
 
 fn compiled(program: &str) -> super::Jq {

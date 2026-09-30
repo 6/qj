@@ -246,6 +246,9 @@ pub(super) struct Region {
     pub nregs: u8,
     /// Whether the ops use variables of the current frame (level 0).
     pub vars0: bool,
+    /// Whether the region can backtrack without an error (`BACKTRACK`, `empty`, an
+    /// `INDEX_OPT` that fails).
+    pub may_backtrack: bool,
 }
 
 /// How a region is entered.
@@ -848,6 +851,9 @@ pub(super) fn compile(
             return None;
         }
     }
+    let may_backtrack = ops
+        .iter()
+        .any(|op| matches!(op, Op::Backtrack | Op::Index { opt: true, .. }));
     Some((
         Region {
             ops,
@@ -856,6 +862,7 @@ pub(super) fn compile(
             nest: best.level,
             nregs: (32 - c.used.leading_zeros()) as u8,
             vars0: c.vars0,
+            may_backtrack,
         },
         best.ninstr,
     ))
