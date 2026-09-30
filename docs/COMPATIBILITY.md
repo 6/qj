@@ -254,7 +254,7 @@ the numbers repeatable. The last two columns are the 16 MB of GitHub's runners:
 | `delpaths_sorted` | 240 | 69,895 | 69,852 |
 
 The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
-threshold is 28 to 217 levels below jq's. What it covers is different on each:
+threshold is 29 to 218 levels below jq's. What it covers is different on each:
 
 - **macOS: the environment.** argv and the environment sit on top of jq's stack, so its
   threshold drops by about a level per 64 bytes of them — `jv_free` reaches 130,760 in
@@ -320,9 +320,10 @@ not while it is freed, so `$a == $b` dies where `$a | length` answers.
 The whole emulation is checked against the jq binary the same way it was measured: for
 every shape that drives one of the six recursions — 23 of them, from `==` to `bsearch` to
 `del` — the deepest value each tool survives is bisected at several stack limits, and
-qj's is never above jq's, and never more than the margin's worth of levels below it (28
-to 98 at 1 MB and 256 KB on macOS). Shapes where jq's traversal stops early agree at every
-depth.
+qj's is never above jq's, and never more than the margin's worth of levels below it (29 to
+98 at 256 KB and 1 MB on macOS, 43 to 218 at 1, 8 and 16 MB on Linux). Below the
+threshold the two answer the same thing, and shapes where jq's traversal stops early agree
+at every depth.
 
 ## Numbers
 
