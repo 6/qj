@@ -1,0 +1,69 @@
+# --debug-trace=all of instructions that run with an empty data stack (format:
+# tests/jq_diff/cli.rs). For those, jq's trace reads the 4 bytes at the top of
+# its data stack's allocation, which nothing ever wrote, as the next entry:
+# 0 ends the line there, anything else is followed as a stack offset. macOS
+# hands jq zeroed memory for it — in every program of a 264-program corpus,
+# in every run, with the environment's size or ASLR changed — so jq's trace
+# there is the one qj prints. On Linux, glibc leaves other data in that memory
+# and jq prints garbage or crashes, depending on the heap, so these run on
+# macOS only. MallocScribble=1 changes jq's answer on macOS too; see "jq's
+# undefined behaviour" in docs/COMPATIBILITY.md.
+
+[[sweep]]
+name = "empty-stack-pair"
+os = "macos"
+stdin = "[1,2]"
+programs = [
+  "[.[] | . * 2]",
+  "[.[]]",
+  "[.[] | tostring]",
+  "reduce .[] as $x (0; . + $x)",
+  "foreach .[] as $x (0; . + $x)",
+  "first(.[])",
+  "[limit(2; .[])]",
+  "[paths]",
+  "[.. | numbers]",
+  "label $f | .[] | ., break $f",
+  "[.[] | select(. > 1)]",
+  "map(. + 1)",
+  "add",
+  "to_entries",
+  "[.[] | {a: .}]",
+  "try error(\"x\") catch .",
+  "[.[], .[]]",
+  "[.[] as $a | .[] as $b | $a + $b]",
+  ". as $v0 | [.[] | . * 2]",
+  "def f0: .; def f1: .; [.[] | . * 2]",
+]
+variants = { c = ["-c", "--debug-trace=all", "{program}"], pretty = ["--debug-trace=all", "{program}"] }
+
+[[sweep]]
+name = "empty-stack-mixed"
+os = "macos"
+stdin = "[1,\"a\",null]"
+programs = [
+  "[.[] | . * 2]",
+  "reduce .[] as $x (0; . + $x)",
+  "map(. + 1)",
+  "[.[] | tostring]",
+  "[.[] | if . > 1 then . else empty end]",
+]
+variants = { c = ["-c", "--debug-trace=all", "{program}"] }
+
+[[sweep]]
+name = "empty-stack-null-input"
+os = "macos"
+programs = [
+  "[range(10)] | [.[] | . * 2]",
+  "[range(10)] | first(.[])",
+  "[range(10)] | add",
+  "[range(10)] | to_entries | length",
+  "[range(3)] | any",
+]
+variants = { c = ["-nc", "--debug-trace=all", "{program}"] }
+
+[[case]]
+name = "empty-stack-with-named-arguments"
+os = "macos"
+args = ["-c", "--debug-trace=all", "--arg", "a", "1", "--argjson", "b", "2", "[.[] | . * 2]"]
+stdin = "[1,2]"

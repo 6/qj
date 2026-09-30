@@ -375,7 +375,7 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
         stdin: job.inv.stdin.as_deref(),
         timeout: ctx.timeout,
         max_output: MAX_OUTPUT,
-        max_rss: ctx.max_rss,
+        max_rss: job.inv.mem_mb.map_or(ctx.max_rss, |mb| mb << 20),
         merge: job.inv.merge,
         close_fds: &job.inv.close_fds,
     })

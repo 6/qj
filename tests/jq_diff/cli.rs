@@ -16,6 +16,13 @@
 //!                                      # file (`>out 2>&1`), or "pipe" (`2>&1 |`);
 //!                                      # the stream is compared as stdout, with
 //!                                      # stderr's name normalization
+//! os = "linux"                         # optional: only on this OS ("linux" or
+//!                                      # "macos"), for what jq does on one
+//!                                      # platform and not the other
+//! mem_mb = 256                         # optional: this case's resident-memory
+//!                                      # cap (default JQ_DIFF_MEM_MB), so that a
+//!                                      # program that grows forever reaches it
+//!                                      # long before the timeout, in both tools
 //!
 //! # A sweep runs every program under every variant. `{program}` in a
 //! # variant's args is replaced by the program.
@@ -92,6 +99,12 @@ pub struct CaseDef {
     /// Standard descriptors (0, 1, 2) the tool starts with closed.
     #[serde(default)]
     pub close_fds: Vec<i32>,
+    /// Only on this operating system (`std::env::consts::OS`).
+    #[serde(default)]
+    pub os: Option<String>,
+    /// This case's resident-memory cap in MB, instead of `JQ_DIFF_MEM_MB`.
+    #[serde(default)]
+    pub mem_mb: Option<u64>,
     /// Free-form note for humans; not used by the harness.
     #[serde(default)]
     #[allow(dead_code)]
@@ -116,6 +129,12 @@ pub struct SweepDef {
     /// Standard descriptors (0, 1, 2) the tool starts with closed.
     #[serde(default)]
     pub close_fds: Vec<i32>,
+    /// Only on this operating system (`std::env::consts::OS`).
+    #[serde(default)]
+    pub os: Option<String>,
+    /// This case's resident-memory cap in MB, instead of `JQ_DIFF_MEM_MB`.
+    #[serde(default)]
+    pub mem_mb: Option<u64>,
     /// Free-form note for humans; not used by the harness.
     #[serde(default)]
     #[allow(dead_code)]
@@ -146,6 +165,22 @@ pub struct CliCase {
     pub merge: Merge,
     /// Standard descriptors the tool starts with closed.
     pub close_fds: Vec<i32>,
+    /// Only on this operating system, if set.
+    pub os: Option<String>,
+    /// Resident-memory cap in MB, if not the run's.
+    pub mem_mb: Option<u64>,
+}
+
+/// The operating systems a case can be limited to.
+pub fn known_os(os: &str) -> bool {
+    matches!(os, "linux" | "macos")
+}
+
+fn check_os(os: &Option<String>) -> Result<Option<String>, String> {
+    match os {
+        Some(o) if !known_os(o) => Err(format!("unknown os {o:?} (linux or macos)")),
+        _ => Ok(os.clone()),
+    }
 }
 
 /// Only 0, 1 and 2 can be closed: anything else is the harness's own.
@@ -221,6 +256,8 @@ pub fn parse(toml_src: &str, base: &Path) -> Result<Vec<CliCase>, String> {
             program: None,
             merge: merge_mode(&c.merge).map_err(|e| format!("{}: {e}", c.name))?,
             close_fds: check_close_fds(&c.close_fds).map_err(|e| format!("{}: {e}", c.name))?,
+            os: check_os(&c.os).map_err(|e| format!("{}: {e}", c.name))?,
+            mem_mb: c.mem_mb,
         });
     }
     for s in &file.sweep {
@@ -257,6 +294,8 @@ pub fn parse(toml_src: &str, base: &Path) -> Result<Vec<CliCase>, String> {
                     merge: merge_mode(&s.merge).map_err(|e| format!("{}: {e}", s.name))?,
                     close_fds: check_close_fds(&s.close_fds)
                         .map_err(|e| format!("{}: {e}", s.name))?,
+                    os: check_os(&s.os).map_err(|e| format!("{}: {e}", s.name))?,
+                    mem_mb: s.mem_mb,
                 });
             }
         }
@@ -313,6 +352,17 @@ variants = { c = ["-c", "{program}", "f"], p = ["{program}"] }
         assert_eq!(names, vec!["s/c/0", "s/c/1", "s/p/0", "s/p/1"]);
         assert_eq!(cases[1].args, vec!["-c", ".b", "f"]);
         assert_eq!(cases[1].program.as_deref(), Some(".b"));
+    }
+
+    #[test]
+    fn parses_os() {
+        let src = "[[case]]\nname = \"a\"\nargs = [\"-n\"]\nos = \"linux\"\n\
+                   [[case]]\nname = \"b\"\nargs = [\"-n\"]\n";
+        let cases = parse(src, Path::new("/")).unwrap();
+        assert_eq!(cases[0].os.as_deref(), Some("linux"));
+        assert_eq!(cases[1].os, None);
+        let bad = "[[case]]\nname = \"a\"\nargs = []\nos = \"windows\"\n";
+        assert!(parse(bad, Path::new("/")).is_err());
     }
 
     #[test]

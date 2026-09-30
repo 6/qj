@@ -1,0 +1,72 @@
+# jq_diff: os=linux
+# lgamma_r at 0, -0, nan and +-infinity (format: program line, input line,
+# blank line). jq's LIBM_DA(lgamma_r) passes lgamma_r the address of an `int`
+# it never initializes, so the sign it prints is whatever libm writes there.
+# glibc writes it for every input (1, or -1 for a negative zero), so on Linux
+# jq's answer is a function of its input, and qj's is glibc's too. Apple's
+# libm doesn't write it for these inputs: on macOS the sign is what the stack
+# held, different from run to run, so these cases don't run there (see
+# "jq's undefined behaviour" in docs/COMPATIBILITY.md).
+
+0 | lgamma_r
+null
+
+-0 | lgamma_r
+null
+
+nan | lgamma_r
+null
+
+infinite | lgamma_r
+null
+
+-infinite | lgamma_r
+null
+
+[0, -0, nan, infinite, -infinite] | map(lgamma_r)
+null
+
+[0, -0, nan, infinite, -infinite] | map(lgamma_r | .[1])
+null
+
+(0 * 1, -0.0, 1e-400, -1e-400, (nan | -.), (infinite | -.)) | lgamma_r
+null
+
+[.[] | lgamma_r]
+[0,-0,1e-400,-1e-400,1e1000,-1e1000]
+
+map(lgamma_r)
+[0,1,2,-0.5]
+
+.[] | numbers | lgamma_r
+[0,"a",null,-0]
+
+.a | lgamma_r
+{"a":0}
+
+[range(3) | 0 | lgamma_r]
+null
+
+reduce range(3) as $i (null; 0 | lgamma_r)
+null
+
+([range(1000)] | add) as $_ | 0 | lgamma_r
+null
+
+"abc" | test("b") | (0 | lgamma_r)
+null
+
+(1.5 | modf), (0 | lgamma_r), (1 | frexp), (-0 | lgamma_r)
+null
+
+[2.5, -2.5, 0] | map(lgamma_r)
+null
+
+def f: 0 | lgamma_r; [f, f]
+null
+
+try (nan | lgamma_r) catch .
+null
+
+(0 | lgamma_r) as [$v, $s] | {$v, $s}
+null

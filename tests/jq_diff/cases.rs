@@ -74,6 +74,9 @@ pub struct Invocation {
     /// Standard descriptors the tool starts with closed (CLI cases with
     /// `close_fds`).
     pub close_fds: Vec<i32>,
+    /// A resident-memory cap in MB of the case's own (CLI cases with
+    /// `mem_mb`), instead of the run's.
+    pub mem_mb: Option<u64>,
 }
 
 impl Invocation {
@@ -107,6 +110,9 @@ impl Invocation {
         }
         if let Some(arg0) = arg0 {
             h.str("arg0").str(arg0);
+        }
+        if let Some(mb) = self.mem_mb {
+            h.str("mem_mb").str(&mb.to_string());
         }
         h.hex()
     }
@@ -213,6 +219,7 @@ pub fn test_file_jobs(
                         files: Vec::new(),
                         merge: Merge::No,
                         close_fds: Vec::new(),
+                        mem_mb: None,
                     },
                 });
             }
@@ -237,6 +244,7 @@ pub fn test_file_jobs(
                             files: Vec::new(),
                             merge: Merge::No,
                             close_fds: Vec::new(),
+                            mem_mb: None,
                         },
                         _ => {
                             let (content, ext) = if mode == Mode::File {
@@ -253,6 +261,7 @@ pub fn test_file_jobs(
                                 files: vec![(name, content)],
                                 merge: Merge::No,
                                 close_fds: Vec::new(),
+                                mem_mb: None,
                             }
                         }
                     };
@@ -273,10 +282,16 @@ pub fn test_file_jobs(
     jobs
 }
 
-/// Jobs for one CLI case file.
+/// Whether a case limited to `os` runs here.
+fn runs_on_this_os(os: Option<&str>) -> bool {
+    os.is_none_or(|o| o == std::env::consts::OS)
+}
+
+/// Jobs for one CLI case file (the cases for another OS are left out).
 pub fn cli_jobs(group: &str, origin_path: &str, cases: &[CliCase]) -> Vec<Job> {
     cases
         .iter()
+        .filter(|c| runs_on_this_os(c.os.as_deref()))
         .map(|c| {
             let mut h = Fnv128::new();
             h.str("cli");
@@ -320,6 +335,7 @@ pub fn cli_jobs(group: &str, origin_path: &str, cases: &[CliCase]) -> Vec<Job> {
                     cwd: dir,
                     merge: c.merge,
                     close_fds: c.close_fds.clone(),
+                    mem_mb: c.mem_mb,
                 },
             }
         })
@@ -378,7 +394,13 @@ pub fn collect(root: &Path, modes: &[Mode]) -> Result<Vec<Job>, String> {
             {
                 return Err(format!("{origin}: unknown mode {bad:?}"));
             }
-            jobs.extend(test_file_jobs(&group, &origin, &file, modes));
+            let here = file
+                .os
+                .as_ref()
+                .is_none_or(|os| os.iter().any(|o| runs_on_this_os(Some(o))));
+            if here {
+                jobs.extend(test_file_jobs(&group, &origin, &file, modes));
+            }
         } else if name.ends_with(".toml") {
             if !modes.contains(&Mode::Cli) {
                 continue;
@@ -481,6 +503,7 @@ mod tests {
             files: vec![],
             merge: Merge::No,
             close_fds: Vec::new(),
+            mem_mb: None,
         };
         let k = inv.key(&[], None);
         let mut other = inv.clone();

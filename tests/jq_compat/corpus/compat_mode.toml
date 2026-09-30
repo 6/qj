@@ -409,29 +409,36 @@ env = { QJ_JQ_COMPAT = "1" }
 # ---------------------------------------------------------------------------
 # Hangs. jv_equal(nan, nan) is false, so delpaths_sorted never advances past a
 # NaN path element: it loops forever, appending the key to an array as it
-# goes. Neither tool finishes; the harness requires that of both.
+# goes. Neither tool finishes, and the harness requires that both end the same
+# way: here, at the memory cap. It is 256 MB for these, which jq reaches in
+# about a second even on GitHub's runners (the default 2 GB took it 8.7 s
+# there, close to the 10 s timeout, where it would have ended another way).
 # ---------------------------------------------------------------------------
 
 [[case]]
 name = "delpaths-nan-on-an-array"
 args = ["-nc", "[1] | delpaths([[nan]])"]
 env = { QJ_JQ_COMPAT = "1" }
+mem_mb = 256
 
 [[case]]
 name = "delpaths-nan-on-an-object"
 args = ["-nc", "{\"a\":1} | delpaths([[nan]])"]
 env = { QJ_JQ_COMPAT = "1" }
+mem_mb = 256
 
 [[case]]
 name = "delpaths-nan-under-try"
 args = ["-nc", "[1] | try delpaths([[nan]]) catch \"caught\""]
 env = { QJ_JQ_COMPAT = "1" }
+mem_mb = 256
 
 # A NaN deeper in a path reaches the same loop, one level down.
 [[case]]
 name = "delpaths-nan-deeper-in-a-path"
 args = ["-nc", "[[1]] | try delpaths([[0,nan]]) catch ."]
 env = { QJ_JQ_COMPAT = "1" }
+mem_mb = 256
 
 # ---------------------------------------------------------------------------
 # qj's extensions, off.
