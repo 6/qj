@@ -67,6 +67,11 @@ answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode
   format in `tests/jq_diff/cli.rs`). A CLI case with `merge = "file"` or
   `"pipe"` sends stderr where stdout goes (`>out 2>&1`, `2>&1 |`), which shows stdio's
   buffering order (`corpus/merged_output.toml`). Ids look like `upstream/man.test:280:compact`.
+  A case can't ask for a stack limit: Darwin refuses `setrlimit(RLIMIT_STACK)` in a process
+  forked from a multi-threaded one, so a `stack_kb` option would need a shell per case.
+  Cases near one of `QJ_JQ_COMPAT`'s stack-overflow thresholds therefore live in
+  `tests/compat_mode.rs`, which runs qj through `sh -c 'ulimit -s N; exec …'` and sizes the
+  value or chain of modules from the model (`Site::frame_budget_at`).
 - **Modes** for `.test` cases: `compact` (`-c`, stdin), `pretty` (stdin), `file` (`-c`, input
   as a file argument, which qj memory-maps), `ndjson` (`-c`, input line twice in a
   file; only single objects/arrays, no `input`/`$__loc__`/`halt`). `%%FAIL` blocks run once as
