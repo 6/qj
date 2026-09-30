@@ -685,6 +685,26 @@ pub fn native_drop_limit() -> u32 {
     NATIVE_DROP_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The stack jq's start-up, its compiler and its test loop need, margin
+/// included — what [`starting`], [`compiling`] and [`running_tests`] compare
+/// with the stack beyond argv and the environment. Public so that a test can
+/// pick a limit between two of them.
+pub fn fixed_needs() -> FixedNeeds {
+    FixedNeeds {
+        start: START_BYTES + STACK_MARGIN,
+        compile: COMPILE_BYTES + STACK_MARGIN,
+        run_tests: RUN_TESTS_FLOOR_BYTES + STACK_MARGIN,
+    }
+}
+
+/// [`fixed_needs`].
+#[derive(Clone, Copy, Debug)]
+pub struct FixedNeeds {
+    pub start: u64,
+    pub compile: u64,
+    pub run_tests: u64,
+}
+
 /// The nesting depth of the deepest value in `items`, counted as jq counts
 /// `jv_free` frames: one for the value itself, plus the deepest child.
 ///

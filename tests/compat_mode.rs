@@ -45,7 +45,18 @@ fn exact_env(dir: &Path, compat: bool) -> Vec<String> {
     if compat {
         env.push(format!("{}=1", qj::compat::ENV_VAR));
     }
+    let pad = PAD.with(std::cell::Cell::get);
+    if pad > 0 {
+        env.push(format!("PAD={}", "x".repeat(pad)));
+    }
     env
+}
+
+thread_local! {
+    /// Bytes of padding [`exact_env`] adds, in a variable of its own: a test
+    /// that wants less of the stack for jq than a page-sized limit leaves can
+    /// take it with the environment, which sits on the stack too.
+    static PAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The stack compat mode sees as jq's in a qj started with `args` by
@@ -1044,6 +1055,240 @@ fn the_deepest_program_bison_parses_compiles_at_the_default_stack() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Small stacks: jq's start-up, its test loop, regexes, dumps, native frees
+// ---------------------------------------------------------------------------
+
+/// The page size the kernel rounds `RLIMIT_STACK` to.
+fn page_kb() -> u64 {
+    // SAFETY: sysconf has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    (page as u64).max(4096) / 1024
+}
+
+/// The smallest limit (a page multiple, in KB) at which compat mode sees at
+/// least `need` bytes of jq's stack for a qj started with `args` from a
+/// program file.
+fn limit_for(need: u64, args: &[&str]) -> u64 {
+    let probe = program_file("");
+    let step = page_kb();
+    let mut kb = step;
+    while jq_stack(probe.path(), true, kb * 1024, args) < need {
+        kb += step;
+    }
+    kb
+}
+
+/// [`run_stack`], on Linux with the kernel's stack randomization off where
+/// `setarch` is installed (`None` where it isn't): qj's own start-up (the
+/// dynamic loader's) needs about 6 KB of a limit this small, which the
+/// randomization would sometimes take away.
+fn run_stack_norandom(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Option<Output> {
+    if !cfg!(target_os = "linux") {
+        return Some(run_stack(dir, compat, stack_kb, args));
+    }
+    let setarch = ["/usr/bin/setarch", "/bin/setarch"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())?;
+    let script = format!(
+        "ulimit -s {stack_kb} || exit 99; ulimit -c 0; exec {setarch} \"$(uname -m)\" -R /usr/bin/env -i \"$@\""
+    );
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(script)
+        .arg("sh")
+        .args(exact_env(dir, compat))
+        .arg(env!("CARGO_BIN_EXE_qj"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin");
+    Some(cmd.output().expect("failed to run qj"))
+}
+
+fn assert_dies(o: &Output, what: &str) {
+    assert_eq!(
+        signal(o),
+        Some(libc::SIGSEGV),
+        "{what} should crash ({:?}, {})",
+        o.status,
+        stderr(o)
+    );
+    assert_eq!(stdout(o), "", "{what}: nothing is written");
+}
+
+/// On Linux, where jq is linked statically, its start-up needs about 5 KB
+/// (the help text, the version, a usage error) and compiling a program about
+/// 9 KB; between the two, compat mode prints the version and dies compiling.
+/// (On macOS dyld needs more than either, for jq and qj alike.)
+#[test]
+fn compat_mode_needs_what_jqs_start_and_compiler_do() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let needs = qj::compat::fixed_needs();
+    let args = ["-nc", "-f", "p.jq"];
+    // The first limit where jq starts, and where its compiler still dies.
+    let kb = limit_for(needs.start, &args);
+    let dir = program_file("1");
+    assert!(jq_stack(dir.path(), true, kb * 1024, &args) < needs.compile);
+    let Some(o) = run_stack_norandom(dir.path(), true, kb, &args) else {
+        return; // no setarch
+    };
+    assert_dies(&o, &format!("compiling at {kb} KB"));
+    let version =
+        run_stack_norandom(dir.path(), true, kb, &["--version"]).expect("setarch was there");
+    assert_eq!(code(&version), Some(0), "{}", stderr(&version));
+    assert_eq!(stdout(&version), "jq-1.8.1\n");
+    // Below the start-up's need, even the version dies; by default qj answers.
+    let below = kb - page_kb();
+    if jq_stack(dir.path(), true, below * 1024, &["--version"]) < needs.start {
+        let o = run_stack_norandom(dir.path(), true, below, &["--version"]).expect("setarch");
+        assert_dies(&o, &format!("starting at {below} KB"));
+    }
+    let plain = run_stack_norandom(dir.path(), false, kb, &args).expect("setarch");
+    assert_eq!(code(&plain), Some(0), "{}", stderr(&plain));
+    assert_eq!(stdout(&plain), "1\n");
+}
+
+/// jq's `--run-tests` keeps its test loop's buffers on the stack, 28 KB on
+/// macOS and 12 KB on Linux above everything it runs: on a stack that holds a
+/// program but not the loop, compat mode dies where the program answers.
+#[test]
+fn run_tests_needs_jqs_test_loop() {
+    let needs = qj::compat::fixed_needs();
+    let dir = program_file("1");
+    std::fs::write(dir.path().join("t.test"), ".\n1\n1\n\n").expect("write the tests");
+    let args = ["--run-tests", "t.test"];
+    // Where jq starts and compiles a program (dyld needs more than the
+    // compiler on macOS), but not where its test loop fits.
+    let kb = limit_for(needs.start.max(needs.compile), &args);
+    assert!(jq_stack(dir.path(), true, kb * 1024, &args) < needs.run_tests);
+    let o = run_stack(dir.path(), true, kb, &args);
+    assert_dies(&o, &format!("--run-tests at {kb} KB"));
+    let plain = run_stack(dir.path(), false, kb, &args);
+    assert_eq!(code(&plain), Some(0), "{}", stderr(&plain));
+    assert!(
+        stdout(&plain).contains("1 of 1 tests passed"),
+        "{}",
+        stdout(&plain)
+    );
+    // With room for the loop, compat mode runs the tests too.
+    let kb = limit_for(needs.run_tests, &args);
+    let o = run_stack(dir.path(), true, kb, &args);
+    assert_eq!(code(&o), Some(0), "at {kb} KB: {}", stderr(&o));
+    assert!(stdout(&o).contains("1 of 1 tests passed"), "{}", stdout(&o));
+}
+
+/// Oniguruma parses a pattern by recursing once per group, and walks the
+/// parsed tree once per node: both overflow jq's stack on a small one, at
+/// their own depths, and compat mode dies where jq does.
+#[test]
+fn a_nested_regex_crashes_where_jqs_oniguruma_does() {
+    let stack_kb = SMALL_STACK_KB;
+    let stack = file_stack(stack_kb);
+    let parse = Site::RegexParse.frame_budget_at(stack, 0);
+    let tree = Site::RegexTree.frame_budget_at(stack, 0);
+    // `n` groups around an alternation: the parser has a level for the
+    // pattern and one per group, the tree `n + 2` nodes; the parser runs out
+    // first.
+    let groups = (parse - 1).min(tree - 2);
+    // `n` quantified groups: two nodes a level, and one for the leaf.
+    let quantified = (tree - 1) / 2;
+    assert!(
+        (100..500).contains(&groups) && quantified < groups,
+        "implausible regex depths {groups}, {quantified} at {stack_kb} KB"
+    );
+    for (shape, n, open, close, mid) in [
+        ("groups", groups, "(", ")", "a|b"),
+        ("quantified", quantified, "(", ")*", "a"),
+    ] {
+        let prog = |n: u64| {
+            let pattern = format!(
+                "{}{mid}{}",
+                open.repeat(n as usize),
+                close.repeat(n as usize)
+            );
+            format!("\"ab\" | test(\"{pattern}\")")
+        };
+        let ok = run_stack_program(true, stack_kb, &prog(n));
+        assert_eq!(code(&ok), Some(0), "{shape} {n}: {}", stderr(&ok));
+        assert_eq!(stdout(&ok), "true\n", "{shape} {n}");
+        let o = run_stack_program(true, stack_kb, &prog(n + 1));
+        assert_dies(&o, &format!("{shape} {} at {stack_kb} KB", n + 1));
+        let plain = run_stack_program(false, stack_kb, &prog(n + 1));
+        assert_eq!(
+            code(&plain),
+            Some(0),
+            "{shape} by default: {}",
+            stderr(&plain)
+        );
+        assert_eq!(stdout(&plain), "true\n");
+    }
+}
+
+/// jq prints a result from `main.c`, and dumps a value for `tojson` from
+/// deeper in its stack, inside the VM: the same value can print and still
+/// kill jq converted to a string.
+#[test]
+fn a_dump_inside_the_program_has_less_stack_than_the_output() {
+    let stack_kb = 64;
+    let stack = file_stack(stack_kb);
+    let (print, dump) = (
+        Site::Print.frame_budget_at(stack, 0),
+        Site::Dump.frame_budget_at(stack, 0),
+    );
+    assert!(dump < print && print < 258, "{dump} {print}");
+    // `n` arrays around a 0 take `n + 1` frames to dump.
+    let n = dump;
+    let printed = run_stack_program(true, stack_kb, &format!("reduce range({n}) as $i (0;[.])"));
+    assert_eq!(code(&printed), Some(0), "{}", stderr(&printed));
+    let dumped = run_stack_program(
+        true,
+        stack_kb,
+        &format!("reduce range({n}) as $i (0;[.]) | tojson | length"),
+    );
+    assert_dies(&dumped, &format!("tojson of {n} levels at {stack_kb} KB"));
+}
+
+/// qj frees a value natively up to 256 levels deep; where jq's `jv_free` has
+/// fewer frames than that, compat mode stops short of them, so that a value
+/// too deep for jq is checked however shallow it is.
+#[test]
+fn a_shallow_value_on_a_small_stack_is_checked_as_it_is_freed() {
+    // The first limit with room to start and compile, and so few frames for
+    // `jv_free`: on macOS, whose pages are 16 KB, with the environment taking
+    // what jq would have in excess of that.
+    let needs = qj::compat::fixed_needs();
+    let need = needs.start.max(needs.compile);
+    let args = ["-nc", "-f", "p.jq"];
+    let kb = limit_for(need, &args);
+    let spare = file_stack(kb) - need;
+    let frame = Site::Free.frame_bytes();
+    let pad = spare.saturating_sub(8 * frame) as usize;
+    PAD.with(|p| p.set(pad));
+    let budget = Site::Free.frame_budget_at(file_stack(kb), 0);
+    assert!(budget < 256, "{budget} frames for jv_free at {kb} KB");
+    // `n` arrays around a null take `n + 1` frames to free.
+    for (n, dies) in [(budget - 1, false), (budget, true)] {
+        let prog = format!("reduce range({n}) as $i (null;[.]) | length");
+        let dir = program_file(&prog);
+        let Some(o) = run_stack_norandom(dir.path(), true, kb, &args) else {
+            return; // no setarch
+        };
+        if dies {
+            assert_dies(&o, &format!("freeing {n} levels at {kb} KB"));
+        } else {
+            assert_eq!(code(&o), Some(0), "{n} at {kb} KB: {}", stderr(&o));
+            assert_eq!(stdout(&o), "1\n");
+        }
+    }
+    PAD.with(|p| p.set(0));
 }
 
 // ---------------------------------------------------------------------------
