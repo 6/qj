@@ -644,12 +644,12 @@ impl InputReader {
         }
         let cur = self.cur.as_ref().expect("an open input");
         let bytes = cur.slice(from, to);
-        let mut n = 0u64;
-        let mut last = None;
-        for i in memchr::memchr_iter(b'\n', bytes) {
-            n += 1;
-            last = Some(i);
-        }
+        // (Counted in vector blocks: a pretty-printed text has a newline
+        // every few dozen bytes, too many to find one by one.)
+        let last = memchr::memrchr(b'\n', bytes);
+        let n = last.map_or(0, |i| {
+            memchr::memchr_iter(b'\n', &bytes[..i]).count() as u64 + 1
+        });
         self.fp.pos = to;
         if let Some(i) = last {
             self.fp.nl += n;
@@ -1258,6 +1258,15 @@ impl InputReader {
         match &self.cur {
             Some(cur) if self.generation == at.generation => cur.avail_end().saturating_sub(at.pos),
             _ => 0,
+        }
+    }
+
+    /// Whether the current input ends at `at`: all of it has been read, and
+    /// nothing is left after `at`.
+    pub(crate) fn ends_at(&self, at: &Cut) -> bool {
+        match &self.cur {
+            Some(cur) if self.generation == at.generation => cur.eof && cur.avail_end() <= at.pos,
+            _ => false,
         }
     }
 

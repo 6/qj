@@ -80,6 +80,24 @@ const PROGRAMS: &[&str] = &[
     ".arr[] | select(.a)",
     "select(.a != -0)",
     ".s",
+    ".a?",
+    ".arr[].b?",
+    ".arr[].b[]?",
+    "[.[]?]",
+    "[.[][]?]",
+    ".s[]?",
+    "def f: .arr; f[] | .a",
+    "def keys: .k1; keys",
+    "def is_one: .a == 1; .arr[] | select(is_one)",
+    ".arr[] | select(.a > 0)",
+    ".arr[] | select(.a <= \"x\") | .b",
+    ".a.b[] | select(. >= 1.5)",
+    ".arr[] | select(.a == 1 and .b != null)",
+    ".arr[] | select(.a == \"x\" or (.b | not))",
+    ".a.b | add",
+    "[.arr[] | .a] | add",
+    "add(.k1, .k2)",
+    "[.[] | length] | add",
 ];
 
 const OPTIONS: &[&[&str]] = &[
@@ -150,4 +168,88 @@ fn document_stdin() {
 #[test]
 fn documents_stdin() {
     check_input(None, MULTI);
+}
+
+/// Outputs over 1 MB, which qj writes out while it prints them (in whole
+/// stdio buffers): stdout and stderr merged into one file (`>out 2>&1`) show
+/// where each buffer went out, which must be where jq's did. In `big.json`
+/// the document is followed by a text that doesn't parse, whose error comes
+/// after the document's whole buffers and before the rest. (stderr's `qj:`
+/// is `jq:` anywhere here: it needn't start a line.)
+#[test]
+fn big_outputs_go_out_like_jq() {
+    if !jq_available() {
+        return;
+    }
+    let qj = env!("CARGO_BIN_EXE_qj");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut doc = String::from("[");
+    for i in 0..20_000 {
+        if i > 0 {
+            doc.push(',');
+        }
+        doc.push_str(&format!(
+            "{{\"i\":{i},\"s\":\"text \\u00e9 \\\"{i}\\\"\",\"a\":[1,2.50,-0,{{}}],\"n\":null}}"
+        ));
+    }
+    doc.push_str("]\n");
+    std::fs::write(dir.path().join("big.json"), format!("{doc}{{\"x\": ]\n")).expect("write");
+    std::fs::write(dir.path().join("big2.json"), format!("{doc}{doc}")).expect("write");
+    let cases: &[&[&str]] = &[
+        &["-c", "."],
+        &["."],
+        &["--tab", "."],
+        &["-c", ".[]"],
+        &["-c", "map({i, s})"],
+        &["-r", ".[] | .s"],
+        &["-c", ". + ."],
+        &["-c", "[.[] | select(.i == 5)]"],
+    ];
+    let merged = |script: String| {
+        let status = Command::new("sh")
+            .args(["-c", &script])
+            .current_dir(dir.path())
+            .status()
+            .expect("sh");
+        assert!(status.success());
+        std::fs::read(dir.path().join("out")).expect("read out")
+    };
+    // Records for the parallel engine's jobs, some of which make errors
+    // between outputs (`.a[0]`: jobs with and without errors).
+    let mut records = String::new();
+    for i in 0..8_000 {
+        if i % 2_500 == 1_000 {
+            records.push_str(&format!("{{\"i\":\"{i}\",\"s\":5,\"a\":{{}},\"n\":[]}}\n"));
+        } else {
+            records.push_str(&format!(
+                "{{\"i\":{i},\"s\":\"text \\u00e9 \\\"{i}\\\"\",\"a\":[1,2.50,-0,{{}}],\"n\":null}}\n"
+            ));
+        }
+    }
+    std::fs::write(dir.path().join("records.json"), records).expect("write");
+    let cases: Vec<&[&str]> = cases
+        .iter()
+        .copied()
+        .chain([&["-c", ".a[0]"][..], &["--unbuffered", "-c", ".a[0]"]])
+        .collect();
+    for args in cases {
+        let quoted: Vec<String> = args.iter().map(|a| format!("'{a}'")).collect();
+        for file in ["big.json", "big2.json", "records.json"] {
+            let script = |tool: &str, threads: &str| {
+                format!(
+                    "'{tool}' {threads} {} {file} > out 2>&1; echo \"status $?\" >> out",
+                    quoted.join(" ")
+                )
+            };
+            let want = String::from_utf8_lossy(&merged(script("jq", ""))).into_owned();
+            for threads in ["", "--threads 1"] {
+                let got = merged(script(qj, threads));
+                let got = String::from_utf8_lossy(&got).replace("qj: ", "jq: ");
+                assert!(
+                    got == want,
+                    "qj {threads} {args:?} {file}: merged output differs from jq's"
+                );
+            }
+        }
+    }
 }

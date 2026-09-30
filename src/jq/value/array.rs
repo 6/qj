@@ -15,9 +15,10 @@
 //!   elements beyond the view's end reappear:
 //!   `[range(4)+1] | .[0:2] | .[3] = 9` gives `[1,2,3,9]`.
 
+use std::alloc::{self, Layout};
 use std::cell::Cell;
 use std::fmt;
-use std::rc::Rc;
+use std::ptr::{self, NonNull};
 
 use super::{Error, Value};
 
@@ -30,26 +31,282 @@ fn round_up(n: usize) -> usize {
 /// Size of a new `jv_array()`.
 const DEFAULT_ARRAY_SIZE: usize = 16;
 
-/// jq's `jvp_array` payload.
-#[derive(Clone)]
-struct Storage {
-    /// Elements; `items.len()` is jq's `array->length` (it can extend past
-    /// the end of the views that use this storage).
-    items: Vec<Value>,
+/// jq's `alloc_length` after appending `len` elements to `jv_array()`.
+fn appended_alloc(len: usize) -> usize {
+    let mut alloc = DEFAULT_ARRAY_SIZE;
+    while len > alloc {
+        alloc = round_up(alloc + 1);
+    }
+    alloc
+}
+
+/// The header of an array's storage, which its elements follow in the same
+/// allocation (like jq's `jvp_array`).
+#[repr(C)]
+struct Header {
+    strong: Cell<usize>,
+    /// Initialized elements: jq's `array->length` (it can extend past the
+    /// end of the views that use this storage).
+    len: usize,
+    /// Element slots allocated. Only `alloc` is jq's: the slots grow as
+    /// elements are added, which nothing can observe.
+    cap: usize,
     /// jq's `alloc_length`: positions below it can be written in place.
     alloc: usize,
 }
 
-impl Drop for Storage {
-    fn drop(&mut self) {
-        if self.items.is_empty() {
+/// jq's `jvp_array` payload: reference-counted, one allocation.
+struct Storage(NonNull<Header>);
+
+impl Storage {
+    fn layout(cap: usize) -> Layout {
+        let size = std::mem::size_of::<Value>()
+            .checked_mul(cap)
+            .and_then(|n| n.checked_add(std::mem::size_of::<Header>()))
+            .expect("array size overflow");
+        let align = std::mem::align_of::<Header>().max(std::mem::align_of::<Value>());
+        Layout::from_size_align(size, align).expect("array layout")
+    }
+
+    /// Empty storage with room for `cap` elements and jq's `alloc_length`.
+    fn new(cap: usize, alloc: usize) -> Storage {
+        let layout = Storage::layout(cap);
+        // SAFETY: the layout has a non-zero size (the header).
+        let p = unsafe { alloc::alloc(layout) }.cast::<Header>();
+        let Some(p) = NonNull::new(p) else {
+            alloc::handle_alloc_error(layout)
+        };
+        // SAFETY: `p` is a fresh allocation for a header and `cap` values.
+        unsafe {
+            p.as_ptr().write(Header {
+                strong: Cell::new(1),
+                len: 0,
+                cap,
+                alloc,
+            })
+        };
+        Storage(p)
+    }
+
+    /// Storage holding `items` (moved in).
+    fn from_vec(mut items: Vec<Value>, alloc: usize) -> Storage {
+        let n = items.len();
+        let mut st = Storage::new(n, alloc);
+        // SAFETY: the storage has room for `n` values; the vector's are
+        // moved (copied, then forgotten by setting its length to 0).
+        unsafe {
+            ptr::copy_nonoverlapping(items.as_ptr(), st.items_ptr(), n);
+            items.set_len(0);
+            st.header_mut().len = n;
+        }
+        st
+    }
+
+    #[inline]
+    fn header(&self) -> &Header {
+        // SAFETY: the pointer is a live allocation holding a header.
+        unsafe { self.0.as_ref() }
+    }
+
+    /// The header, for changes: only while the storage is unique (or being
+    /// freed), so that no view sees them happen.
+    #[inline]
+    unsafe fn header_mut(&mut self) -> &mut Header {
+        // SAFETY: the caller has the only reference to the storage.
+        unsafe { self.0.as_mut() }
+    }
+
+    #[inline]
+    fn items_ptr(&self) -> *mut Value {
+        // SAFETY: the elements follow the header in the allocation (the
+        // layout's alignment suits both).
+        unsafe { self.0.as_ptr().add(1).cast::<Value>() }
+    }
+
+    #[inline]
+    fn items(&self) -> &[Value] {
+        // SAFETY: the first `len` slots are initialized.
+        unsafe { std::slice::from_raw_parts(self.items_ptr(), self.header().len) }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.header().len
+    }
+
+    #[inline]
+    fn alloc(&self) -> usize {
+        self.header().alloc
+    }
+
+    #[inline]
+    fn strong(&self) -> usize {
+        self.header().strong.get()
+    }
+
+    #[inline]
+    fn is_unique(&self) -> bool {
+        self.strong() == 1
+    }
+
+    #[inline]
+    fn ptr_eq(&self, other: &Storage) -> bool {
+        self.0 == other.0
+    }
+
+    // ---- changes, on unique storage only ----
+
+    /// The elements, mutably.
+    #[inline]
+    fn items_mut(&mut self) -> &mut [Value] {
+        debug_assert!(self.is_unique());
+        // SAFETY: unique, and the first `len` slots are initialized.
+        unsafe { std::slice::from_raw_parts_mut(self.items_ptr(), self.header().len) }
+    }
+
+    fn set_alloc(&mut self, alloc: usize) {
+        debug_assert!(self.is_unique());
+        // SAFETY: unique.
+        unsafe { self.header_mut().alloc = alloc };
+    }
+
+    /// Makes room for `total` elements (growing by doubling).
+    fn reserve(&mut self, total: usize) {
+        debug_assert!(self.is_unique());
+        let cap = self.header().cap;
+        if total <= cap {
             return;
         }
-        // Drop the elements here (not in the drop glue after this returns)
-        // so that the nesting is counted.
-        if !drop_nested(|| self.items.clear()) {
-            drop_values_iteratively(&mut self.items);
+        let new_cap = total.max(cap.saturating_mul(2)).max(4);
+        let new_layout = Storage::layout(new_cap);
+        // SAFETY: the allocation was made with `layout(cap)`; the header
+        // and the initialized elements move with it (values are movable).
+        let p = unsafe {
+            alloc::realloc(
+                self.0.as_ptr().cast(),
+                Storage::layout(cap),
+                new_layout.size(),
+            )
         }
+        .cast::<Header>();
+        let Some(p) = NonNull::new(p) else {
+            alloc::handle_alloc_error(new_layout)
+        };
+        self.0 = p;
+        // SAFETY: unique.
+        unsafe { self.header_mut().cap = new_cap };
+    }
+
+    /// Grows to `n` elements with nulls, or truncates to `n`.
+    fn resize_null(&mut self, n: usize) {
+        let len = self.len();
+        if n <= len {
+            self.truncate(n);
+            return;
+        }
+        self.reserve(n);
+        let p = self.items_ptr();
+        for i in len..n {
+            // SAFETY: slot `i` is allocated and uninitialized.
+            unsafe { p.add(i).write(Value::Null) };
+        }
+        // SAFETY: unique; the slots up to `n` are initialized now.
+        unsafe { self.header_mut().len = n };
+    }
+
+    /// Appends clones of `items`.
+    fn extend_cloned(&mut self, items: &[Value]) {
+        self.reserve(self.len() + items.len());
+        let p = self.items_ptr();
+        for v in items {
+            let len = self.len();
+            // SAFETY: slot `len` is allocated; the length covers it only
+            // once it's written (a panicking clone leaves it out).
+            unsafe {
+                p.add(len).write(v.clone());
+                self.header_mut().len = len + 1;
+            }
+        }
+    }
+
+    /// Drops the elements from `n` on.
+    fn truncate(&mut self, n: usize) {
+        debug_assert!(self.is_unique());
+        let len = self.len();
+        if n >= len {
+            return;
+        }
+        // SAFETY: unique; the length drops first, so the elements are
+        // never seen after they're dropped.
+        unsafe {
+            self.header_mut().len = n;
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+                self.items_ptr().add(n),
+                len - n,
+            ));
+        }
+    }
+
+    /// Drops the first `n` elements, moving the rest down.
+    fn remove_prefix(&mut self, n: usize) {
+        debug_assert!(self.is_unique());
+        let len = self.len();
+        let n = n.min(len);
+        if n == 0 {
+            return;
+        }
+        let p = self.items_ptr();
+        // SAFETY: unique; the first `n` elements are dropped, then the rest
+        // (initialized, `len - n` of them) move down.
+        unsafe {
+            self.header_mut().len = 0;
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(p, n));
+            ptr::copy(p.add(n), p, len - n);
+            self.header_mut().len = len - n;
+        }
+    }
+
+    /// Moves every element out, onto the end of `out`.
+    fn drain_into(&mut self, out: &mut Vec<Value>) {
+        debug_assert!(self.is_unique());
+        let len = self.len();
+        out.reserve(len);
+        // SAFETY: unique; the elements are moved (copied, then forgotten
+        // by setting the length to 0) into reserved room.
+        unsafe {
+            ptr::copy_nonoverlapping(self.items_ptr(), out.as_mut_ptr().add(out.len()), len);
+            out.set_len(out.len() + len);
+            self.header_mut().len = 0;
+        }
+    }
+}
+
+impl Clone for Storage {
+    #[inline]
+    fn clone(&self) -> Storage {
+        let s = &self.header().strong;
+        s.set(s.get() + 1);
+        Storage(self.0)
+    }
+}
+
+impl Drop for Storage {
+    fn drop(&mut self) {
+        let strong = self.header().strong.get();
+        if strong > 1 {
+            self.header().strong.set(strong - 1);
+            return;
+        }
+        // The last reference: drop the elements here, counting the nesting
+        // (or iteratively past the budget), then free the allocation.
+        if self.len() > 0 && !drop_nested(|| self.truncate(0)) {
+            let mut items = Vec::new();
+            self.drain_into(&mut items);
+            drop_values_iteratively(&mut items);
+        }
+        let cap = self.header().cap;
+        // SAFETY: allocated with `layout(cap)`; nothing refers to it now.
+        unsafe { alloc::dealloc(self.0.as_ptr().cast(), Storage::layout(cap)) };
     }
 }
 
@@ -82,7 +339,7 @@ pub(crate) fn drop_nested(drop_contents: impl FnOnce()) -> bool {
 #[inline]
 pub(crate) fn owns_container(v: &Value) -> bool {
     match v {
-        Value::Array(a) => Rc::strong_count(&a.storage) == 1,
+        Value::Array(a) => a.storage.is_unique(),
         Value::Object(o) => o.is_unique(),
         _ => false,
     }
@@ -105,8 +362,8 @@ pub(crate) fn drop_values_iteratively(items: &mut Vec<Value>) {
     while let Some(mut v) = stack.pop() {
         match &mut v {
             Value::Array(a) => {
-                if let Some(st) = Rc::get_mut(&mut a.storage) {
-                    stack.append(&mut st.items);
+                if a.storage.is_unique() {
+                    a.storage.drain_into(&mut stack);
                 }
             }
             Value::Object(o) => o.drain_values_into(&mut stack),
@@ -119,7 +376,7 @@ pub(crate) fn drop_values_iteratively(items: &mut Vec<Value>) {
 /// A jq array value (`JV_KIND_ARRAY`).
 #[derive(Clone)]
 pub struct Array {
-    storage: Rc<Storage>,
+    storage: Storage,
     offset: u32,
     len: u32,
 }
@@ -136,13 +393,12 @@ impl Array {
         Array::with_capacity(DEFAULT_ARRAY_SIZE)
     }
 
-    /// `jv_array_sized(n)`: an empty array with `alloc_length = n`.
+    /// `jv_array_sized(n)`: an empty array with `alloc_length = n`. (Only
+    /// that number is jq's: the elements' memory grows as they're added,
+    /// which nothing can observe.)
     pub fn with_capacity(n: usize) -> Array {
         Array {
-            storage: Rc::new(Storage {
-                items: Vec::with_capacity(n.min(DEFAULT_ARRAY_SIZE)),
-                alloc: n,
-            }),
+            storage: Storage::new(0, n),
             offset: 0,
             len: 0,
         }
@@ -153,12 +409,35 @@ impl Array {
     /// arrays from `[...]` collection and from JSON text).
     pub fn from_vec(items: Vec<Value>) -> Array {
         let len = items.len();
-        let mut alloc = DEFAULT_ARRAY_SIZE;
-        while len > alloc {
-            alloc = round_up(alloc + 1);
+        Array {
+            storage: Storage::from_vec(items, appended_alloc(len)),
+            offset: 0,
+            len: len as u32,
+        }
+    }
+
+    /// [`Array::from_vec`] of the elements `items` yields (moved), without
+    /// collecting them first.
+    pub fn from_exact<I: ExactSizeIterator<Item = Value>>(items: I) -> Array {
+        let n = items.len();
+        let mut storage = Storage::new(n, appended_alloc(n));
+        let p = storage.items_ptr();
+        for v in items.take(n) {
+            let len = storage.len();
+            // SAFETY: the storage is fresh (unique) with room for `n`
+            // values, and at most `n` are written; the length covers each
+            // once it's written.
+            unsafe {
+                p.add(len).write(v);
+                storage.header_mut().len = len + 1;
+            }
+        }
+        let len = storage.len();
+        if len != n {
+            storage.set_alloc(appended_alloc(len));
         }
         Array {
-            storage: Rc::new(Storage { items, alloc }),
+            storage,
             offset: 0,
             len: len as u32,
         }
@@ -184,7 +463,7 @@ impl Array {
     /// The visible elements.
     #[inline]
     pub fn as_slice(&self) -> &[Value] {
-        &self.storage.items[self.off()..self.off() + self.len()]
+        &self.storage.items()[self.off()..self.off() + self.len()]
     }
 
     /// Iterates over the elements.
@@ -214,7 +493,7 @@ impl Array {
     /// view offset (a jq quirk that `==`, `unique` and `group_by` expose).
     #[inline]
     pub fn same_storage(&self, other: &Array) -> bool {
-        self.len == other.len && Rc::ptr_eq(&self.storage, &other.storage)
+        self.len == other.len && self.storage.ptr_eq(&other.storage)
     }
 
     /// `jv_identical` for arrays: same storage, offset and length.
@@ -223,14 +502,14 @@ impl Array {
         self.same_storage(other) && self.offset == other.offset
     }
 
-    fn is_unique(&mut self) -> bool {
-        Rc::get_mut(&mut self.storage).is_some()
+    fn is_unique(&self) -> bool {
+        self.storage.is_unique()
     }
 
     /// The number of references to the storage (`jv_get_refcnt`; views of
     /// the same storage share it).
     pub fn refcount(&self) -> usize {
-        Rc::strong_count(&self.storage)
+        self.storage.strong()
     }
 
     /// Port of `jvp_array_write`: returns the slot for index `i`, extending
@@ -239,34 +518,32 @@ impl Array {
         let pos = i + self.off();
         let (offset, len) = (self.off(), self.len());
         let unique = self.is_unique();
-        if pos < self.storage.alloc && unique {
+        if pos < self.storage.alloc() && unique {
             // use existing array space
-            let st = Rc::get_mut(&mut self.storage).expect("unique");
-            if st.items.len() <= pos {
-                st.items.resize(pos + 1, Value::Null);
+            if self.storage.len() <= pos {
+                self.storage.resize_null(pos + 1);
             }
             self.len = len.max(i + 1) as u32;
-            return &mut st.items[pos];
+            return &mut self.storage.items_mut()[pos];
         }
         // allocate a new array
         let new_length = (i + 1).max(len);
         let alloc = round_up(new_length);
         if unique {
             // Unique: move the visible elements instead of copying them.
-            let st = Rc::get_mut(&mut self.storage).expect("unique");
-            st.items.truncate(offset + len);
-            st.items.drain(..offset);
-            st.items.resize(new_length, Value::Null);
-            st.alloc = alloc;
+            self.storage.truncate(offset + len);
+            self.storage.remove_prefix(offset);
+            self.storage.resize_null(new_length);
+            self.storage.set_alloc(alloc);
         } else {
-            let mut items = Vec::with_capacity(new_length.max(DEFAULT_ARRAY_SIZE).min(alloc));
-            items.extend_from_slice(&self.storage.items[offset..offset + len]);
-            items.resize(new_length, Value::Null);
-            self.storage = Rc::new(Storage { items, alloc });
+            let mut st = Storage::new(new_length, alloc);
+            st.extend_cloned(&self.as_slice()[..len]);
+            st.resize_null(new_length);
+            self.storage = st;
         }
         self.offset = 0;
         self.len = new_length as u32;
-        &mut Rc::get_mut(&mut self.storage).expect("unique").items[i]
+        &mut self.storage.items_mut()[i]
     }
 
     /// `jv_array_set`: negative indices count from the end; errors
@@ -314,15 +591,13 @@ impl Array {
         }
         if !self.is_unique() {
             // jq copies the view (jvp_array_write's "allocate a new array").
-            let items = self.as_slice().to_vec();
-            self.storage = Rc::new(Storage {
-                items,
-                alloc: round_up(self.len()),
-            });
+            let mut st = Storage::new(self.len(), round_up(self.len()));
+            st.extend_cloned(self.as_slice());
+            self.storage = st;
             self.offset = 0;
         }
         let (o, l) = (self.off(), self.len());
-        &mut Rc::get_mut(&mut self.storage).expect("unique").items[o..o + l]
+        &mut self.storage.items_mut()[o..o + l]
     }
 
     /// Mutable access to one element (unsharing like [`Array::as_mut_slice`]).
@@ -392,15 +667,14 @@ impl Array {
     /// uniquely owned.
     pub fn into_vec(mut self) -> Vec<Value> {
         let (o, l) = (self.off(), self.len());
-        match Rc::get_mut(&mut self.storage) {
-            Some(st) => {
-                let mut v = std::mem::take(&mut st.items);
-                v.truncate(o + l);
-                v.drain(..o);
-                v
-            }
-            None => self.as_slice().to_vec(),
+        if !self.is_unique() {
+            return self.as_slice().to_vec();
         }
+        self.storage.truncate(o + l);
+        self.storage.remove_prefix(o);
+        let mut v = Vec::new();
+        self.storage.drain_into(&mut v);
+        v
     }
 }
 
@@ -512,10 +786,10 @@ mod tests {
         for i in 0..20 {
             a.push(Value::from(i as f64));
         }
-        assert_eq!(a.storage.alloc, 25);
-        assert_eq!(Array::from_vec(vec![Value::Null; 20]).storage.alloc, 25);
-        assert_eq!(Array::from_vec(vec![Value::Null; 26]).storage.alloc, 39);
-        assert_eq!(Array::from_vec(vec![Value::Null; 16]).storage.alloc, 16);
+        assert_eq!(a.storage.alloc(), 25);
+        assert_eq!(Array::from_vec(vec![Value::Null; 20]).storage.alloc(), 25);
+        assert_eq!(Array::from_vec(vec![Value::Null; 26]).storage.alloc(), 39);
+        assert_eq!(Array::from_vec(vec![Value::Null; 16]).storage.alloc(), 16);
     }
 
     #[test]

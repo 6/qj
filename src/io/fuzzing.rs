@@ -327,6 +327,22 @@ pub const TAPE_PROGRAMS: &[&str] = &[
     "map(select(.a))",
     "select(length == 1)",
     "[.[] | select(. == 0)]",
+    ".a?",
+    ".a.b?",
+    ".[]?",
+    ".[][]?",
+    "[.[].a?]",
+    "map(.a[]?)",
+    "def f: .a; f",
+    "def keys: .b; [keys]",
+    "def t: .a == 1; map(select(t))",
+    "select(.a > 1)",
+    "map(select(. <= \"b\"))",
+    "select(0 < .a)",
+    "select(.a and .b)",
+    "map(select(. == 1 or (. | not)))",
+    "add",
+    "map(.a) | add",
 ];
 
 /// The tape evaluator (`super::tape_eval`) against the VM: `data[0]` picks

@@ -9,7 +9,7 @@
 //!   key's position, which keeps the first key string): an object whose keys
 //!   are distinct is built from its entries in order, and one that may have
 //!   duplicates is built with [`Object::insert`] like jq's `jv_object_set`;
-//! * arrays are built from their elements with [`Array::from_vec`], which
+//! * arrays are built from their elements with [`Array::from_exact`], which
 //!   gives them the allocation jq's parser gives them by appending to
 //!   `jv_array()` (observable through slices: `[1,2,3,4,5] | .[0:2] | .[5] =
 //!   9` is `[1,2,3,4,5,9]`);
@@ -29,6 +29,7 @@
 //! for values and error messages. This module never produces an error of its
 //! own.
 
+use super::tape::{fingerprint, short_eq};
 use crate::jq::value::number::Serials;
 use crate::jq::value::{Array, Number, Object, Str, Value, hash_key};
 use crate::simdjson::{Tape, TapeParser, padding};
@@ -69,7 +70,7 @@ pub struct SimdParser {
 /// (`path_intact` in jq's execute.c), which keys never are. Every key the
 /// cache returns has its hash cached ([`Str::key_hash`]).
 struct KeyCache {
-    slots: Box<[Option<(u64, Str)>]>,
+    slots: Box<[Option<Str>]>,
 }
 
 const KEY_SLOTS: usize = 1024;
@@ -82,24 +83,27 @@ impl KeyCache {
         }
     }
 
+    /// The key as a string, from the cache when it's there. (Slots are
+    /// picked by a cheap fingerprint; a key's own hash is only computed
+    /// for a new string.)
     #[inline]
     fn get(&mut self, key: &str) -> Str {
-        let h = hash_key(key.as_bytes());
-        if key.len() > MAX_CACHED_KEY {
+        let b = key.as_bytes();
+        if b.len() > MAX_CACHED_KEY {
             let s = Str::from(key);
-            s.set_key_hash(h);
+            s.set_key_hash(hash_key(b));
             return s;
         }
-        let slot = &mut self.slots[h as usize & (KEY_SLOTS - 1)];
-        if let Some((sh, s)) = slot
-            && *sh == h
-            && s.as_bytes() == key.as_bytes()
+        let f = fingerprint(b).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let slot = &mut self.slots[(f >> 54) as usize];
+        if let Some(s) = slot
+            && short_eq(s.as_bytes(), b)
         {
             return s.clone();
         }
         let s = Str::from(key);
-        s.set_key_hash(h);
-        *slot = Some((h, s.clone()));
+        s.set_key_hash(hash_key(b));
+        *slot = Some(s.clone());
         s
     }
 }
@@ -166,6 +170,18 @@ impl Builder {
     fn distinct_keys(&mut self, start: usize) -> bool {
         let n = self.entries.len() - start;
         if n <= 1 {
+            return true;
+        }
+        if n <= 8 {
+            // Few keys: compare their hashes pairwise.
+            let mut seen = [0u64; 8];
+            for (j, (k, _)) in self.entries[start..].iter().enumerate() {
+                let h = k.key_hash();
+                if seen[..j].contains(&h) {
+                    return false;
+                }
+                seen[j] = h;
+            }
             return true;
         }
         if n > SEEN_SLOTS / 2 {
@@ -266,6 +282,7 @@ impl SimdParser {
         let result = f(Parsed {
             tape,
             src: &text[..len],
+            padded: text,
             build: &mut self.build,
         });
         if len > KEEP_CAPACITY {
@@ -284,13 +301,15 @@ impl SimdParser {
 pub struct Parsed<'p> {
     tape: Tape<'p>,
     src: &'p [u8],
+    /// `src` and the padding after it.
+    padded: &'p [u8],
     build: &'p mut Builder,
 }
 
 impl Parsed<'_> {
     /// The document on the tape.
     pub fn doc(&self) -> super::tape::Doc<'_> {
-        super::tape::Doc::new(&self.tape, self.src)
+        super::tape::Doc::new(&self.tape, self.padded, self.src.len())
     }
 
     /// The document's value, as [`SimdParser::parse`] builds it.
@@ -317,13 +336,15 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
     let structurals = tape.structurals;
     let mut i = 1; // words[0] is the root
     let mut si = 0usize;
+    // The innermost open container (the others are on `b.frames`).
+    let mut top: Option<Frame> = None;
     loop {
         let word = words[i];
         let tag = (word >> 56) as u8;
         // Separator before this item (none before a closing bracket).
         if tag != b']'
             && tag != b'}'
-            && let Some(f) = b.frames.last()
+            && let Some(f) = &top
         {
             if f.object {
                 if f.key.is_some() || b.entries.len() > f.start {
@@ -338,22 +359,20 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             "structural cursor out of sync at tape word {i}"
         );
         let value = match tag {
-            b'{' => {
-                b.frames.push(Frame {
-                    object: true,
-                    start: b.entries.len(),
+            b'{' | b'[' => {
+                let object = tag == b'{';
+                let start = if object {
+                    b.entries.len()
+                } else {
+                    b.values.len()
+                };
+                if let Some(f) = top.replace(Frame {
+                    object,
+                    start,
                     key: None,
-                });
-                i += 1;
-                si += 1;
-                continue;
-            }
-            b'[' => {
-                b.frames.push(Frame {
-                    object: false,
-                    start: b.values.len(),
-                    key: None,
-                });
+                }) {
+                    b.frames.push(f);
+                }
                 i += 1;
                 si += 1;
                 continue;
@@ -361,7 +380,8 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             b'}' => {
                 i += 1;
                 si += 1;
-                let f = b.frames.pop().ok_or(Rejected::UNSUPPORTED)?;
+                let f = top.take().ok_or(Rejected::UNSUPPORTED)?;
+                top = b.frames.pop();
                 if !f.object || f.key.is_some() {
                     return Err(Rejected::UNSUPPORTED);
                 }
@@ -370,11 +390,12 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             b']' => {
                 i += 1;
                 si += 1;
-                let f = b.frames.pop().ok_or(Rejected::UNSUPPORTED)?;
+                let f = top.take().ok_or(Rejected::UNSUPPORTED)?;
+                top = b.frames.pop();
                 if f.object {
                     return Err(Rejected::UNSUPPORTED);
                 }
-                Value::Array(Array::from_vec(b.values.drain(f.start..).collect()))
+                Value::Array(Array::from_exact(b.values.drain(f.start..)))
             }
             b'"' => {
                 // SAFETY: the payload of a string word is its offset in the
@@ -389,7 +410,7 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
                 let s = unsafe { std::str::from_utf8_unchecked(bytes) };
                 i += 1;
                 si += 1;
-                if let Some(f) = b.frames.last_mut()
+                if let Some(f) = &mut top
                     && f.object
                     && f.key.is_none()
                 {
@@ -449,7 +470,7 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
             }
             _ => return Err(Rejected::UNSUPPORTED),
         };
-        match b.frames.last_mut() {
+        match &mut top {
             None => return Ok(value),
             Some(f) if f.object => {
                 let k = f.key.take().ok_or(Rejected::UNSUPPORTED)?;

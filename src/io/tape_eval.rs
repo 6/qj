@@ -1,15 +1,20 @@
 //! Running simple programs on simdjson's tape, without building jq values.
 //!
-//! A program made only of paths (`.a.b`, `."a"`, `.["a"]`), iteration
-//! (`.[]`), pipes, `length`, `keys`, `keys_unsorted`, array collection
-//! (`[...]`, `map(...)`), object construction with constant keys (`{a, b:
-//! .c.d}`) and `select` on a path's truthiness or its equality with a constant
-//! (`select(.type == "PushEvent")`) has outputs that are fully determined by
-//! its input, and can be computed on the tape ([`super::tape`]). Those outputs
-//! are what the jq VM would produce on the value the builder makes of the
-//! input: every step follows the builtin or opcode it stands for (`jv_get` on
-//! objects, `EACH`, `f_length`, `f_keys`, `jv_equal`, ...), and duplicate keys
-//! follow jq's rule.
+//! A program made only of paths (`.a.b`, `."a"`, `.["a"]`, and `.a?`),
+//! iteration (`.[]`, `.[]?`), pipes, `length`, `keys`, `keys_unsorted`,
+//! `add` (of numbers and nulls: other sums decline), array collection
+//! (`[...]`, `map(...)`), object construction with constant
+//! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its
+//! comparison with a constant (`select(.type == "PushEvent")`,
+//! `select(.n > 0)`), combined with `and`, `or` and `not`, and of
+//! definitions without parameters of such programs (inlined where they're
+//! called, as jq resolves the calls), has outputs that are fully determined
+//! by its input, and can be computed on the tape ([`super::tape`]). Those
+//! outputs are what the jq VM would produce
+//! on the value the builder makes of the input: every step follows the
+//! builtin or opcode it stands for (`jv_get` on objects, `EACH`,
+//! `INDEX_OPT`, `EACH_OPT`, `f_length`, `f_keys`, `jv_equal`, `jv_cmp`, ...),
+//! and duplicate keys follow jq's rule.
 //!
 //! Anything else is [`Decline`]d: an error in jq (`.a` on a number, `length`
 //! of a boolean, ...), or a document the tape view can't handle. The caller
@@ -24,10 +29,12 @@
 //! colored.
 
 use std::cell::RefCell;
+use std::cmp::Ordering;
 
 use crate::jq::lang::ast::{self, BinOp, DictPairKind, Literal, NodeKind, ProgramBody};
 use crate::jq::lang::parser::{NoHooks, parse};
 use crate::jq::value::Number;
+use crate::jq::value::print::DumpSink;
 
 use super::tape::{Doc, Layout, Node, NodeKind as Kind, Scratch};
 
@@ -47,8 +54,14 @@ enum Expr {
     Identity,
     /// `T | .[key]` for a constant string key.
     Index(Box<Expr>, String),
+    /// `T | .[key]?`: jq's `INDEX_OPT`, which backtracks where `INDEX`
+    /// raises an error (`T`'s own errors aren't caught).
+    IndexOpt(Box<Expr>, String),
     /// `T | .[]`
     Each(Box<Expr>),
+    /// `T | .[]?`: `EACH_OPT`, which backtracks on what `EACH` can't
+    /// iterate.
+    EachOpt(Box<Expr>),
     /// `A | B`
     Pipe(Box<Expr>, Box<Expr>),
     /// `length`
@@ -59,9 +72,24 @@ enum Expr {
     Collect(Box<Expr>),
     /// `{k: E, ...}` with distinct constant keys and single-valued `E`s.
     Object(Vec<(String, Expr)>),
-    /// `select(E)` (truthiness) and `select(E == c)`, `select(E != c)` for
-    /// a single-valued `E` and a constant `c`.
-    Select(Box<Expr>, Test),
+    /// `select(C)`.
+    Select(Cond),
+    /// builtin.jq's `def add(f): reduce f as $x (null; . + $x);` (and
+    /// `add` for `add(.[])`), for sums of numbers (and nulls).
+    Add(Box<Expr>),
+}
+
+/// A condition of `select`.
+#[derive(Debug)]
+enum Cond {
+    /// A single-valued `E`'s truthiness, or its comparison with a constant.
+    Test(Box<Expr>, Test),
+    /// `A and B` (`B` only when `A` holds).
+    And(Box<Cond>, Box<Cond>),
+    /// `A or B` (`B` only when `A` doesn't hold).
+    Or(Box<Cond>, Box<Cond>),
+    /// `A | not`.
+    Not(Box<Cond>),
 }
 
 #[derive(Debug)]
@@ -69,6 +97,13 @@ enum Test {
     Truthy,
     Equal(Const),
     NotEqual(Const),
+    /// `E < c` and the other orderings: whether `accept` takes
+    /// `jv_cmp(E, c)` (reversed with `flip`, for `c < E`).
+    Order {
+        accept: fn(Ordering) -> bool,
+        flip: bool,
+        c: Const,
+    },
 }
 
 #[derive(Debug)]
@@ -109,7 +144,8 @@ impl TapeProgram {
         let ProgramBody::Main(node) = &program.body else {
             return None;
         };
-        let expr = convert(node)?;
+        let mut budget = INLINE_BUDGET;
+        let expr = convert(node, &Scope::TOP, &mut budget)?;
         Some(TapeProgram { expr })
     }
 
@@ -132,27 +168,91 @@ impl TapeProgram {
     }
 }
 
+/// The definitions (without parameters) an expression of the program sees:
+/// the innermost, then the ones around it. jq resolves a call by name and
+/// arity to the innermost definition in scope, and a definition's body sees
+/// the definitions before it and itself.
+struct Scope<'a, 'p> {
+    /// `def name: body;` (`None` at the top: builtins only).
+    def: Option<(&'a str, &'a ast::Node)>,
+    parent: Option<&'p Scope<'a, 'p>>,
+}
+
+impl<'a> Scope<'a, '_> {
+    const TOP: Scope<'static, 'static> = Scope {
+        def: None,
+        parent: None,
+    };
+
+    /// The body of the innermost definition of `name` (without
+    /// parameters), and the scope it sees.
+    fn find(&self, name: &str) -> Option<(&'a ast::Node, &Self)> {
+        let mut s = self;
+        loop {
+            if let Some((n, body)) = s.def
+                && n == name
+            {
+                return Some((body, s));
+            }
+            s = s.parent?;
+        }
+    }
+}
+
+/// How many calls of definitions a program may inline (each call anew, so
+/// a recursive definition doesn't qualify, nor definitions that call each
+/// other too often).
+const INLINE_BUDGET: usize = 64;
+
 /// The program's AST as an [`Expr`], if it qualifies.
-fn convert(n: &ast::Node) -> Option<Expr> {
+fn convert<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Expr> {
     Some(match &n.kind {
         NodeKind::Identity => Expr::Identity,
         NodeKind::Index {
             target,
             key,
-            optional: false,
+            optional,
         } => {
             let key = const_string(key)?;
-            let target = match target {
+            let target = Box::new(match target {
                 None => Expr::Identity,
-                Some(t) => convert(t)?,
-            };
-            Expr::Index(Box::new(target), key)
+                Some(t) => convert(t, scope, budget)?,
+            });
+            if *optional {
+                Expr::IndexOpt(target, key)
+            } else {
+                Expr::Index(target, key)
+            }
         }
-        NodeKind::Each {
-            target,
-            optional: false,
-        } => Expr::Each(Box::new(convert(target)?)),
-        NodeKind::Pipe(a, b) => Expr::Pipe(Box::new(convert(a)?), Box::new(convert(b)?)),
+        NodeKind::Each { target, optional } => {
+            let target = Box::new(convert(target, scope, budget)?);
+            if *optional {
+                Expr::EachOpt(target)
+            } else {
+                Expr::Each(target)
+            }
+        }
+        NodeKind::Pipe(a, b) => Expr::Pipe(
+            Box::new(convert(a, scope, budget)?),
+            Box::new(convert(b, scope, budget)?),
+        ),
+        // A definition without parameters is inlined where it's called
+        // (below); one with parameters makes the program not qualify.
+        NodeKind::FuncDef { def, rest } => {
+            if !def.params.is_empty() {
+                return None;
+            }
+            let inner = Scope {
+                def: Some((&def.name, &def.body)),
+                parent: Some(scope),
+            };
+            return convert(rest, &inner, budget);
+        }
+        NodeKind::Call { name, args, .. } if args.is_empty() && scope.find(name).is_some() => {
+            let (body, s) = scope.find(name)?;
+            *budget = budget.checked_sub(1)?;
+            return convert(body, s, budget);
+        }
         NodeKind::Call { name, args, .. } => match (name.as_str(), args.as_slice()) {
             ("length", []) => Expr::Length,
             ("keys", []) => Expr::Keys { sorted: true },
@@ -160,19 +260,26 @@ fn convert(n: &ast::Node) -> Option<Expr> {
             // builtin.jq: `def map(f): [.[] | f];`
             ("map", [f]) => Expr::Collect(Box::new(Expr::Pipe(
                 Box::new(Expr::Each(Box::new(Expr::Identity))),
-                Box::new(convert(f)?),
+                Box::new(convert(f, scope, budget)?),
             ))),
             // builtin.jq: `def select(f): if f then . else empty end;`
-            ("select", [f]) => select(f)?,
+            ("select", [f]) => select(f, scope, budget)?,
+            // builtin.jq: `def add: add(.[]);`
+            ("add", []) => Expr::Add(Box::new(Expr::Each(Box::new(Expr::Identity)))),
+            ("add", [f]) => Expr::Add(Box::new(convert(f, scope, budget)?)),
             _ => return None,
         },
-        NodeKind::Array(Some(e)) => Expr::Collect(Box::new(convert(e)?)),
+        NodeKind::Array(Some(e)) => Expr::Collect(Box::new(convert(e, scope, budget)?)),
         NodeKind::Object(pairs) => {
             let mut entries: Vec<(String, Expr)> = Vec::with_capacity(pairs.len());
             for p in pairs {
                 let (key, value) = match &p.kind {
-                    DictPairKind::Named { key, value } => (key.clone(), convert(value)?),
-                    DictPairKind::Str { key, value } => (const_string_lit(key)?, convert(value)?),
+                    DictPairKind::Named { key, value } => {
+                        (key.clone(), convert(value, scope, budget)?)
+                    }
+                    DictPairKind::Str { key, value } => {
+                        (const_string_lit(key)?, convert(value, scope, budget)?)
+                    }
                     // `{a}` is `{a: .a}`, `{"a"}` is `{"a": .["a"]}`.
                     DictPairKind::NameShorthand(key) => (
                         key.clone(),
@@ -196,46 +303,132 @@ fn convert(n: &ast::Node) -> Option<Expr> {
     })
 }
 
-/// `select(f)` for the tests handled here.
-fn select(f: &ast::Node) -> Option<Expr> {
-    if let NodeKind::Binary {
-        op: op @ (BinOp::Eq | BinOp::Ne),
-        lhs,
-        rhs,
-    } = &f.kind
+/// `select(f)` for the conditions handled here.
+fn select<'a>(f: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Expr> {
+    Some(Expr::Select(cond(f, scope, budget)?))
+}
+
+/// `f` as a condition: its one output's truthiness.
+fn cond<'a>(f: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Cond> {
+    // A call of `def f: ...;` is f's body.
+    if let NodeKind::Call { name, args, .. } = &f.kind
+        && args.is_empty()
+        && let Some((body, s)) = scope.find(name)
     {
-        // The constant may be on either side (`==` is symmetric in jq).
-        let (e, c) = match (constant(lhs), constant(rhs)) {
-            (None, Some(c)) => (lhs, c),
-            (Some(c), None) => (rhs, c),
-            _ => return None,
-        };
-        let e = convert(e)?;
-        if !single(&e) {
-            return None;
+        *budget = budget.checked_sub(1)?;
+        return cond(body, s, budget);
+    }
+    // builtin.jq: `def not: if . then false else true end;`
+    let is_not = |n: &ast::Node| {
+        matches!(&n.kind, NodeKind::Call { name, args, .. }
+            if name == "not" && args.is_empty() && scope.find(name).is_none())
+    };
+    if is_not(f) {
+        let this = Cond::Test(Box::new(Expr::Identity), Test::Truthy);
+        return Some(Cond::Not(Box::new(this)));
+    }
+    if let NodeKind::Pipe(x, y) = &f.kind {
+        // `x | not | not ...` (pipes group to the right).
+        let mut nots = 0;
+        let mut rest = &**y;
+        loop {
+            match &rest.kind {
+                _ if is_not(rest) => {
+                    nots += 1;
+                    break;
+                }
+                NodeKind::Pipe(n, more) if is_not(n) => {
+                    nots += 1;
+                    rest = more;
+                }
+                _ => {
+                    nots = 0;
+                    break;
+                }
+            }
         }
-        let test = if *op == BinOp::Eq {
-            Test::Equal(c)
-        } else {
-            Test::NotEqual(c)
-        };
-        return Some(Expr::Select(Box::new(e), test));
+        if nots > 0 {
+            let mut c = cond(x, scope, budget)?;
+            for _ in 0..nots {
+                c = Cond::Not(Box::new(c));
+            }
+            return Some(c);
+        }
     }
-    let e = convert(f)?;
-    if !single(&e) {
-        return None;
+    if let NodeKind::Binary { op, lhs, rhs } = &f.kind {
+        match op {
+            // `a and b` is `if a then (if b then true else false) else
+            // false` (b only when a is true); `or` likewise.
+            BinOp::And => {
+                let a = cond(lhs, scope, budget)?;
+                let b = cond(rhs, scope, budget)?;
+                return Some(Cond::And(Box::new(a), Box::new(b)));
+            }
+            BinOp::Or => {
+                let a = cond(lhs, scope, budget)?;
+                let b = cond(rhs, scope, budget)?;
+                return Some(Cond::Or(Box::new(a), Box::new(b)));
+            }
+            BinOp::Eq | BinOp::Ne => {
+                // The constant may be on either side (`==` is symmetric).
+                let (e, c) = match (constant(lhs), constant(rhs)) {
+                    (None, Some(c)) => (lhs, c),
+                    (Some(c), None) => (rhs, c),
+                    _ => return None,
+                };
+                let e = single_expr(e, scope, budget)?;
+                let test = if *op == BinOp::Eq {
+                    Test::Equal(c)
+                } else {
+                    Test::NotEqual(c)
+                };
+                return Some(Cond::Test(Box::new(e), test));
+            }
+            _ => {
+                let accept = order_op(*op)?;
+                // `c < E` is `E > c`.
+                let (e, c, flip) = match (constant(lhs), constant(rhs)) {
+                    (None, Some(c)) => (lhs, c, false),
+                    (Some(c), None) => (rhs, c, true),
+                    _ => return None,
+                };
+                let e = single_expr(e, scope, budget)?;
+                let test = Test::Order { accept, flip, c };
+                return Some(Cond::Test(Box::new(e), test));
+            }
+        }
     }
-    Some(Expr::Select(Box::new(e), Test::Truthy))
+    let e = single_expr(f, scope, budget)?;
+    Some(Cond::Test(Box::new(e), Test::Truthy))
+}
+
+/// `n` converted, if it always has exactly one output (unless it's an
+/// error).
+fn single_expr<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Expr> {
+    let e = convert(n, scope, budget)?;
+    single(&e).then_some(e)
+}
+
+/// For `<`, `<=`, `>`, `>=`: which results of `jv_cmp(lhs, rhs)` make it
+/// true (builtin.c's `order_cmp`).
+fn order_op(op: BinOp) -> Option<fn(Ordering) -> bool> {
+    Some(match op {
+        BinOp::Lt => Ordering::is_lt,
+        BinOp::Le => Ordering::is_le,
+        BinOp::Gt => Ordering::is_gt,
+        BinOp::Ge => Ordering::is_ge,
+        _ => return None,
+    })
 }
 
 /// Whether `e` always has exactly one output (unless it's an error).
 fn single(e: &Expr) -> bool {
     match e {
-        Expr::Identity | Expr::Length | Expr::Keys { .. } | Expr::Collect(_) => true,
+        Expr::Identity | Expr::Length | Expr::Keys { .. } | Expr::Collect(_) | Expr::Add(_) => true,
         Expr::Index(t, _) => single(t),
         Expr::Pipe(a, b) => single(a) && single(b),
         Expr::Object(entries) => entries.iter().all(|(_, e)| single(e)),
-        Expr::Each(_) | Expr::Select(..) => false,
+        Expr::IndexOpt(..) | Expr::Each(_) | Expr::EachOpt(_) | Expr::Select(..) => false,
     }
 }
 
@@ -276,7 +469,54 @@ fn const_string_lit(s: &ast::StringLit) -> Option<String> {
     s.constant_value()
 }
 
+/// jq's order of kinds (`jv_kind`'s): null < false < true < numbers <
+/// strings < arrays < objects.
+fn kind_rank(kind: Kind) -> u8 {
+    match kind {
+        Kind::Null => 0,
+        Kind::False => 1,
+        Kind::True => 2,
+        Kind::Number => 3,
+        Kind::String => 4,
+        Kind::Array => 5,
+        Kind::Object => 6,
+    }
+}
+
 impl Const {
+    fn kind(&self) -> Kind {
+        match self {
+            Const::Null => Kind::Null,
+            Const::False => Kind::False,
+            Const::True => Kind::True,
+            Const::Number(..) => Kind::Number,
+            Const::String(_) => Kind::String,
+        }
+    }
+
+    /// The literal jq's compiler makes of a number constant.
+    fn number(&self) -> Option<Number> {
+        let Const::Number(t, neg) = self else {
+            return None;
+        };
+        let c = Number::from_literal(t.as_bytes()).expect("checked");
+        Some(if *neg { c.negate() } else { c })
+    }
+
+    /// `jv_cmp(v, c)` for a value of `kind` (`number` gives it when it's a
+    /// number, `string` when it's a string): by kind, then numbers by
+    /// value (never NaN here: JSON has none, nor do constants or lengths)
+    /// and strings by their bytes.
+    fn order(&self, kind: Kind, number: impl FnOnce() -> Number, string: &str) -> Ordering {
+        kind_rank(kind)
+            .cmp(&kind_rank(self.kind()))
+            .then_with(|| match self {
+                Const::Number(..) => number().compare(&self.number().expect("a number")),
+                Const::String(s) => string.as_bytes().cmp(s.as_bytes()),
+                _ => Ordering::Equal,
+            })
+    }
+
     /// `jv_equal(v, c)` for a value of `kind` (`number` gives it when it's a
     /// number, `string` when it's a string).
     fn equals(&self, kind: Kind, number: impl FnOnce() -> Number, string: &str) -> bool {
@@ -321,6 +561,12 @@ impl Eval<'_, '_> {
                     self.run(t, input, &mut |v| emit(self.index(v, key)?))
                 }
             }
+            // (What the index or the iteration raises is caught; what `T`
+            // or the rest of the program raises isn't.)
+            Expr::IndexOpt(t, key) => self.run(t, input, &mut |v| match self.index(v, key) {
+                Ok(x) => emit(x),
+                Err(Decline) => Ok(()),
+            }),
             Expr::Each(t) => {
                 if single(t) {
                     let v = self.single(t, input)?;
@@ -329,6 +575,13 @@ impl Eval<'_, '_> {
                     self.run(t, input, &mut |v| self.each(v, emit))
                 }
             }
+            Expr::EachOpt(t) => self.run(t, input, &mut |v| {
+                if self.iterable(&v) {
+                    self.each(v, emit)
+                } else {
+                    Ok(())
+                }
+            }),
             Expr::Pipe(a, b) => self.run(a, input, &mut |v| self.run(b, v, emit)),
             Expr::Length => emit(self.length(input)?),
             Expr::Keys { sorted } => emit(self.keys(input, *sorted)?),
@@ -348,14 +601,50 @@ impl Eval<'_, '_> {
                 }
                 emit(TVal::Object(out))
             }
-            Expr::Select(e, test) => {
-                let v = self.single(e, input.clone())?;
-                if self.test(&v, test) {
+            Expr::Select(c) => {
+                if self.cond(c, &input)? {
                     emit(input)
                 } else {
                     Ok(())
                 }
             }
+            Expr::Add(f) => {
+                let mut acc = TVal::Null;
+                self.run(f, input, &mut |v| {
+                    let a = std::mem::replace(&mut acc, TVal::Null);
+                    acc = self.plus(a, v)?;
+                    Ok(())
+                })?;
+                emit(acc)
+            }
+        }
+    }
+
+    /// builtin.c's `binop_plus` for nulls and numbers (`null` is the other
+    /// side; numbers add as doubles). Anything else declines: strings,
+    /// arrays and objects concatenate, which isn't done here, and other
+    /// kinds are jq's error.
+    fn plus<'p>(&self, a: TVal<'p>, b: TVal<'p>) -> Result<TVal<'p>, Decline> {
+        let doc = self.doc;
+        let is_null = |v: &TVal<'_>| match v {
+            TVal::Null => true,
+            TVal::Node(n) => doc.kind(*n) == Kind::Null,
+            _ => false,
+        };
+        if is_null(&a) {
+            return Ok(b);
+        }
+        if is_null(&b) {
+            return Ok(a);
+        }
+        let number = |v: &TVal<'_>| match v {
+            TVal::Node(n) if doc.kind(*n) == Kind::Number => Some(doc.number(*n)),
+            TVal::Number(x) => Some(x.clone()),
+            _ => None,
+        };
+        match (number(&a), number(&b)) {
+            (Some(x), Some(y)) => Ok(TVal::Number(Number::from_f64(x.value() + y.value()))),
+            _ => Err(Decline),
         }
     }
 
@@ -393,6 +682,16 @@ impl Eval<'_, '_> {
                 .find(|(k, _)| *k == key)
                 .map_or(TVal::Null, |(_, v)| v)),
             TVal::Number(_) | TVal::Array(_) => Err(Decline),
+        }
+    }
+
+    /// Whether `EACH` iterates `v` (an array or an object) rather than
+    /// raising an error.
+    fn iterable(&self, v: &TVal<'_>) -> bool {
+        match v {
+            TVal::Node(n) => matches!(self.doc.kind(*n), Kind::Array | Kind::Object),
+            TVal::Array(_) | TVal::Object(_) => true,
+            TVal::Null | TVal::Number(_) => false,
         }
     }
 
@@ -492,6 +791,20 @@ impl Eval<'_, '_> {
         }
     }
 
+    /// Whether a condition holds for `input` (evaluating as jq's `and`,
+    /// `or` and `not` do: the right side only when the left doesn't decide).
+    fn cond<'p>(&self, c: &'p Cond, input: &TVal<'p>) -> Result<bool, Decline> {
+        Ok(match c {
+            Cond::Test(e, test) => {
+                let v = self.single(e, input.clone())?;
+                self.test(&v, test)
+            }
+            Cond::And(a, b) => self.cond(a, input)? && self.cond(b, input)?,
+            Cond::Or(a, b) => self.cond(a, input)? || self.cond(b, input)?,
+            Cond::Not(a) => !self.cond(a, input)?,
+        })
+    }
+
     fn test(&self, v: &TVal<'_>, test: &Test) -> bool {
         let doc = self.doc;
         match test {
@@ -517,6 +830,24 @@ impl Eval<'_, '_> {
                     TVal::Array(_) | TVal::Object(_) => false,
                 };
                 eq == matches!(test, Test::Equal(_))
+            }
+            Test::Order { accept, flip, c } => {
+                let ord = match v {
+                    TVal::Node(n) => {
+                        let kind = doc.kind(*n);
+                        let s = if kind == Kind::String {
+                            doc.str(*n)
+                        } else {
+                            ""
+                        };
+                        c.order(kind, || doc.number(*n), s)
+                    }
+                    TVal::Null => c.order(Kind::Null, || unreachable!(), ""),
+                    TVal::Number(x) => c.order(Kind::Number, || x.clone(), ""),
+                    TVal::Array(_) => c.order(Kind::Array, || unreachable!(), ""),
+                    TVal::Object(_) => c.order(Kind::Object, || unreachable!(), ""),
+                };
+                accept(if *flip { ord.reverse() } else { ord })
             }
         }
     }
@@ -547,64 +878,69 @@ impl Output<'_, '_> {
     }
 
     /// Writes it as `dump_to_vec` writes the value jq would have.
-    pub fn dump(&self, layout: &Layout, scratch: &mut Scratch, out: &mut Vec<u8>) {
-        dump(self.doc, self.val, 0, layout, scratch, out)
+    pub fn dump<S: DumpSink>(&self, layout: &Layout, scratch: &mut Scratch, sink: &mut S) {
+        dump(self.doc, self.val, 0, layout, scratch, sink)
     }
 }
 
-fn dump(
+fn dump<S: DumpSink>(
     doc: &Doc<'_>,
     v: &TVal<'_>,
     depth: usize,
     layout: &Layout,
     scratch: &mut Scratch,
-    out: &mut Vec<u8>,
+    sink: &mut S,
 ) {
     if depth > super::tape::PRINT_DEPTH {
-        out.extend_from_slice(b"<skipped: too deep>");
+        sink.buf().extend_from_slice(b"<skipped: too deep>");
         return;
     }
     match v {
         TVal::Node(n) => {
-            doc.print(*n, depth, layout, scratch, out);
+            doc.print(*n, depth, layout, scratch, sink);
         }
-        TVal::Null => out.extend_from_slice(b"null"),
+        TVal::Null => sink.buf().extend_from_slice(b"null"),
         TVal::Number(x) => {
             if x.is_nan() {
-                out.extend_from_slice(b"null");
+                sink.buf().extend_from_slice(b"null");
             } else {
-                x.write_json(out);
+                x.write_json(sink.buf());
             }
         }
         TVal::Array(items) => {
             if items.is_empty() {
-                out.extend_from_slice(b"[]");
+                sink.buf().extend_from_slice(b"[]");
                 return;
             }
-            out.push(b'[');
+            sink.buf().push(b'[');
             for (i, item) in items.iter().enumerate() {
-                layout.before_element(i, depth, out);
-                dump(doc, item, depth + 1, layout, scratch, out);
+                layout.before_element(i, depth, sink.buf());
+                dump(doc, item, depth + 1, layout, scratch, sink);
+                sink.checkpoint();
             }
+            let out = sink.buf();
             layout.before_close(depth, out);
             out.push(b']');
         }
         TVal::Object(entries) => {
             if entries.is_empty() {
-                out.extend_from_slice(b"{}");
+                sink.buf().extend_from_slice(b"{}");
                 return;
             }
-            out.push(b'{');
+            sink.buf().push(b'{');
             let mut order: Vec<usize> = (0..entries.len()).collect();
             if layout.sort_keys() {
                 order.sort_by(|&a, &b| entries[a].0.cmp(entries[b].0));
             }
             for (i, &at) in order.iter().enumerate() {
                 let (k, v) = &entries[at];
+                let out = sink.buf();
                 layout.before_element(i, depth, out);
                 layout.key(k, out);
-                dump(doc, v, depth + 1, layout, scratch, out);
+                dump(doc, v, depth + 1, layout, scratch, sink);
+                sink.checkpoint();
             }
+            let out = sink.buf();
             layout.before_close(depth, out);
             out.push(b'}');
         }

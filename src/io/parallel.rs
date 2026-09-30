@@ -30,7 +30,10 @@
 //! [`RecordSink`]: output bytes, stderr bytes, and the worker's status for
 //! each record. jq's exit status depends on the order (the last record's
 //! `process()` result wins), so the sink can fold them exactly as `main.c`
-//! does.
+//! does. A record the calling thread reads itself comes after everything
+//! the sink has been handed, so its worker may write its outputs where the
+//! sink would, as they're made ([`RecordWorker::process_direct`],
+//! [`WorkerFactory::new_direct_tape`]): a large output isn't held.
 //!
 //! **When not to use it.** The engine is only correct when records are
 //! independent. The CLI must process sequentially (`threads: 0`, or its
@@ -39,8 +42,10 @@
 //! whose output interleaving or state spans records (`debug`, `stderr`,
 //! `input_line_number`... unless the worker answers them from
 //! [`RecordMeta`], `$__loc__`, `limit` over `inputs`, `-s`, `-n`, `--seq`,
-//! `--stream`). It is also pointless for a single large document (there's
-//! one record), and gains little on inputs whose texts mostly span lines.
+//! `--stream`). It gains nothing on a single large document (there's one
+//! record: a job holding all the rest of a complete input, with nothing
+//! else in flight, isn't cut, and the calling thread reads it itself), and
+//! little on inputs whose texts mostly span lines.
 
 use std::collections::{HashMap, VecDeque};
 use std::ops::ControlFlow;
@@ -87,6 +92,22 @@ pub trait RecordWorker {
     /// single writes rather than piecemeal (a stdio `fwrite` of a large `-r`
     /// string flushes differently). Most workers have none.
     fn take_marks(&mut self, _marks: &mut Vec<(usize, usize)>) {}
+
+    /// Whether [`RecordWorker::process_direct`] works: the calling thread's
+    /// worker is asked, for the records that thread reads itself.
+    fn writes_direct(&self) -> bool {
+        false
+    }
+
+    /// Processes a record the calling thread read itself, writing its stdout
+    /// and stderr where the sink writes them, as the sink would (such a
+    /// record comes after everything the sink has been handed), so that a
+    /// large output needn't be held; the sink then gets the record, with no
+    /// output, and this status. Only called when
+    /// [`RecordWorker::writes_direct`] says so.
+    fn process_direct(&mut self, _value: Value, _meta: &RecordMeta<'_>) -> i32 {
+        unreachable!("the worker doesn't write direct")
+    }
 }
 
 /// Makes workers: called once on each worker thread, and once on the
@@ -98,6 +119,15 @@ pub trait WorkerFactory: Sync {
     /// A [`RecordTape`] for a worker thread, if the program can run on
     /// records as simdjson parses them (see [`crate::io::tape_eval`]).
     fn new_tape(&self) -> Option<Box<dyn RecordTape>> {
+        None
+    }
+
+    /// The calling thread's tape program, for the records it reads itself,
+    /// if it writes their outputs where the sink writes them, as
+    /// [`RecordWorker::process_direct`] does (instead of the
+    /// [`WorkerFactory::new_tape`] one, which writes into buffers). Only
+    /// asked when [`WorkerFactory::new_tape`] gives one.
+    fn new_direct_tape(&self) -> Option<Box<dyn TapeSink>> {
         None
     }
 }
@@ -171,9 +201,51 @@ pub trait RecordSink {
     ) -> ControlFlow<()> {
         self.record(out, err, status)
     }
+    /// A job's records, in order: their outputs and stderr bytes follow each
+    /// other in `out` and `err`, their marks are in `marks` (offsets in
+    /// `out`), and record `k` ends where `recs[k]` says. By default each is
+    /// handed to [`RecordSink::record`] (or [`RecordSink::record_marked`])
+    /// in turn ([`records_one_by_one`]).
+    fn records(
+        &mut self,
+        out: &[u8],
+        err: &[u8],
+        marks: &[(usize, usize)],
+        recs: &[Rec],
+    ) -> ControlFlow<()> {
+        records_one_by_one(self, out, err, marks, recs)
+    }
     /// A parse error in the input (jq's main loop prints
     /// `jq: parse error: ...` and stops; with `--seq` it continues).
     fn parse_error(&mut self, error: Error) -> ControlFlow<()>;
+}
+
+/// [`RecordSink::records`] as [`RecordSink::record`] calls, stopping at
+/// the first that breaks.
+pub fn records_one_by_one<S: RecordSink + ?Sized>(
+    sink: &mut S,
+    out: &[u8],
+    err: &[u8],
+    marks: &[(usize, usize)],
+    recs: &[Rec],
+) -> ControlFlow<()> {
+    let (mut o, mut e, mut m) = (0, 0, 0);
+    for rec in recs {
+        let (out_k, err_k) = (&out[o..rec.out_end], &err[e..rec.err_end]);
+        let marks_k = &marks[m..rec.marks_end];
+        if marks_k.is_empty() {
+            sink.record(out_k, err_k, rec.status)?;
+        } else {
+            // Offsets in the record's own output.
+            let marks_k: Vec<(usize, usize)> =
+                marks_k.iter().map(|&(off, len)| (off - o, len)).collect();
+            sink.record_marked(out_k, err_k, &marks_k, rec.status)?;
+        }
+        o = rec.out_end;
+        e = rec.err_end;
+        m = rec.marks_end;
+    }
+    ControlFlow::Continue(())
 }
 
 /// Engine settings.
@@ -284,11 +356,14 @@ struct Job {
     filename: Option<Arc<str>>,
 }
 
-struct Rec {
-    out_end: usize,
-    err_end: usize,
-    marks_end: usize,
-    status: i32,
+/// Where a record of a job ends in the job's buffers (see
+/// [`RecordSink::records`]), and its status.
+#[derive(Clone, Copy, Debug)]
+pub struct Rec {
+    pub out_end: usize,
+    pub err_end: usize,
+    pub marks_end: usize,
+    pub status: i32,
 }
 
 struct JobResult {
@@ -386,13 +461,18 @@ pub fn run_with<F: WorkerFactory, S: RecordSink>(
     let mut err = Vec::new();
     let mut stats = EngineStats::default();
     // Records the calling thread reads go through the factory's tape
-    // program too (it writes their outputs into `tape`).
+    // program too (it writes their outputs into `tape`, unless it writes
+    // them directly).
     let tape: Option<TapeBuf> = factory.new_tape().map(|t| {
         let buf = TapeBuf::default();
-        reader.set_tape_sink(Some(Box::new(ReaderTape {
-            tape: t,
-            buf: buf.clone(),
-        })));
+        let sink: Box<dyn TapeSink> = match factory.new_direct_tape() {
+            Some(direct) => direct,
+            None => Box::new(ReaderTape {
+                tape: t,
+                buf: buf.clone(),
+            }),
+        };
+        reader.set_tape_sink(Some(sink));
         buf
     });
     struct Unset<'a>(&'a mut InputReader, bool);
@@ -468,6 +548,7 @@ pub fn run_with<F: WorkerFactory, S: RecordSink>(
             spawn: &mut spawn,
             started: false,
             tape: tape.as_ref(),
+            rest_read: None,
         };
         ctx.run();
         panic_payload = ctx.panic.take();
@@ -727,7 +808,8 @@ fn step<W: RecordWorker, S: RecordSink>(
     };
     match next {
         Some(Ok(Record::Done(status))) => {
-            // The reader's sink wrote the outputs into `tape`.
+            // The reader's sink wrote the outputs into `tape` (or directly,
+            // leaving it empty).
             let buf = tape.expect("a tape sink");
             let (bytes, marks) = &mut *buf.borrow_mut();
             let flow = if marks.is_empty() {
@@ -747,6 +829,10 @@ fn step<W: RecordWorker, S: RecordSink>(
             };
             out.clear();
             err.clear();
+            if worker.writes_direct() {
+                let status = worker.process_direct(value, &meta);
+                return sink.record(&[], &[], status);
+            }
             let status = worker.process(value, &meta, out, err);
             let mut marks = Vec::new();
             worker.take_marks(&mut marks);
@@ -803,6 +889,9 @@ struct Ctx<'a, W: RecordWorker, S: RecordSink> {
     started: bool,
     /// Where the reader's tape sink writes (see [`step`]).
     tape: Option<&'a TapeBuf>,
+    /// The input (generation) whose rest this thread reads itself: no jobs
+    /// are cut from it.
+    rest_read: Option<u64>,
 }
 
 impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
@@ -889,23 +978,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         let slot = self.queue.pop_front().expect("non-empty");
         self.in_flight -= slot.end - slot.start;
         self.stats.worker_records += r.recs.len() as u64;
-        let (mut o, mut e, mut m) = (0, 0, 0);
-        for rec in &r.recs {
-            let (out, err) = (&r.out[o..rec.out_end], &r.err[e..rec.err_end]);
-            let marks = &r.marks[m..rec.marks_end];
-            let flow = if marks.is_empty() {
-                self.sink.record(out, err, rec.status)
-            } else {
-                // Offsets in the record's own output.
-                let marks: Vec<(usize, usize)> =
-                    marks.iter().map(|&(off, len)| (off - o, len)).collect();
-                self.sink.record_marked(out, err, &marks, rec.status)
-            };
-            o = rec.out_end;
-            e = rec.err_end;
-            m = rec.marks_end;
-            flow?;
-        }
+        self.sink.records(&r.out, &r.err, &r.marks, &r.recs)?;
         // Everything before the line the worker didn't take was consumed
         // like the fast path would; the reader reads on from there.
         match r.failed_at {
@@ -1006,8 +1079,9 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                     c
                 }
                 _ => match self.reader.cut_start() {
-                    // Start over from the reader when nothing is in flight.
-                    Some(c) if self.queue.is_empty() => c,
+                    // Start over from the reader when nothing is in flight
+                    // (unless it reads the rest of this input itself).
+                    Some(c) if self.queue.is_empty() && self.rest_read != Some(c.generation) => c,
                     _ => return,
                 },
             };
@@ -1027,6 +1101,14 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 self.cursor = None;
                 return;
             };
+            if self.queue.is_empty() && self.reader.ends_at(&next) {
+                // A job for all the rest (one large document, say) would
+                // keep this thread waiting: it reads the rest itself, and
+                // can write large outputs as they're made.
+                self.rest_read = Some(w.generation);
+                self.cursor = None;
+                return;
+            }
             if !self.started {
                 self.started = true;
                 (self.spawn)();

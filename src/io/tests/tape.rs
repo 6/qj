@@ -256,6 +256,86 @@ const PROGRAMS: &[&str] = &[
     "map(select(.a))",
     "[.[] | select(. == 1)]",
     "select(length == 2)",
+    ".a?",
+    ".a.b?",
+    ".a?.b",
+    ".[]?",
+    ".a[]?",
+    ".[].a?",
+    ".[][]?",
+    "[.[]?]",
+    "[.[].a?]",
+    "[.a[]?.b]",
+    "map(.a?)",
+    ".a[]? | .b",
+    "[.[] | .[]?]",
+    "[.[]? | length]",
+    ".[]? | keys",
+    "{a} | .a[]?",
+    "def f: .a; f",
+    "def f: .a; def g: f | .b; g",
+    "def keys: .a; keys",
+    "def f: length; def length: .a; f",
+    "def f: length; def length: .a; [f] | length",
+    "def f: .a; def f: .b; f",
+    "def f: def g: .a; g | length; f",
+    "def is_one: .a == 1; select(is_one)",
+    "def is_x: .a != \"x\"; .[] | select(is_x)",
+    "def f: .[]; [f]",
+    "def select: .; select(.a)",
+    "def f: .a; map(f)",
+    "def f: .a?; [.[] | f]",
+    "def f: {a}; f | .a",
+    "def keys: .a; map(keys)",
+    "def f: .a; {x: f}",
+    "select(.a > 1)",
+    "select(.a >= 1)",
+    "select(.a < 1.0)",
+    "select(.a <= -1)",
+    "select(.a > 1e2)",
+    "select(.a > 12345678901234567889)",
+    "select(.a < \"x\")",
+    "select(.a >= \"\")",
+    "select(.a <= null)",
+    "select(.a > null)",
+    "select(.a < true)",
+    "select(.a >= false)",
+    "select(1 < .a)",
+    "select(\"b\" >= .a)",
+    "select(length > 2)",
+    ".[] | select(.b < 2)",
+    "map(select(. > 1))",
+    "[.[] | select(. <= \"a\")]",
+    "def big: .a > 1; select(big)",
+    "select(.a and .b)",
+    "select(.a or .b)",
+    "select(.a | not)",
+    "select(not)",
+    "map(select(not))",
+    "select(.a == 1 and .b != null)",
+    "select(.a == 1 or .a == 2)",
+    "select((.a | not) and .b)",
+    "select(.a > 1 and .a < 3)",
+    ".[] | select(.a or .b == 1)",
+    "def not: .a; select(not)",
+    "select(.a == 1 | not)",
+    "select(.a and .a.b)",
+    "select(.a or .a.b)",
+    "select(.a | not | not)",
+    "select(.b and .c and .a)",
+];
+
+/// Programs the tape evaluates only on some inputs, declining on others
+/// where jq succeeds (`add` of strings, arrays or objects): whenever they
+/// don't decline, their outputs must be the VM's.
+const PARTIAL_PROGRAMS: &[&str] = &[
+    "add",
+    "map(.a) | add",
+    "[.[] | length] | add",
+    "add(.[] | .a?)",
+    "[.[] | .b] | add | length",
+    "{s: add(.[]?)}",
+    "def add: .a; add",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -371,12 +451,14 @@ fn evaluates_programs_like_the_vm() {
     let mut counts = std::collections::HashMap::new();
     let mut declined = Vec::new();
     let mut tally = |o: Outcome, program: &str, text: &[u8]| {
-        *counts.entry(o).or_insert(0usize) += 1;
-        if o == Outcome::Declined && declined.len() < 20 {
+        let partial = PARTIAL_PROGRAMS.contains(&program);
+        *counts.entry((o, partial)).or_insert(0usize) += 1;
+        if o == Outcome::Declined && !partial && declined.len() < 20 {
             declined.push(format!("{program} on {}", String::from_utf8_lossy(text)));
         }
     };
-    for program in PROGRAMS {
+    let programs = || PROGRAMS.iter().chain(PARTIAL_PROGRAMS);
+    for program in programs() {
         for input in inputs {
             let o = check_eval(&mut simd, program, input.as_bytes(), &layouts);
             tally(o, program, input.as_bytes());
@@ -390,12 +472,24 @@ fn evaluates_programs_like_the_vm() {
             weird: 0,
         };
         g.value(&mut text, 0, case % 2 == 0);
-        for program in PROGRAMS {
+        for program in programs() {
             let o = check_eval(&mut simd, program, &text, &layouts);
             tally(o, program, &text);
         }
     }
-    let evaluated = counts.get(&Outcome::Evaluated).copied().unwrap_or(0);
+    let evaluated = counts
+        .get(&(Outcome::Evaluated, false))
+        .copied()
+        .unwrap_or(0);
+    // The partial programs are evaluated sometimes.
+    assert!(
+        counts
+            .get(&(Outcome::Evaluated, true))
+            .copied()
+            .unwrap_or(0)
+            > rounds(3000),
+        "{counts:?}"
+    );
     // Declining where jq succeeds is only a missed shortcut, but it should be
     // rare: only documents with huge containers.
     assert!(declined.is_empty(), "{counts:?}: {declined:#?}");
@@ -477,15 +571,27 @@ fn fuzz_check_on_generated_inputs() {
 
 #[test]
 fn only_simple_programs_qualify() {
-    for p in PROGRAMS {
+    for p in PROGRAMS.iter().chain(PARTIAL_PROGRAMS) {
         assert!(TapeProgram::new(p.as_bytes()).is_some(), "{p}");
     }
     for p in [
-        ".a?",
-        ".[]?",
+        "def f: f; f",
+        "def f: .a | f; f",
+        "def f(x): x; f(.a)",
+        "def map(f): 1; map(.a)",
+        "def f: 1; f",
+        "def f: .a; f, f",
+        "def f: $__loc__; f",
+        "def f: input; f",
+        "def f: .; def g: f | f; def h: g | g; def i: h | h; def j: i | i; \
+         def k: j | j; def l: k | k; def m: l | l; m",
+        "(.a)?",
+        "try .a",
+        ".a[]?.b?[0]",
+        "{a: .b?}",
+        "select(.a?)",
         ".[0]",
         ".a, .b",
-        "def f: .; f",
         "map(.a, .b)",
         "{a: .[]}",
         "{a: select(.b)}",
@@ -493,7 +599,8 @@ fn only_simple_programs_qualify() {
         "{$x}",
         "{a: 1}",
         "{a: .x, a: .y}",
-        "select(.a > 1)",
+        "select(.a > .b)",
+        "select(.a < [1])",
         "select(.[] == 1)",
         "select(.a == .b)",
         "select(.a == \"x\\(.b)\")",

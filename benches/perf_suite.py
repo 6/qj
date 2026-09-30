@@ -21,7 +21,9 @@ Timing: by default runs are interleaved (warmup, then run r of every tool
 before run r+1 of any), output goes to /dev/null, and wall time and peak RSS
 come from wait4(). With --hyperfine, times come from hyperfine instead
 ($HYPERFINE, default `hyperfine`; --output=pipe, as benches/results_*.md
-always did), and RSS from one extra run.
+always did), and RSS from one extra run. Every run but hyperfine's is
+killed (failing the suite) when its resident set passes $PERF_MEM_MB
+(default 4096) or it takes longer than $PERF_TIMEOUT seconds (default 300).
 
   bash benches/download_data.sh --json --gharchive && bash benches/generate_data.sh
   python3 benches/perf_suite.py --suite json --tools qj,qj1,jq --runs 3 \\
@@ -34,6 +36,7 @@ workloads by id substrings (comma separated).
 """
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -42,6 +45,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -262,6 +266,61 @@ def build(tool, workload):
     return argv, env, stdin_file, pipe, repeat
 
 
+MEM_CAP = int(os.environ.get("PERF_MEM_MB", "4096")) << 20
+TIMEOUT = float(os.environ.get("PERF_TIMEOUT", "300"))
+
+
+def resident_bytes(pid):
+    """Resident set size of a live (or not yet reaped) process, or None."""
+    if sys.platform == "darwin":
+        global _libc
+        if _libc is None:
+            _libc = ctypes.CDLL(None, use_errno=True)
+        info = ctypes.create_string_buffer(96)  # struct proc_taskinfo
+        n = _libc.proc_pidinfo(pid, 4, ctypes.c_uint64(0), info, 96)  # PROC_PIDTASKINFO
+        return int.from_bytes(info.raw[8:16], "little") if n == 96 else None
+    try:
+        with open(f"/proc/{pid}/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+_libc = None
+
+
+def wait_capped(p):
+    """os.wait4() for `p`, killing it when its resident set exceeds
+    $PERF_MEM_MB (default 4096) or it runs longer than $PERF_TIMEOUT seconds
+    (default 300): then this raises. The child is only reaped after the
+    watchdog stopped, so it never signals a reused pid."""
+    stop = threading.Event()
+    why = []
+
+    def watch():
+        start = time.monotonic()
+        while not stop.wait(0.05):
+            rss = resident_bytes(p.pid)
+            if rss is not None and rss > MEM_CAP:
+                why.append(f"resident set over {MEM_CAP >> 20} MB")
+            elif time.monotonic() - start > TIMEOUT:
+                why.append(f"still running after {TIMEOUT:g} s")
+            else:
+                continue
+            p.kill()
+            return
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)
+    stop.set()
+    t.join()
+    _, status, ru = os.wait4(p.pid, 0)
+    if why:
+        raise SystemExit(f"killed {shlex.join(p.args)}: {why[0]}")
+    return status, ru
+
+
 def run_once(argv, env, stdin_file, pipe, out=subprocess.DEVNULL):
     """Wall seconds, peak RSS bytes and exit status of one run."""
     cat = None
@@ -274,7 +333,7 @@ def run_once(argv, env, stdin_file, pipe, out=subprocess.DEVNULL):
             stdin = open(stdin_file, "rb")
     t0 = time.perf_counter()
     p = subprocess.Popen(argv, env=env, stdin=stdin, stdout=out, stderr=subprocess.DEVNULL)
-    _, status, ru = os.wait4(p.pid, 0)
+    status, ru = wait_capped(p)
     t1 = time.perf_counter()
     p.returncode = os.waitstatus_to_exitcode(status)
     if cat is not None:

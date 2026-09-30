@@ -193,6 +193,40 @@ impl<W: Write> Sink for WriterSink<'_, W> {
     }
 }
 
+/// Where a dump goes when its owner may write it out as it's produced (like
+/// stdio, which jq's `jv_dumpf` writes a token at a time): the printers
+/// append to [`DumpSink::buf`] and call [`DumpSink::checkpoint`] between
+/// elements.
+pub trait DumpSink {
+    fn buf(&mut self) -> &mut Vec<u8>;
+    /// Between elements: the owner may write out (a prefix of) the buffer.
+    fn checkpoint(&mut self);
+}
+
+impl DumpSink for Vec<u8> {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        self
+    }
+    #[inline]
+    fn checkpoint(&mut self) {}
+}
+
+/// A [`DumpSink`] as the printer's sink.
+struct Streaming<'s, S: DumpSink>(&'s mut S);
+
+impl<S: DumpSink> Sink for Streaming<'_, S> {
+    #[inline]
+    fn buf(&mut self) -> &mut Vec<u8> {
+        self.0.buf()
+    }
+    #[inline]
+    fn checkpoint(&mut self) -> io::Result<()> {
+        self.0.checkpoint();
+        Ok(())
+    }
+}
+
 /// Stops the dump once more than `limit` bytes were produced.
 struct TruncSink {
     buf: Vec<u8>,
@@ -303,10 +337,194 @@ fn skip_plain(bytes: &[u8], mut i: usize, ascii_only: bool) -> usize {
     i
 }
 
+/// Whether no byte of `b` needs escaping (see [`NEEDS_ESCAPE`]; with
+/// `ascii_only`, no byte is non-ASCII either). Short strings are checked with
+/// two overlapping loads rather than byte by byte.
+#[inline]
+fn is_plain(b: &[u8], ascii_only: bool) -> bool {
+    let n = b.len();
+    let high = if ascii_only { HI } else { 0 };
+    // (A mask is non-zero exactly when some byte is flagged: borrows only
+    // start at flagged bytes.)
+    let flagged = |w: u64| escape_mask(w) | (w & high) != 0;
+    let word = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().expect("8 bytes"));
+    if n >= 16 {
+        #[cfg(target_arch = "aarch64")]
+        {
+            use std::arch::aarch64::*;
+            // SAFETY: NEON is part of the aarch64 baseline, and every load
+            // reads 16 bytes at an offset at most `n - 16`.
+            unsafe {
+                let chunk = |i: usize| {
+                    let v = vld1q_u8(b.as_ptr().add(i));
+                    let control = vcltq_u8(v, vdupq_n_u8(0x20));
+                    let quote = vceqq_u8(v, vdupq_n_u8(b'"'));
+                    let backslash = vceqq_u8(v, vdupq_n_u8(b'\\'));
+                    let del = vceqq_u8(v, vdupq_n_u8(0x7F));
+                    let mut m = vorrq_u8(vorrq_u8(control, quote), vorrq_u8(backslash, del));
+                    if ascii_only {
+                        m = vorrq_u8(m, vcgeq_u8(v, vdupq_n_u8(0x80)));
+                    }
+                    vmaxvq_u8(m) != 0
+                };
+                let mut i = 0;
+                while i + 16 < n {
+                    if chunk(i) {
+                        return false;
+                    }
+                    i += 16;
+                }
+                return !chunk(n - 16);
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let mut i = 0;
+            while i + 8 < n {
+                if flagged(word(i)) {
+                    return false;
+                }
+                i += 8;
+            }
+            return !flagged(word(n - 8));
+        }
+    }
+    if n >= 8 {
+        return !flagged(word(0)) && !flagged(word(n - 8));
+    }
+    if n >= 4 {
+        let half = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().expect("4 bytes"));
+        return !flagged(u64::from(half(0)) | u64::from(half(n - 4)) << 32);
+    }
+    b.iter()
+        .all(|&c| !NEEDS_ESCAPE[c as usize] && (c < 0x80 || !ascii_only))
+}
+
+/// Copies `src` to `dst`: short slices with two overlapping loads and
+/// stores rather than a call to `memcpy`.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of `src.len()` bytes that don't overlap
+/// `src`.
+#[inline]
+unsafe fn copy_to(src: &[u8], dst: *mut u8) {
+    let n = src.len();
+    let s = src.as_ptr();
+    // SAFETY: every read is within `src`, every write within `dst[..n]`.
+    unsafe {
+        if n > 32 {
+            std::ptr::copy_nonoverlapping(s, dst, n);
+        } else if n >= 16 {
+            let a = s.cast::<[u8; 16]>().read_unaligned();
+            let z = s.add(n - 16).cast::<[u8; 16]>().read_unaligned();
+            dst.cast::<[u8; 16]>().write_unaligned(a);
+            dst.add(n - 16).cast::<[u8; 16]>().write_unaligned(z);
+        } else if n >= 8 {
+            let a = s.cast::<u64>().read_unaligned();
+            let z = s.add(n - 8).cast::<u64>().read_unaligned();
+            dst.cast::<u64>().write_unaligned(a);
+            dst.add(n - 8).cast::<u64>().write_unaligned(z);
+        } else if n >= 4 {
+            let a = s.cast::<u32>().read_unaligned();
+            let z = s.add(n - 4).cast::<u32>().read_unaligned();
+            dst.cast::<u32>().write_unaligned(a);
+            dst.add(n - 4).cast::<u32>().write_unaligned(z);
+        } else if n > 0 {
+            *dst = *s;
+            *dst.add(n / 2) = *s.add(n / 2);
+            *dst.add(n - 1) = *s.add(n - 1);
+        }
+    }
+}
+
+/// How many bytes of the source [`write_json_string_raw`] needs for a
+/// string of `len` bytes: whole 16-byte blocks, at least one.
+#[inline]
+pub fn raw_read_len(len: usize) -> usize {
+    len.next_multiple_of(16).max(16)
+}
+
+/// [`write_json_string`] of `s` (a string from simdjson's tape), copying its
+/// text in the source, `raw` (from just after its opening quote, with at
+/// least [`raw_read_len`] bytes), when nothing needs escaping: then the
+/// source spells it without escapes (the first backslash of an escape
+/// would be among its first `s.len()` bytes), so its first `s.len()` bytes
+/// are `s`. It checks and copies whole 16-byte blocks, writing past the end
+/// into the spare capacity of `out`, so that a short string takes one load
+/// and one store rather than branches on its length.
+#[inline]
+pub fn write_json_string_raw(raw: &[u8], s: &str, ascii_only: bool, out: &mut Vec<u8>) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        const INDEX: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let n = s.len();
+        if raw.len() < raw_read_len(n) {
+            return write_json_string(s, ascii_only, out);
+        }
+        let start = out.len();
+        out.reserve(raw_read_len(n) + 2);
+        // SAFETY: NEON is part of the aarch64 baseline; each load reads a
+        // block of `raw` (`i + 16 <= raw_read_len(n) <= raw.len()`); the
+        // stores write into the capacity reserved after `start`, and the
+        // length only grows to cover the string and its quotes.
+        unsafe {
+            let src = raw.as_ptr();
+            let dst = out.as_mut_ptr().add(start);
+            *dst = b'"';
+            let index = vld1q_u8(INDEX.as_ptr());
+            let mut i = 0;
+            loop {
+                let v = vld1q_u8(src.add(i));
+                let control = vcltq_u8(v, vdupq_n_u8(0x20));
+                let quote = vceqq_u8(v, vdupq_n_u8(b'"'));
+                let backslash = vceqq_u8(v, vdupq_n_u8(b'\\'));
+                let del = vceqq_u8(v, vdupq_n_u8(0x7F));
+                let mut m = vorrq_u8(vorrq_u8(control, quote), vorrq_u8(backslash, del));
+                if ascii_only {
+                    m = vorrq_u8(m, vcgeq_u8(v, vdupq_n_u8(0x80)));
+                }
+                // (Only the string's own bytes count.)
+                let inside = vcltq_u8(index, vdupq_n_u8((n - i).min(16) as u8));
+                if vmaxvq_u8(vandq_u8(m, inside)) != 0 {
+                    // Something to escape (nothing was written yet).
+                    return write_json_string(s, ascii_only, out);
+                }
+                vst1q_u8(dst.add(1 + i), v);
+                i += 16;
+                if i >= n {
+                    break;
+                }
+            }
+            *dst.add(n + 1) = b'"';
+            out.set_len(start + n + 2);
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = raw;
+        write_json_string(s, ascii_only, out)
+    }
+}
+
 /// Port of `jvp_dump_string`: a quoted, escaped JSON string.
 pub fn write_json_string(s: &str, ascii_only: bool, out: &mut Vec<u8>) {
     let bytes = s.as_bytes();
     out.reserve(bytes.len() + 2);
+    if is_plain(bytes, ascii_only) {
+        let len = out.len();
+        // SAFETY: the `bytes.len() + 2` bytes after `len` are reserved, and
+        // all of them are written before the length covers them.
+        unsafe {
+            let dst = out.as_mut_ptr().add(len);
+            *dst = b'"';
+            copy_to(bytes, dst.add(1));
+            *dst.add(bytes.len() + 1) = b'"';
+            out.set_len(len + bytes.len() + 2);
+        }
+        return;
+    }
     out.push(b'"');
     let mut start = 0;
     let mut i = 0;
@@ -563,6 +781,14 @@ pub fn dump_to_vec(v: &Value, opts: &DumpOptions, out: &mut Vec<u8>) {
         .expect("writing to a Vec cannot fail");
 }
 
+/// [`dump_to_vec`] into a [`DumpSink`], which may write the dump out as it
+/// grows.
+pub fn dump_to_sink<S: DumpSink>(v: &Value, opts: &DumpOptions, sink: &mut S) {
+    printer(opts)
+        .term(v, 0, &mut Streaming(sink))
+        .expect("a DumpSink cannot fail");
+}
+
 /// `jv_dumpf`: writes the dump of `v` to `w` (no trailing newline).
 pub fn dump<W: Write>(v: &Value, opts: &DumpOptions, w: &mut W) -> io::Result<()> {
     let mut sink = WriterSink {
@@ -699,6 +925,33 @@ mod tests {
                 let mut out = Vec::new();
                 write_json_string(&s, ascii, &mut out);
                 assert_eq!(out, reference(&s, ascii), "{s:?} ascii={ascii}");
+            }
+            // As a source text would spell it (escaped at random, even
+            // where no escape is needed), followed by more text: printed
+            // from the source, it must come out the same.
+            let mut src = String::new();
+            for c in s.chars() {
+                let r = next();
+                match c {
+                    '"' | '\\' => src.extend(['\\', c]),
+                    c if (c as u32) < 0x20 => src.push_str(&format!("\\u{:04x}", c as u32)),
+                    '/' if r % 2 == 0 => src.push_str("\\/"),
+                    c if r % 16 == 0 && (c as u32) < 0x10000 => {
+                        src.push_str(&format!("\\u{:04X}", c as u32))
+                    }
+                    c => src.push(c),
+                }
+            }
+            src.push_str(["\"", "\",\"x\"", "\"\"\"", "\\\"\"]"][(next() % 4) as usize]);
+            for ascii in [false, true] {
+                let mut out = b"[".to_vec();
+                write_json_string_raw(src.as_bytes(), &s, ascii, &mut out);
+                assert_eq!(out[1..], reference(&s, ascii), "{src:?} ascii={ascii}");
+                // Also with the source cut short (not enough to read ahead).
+                let mut out = Vec::new();
+                let cut = &src.as_bytes()[..src.len().min(raw_read_len(s.len()) - 1)];
+                write_json_string_raw(cut, &s, ascii, &mut out);
+                assert_eq!(out, reference(&s, ascii), "{src:?} ascii={ascii} (cut)");
             }
         }
     }
