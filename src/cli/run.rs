@@ -66,6 +66,22 @@ const JQ_ERROR_COMPILE: i32 = 3;
 const JQ_OK_NO_OUTPUT: i32 = -4;
 const JQ_ERROR_UNKNOWN: i32 = 5;
 
+/// The stack of every thread qj runs a program on: its own thread, which the
+/// `qj` binary starts as soon as it has its arguments (`src/main.rs`), and the
+/// parallel engine's workers ([`run_parallel`]).
+///
+/// Fixed, so that qj's own frames never depend on `RLIMIT_STACK`: at any
+/// `ulimit -s`, the only stack overflows are the ones compat mode reproduces
+/// from its models of jq's stack (`src/compat.rs`), which read the limit.
+/// Reserved, not committed: a thread's stack is address space until it is
+/// touched, so this costs what the deepest recursion touches, not its size.
+/// qj's deepest recursions are bounded by jq's own limits (bison's
+/// `YYMAXDEPTH`, Oniguruma's parse depth, `MAX_PRINT_DEPTH`) or turn into loops
+/// past a few hundred levels (values, paths, modules), and the most any of them
+/// needs is about 100 KB in an optimized build and a few MB in a debug one,
+/// so this is a very wide margin.
+pub const STACK_BYTES: usize = 256 << 20;
+
 /// Runs qj on the new core with this process's arguments and exits.
 pub fn main() -> ! {
     main_with(args::argv_bytes())
@@ -1639,6 +1655,7 @@ fn run_parallel(
     };
     let mut engine = crate::io::parallel::EngineOptions {
         threads: plan.threads,
+        stack_size: STACK_BYTES,
         ..crate::io::parallel::EngineOptions::default()
     };
     // QJ_WINDOW_SIZE=N: at most N MB of input in flight (as for the old core),
