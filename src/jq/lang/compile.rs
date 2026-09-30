@@ -514,17 +514,25 @@ impl Compiler {
                 cur: Option<InstId>,
                 owner: Option<InstId>,
                 bd: i32,
+                /// The frame jq's `block_bind_subblock_inner` would be in while
+                /// it scans this list: 1 for `body`, one more per level below.
+                depth: u64,
             },
             Finish {
                 inst: InstId,
                 owner: Option<InstId>,
             },
         }
+        // QJ_JQ_COMPAT=1: jq recurses twice per instruction it visits (into the
+        // closure body and the argument list, even when both are empty), so the
+        // deepest frame it reaches is one below the deepest list it scans.
+        let bind_frames = crate::compat::frames_available(crate::compat::Site::Bind);
         let mut nrefs = 0;
         let mut stack = vec![Task::Scan {
             cur: body.first,
             owner: None,
             bd: break_distance,
+            depth: 1,
         }];
         while let Some(task) = stack.pop() {
             match task {
@@ -539,12 +547,17 @@ impl Compiler {
                     mut cur,
                     owner,
                     mut bd,
+                    depth,
                 } => {
                     while let Some(i) = cur {
                         let inst = &self.insts[i as usize];
                         cur = inst.next;
                         if inst.any_unbound == 0 {
                             continue;
+                        }
+                        if depth >= bind_frames {
+                            // jq's next two calls are past the end of its stack.
+                            crate::compat::die_of_stack_overflow();
                         }
                         let fl = flags(inst.op);
                         if fl & bindflags == want && inst.bound_by.is_none() && {
@@ -586,17 +599,24 @@ impl Compiler {
                         }
                         // Recurse into the closure body, then the argument list, then
                         // propagate this instruction's flag, then continue the list.
-                        stack.push(Task::Scan { cur, owner, bd });
+                        stack.push(Task::Scan {
+                            cur,
+                            owner,
+                            bd,
+                            depth,
+                        });
                         stack.push(Task::Finish { inst: i, owner });
                         stack.push(Task::Scan {
                             cur: arglist.first,
                             owner: Some(i),
                             bd,
+                            depth: depth + 1,
                         });
                         stack.push(Task::Scan {
                             cur: subfn.first,
                             owner: Some(i),
                             bd,
+                            depth: depth + 1,
                         });
                         break;
                     }
@@ -845,11 +865,17 @@ impl Compiler {
         inst.nformals = nformals;
         inst.arglist = formals;
         let b = Self::inst_block(i);
-        if name == LAMBDA {
+        if name == LAMBDA && !crate::compat::exactly_jq() {
             // Binding a lambda to itself binds nothing (no call can be named
             // `@lambda`); jq's walk would only refresh the `any_unbound` hints, which
             // may stay conservative. Skipping it keeps `. + . + ... + .` (one lambda
             // per `+`, each containing the rest) linear instead of quadratic.
+            //
+            // QJ_JQ_COMPAT=1 keeps the walk: it is where jq's binding recursion goes
+            // deepest while parsing, so it is where jq's stack runs out for a deeply
+            // nested program — including one that fails to parse, where nothing binds
+            // the program later (see `ParseHooks::replay_reduced`). Doing it makes qj
+            // quadratic in the length of a chain of lambdas, exactly as jq is.
             inst.bound_by = Some(i);
         } else {
             self.block_bind_subblock(i, b, OP_IS_CALL_PSEUDO | OP_HAS_BINDING, 0);
@@ -1483,6 +1509,9 @@ impl Compiler {
     /// for jq functions, inlined `SUBEXP`s for C functions).
     fn expand_call_arglist(&mut self, b: Block, globals: &mut Globals<'_>) -> (Block, usize) {
         let mut errors = 0;
+        // QJ_JQ_COMPAT=1: jq recurses once per nested C-function argument, on top
+        // of the `compile` frames it is called from.
+        let expand_frames = crate::compat::frames_available(crate::compat::Site::ExpandArgs);
         // The recursion over C builtin arguments, as an explicit stack: each frame is
         // one `expand_call_arglist(&body)` call.
         let mut stack = vec![ExpandFrame {
@@ -1492,6 +1521,9 @@ impl Compiler {
         }];
         loop {
             let top = stack.len() - 1;
+            if top as u64 >= expand_frames {
+                crate::compat::die_of_stack_overflow();
+            }
 
             // Expanding the arguments of a C builtin call: take the next one.
             if let Some(call) = &stack[top].call {
@@ -1834,18 +1866,25 @@ impl Compiler {
         }];
         let mut cfunctions = Vec::new();
         let mut nerrors = 0;
-        // Depth-first, in subfunction order (the order jq reports errors in).
-        let mut stack: Vec<(usize, Block)> = vec![(0, b)];
-        while let Some((fid, body)) = stack.pop() {
+        // QJ_JQ_COMPAT=1: jq's `compile` recurses once per nested closure, and
+        // what it does at each level (`expand_call_arglist`, freeing the block)
+        // runs with those frames held.
+        let descent = crate::compat::Descent::new(crate::compat::Site::Compile);
+        // Depth-first, in subfunction order (the order jq reports errors in), with
+        // the depth of jq's recursion for each.
+        let mut stack: Vec<(usize, Block, u64)> = vec![(0, b, 1)];
+        while let Some((fid, body, depth)) = stack.pop() {
+            descent.at(depth);
             let (errors, children) =
                 self.compile_fn(&mut fns, fid, body, lf, globals, &mut cfunctions);
             nerrors += errors;
             for &(inst, sid) in children.iter().rev() {
                 let body = self.inst(inst).subfn;
                 self.inst_mut(inst).subfn = Block::NOOP;
-                stack.push((sid, body));
+                stack.push((sid, body, depth + 1));
             }
         }
+        drop(descent);
         if nerrors > 0 {
             return Err(nerrors);
         }

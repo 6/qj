@@ -61,6 +61,20 @@ pub trait ParseHooks {
         let _ = meta;
         None
     }
+
+    /// `QJ_JQ_COMPAT=1` only, and only when the parse failed: the subtrees bison
+    /// had already reduced, outermost last.
+    ///
+    /// jq's parser.y actions build *and bind* the IR as bison reduces, so a
+    /// program that doesn't parse has still driven `block_bind_subblock_inner`
+    /// over everything the parser did reduce — deep enough to overflow jq's C
+    /// stack for a deeply nested program with a syntax error after it, which is
+    /// why jq crashes there instead of reporting the error. qj parses first and
+    /// lowers afterwards, so the compiler's hook lowers these nodes to reach the
+    /// same depth, and throws the blocks away.
+    fn replay_reduced(&mut self, nodes: &[&Node]) {
+        let _ = nodes;
+    }
 }
 
 /// Hooks that accept everything (no constant folding available).
@@ -83,6 +97,104 @@ pub fn parse(src: &[u8], hooks: &mut dyn ParseHooks) -> Result<Program, Vec<Pars
     match (accepted, p.answer) {
         (true, Some(program)) if p.errors.is_empty() => Ok(program),
         _ => Err(p.errors),
+    }
+}
+
+/// Every `Query`/`Expr`/`Term` on the parser's value stack, outermost last: what
+/// jq's actions had already turned into bound IR when the parse failed (see
+/// [`ParseHooks::replay_reduced`]).
+///
+/// The walk into patterns, strings and object pairs is iterative, and it never
+/// descends into a `Node` — lowering one covers everything under it.
+fn reduced_nodes(vs: &[Sem]) -> Vec<&Node> {
+    let mut out: Vec<&Node> = Vec::new();
+    let mut pats: Vec<&Pattern> = Vec::new();
+    let mut objpats: Vec<&ObjPat> = Vec::new();
+    let mut strs: Vec<&StringLit> = Vec::new();
+    for sem in vs {
+        match sem {
+            Sem::Node(n) => out.push(n),
+            Sem::OptNode(n) => out.extend(n),
+            Sem::Args(ns) => out.extend(ns),
+            Sem::FuncDef(d) => out.push(&d.body),
+            Sem::FuncDefs(ds) => out.extend(ds.iter().map(|d| &d.body)),
+            Sem::Module(m) => out.extend(m.as_ref().map(|m| &m.meta)),
+            Sem::Import(i) => out.extend(i.as_ref().and_then(|i| i.meta.as_ref())),
+            Sem::ImportWhat(i) => out.extend(i.meta.as_ref()),
+            Sem::Str(s) => strs.push(s),
+            Sem::QQString(parts) => out.extend(parts.iter().filter_map(interp)),
+            Sem::Patterns(ps) => pats.extend(ps),
+            Sem::Pattern(p) => pats.push(p),
+            Sem::ObjPats(ps) => objpats.extend(ps),
+            Sem::ObjPat(p) => objpats.push(p),
+            Sem::DictPairs(ps) => ps
+                .iter()
+                .for_each(|p| dict_pair_parts(p, &mut out, &mut strs)),
+            Sem::DictPair(p) => dict_pair_parts(p, &mut out, &mut strs),
+            Sem::Imports(is) => out.extend(is.iter().filter_map(|i| i.meta.as_ref())),
+            Sem::None
+            | Sem::Text(_)
+            | Sem::ImportFrom(_)
+            | Sem::Params(_)
+            | Sem::Param(_)
+            | Sem::StringStart(_) => {}
+        }
+    }
+    while !pats.is_empty() || !objpats.is_empty() {
+        while let Some(p) = pats.pop() {
+            match &p.kind {
+                PatternKind::Var(_) => {}
+                PatternKind::Array(ps) => pats.extend(ps),
+                PatternKind::Object(ps) => objpats.extend(ps),
+            }
+        }
+        while let Some(p) = objpats.pop() {
+            match &p.kind {
+                ObjPatKind::Var(_) => {}
+                ObjPatKind::VarPattern(_, pat)
+                | ObjPatKind::Named(_, pat)
+                | ObjPatKind::Error(pat) => pats.push(pat),
+                ObjPatKind::Str(s, pat) => {
+                    strs.push(s);
+                    pats.push(pat);
+                }
+                ObjPatKind::Computed { key, pattern, .. } => {
+                    out.push(key);
+                    pats.push(pattern);
+                }
+            }
+        }
+    }
+    for s in strs {
+        out.extend(s.parts.iter().filter_map(interp));
+    }
+    out
+}
+
+/// The query of a `\(...)` interpolation.
+fn interp(part: &StrPart) -> Option<&Node> {
+    match part {
+        StrPart::Interp(n) => Some(n),
+        StrPart::Text(_) => None,
+    }
+}
+
+/// The nodes and strings of a `DictPair`.
+fn dict_pair_parts<'a>(p: &'a DictPair, out: &mut Vec<&'a Node>, strs: &mut Vec<&'a StringLit>) {
+    match &p.kind {
+        DictPairKind::Named { value, .. }
+        | DictPairKind::VarKey { value, .. }
+        | DictPairKind::Error(value) => out.push(value),
+        DictPairKind::Str { key, value } => {
+            strs.push(key);
+            out.push(value);
+        }
+        DictPairKind::StrShorthand(key) => strs.push(key),
+        DictPairKind::Computed { key, value, .. } => {
+            out.push(key);
+            out.push(value);
+        }
+        DictPairKind::Var(_) | DictPairKind::NameShorthand(_) | DictPairKind::LocObject => {}
     }
 }
 
@@ -460,6 +572,14 @@ impl Parser<'_, '_> {
                     if yyerrstatus == 0 {
                         let msg = syntax_error_message(yystate, yychar);
                         self.fail(yylloc, msg);
+                    }
+                    // QJ_JQ_COMPAT=1: jq's actions have bound the IR of every
+                    // subtree reduced so far, and error recovery is about to
+                    // throw those subtrees away — so this is the last moment at
+                    // which qj can reach the depth jq's binding reached.
+                    if crate::compat::exactly_jq() {
+                        let nodes = reduced_nodes(&self.vs);
+                        self.hooks.replay_reduced(&nodes);
                     }
                     yyerror_range1 = yylloc;
                     if yyerrstatus == 3 {

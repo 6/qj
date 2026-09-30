@@ -185,6 +185,25 @@ pub enum Site {
     /// out has bison's three `YYINITDEPTH` (200) arrays on it, about 7 KB (see
     /// [`Site::model`]).
     Modules,
+    /// `block_bind_subblock_inner` (`compile.c`): binding descends a program's
+    /// closure bodies and argument lists, one frame a level.
+    ///
+    /// The deepest of the compiler's recursions for every kind of nesting but
+    /// nested `def`s, and the one with the largest base: the binding walks that
+    /// go deepest are parser.y's own actions (`gen_function`, `gen_lambda`,
+    /// `block_bind_referenced`), which run inside `yyparse`, with bison's three
+    /// `YYINITDEPTH` arrays on the stack.
+    Bind,
+    /// `compile` (`compile.c`): one frame per nested closure, emitting each
+    /// subfunction's bytecode.
+    ///
+    /// What nested `def`s reach: each one is a closure inside the previous
+    /// one's body, and binding doesn't descend them (a bound definition's
+    /// `any_unbound` is 0), so this is the only recursion their nesting drives.
+    Compile,
+    /// `expand_call_arglist` (`compile.c`): one frame per nested argument of a
+    /// C function, inside [`Site::Compile`].
+    ExpandArgs,
 }
 
 impl Site {
@@ -211,6 +230,9 @@ impl Site {
             Site::Setpath => (144, RESERVED_BYTES),
             Site::Delpaths => (240, RESERVED_BYTES),
             Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES + STACK_MARGIN),
+            Site::Bind => (112, BIND_BASE_BYTES + STACK_MARGIN),
+            Site::Compile => (176, COMPILE_BASE_BYTES + STACK_MARGIN),
+            Site::ExpandArgs => (192, COMPILE_BASE_BYTES + STACK_MARGIN),
         };
         // Linux/x86-64 (jq's release binary, built by gcc), bisected the same
         // way at 1024, 4096, 8192 and 16384 KB with the stack randomization
@@ -225,6 +247,9 @@ impl Site {
             Site::Setpath => (160, RESERVED_BYTES),
             Site::Delpaths => (240, RESERVED_BYTES),
             Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES + STACK_MARGIN),
+            Site::Bind => (112, BIND_BASE_BYTES + STACK_MARGIN),
+            Site::Compile => (224, COMPILE_BASE_BYTES + STACK_MARGIN),
+            Site::ExpandArgs => (224, COMPILE_BASE_BYTES + STACK_MARGIN),
         };
         (frame, reserved)
     }
@@ -246,6 +271,14 @@ impl Site {
     /// doesn't overflow either.
     pub fn frame_budget(self) -> Option<u64> {
         self.budget_below(0)
+    }
+
+    /// The bytes of stack one level of this recursion costs jq, from the
+    /// disassembly of jq 1.8.1's release binary for this platform (see
+    /// `docs/COMPATIBILITY.md`). Public so that a test can work out where a
+    /// recursion this one drives runs out.
+    pub fn frame_bytes(self) -> u64 {
+        self.model().0
     }
 
     /// [`Site::frame_budget`] with `outer` bytes of the stack already held by
@@ -318,6 +351,40 @@ const MODULE_BASE_BYTES: u64 = 12000;
 const MODULE_FRAME_BYTES: u64 = 464;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const MODULE_BASE_BYTES: u64 = 8304;
+
+/// [`Site::Bind`]: what the stack holds when jq's deepest binding walk starts.
+///
+/// Those walks are parser.y's actions, so this is `main` → `jq_compile_args` →
+/// `load_program` → `jq_parse` → `yyparse` → the action → `block_bind_subblock`,
+/// and `yyparse` alone is 5,616 bytes on macOS and 5,696 on Linux: its three
+/// `YYINITDEPTH` (200) arrays for the states, values and locations. Bisected
+/// against jq's binaries (see `docs/COMPATIBILITY.md`): the deepest binding
+/// walk jq survives is `(stack - this) / 112` frames at every stack limit
+/// measured, which pins it to 8,976 bytes on macOS.
+///
+/// A program whose deepest binding walk is `builtins_bind`'s rather than a
+/// parser action's has about 8 KB more stack than this (no `yyparse` frame),
+/// and there qj gives up 74 levels it needn't.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const BIND_BASE_BYTES: u64 = 8976;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const BIND_BASE_BYTES: u64 = 9280;
+
+/// [`Site::Compile`] and [`Site::ExpandArgs`]: what the stack holds when
+/// `block_compile` calls `compile` for the top-level function — `main` →
+/// `jq_compile_args` → `block_compile`, plus what the deepest level of
+/// `compile` itself calls below the recursion (`expand_call_arglist`'s own
+/// callees, `jv_mem_calloc`, `block_free`).
+///
+/// This is the stack held *before* `compile`'s first frame. `compile` starts by
+/// calling `expand_call_arglist`, so at its deepest level there is always a
+/// frame of [`Site::ExpandArgs`] on top of it, and that is where jq's stack
+/// actually runs out: the two together reproduce the depth of nested `def`s jq
+/// survives at every limit measured, which pins this to 3,552 bytes on macOS.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const COMPILE_BASE_BYTES: u64 = 3552;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const COMPILE_BASE_BYTES: u64 = 4096;
 
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is
@@ -429,6 +496,18 @@ fn budget_of(site: Site) -> Option<u64> {
         return None;
     }
     site.budget_below(OUTER_BYTES.with(std::cell::Cell::get))
+}
+
+/// How deep `site`'s recursion can go here, as a plain number a walk can
+/// compare its depth against: [`u64::MAX`] when nothing can overflow (compat
+/// mode is off, or the stack is unlimited), so that the walk's per-level test
+/// is one comparison.
+///
+/// Read once per walk, not per level: it depends on what an outer recursion
+/// holds ([`Descent`]), which doesn't change inside one.
+#[inline]
+pub fn frames_available(site: Site) -> u64 {
+    budget_of(site).unwrap_or(u64::MAX)
 }
 
 /// Hook for `src/jq/value/deep.rs`: `jv_equal(a, b)`.

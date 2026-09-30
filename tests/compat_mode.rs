@@ -383,6 +383,12 @@ fn program(site: Site, n: u64) -> String {
         ),
         // A chain of imports needs files, so it has its own test.
         Site::Modules => unreachable!("Site::Modules needs a module tree"),
+        // The compiler's recursions are driven by the shape of a *program*, not
+        // of a value: see `nested_closures_crash_where_jqs_binding_does` and
+        // `nested_defs_crash_where_jqs_compile_does`.
+        Site::Bind | Site::Compile | Site::ExpandArgs => {
+            unreachable!("{site:?} is driven by the program, not by a value")
+        }
     }
 }
 
@@ -592,6 +598,230 @@ fn run_tests_without_a_count_segfaults_in_both_modes() {
                 Some(libc::SIGSEGV),
                 "compat={compat} {opt}: {:?}",
                 o.status
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// jq's recursions over the program: the compiler
+// ---------------------------------------------------------------------------
+
+/// A program nesting `n` closures: each `select(f)` call holds a lambda whose
+/// body is the next one, so binding descends two frames a level.
+fn nested_closures(n: u64) -> String {
+    format!(
+        "{}true{}",
+        "select(".repeat(n as usize),
+        ")".repeat(n as usize)
+    )
+}
+
+/// The same nesting through a C function's arguments: `. + . + ... + .` is
+/// `_plus(lambda(rest); lambda(.))`, left-associated, so the chain nests in the
+/// first argument. Unlike `select(...)`, bison reduces it as it goes, so this
+/// one is not bounded by `YYMAXDEPTH` at all.
+fn nested_binops(n: u64) -> String {
+    vec!["."; n as usize + 1].join(" + ")
+}
+
+/// A chain of `n` definitions, each in the body of the one before, which jq
+/// compiles by recursing once per level. Binding does *not* descend them: a
+/// definition bound to itself has `any_unbound == 0`, so later walks skip it.
+fn nested_defs(n: u64) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        s += &format!("def f{i}: ");
+    }
+    s += "1";
+    for i in (0..n).rev() {
+        s += &format!("; f{i}");
+    }
+    s
+}
+
+/// The deepest `select(...)` nesting (or chain of binops) compat-mode qj
+/// compiles at `stack_kb`.
+///
+/// Binding recurses into an instruction's closure body *and* its argument list,
+/// so a level costs two frames: the call at level `k` is bound at frame
+/// `2k - 1`, the lambda holding the next level at `2k`. The innermost lambda's
+/// body has nothing unbound in it, so jq skips it, and `n` levels reach frame
+/// `2n - 1`.
+fn deepest_closures(stack_kb: u64) -> u64 {
+    Site::Bind.frame_budget_at(stack_kb * 1024, 0) / 2
+}
+
+/// The deepest chain of definitions compat-mode qj compiles at `stack_kb`.
+///
+/// `compile` recurses once per level (a chain of `n` reaches level `n + 1`,
+/// counting the top-level function), and the first thing it does at each level
+/// is call `expand_call_arglist`, so the level that fails is the one where that
+/// frame no longer does.
+fn deepest_defs(stack_kb: u64) -> u64 {
+    let stack = stack_kb * 1024;
+    let frame = Site::Compile.frame_bytes();
+    let mut level = 1;
+    while Site::ExpandArgs.frame_budget_at(stack, level * frame) >= 1 {
+        level += 1;
+    }
+    // `level` is the first that doesn't fit, and a chain of `n` reaches
+    // `n + 1`.
+    level - 2
+}
+
+/// jq's `block_bind_subblock_inner` recurses over a program's closures, so a
+/// deeply nested program overflows its stack while parsing. In compat mode qj
+/// dies at the same nesting, one level short answers, and by default neither
+/// depth is a problem.
+#[test]
+fn nested_closures_crash_where_jqs_binding_does() {
+    for stack_kb in [SMALL_STACK_KB, 512] {
+        let deepest = deepest_closures(stack_kb);
+        assert!(deepest > 100, "implausible closure depth {deepest}");
+        for (shape, prog) in [
+            ("select", nested_closures(deepest)),
+            ("binop", nested_binops(deepest)),
+        ] {
+            let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+            assert_eq!(
+                code(&o),
+                Some(0),
+                "{shape} {deepest} at {stack_kb} KB should compile: {}",
+                stderr(&o)
+            );
+        }
+        for (shape, prog) in [
+            ("select", nested_closures(deepest + 1)),
+            ("binop", nested_binops(deepest + 1)),
+        ] {
+            let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+            assert_eq!(
+                signal(&o),
+                Some(libc::SIGSEGV),
+                "{shape} {} at {stack_kb} KB should crash ({:?}, {})",
+                deepest + 1,
+                o.status,
+                stderr(&o)
+            );
+            assert_eq!(stdout(&o), "", "{shape} at {stack_kb} KB");
+            // By default the same program compiles and runs.
+            let plain = run_stack(Path::new("."), false, stack_kb, &["-nc", &prog]);
+            assert_eq!(
+                code(&plain),
+                Some(0),
+                "{shape} {} at {stack_kb} KB by default: {}",
+                deepest + 1,
+                stderr(&plain)
+            );
+        }
+    }
+}
+
+/// `compile` recurses once per nested definition, with `expand_call_arglist` on
+/// top of it — the one recursion nested `def`s drive, and the only one whose
+/// threshold they reach.
+#[test]
+fn nested_defs_crash_where_jqs_compile_does() {
+    // Bison stops at `YYMAXDEPTH` (10,000 states) after about 3,330 nested
+    // definitions, which is why this needs a small stack.
+    let stack_kb = SMALL_STACK_KB;
+    let deepest = deepest_defs(stack_kb);
+    assert!(
+        (100..3000).contains(&deepest),
+        "implausible def depth {deepest}"
+    );
+    let ok = run_stack(
+        Path::new("."),
+        true,
+        stack_kb,
+        &["-nc", &nested_defs(deepest)],
+    );
+    assert_eq!(
+        code(&ok),
+        Some(0),
+        "{deepest} defs should compile: {}",
+        stderr(&ok)
+    );
+    assert_eq!(stdout(&ok), "1\n");
+    let prog = nested_defs(deepest + 1);
+    let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+    assert_eq!(
+        signal(&o),
+        Some(libc::SIGSEGV),
+        "{} defs should crash ({:?}, {})",
+        deepest + 1,
+        o.status,
+        stderr(&o)
+    );
+    let plain = run_stack(Path::new("."), false, stack_kb, &["-nc", &prog]);
+    assert_eq!(code(&plain), Some(0), "by default: {}", stderr(&plain));
+    assert_eq!(stdout(&plain), "1\n");
+}
+
+/// jq runs parser.y's actions as bison reduces, so a program that fails to
+/// parse has already driven the binding recursion over everything the parser
+/// did reduce: jq crashes instead of reporting the syntax error. qj parses
+/// first and lowers afterwards, and in compat mode replays that lowering.
+#[test]
+fn a_syntax_error_after_deep_nesting_crashes_where_jqs_actions_do() {
+    let stack_kb = SMALL_STACK_KB;
+    // One level deeper than [`nested_closures_crash_where_jqs_binding_does`]
+    // needs: the deepest walk of a program that *does* parse is the one that
+    // binds the builtins to it, which starts a frame above the parse's own
+    // walks, and a program that fails to parse never gets there. jq's threshold
+    // is the same for both (its parse-time walk is what runs out), so this is
+    // one more level of the margin, not a divergence.
+    let deepest = deepest_closures(stack_kb) + 1;
+    for (shape, deep) in [
+        ("select", nested_closures(deepest + 1)),
+        ("binop", nested_binops(deepest + 1)),
+    ] {
+        let prog = format!("{deep} | %%%");
+        let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+        assert_eq!(
+            signal(&o),
+            Some(libc::SIGSEGV),
+            "{shape} + a syntax error should crash ({:?}, {})",
+            o.status,
+            stderr(&o)
+        );
+        // By default qj reports the error, as it does for a shallow program.
+        let plain = run_stack(Path::new("."), false, stack_kb, &["-nc", &prog]);
+        assert_eq!(
+            code(&plain),
+            Some(3),
+            "{shape} by default: {}",
+            stderr(&plain)
+        );
+        assert!(
+            stderr(&plain).starts_with("qj: error: syntax error, unexpected '%'"),
+            "{shape} by default: {}",
+            stderr(&plain)
+        );
+    }
+}
+
+/// Nothing about the compiler's thresholds fires at a normal stack limit: the
+/// deepest program bison will parse is far inside them, and the checks cost
+/// nothing there.
+#[test]
+fn the_deepest_program_bison_parses_compiles_at_the_default_stack() {
+    // 4,990 nested `select(...)` and 3,330 nested definitions are bison's
+    // limits; jq needs a 2 MB stack for the first, which every platform's
+    // default exceeds.
+    for prog in [
+        nested_closures(4_900),
+        nested_defs(3_300),
+        nested_binops(9_900),
+    ] {
+        for compat in [false, true] {
+            let o = run(compat, &["-nc", &prog]);
+            assert_eq!(
+                code(&o),
+                Some(0),
+                "compat={compat}: {}",
+                &stderr(&o)[..stderr(&o).len().min(200)]
             );
         }
     }
