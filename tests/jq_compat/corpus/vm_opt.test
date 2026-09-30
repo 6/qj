@@ -2949,194 +2949,254 @@ null
 [limit(2; .[]? | select(. != null))]
 [[1],[2]]
 
-[first(error({"__jq":0}))]
+[., ., ., .][0:2] | (.[] |= 1) | .[3] = 9
 1
 
-[first(error({"__jq":0}))]
+[., ., ., .][0:2] | (.[] |= 1) | .[3] = 9
 [1,2,3]
 
-[first(error({"__jq":0}))]
+[., ., ., .][0:2] | (.[] |= 1) | .[3] = 9
 {"a":{"b":{"c":1}},"c":true}
 
+[., ., ., .][0:2] | (.[] |= 1) | .[3] = 9
+100000000000000000001
+
+[., ., ., .][0:2] as $v | $v | (.[] |= 1) | $$$$v | .[3] = 9
+{"a":1,"b":2}
+
+[., ., ., .][0:2] as $v | $v | (.[] |= 1) | $$$$v | .[3] = 9
+1.000
+
+[., ., ., .][0:2] as $v | $v | (.[] |= 1) | $$$$v | .[3] = 9
+null
+
+[., ., ., .][0:2] as $v | $v | (.[] |= 1) | $$$$v | .[3] = 9
+"a"
+
+[range(4)] | .[0:2] | (.[] |= . + 1) | .[3] = 9
+[null,false,0,""]
+
+[range(4)] | .[0:2] | (.[] |= . + 1) | .[3] = 9
+2.5
+
+[range(4)] | .[0:2] | (.[] |= . + 1) | .[3] = 9
+[[1],[2]]
+
+[range(4)] | .[0:2] | (.[] |= . + 1) | .[3] = 9
+[{"a":2},{"a":1}]
+
+[[1,2,3,4][0:2]] | (.[] |= (.[0:1])) | .[0][3] = 9
+[1,2,3]
+
+[[1,2,3,4][0:2]] | (.[] |= (.[0:1])) | .[0][3] = 9
+{"a":{"b":{"c":1}},"c":true}
+
+[[1,2,3,4][0:2]] | (.[] |= (.[0:1])) | .[0][3] = 9
+100000000000000000001
+
+[[1,2,3,4][0:2]] | (.[] |= (.[0:1])) | .[0][3] = 9
+1
+
+{a: [1,2,3,4][0:2]} | (.[] |= .) | .a[3] = 9
+1.000
+
+{a: [1,2,3,4][0:2]} | (.[] |= .) | .a[3] = 9
+null
+
+{a: [1,2,3,4][0:2]} | (.[] |= .) | .a[3] = 9
+"a"
+
+{a: [1,2,3,4][0:2]} | (.[] |= .) | .a[3] = 9
+{"a":1,"b":2}
+
 [first(error({"__jq":0}))]
+2.5
+
+[first(error({"__jq":0}))]
+[[1],[2]]
+
+[first(error({"__jq":0}))]
+[{"a":2},{"a":1}]
+
+[first(error({"__jq":0}))]
+[null,false,0,""]
+
+[first(1, error({"__jq":0}))]
+{"a":{"b":{"c":1}},"c":true}
+
+[first(1, error({"__jq":0}))]
 100000000000000000001
 
 [first(1, error({"__jq":0}))]
-{"a":1,"b":2}
+1
 
 [first(1, error({"__jq":0}))]
-1.000
+[1,2,3]
 
-[first(1, error({"__jq":0}))]
+[isempty(error({"__jq":0}))]
 null
 
-[first(1, error({"__jq":0}))]
+[isempty(error({"__jq":0}))]
 "a"
 
 [isempty(error({"__jq":0}))]
-[null,false,0,""]
+{"a":1,"b":2}
 
 [isempty(error({"__jq":0}))]
-2.5
+1.000
 
-[isempty(error({"__jq":0}))]
+[any(.[]?; error({"__jq":0}))]
 [[1],[2]]
 
-[isempty(error({"__jq":0}))]
+[any(.[]?; error({"__jq":0}))]
 [{"a":2},{"a":1}]
 
 [any(.[]?; error({"__jq":0}))]
-[1,2,3]
+[null,false,0,""]
 
 [any(.[]?; error({"__jq":0}))]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
-[any(.[]?; error({"__jq":0}))]
+[all(error({"__jq":0}); .)]
 100000000000000000001
 
-[any(.[]?; error({"__jq":0}))]
+[all(error({"__jq":0}); .)]
 1
 
 [all(error({"__jq":0}); .)]
-1.000
+[1,2,3]
 
 [all(error({"__jq":0}); .)]
-null
+{"a":{"b":{"c":1}},"c":true}
 
-[all(error({"__jq":0}); .)]
+[IN(.[]?; error({"__jq":0}))]
 "a"
 
-[all(error({"__jq":0}); .)]
+[IN(.[]?; error({"__jq":0}))]
 {"a":1,"b":2}
 
 [IN(.[]?; error({"__jq":0}))]
-2.5
+1.000
 
 [IN(.[]?; error({"__jq":0}))]
-[[1],[2]]
+null
 
-[IN(.[]?; error({"__jq":0}))]
+[limit(3; .[]?, error({"__jq":0}))]
 [{"a":2},{"a":1}]
 
-[IN(.[]?; error({"__jq":0}))]
+[limit(3; .[]?, error({"__jq":0}))]
 [null,false,0,""]
 
 [limit(3; .[]?, error({"__jq":0}))]
-{"a":{"b":{"c":1}},"c":true}
+2.5
 
 [limit(3; .[]?, error({"__jq":0}))]
-100000000000000000001
+[[1],[2]]
 
-[limit(3; .[]?, error({"__jq":0}))]
+[limit(3; .[]?, error({"__jq":1}))]
 1
 
-[limit(3; .[]?, error({"__jq":0}))]
+[limit(3; .[]?, error({"__jq":1}))]
 [1,2,3]
 
 [limit(3; .[]?, error({"__jq":1}))]
-null
+{"a":{"b":{"c":1}},"c":true}
 
 [limit(3; .[]?, error({"__jq":1}))]
-"a"
+100000000000000000001
 
-[limit(3; .[]?, error({"__jq":1}))]
+.a |= error({"__jq":0})
 {"a":1,"b":2}
 
-[limit(3; .[]?, error({"__jq":1}))]
+.a |= error({"__jq":0})
 1.000
 
 .a |= error({"__jq":0})
-[[1],[2]]
+null
 
 .a |= error({"__jq":0})
-[{"a":2},{"a":1}]
+"a"
 
-.a |= error({"__jq":0})
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
 [null,false,0,""]
 
-.a |= error({"__jq":0})
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
 2.5
 
 (.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
-100000000000000000001
+[[1],[2]]
 
 (.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
-1
+[{"a":2},{"a":1}]
 
-(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
 [1,2,3]
 
-(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
 {"a":{"b":{"c":1}},"c":true}
 
 .[]? |= (if . == 1 then error({"__jq":1}) else . end)
-"a"
+100000000000000000001
 
 .[]? |= (if . == 1 then error({"__jq":1}) else . end)
-{"a":1,"b":2}
+1
 
-.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+(.. | numbers) |= error({"__jq":0})
 1.000
 
-.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+(.. | numbers) |= error({"__jq":0})
 null
 
 (.. | numbers) |= error({"__jq":0})
-[{"a":2},{"a":1}]
+"a"
 
 (.. | numbers) |= error({"__jq":0})
-[null,false,0,""]
+{"a":1,"b":2}
 
-(.. | numbers) |= error({"__jq":0})
+walk(if type == "number" then error({"__jq":0}) else . end)
 2.5
 
-(.. | numbers) |= error({"__jq":0})
+walk(if type == "number" then error({"__jq":0}) else . end)
 [[1],[2]]
 
 walk(if type == "number" then error({"__jq":0}) else . end)
-1
+[{"a":2},{"a":1}]
 
 walk(if type == "number" then error({"__jq":0}) else . end)
-[1,2,3]
+[null,false,0,""]
 
-walk(if type == "number" then error({"__jq":0}) else . end)
+walk(if type == "number" then error({"__jq":1}) else . end)
 {"a":{"b":{"c":1}},"c":true}
 
-walk(if type == "number" then error({"__jq":0}) else . end)
+walk(if type == "number" then error({"__jq":1}) else . end)
 100000000000000000001
 
 walk(if type == "number" then error({"__jq":1}) else . end)
-{"a":1,"b":2}
+1
 
 walk(if type == "number" then error({"__jq":1}) else . end)
-1.000
+[1,2,3]
 
-walk(if type == "number" then error({"__jq":1}) else . end)
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
 null
 
-walk(if type == "number" then error({"__jq":1}) else . end)
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
 "a"
 
 walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
-[null,false,0,""]
+{"a":1,"b":2}
 
 walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
-2.5
+1.000
 
-walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+walk(if type == "object" then error({"__jq":1}) else . end)
 [[1],[2]]
 
-walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+walk(if type == "object" then error({"__jq":1}) else . end)
 [{"a":2},{"a":1}]
 
 walk(if type == "object" then error({"__jq":1}) else . end)
-[1,2,3]
+[null,false,0,""]
 
 walk(if type == "object" then error({"__jq":1}) else . end)
-{"a":{"b":{"c":1}},"c":true}
-
-walk(if type == "object" then error({"__jq":1}) else . end)
-100000000000000000001
-
-walk(if type == "object" then error({"__jq":1}) else . end)
-1
+2.5

@@ -63,6 +63,14 @@
 //!   `break` is an error carrying the label object `{"__jq": n}`.
 //! * Path expressions track `jq->path` and `jq->value_at_path`, raising
 //!   `Invalid path expression ...` when a value doesn't come from the path.
+//!
+//! # Optimized code
+//!
+//! Runs of simple instructions are compiled when the program is loaded into *regions*,
+//! register code that performs the same value operations in the same order without the
+//! stack shuffling, and a closure whose whole body is a region is called without a frame
+//! (`region.rs`, which explains why both are exact). `--debug-trace`, `QJ_JQ_COMPAT=1`
+//! and `QJ_NO_VM_OPT=1` ([`Jq::set_optimize`]) run the instructions as compiled.
 
 pub mod driver;
 pub(crate) mod native;

@@ -7,6 +7,7 @@ use super::region::REGION_BASE;
 use super::stack::{Closure, ForkPoint, Frame, NO_RETADDR, StackPtr};
 use super::{Jq, Raised, label_object};
 use crate::jq::builtins::CResult;
+use crate::jq::builtins::native::NativeId;
 use crate::jq::lang::bytecode::{ARG_NEWCLOSURE, NUM_OPCODES, Opcode};
 use crate::jq::value::{Error, Value, dump_string_trunc};
 
@@ -75,6 +76,23 @@ mod op {
     pub const fn on_backtrack(op: u16) -> u16 {
         op + BT
     }
+}
+
+/// What an instruction run out of line does next (see `Jq::run`).
+enum Step {
+    /// Continue at this pc.
+    Go(usize),
+    /// Backtrack (with `jq->error` set for an error).
+    Backtrack,
+    /// The program halted.
+    Halted,
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_instruction(opcode: u16, pc: usize) -> ! {
+    let name = Opcode::from_u16(opcode % NUM_OPCODES as u16).map_or("#INVALID", |o| o.name());
+    panic!("invalid instruction {name} ({opcode}) at pc {pc}");
 }
 
 impl Jq {
@@ -389,6 +407,19 @@ impl Jq {
                 return Exit::Halted;
             }};
         }
+
+        // An instruction run out of line (the loop keeps only the frequent ones, so
+        // that entering it, which each native's sub-run does, stays cheap).
+        macro_rules! step {
+            ($s:expr) => {{
+                match $s {
+                    Step::Go(p) => pc = p,
+                    Step::Backtrack => backtrack!(),
+                    Step::Halted => halted!(),
+                }
+            }};
+        }
+
         if self.halted {
             halted!();
         }
@@ -411,11 +442,7 @@ impl Jq {
             match opcode {
                 op::TOP => {}
 
-                op::ERRORK => {
-                    let v = self.constant(prog, code[pc]);
-                    self.set_error(v);
-                    backtrack!();
-                }
+                op::ERRORK => step!(self.op_errork(prog, code, pc)),
 
                 op::LOADK => {
                     let v = self.constant(prog, code[pc]);
@@ -423,29 +450,15 @@ impl Jq {
                     self.stk_top = self.stk.replace_value(self.stk_top, v);
                 }
 
-                op::GENLABEL => {
-                    let label = label_object(self.next_label);
-                    self.next_label = self.next_label.wrapping_add(1);
-                    self.push(label);
-                }
+                op::GENLABEL => step!(self.op_genlabel(pc)),
 
                 op::DUP => {
                     self.stk_top = self.stk.dup_value(self.stk_top);
                 }
 
-                op::DUPN => {
-                    let v = self.popn();
-                    self.push(v.clone());
-                    self.push(v);
-                }
+                op::DUPN => step!(self.op_dupn(pc)),
 
-                op::DUP2 => {
-                    let keep = self.pop();
-                    let v = self.pop();
-                    self.push(v.clone());
-                    self.push(keep);
-                    self.push(v);
-                }
+                op::DUP2 => step!(self.op_dup2(pc)),
 
                 op::SUBEXP_BEGIN => {
                     self.stk_top = self.stk.dup_value(self.stk_top);
@@ -480,29 +493,7 @@ impl Jq {
                     }
                 }
 
-                op::INSERT => {
-                    let stktop = self.pop();
-                    let v = self.pop();
-                    let k = self.pop();
-                    let objv = self.pop();
-                    match (objv, k) {
-                        (Value::Object(mut o), Value::String(k)) => {
-                            o.insert(k, v);
-                            self.push(Value::Object(o));
-                            self.push(stktop);
-                        }
-                        (objv, k) => {
-                            debug_assert!(matches!(objv, Value::Object(_)));
-                            let msg = format!(
-                                "Cannot use {} ({}) as object key",
-                                k.kind_name(),
-                                dump_string_trunc(&k, 15)
-                            );
-                            self.set_error(Value::from(msg));
-                            backtrack!();
-                        }
-                    }
-                }
+                op::INSERT => step!(self.op_insert(pc)),
 
                 op::RANGE | op::BT_RANGE => {
                     let level = code[pc];
@@ -525,30 +516,7 @@ impl Jq {
                         self.push(curr);
                         continue;
                     }
-                    let max = self.pop();
-                    if raising {
-                        drop(max);
-                        backtrack!();
-                    }
-                    let (cur, maxv) = match (&self.stk.locals[var], &max) {
-                        (Value::Number(c), Value::Number(m)) => (c.value(), m.value()),
-                        _ => {
-                            self.set_error(Value::from("Range bounds must be numeric"));
-                            drop(max);
-                            backtrack!();
-                        }
-                    };
-                    if cur >= maxv {
-                        // finished iterating
-                        drop(max);
-                        backtrack!();
-                    }
-                    let curr =
-                        std::mem::replace(&mut self.stk.locals[var], Value::number(cur + 1.0));
-                    let spos = (self.stk_top, self.curr_frame);
-                    self.push(max);
-                    self.stack_save(pc - 3, spos);
-                    self.push(curr);
+                    step!(self.op_range(var, pc, raising));
                 }
 
                 op::LOADV => {
@@ -576,11 +544,7 @@ impl Jq {
                     self.stk_top = self.stk.replace_value_n(self.stk_top, val);
                 }
 
-                op::STOREVN | op::STOREV => {
-                    if opcode == op::STOREVN {
-                        let pos = (self.stk_top, self.curr_frame);
-                        self.stack_save(pc - 1, pos);
-                    }
+                op::STOREV => {
                     let level = code[pc];
                     let v = code[pc + 1];
                     pc += 2;
@@ -592,107 +556,22 @@ impl Jq {
                     self.stk.locals[var] = val;
                 }
 
-                op::BT_STOREVN => {
-                    let level = code[pc];
-                    let v = code[pc + 1];
-                    let var = self.local_var(prog, v, level);
-                    self.stk.locals[var] = Value::Null;
-                    backtrack!();
-                }
+                op::STOREVN => step!(self.op_storevn(prog, code, pc, TRACE)),
 
-                op::STORE_GLOBAL => {
-                    // Get the constant
-                    let val = self.constant(prog, code[pc]);
-                    // Store the var
-                    let level = code[pc + 1];
-                    let v = code[pc + 2];
-                    pc += 3;
-                    let var = self.local_var(prog, v, level);
-                    if TRACE {
-                        self.trace_store(v, &val);
-                    }
-                    self.stk.locals[var] = val;
-                }
+                op::BT_STOREVN => step!(self.op_bt_storevn(prog, code, pc)),
 
-                op::PATH_BEGIN => {
-                    let v = self.pop();
-                    // jq pushes jq->path itself (it is replaced just below); the fork
-                    // point still records its length.
-                    self.push(self.path.clone());
-                    let pos = (self.stk_top, self.curr_frame);
-                    self.stack_save(pc - 1, pos);
-                    self.push(Value::number(self.subexp_nest as f64));
-                    let old_value_at_path = std::mem::take(&mut self.value_at_path);
-                    self.push(old_value_at_path);
-                    self.push(v.clone());
-                    self.path = Value::empty_array();
-                    self.value_at_path = v; // next INDEX operation must index into v
-                    self.subexp_nest = 0;
-                }
+                op::STORE_GLOBAL => step!(self.op_store_global(prog, code, pc, TRACE)),
 
-                op::PATH_END => {
-                    let v = self.pop();
-                    // detect invalid path expression like path(.a | reverse)
-                    if !self.path_intact(&v) {
-                        let msg = format!(
-                            "Invalid path expression with result {}",
-                            dump_string_trunc(&v, 30)
-                        );
-                        self.set_error(Value::from(msg));
-                        backtrack!();
-                    }
-                    drop(v); // discard value, only keep path
+                op::PATH_BEGIN => step!(self.op_path_begin(pc)),
 
-                    let old_value_at_path = self.pop();
-                    let old_subexp_nest = self.pop().as_f64().unwrap_or(0.0) as i32;
-
-                    let path = std::mem::take(&mut self.path);
-                    self.path = self.pop();
-
-                    let spos = (self.stk_top, self.curr_frame);
-                    self.push(path.clone());
-                    self.stack_save(pc - 1, spos);
-
-                    self.push(path);
-                    self.subexp_nest = old_subexp_nest;
-                    self.value_at_path = old_value_at_path;
-                }
+                op::PATH_END => step!(self.op_path_end(pc)),
 
                 op::BT_PATH_BEGIN | op::BT_PATH_END => {
                     self.path = self.pop();
                     backtrack!();
                 }
 
-                op::INDEX | op::INDEX_OPT => {
-                    let t = self.pop();
-                    let k = self.pop();
-                    // detect invalid path expression like path(reverse | .a)
-                    if !self.path_intact(&t) {
-                        let msg = format!(
-                            "Invalid path expression near attempt to access element {} of {}",
-                            dump_string_trunc(&k, 15),
-                            dump_string_trunc(&t, 30)
-                        );
-                        self.set_error(Value::from(msg));
-                        backtrack!();
-                    }
-                    // jv_get(t, jv_copy(k)): t is consumed.
-                    let r = t.get(&k);
-                    drop(t);
-                    match r {
-                        Ok(v) => {
-                            self.path_append(k, v.clone());
-                            self.push(v);
-                        }
-                        Err(e) => {
-                            drop(k);
-                            if opcode == op::INDEX {
-                                self.set_error(e.into_value());
-                            }
-                            backtrack!();
-                        }
-                    }
-                }
+                op::INDEX | op::INDEX_OPT => step!(self.op_index(pc, opcode == op::INDEX_OPT)),
 
                 op::JUMP => {
                     let offset = code[pc] as usize;
@@ -711,82 +590,7 @@ impl Jq {
                 }
 
                 op::EACH | op::EACH_OPT | op::BT_EACH | op::BT_EACH_OPT => {
-                    let first = opcode == op::EACH || opcode == op::EACH_OPT;
-                    let (container, idx) = if first {
-                        let container = self.pop();
-                        // detect invalid path expression like path(reverse | .[])
-                        if !self.path_intact(&container) {
-                            let msg = format!(
-                                "Invalid path expression near attempt to iterate through {}",
-                                dump_string_trunc(&container, 30)
-                            );
-                            self.set_error(Value::from(msg));
-                            backtrack!();
-                        }
-                        // (jq pushes container and -1 and falls through, popping them
-                        // right back.)
-                        (container, -1i64)
-                    } else {
-                        let idx = self.pop().as_f64().unwrap_or(0.0) as i32 as i64;
-                        let container = self.pop();
-                        (container, idx)
-                    };
-
-                    let mut is_last = false;
-                    let (keep_going, idx, kv) = match &container {
-                        Value::Array(a) => {
-                            let idx = if first { 0 } else { idx + 1 };
-                            let len = a.len() as i64;
-                            is_last = idx == len - 1;
-                            if idx < len {
-                                let value = a.get(idx as usize).cloned().unwrap_or_default();
-                                (true, idx, Some((Value::number(idx as f64), value)))
-                            } else {
-                                (false, idx, None)
-                            }
-                        }
-                        Value::Object(o) => {
-                            let idx = if first { 0 } else { idx + 1 };
-                            match o.get_index(idx as usize) {
-                                Some((k, v)) => {
-                                    (true, idx, Some((Value::String(k.clone()), v.clone())))
-                                }
-                                None => (false, idx, None),
-                            }
-                        }
-                        _ => {
-                            debug_assert!(first);
-                            if opcode == op::EACH {
-                                let msg = format!(
-                                    "Cannot iterate over {} ({})",
-                                    container.kind_name(),
-                                    dump_string_trunc(&container, 15)
-                                );
-                                self.set_error(Value::from(msg));
-                            }
-                            (false, idx, None)
-                        }
-                    };
-
-                    if !keep_going || raising {
-                        drop(kv);
-                        drop(container);
-                        backtrack!();
-                    }
-                    let (key, value) = kv.expect("keep_going");
-                    if is_last {
-                        // we don't need to make a backtrack point
-                        drop(container);
-                        self.path_append(key, value.clone());
-                        self.push(value);
-                    } else {
-                        let spos = (self.stk_top, self.curr_frame);
-                        self.push(container);
-                        self.push(Value::number(idx as f64));
-                        self.stack_save(pc - 1, spos);
-                        self.path_append(key, value.clone());
-                        self.push(value);
-                    }
+                    step!(self.op_each(pc, opcode, raising))
                 }
 
                 op::BACKTRACK => {
@@ -804,32 +608,7 @@ impl Jq {
                     self.stack_save(pc - 1, pos);
                 }
 
-                op::BT_TRY_BEGIN => {
-                    if !raising {
-                        // `try EXP ...` -- EXP backtracked (e.g., EXP was `empty`), so we
-                        // backtrack more:
-                        drop(self.pop());
-                        backtrack!();
-                    }
-                    // Else `(try EXP ... ) | EXP2` raised an error.
-                    //
-                    // If the error was wrapped in another error, then that means EXP2
-                    // raised the error. We unwrap it and re-raise it as it wasn't raised
-                    // by EXP.
-                    let err = self.error.as_mut().expect("raising");
-                    if err.wraps > 0 {
-                        err.wraps -= 1;
-                        backtrack!();
-                    }
-                    // Else we caught an error containing a non-error value, so we jump to
-                    // the handler.
-                    let offset = code[pc] as usize;
-                    pc += 1;
-                    drop(self.pop()); // free the input
-                    let err = self.error.take().expect("raising");
-                    self.push(err.msg); // push the error's message
-                    pc += offset;
-                }
+                op::BT_TRY_BEGIN => step!(self.op_bt_try_begin(code, pc, raising)),
 
                 op::BT_TRY_END => {
                     // Wrap the error so the matching TRY_BEGIN doesn't catch it
@@ -845,21 +624,7 @@ impl Jq {
                     pc += 1; // skip offset this time
                 }
 
-                op::BT_DESTRUCTURE_ALT => {
-                    if self.error.is_none() {
-                        // `try EXP ...` backtracked here (no value, `empty`), so we
-                        // backtrack more
-                        drop(self.pop());
-                        backtrack!();
-                    }
-                    // `try EXP ...` exception caught in EXP. DESTRUCTURE_ALT doesn't want
-                    // the error message on the stack, as we would just want to throw it
-                    // away anyway.
-                    self.error = None;
-                    let offset = code[pc] as usize;
-                    pc += 1;
-                    pc += offset;
-                }
+                op::BT_DESTRUCTURE_ALT => step!(self.op_bt_destructure_alt(code, pc)),
 
                 op::BT_FORK => {
                     if raising {
@@ -870,46 +635,7 @@ impl Jq {
                     pc += offset;
                 }
 
-                op::CALL_BUILTIN => {
-                    let nargs = code[pc] as usize;
-                    let function = prog.cfunctions[code[pc + 1] as usize];
-                    pc += 2;
-                    debug_assert_eq!(nargs, function.nargs);
-                    let input = self.pop();
-                    // The arguments, sized by arity (nothing extra to drop afterwards).
-                    let top = match nargs {
-                        1 => (function.f)(self, input, &mut []),
-                        2 => {
-                            let mut args = [self.pop()];
-                            (function.f)(self, input, &mut args)
-                        }
-                        3 => {
-                            let a = self.pop();
-                            let b = self.pop();
-                            let mut args = [a, b];
-                            (function.f)(self, input, &mut args)
-                        }
-                        _ => {
-                            let mut args = [Value::Null, Value::Null, Value::Null];
-                            for a in args.iter_mut().take(nargs - 1) {
-                                *a = self.pop();
-                            }
-                            (function.f)(self, input, &mut args[..nargs - 1])
-                        }
-                    };
-                    match top {
-                        Ok(v) => {
-                            self.push(v);
-                            if self.halted {
-                                halted!();
-                            }
-                        }
-                        Err(e) => {
-                            self.set_error(e.into_value());
-                            backtrack!();
-                        }
-                    }
-                }
+                op::CALL_BUILTIN => step!(self.op_call_builtin(prog, code, pc)),
 
                 op::TAIL_CALL_JQ | op::CALL_JQ => {
                     // Bytecode layout here:
@@ -974,12 +700,6 @@ impl Jq {
                         }
                         _ => None,
                     };
-                    let mut args = [Closure { func: 0, env: 0 }; super::native::MAX_NATIVE_ARGS];
-                    if native.is_some() {
-                        for (i, a) in args.iter_mut().enumerate().take(nclosures) {
-                            *a = self.make_closure(prog, code, pc + 2 + i * 2);
-                        }
-                    }
                     if opcode == op::TAIL_CALL_JQ {
                         let f = self.stk.frame(self.curr_frame);
                         retaddr = f.retaddr;
@@ -988,14 +708,16 @@ impl Jq {
                     }
                     if let Some(id) = native {
                         debug_assert_eq!(self.stk_top, retdata);
-                        match self.call_native(prog, id, cl, input, &args[..nclosures], retaddr) {
-                            Applied::Continue(p) => {
-                                pc = p;
+                        // (Only calls without arguments are tail calls here, so there
+                        // are no argument closures to resolve in the popped frame.)
+                        debug_assert!(opcode == op::CALL_JQ || nclosures == 0);
+                        match self.call_jq_native(prog, code, pc, id, cl, input, nclosures, retaddr)
+                        {
+                            Ok(s) => {
+                                step!(s);
                                 continue;
                             }
-                            Applied::Backtrack => backtrack!(),
-                            Applied::Halted => halted!(),
-                            Applied::Fallback(v) => input = v,
+                            Err(v) => input = v,
                         }
                     }
                     self.frame_push(prog, code, cl, pc + 2, nclosures);
@@ -1073,15 +795,418 @@ impl Jq {
                     }
                 }
 
-                _ => {
-                    let name = Opcode::from_u16(opcode % NUM_OPCODES as u16)
-                        .map_or("#INVALID", |o| o.name());
-                    panic!("invalid instruction {name} ({opcode}) at pc {}", pc - 1);
-                }
+                _ => invalid_instruction(opcode, pc - 1),
             }
         }
     }
 
+    // ---- instructions run out of line ----------------------------------------------
+    //
+    // Each takes the pc after its opcode and returns what comes next (`Step`).
+
+    #[cold]
+    #[inline(never)]
+    fn op_errork(&mut self, prog: &Program, code: &[u16], pc: usize) -> Step {
+        let v = self.constant(prog, code[pc]);
+        self.set_error(v);
+        Step::Backtrack
+    }
+
+    #[inline(never)]
+    fn op_genlabel(&mut self, pc: usize) -> Step {
+        let label = label_object(self.next_label);
+        self.next_label = self.next_label.wrapping_add(1);
+        self.push(label);
+        Step::Go(pc)
+    }
+
+    #[inline(never)]
+    fn op_dupn(&mut self, pc: usize) -> Step {
+        let v = self.popn();
+        self.push(v.clone());
+        self.push(v);
+        Step::Go(pc)
+    }
+
+    #[inline(never)]
+    fn op_dup2(&mut self, pc: usize) -> Step {
+        let keep = self.pop();
+        let v = self.pop();
+        self.push(v.clone());
+        self.push(keep);
+        self.push(v);
+        Step::Go(pc)
+    }
+
+    #[inline(never)]
+    fn op_insert(&mut self, pc: usize) -> Step {
+        let stktop = self.pop();
+        let v = self.pop();
+        let k = self.pop();
+        let objv = self.pop();
+        match (objv, k) {
+            (Value::Object(mut o), Value::String(k)) => {
+                o.insert(k, v);
+                self.push(Value::Object(o));
+                self.push(stktop);
+                Step::Go(pc)
+            }
+            (objv, k) => {
+                debug_assert!(matches!(objv, Value::Object(_)));
+                let msg = format!(
+                    "Cannot use {} ({}) as object key",
+                    k.kind_name(),
+                    dump_string_trunc(&k, 15)
+                );
+                self.set_error(Value::from(msg));
+                Step::Backtrack
+            }
+        }
+    }
+
+    /// `RANGE`/`BT_RANGE` on local `var`, but for a next value with the bound kept in
+    /// its block (`pc` is after the operands).
+    #[inline(never)]
+    fn op_range(&mut self, var: usize, pc: usize, raising: bool) -> Step {
+        let max = self.pop();
+        if raising {
+            drop(max);
+            return Step::Backtrack;
+        }
+        let (cur, maxv) = match (&self.stk.locals[var], &max) {
+            (Value::Number(c), Value::Number(m)) => (c.value(), m.value()),
+            _ => {
+                self.set_error(Value::from("Range bounds must be numeric"));
+                drop(max);
+                return Step::Backtrack;
+            }
+        };
+        if cur >= maxv {
+            // finished iterating
+            drop(max);
+            return Step::Backtrack;
+        }
+        let curr = std::mem::replace(&mut self.stk.locals[var], Value::number(cur + 1.0));
+        let spos = (self.stk_top, self.curr_frame);
+        self.push(max);
+        self.stack_save(pc - 3, spos);
+        self.push(curr);
+        Step::Go(pc)
+    }
+
+    #[inline(never)]
+    fn op_storevn(&mut self, prog: &Program, code: &[u16], pc: usize, trace: bool) -> Step {
+        let pos = (self.stk_top, self.curr_frame);
+        self.stack_save(pc - 1, pos);
+        let level = code[pc];
+        let v = code[pc + 1];
+        let var = self.local_var(prog, v, level);
+        let val = self.pop();
+        if trace {
+            self.trace_store(v, &val);
+        }
+        self.stk.locals[var] = val;
+        Step::Go(pc + 2)
+    }
+
+    #[inline(never)]
+    fn op_bt_storevn(&mut self, prog: &Program, code: &[u16], pc: usize) -> Step {
+        let level = code[pc];
+        let v = code[pc + 1];
+        let var = self.local_var(prog, v, level);
+        self.stk.locals[var] = Value::Null;
+        Step::Backtrack
+    }
+
+    #[inline(never)]
+    fn op_store_global(&mut self, prog: &Program, code: &[u16], pc: usize, trace: bool) -> Step {
+        // Get the constant
+        let val = self.constant(prog, code[pc]);
+        // Store the var
+        let level = code[pc + 1];
+        let v = code[pc + 2];
+        let var = self.local_var(prog, v, level);
+        if trace {
+            self.trace_store(v, &val);
+        }
+        self.stk.locals[var] = val;
+        Step::Go(pc + 3)
+    }
+
+    #[inline(never)]
+    fn op_path_begin(&mut self, pc: usize) -> Step {
+        let v = self.pop();
+        // jq pushes jq->path itself (it is replaced just below); the fork
+        // point still records its length.
+        self.push(self.path.clone());
+        let pos = (self.stk_top, self.curr_frame);
+        self.stack_save(pc - 1, pos);
+        self.push(Value::number(self.subexp_nest as f64));
+        let old_value_at_path = std::mem::take(&mut self.value_at_path);
+        self.push(old_value_at_path);
+        self.push(v.clone());
+        self.path = Value::empty_array();
+        self.value_at_path = v; // next INDEX operation must index into v
+        self.subexp_nest = 0;
+        Step::Go(pc)
+    }
+
+    #[inline(never)]
+    fn op_path_end(&mut self, pc: usize) -> Step {
+        let v = self.pop();
+        // detect invalid path expression like path(.a | reverse)
+        if !self.path_intact(&v) {
+            let msg = format!(
+                "Invalid path expression with result {}",
+                dump_string_trunc(&v, 30)
+            );
+            self.set_error(Value::from(msg));
+            return Step::Backtrack;
+        }
+        drop(v); // discard value, only keep path
+
+        let old_value_at_path = self.pop();
+        let old_subexp_nest = self.pop().as_f64().unwrap_or(0.0) as i32;
+
+        let path = std::mem::take(&mut self.path);
+        self.path = self.pop();
+
+        let spos = (self.stk_top, self.curr_frame);
+        self.push(path.clone());
+        self.stack_save(pc - 1, spos);
+
+        self.push(path);
+        self.subexp_nest = old_subexp_nest;
+        self.value_at_path = old_value_at_path;
+        Step::Go(pc)
+    }
+
+    #[inline(never)]
+    fn op_index(&mut self, pc: usize, opt: bool) -> Step {
+        let t = self.pop();
+        let k = self.pop();
+        // detect invalid path expression like path(reverse | .a)
+        if !self.path_intact(&t) {
+            let msg = format!(
+                "Invalid path expression near attempt to access element {} of {}",
+                dump_string_trunc(&k, 15),
+                dump_string_trunc(&t, 30)
+            );
+            self.set_error(Value::from(msg));
+            return Step::Backtrack;
+        }
+        // jv_get(t, jv_copy(k)): t is consumed.
+        let r = t.get(&k);
+        drop(t);
+        match r {
+            Ok(v) => {
+                self.path_append(k, v.clone());
+                self.push(v);
+                Step::Go(pc)
+            }
+            Err(e) => {
+                drop(k);
+                if !opt {
+                    self.set_error(e.into_value());
+                }
+                Step::Backtrack
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn op_each(&mut self, pc: usize, opcode: u16, raising: bool) -> Step {
+        let first = opcode == op::EACH || opcode == op::EACH_OPT;
+        let (container, idx) = if first {
+            let container = self.pop();
+            // detect invalid path expression like path(reverse | .[])
+            if !self.path_intact(&container) {
+                let msg = format!(
+                    "Invalid path expression near attempt to iterate through {}",
+                    dump_string_trunc(&container, 30)
+                );
+                self.set_error(Value::from(msg));
+                return Step::Backtrack;
+            }
+            // (jq pushes container and -1 and falls through, popping them
+            // right back.)
+            (container, -1i64)
+        } else {
+            let idx = self.pop().as_f64().unwrap_or(0.0) as i32 as i64;
+            let container = self.pop();
+            (container, idx)
+        };
+
+        let mut is_last = false;
+        let (keep_going, idx, kv) = match &container {
+            Value::Array(a) => {
+                let idx = if first { 0 } else { idx + 1 };
+                let len = a.len() as i64;
+                is_last = idx == len - 1;
+                if idx < len {
+                    let value = a.get(idx as usize).cloned().unwrap_or_default();
+                    (true, idx, Some((Value::number(idx as f64), value)))
+                } else {
+                    (false, idx, None)
+                }
+            }
+            Value::Object(o) => {
+                let idx = if first { 0 } else { idx + 1 };
+                match o.get_index(idx as usize) {
+                    Some((k, v)) => (true, idx, Some((Value::String(k.clone()), v.clone()))),
+                    None => (false, idx, None),
+                }
+            }
+            _ => {
+                debug_assert!(first);
+                if opcode == op::EACH {
+                    let msg = format!(
+                        "Cannot iterate over {} ({})",
+                        container.kind_name(),
+                        dump_string_trunc(&container, 15)
+                    );
+                    self.set_error(Value::from(msg));
+                }
+                (false, idx, None)
+            }
+        };
+
+        if !keep_going || raising {
+            drop(kv);
+            drop(container);
+            return Step::Backtrack;
+        }
+        let (key, value) = kv.expect("keep_going");
+        if is_last {
+            // we don't need to make a backtrack point
+            drop(container);
+            self.path_append(key, value.clone());
+            self.push(value);
+        } else {
+            let spos = (self.stk_top, self.curr_frame);
+            self.push(container);
+            self.push(Value::number(idx as f64));
+            self.stack_save(pc - 1, spos);
+            self.path_append(key, value.clone());
+            self.push(value);
+        }
+        Step::Go(pc)
+    }
+
+    #[inline(never)]
+    fn op_bt_try_begin(&mut self, code: &[u16], pc: usize, raising: bool) -> Step {
+        if !raising {
+            // `try EXP ...` -- EXP backtracked (e.g., EXP was `empty`), so we
+            // backtrack more:
+            drop(self.pop());
+            return Step::Backtrack;
+        }
+        // Else `(try EXP ... ) | EXP2` raised an error.
+        //
+        // If the error was wrapped in another error, then that means EXP2
+        // raised the error. We unwrap it and re-raise it as it wasn't raised
+        // by EXP.
+        let err = self.error.as_mut().expect("raising");
+        if err.wraps > 0 {
+            err.wraps -= 1;
+            return Step::Backtrack;
+        }
+        // Else we caught an error containing a non-error value, so we jump to
+        // the handler.
+        let offset = code[pc] as usize;
+        drop(self.pop()); // free the input
+        let err = self.error.take().expect("raising");
+        self.push(err.msg); // push the error's message
+        Step::Go(pc + 1 + offset)
+    }
+
+    #[inline(never)]
+    fn op_bt_destructure_alt(&mut self, code: &[u16], pc: usize) -> Step {
+        if self.error.is_none() {
+            // `try EXP ...` backtracked here (no value, `empty`), so we
+            // backtrack more
+            drop(self.pop());
+            return Step::Backtrack;
+        }
+        // `try EXP ...` exception caught in EXP. DESTRUCTURE_ALT doesn't want
+        // the error message on the stack, as we would just want to throw it
+        // away anyway.
+        self.error = None;
+        let offset = code[pc] as usize;
+        Step::Go(pc + 1 + offset)
+    }
+
+    #[inline(never)]
+    fn op_call_builtin(&mut self, prog: &Program, code: &[u16], pc: usize) -> Step {
+        let nargs = code[pc] as usize;
+        let function = prog.cfunctions[code[pc + 1] as usize];
+        debug_assert_eq!(nargs, function.nargs);
+        let input = self.pop();
+        // The arguments, sized by arity (nothing extra to drop afterwards).
+        let top = match nargs {
+            1 => (function.f)(self, input, &mut []),
+            2 => {
+                let mut args = [self.pop()];
+                (function.f)(self, input, &mut args)
+            }
+            3 => {
+                let a = self.pop();
+                let b = self.pop();
+                let mut args = [a, b];
+                (function.f)(self, input, &mut args)
+            }
+            _ => {
+                let mut args = [Value::Null, Value::Null, Value::Null];
+                for a in args.iter_mut().take(nargs - 1) {
+                    *a = self.pop();
+                }
+                (function.f)(self, input, &mut args[..nargs - 1])
+            }
+        };
+        match top {
+            Ok(v) => {
+                self.push(v);
+                if self.halted {
+                    return Step::Halted;
+                }
+                Step::Go(pc + 2)
+            }
+            Err(e) => {
+                self.set_error(e.into_value());
+                Step::Backtrack
+            }
+        }
+    }
+
+    /// A call of native `id` for closure `cl` (the `CALL_JQ` at hand has its argument
+    /// closures after `pc`; its input and, for a tail call, the caller's frame are
+    /// popped). `Err(input)` if it runs the definition instead.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn call_jq_native(
+        &mut self,
+        prog: &Program,
+        code: &[u16],
+        pc: usize,
+        id: NativeId,
+        cl: Closure,
+        input: Value,
+        nclosures: usize,
+        retaddr: u32,
+    ) -> Result<Step, Value> {
+        let mut args = [Closure { func: 0, env: 0 }; super::native::MAX_NATIVE_ARGS];
+        for (i, a) in args.iter_mut().enumerate().take(nclosures) {
+            *a = self.make_closure(prog, code, pc + 2 + i * 2);
+        }
+        Ok(
+            match self.call_native(prog, id, cl, input, &args[..nclosures], retaddr) {
+                Applied::Continue(p) => Step::Go(p),
+                Applied::Backtrack => Step::Backtrack,
+                Applied::Halted => Step::Halted,
+                Applied::Fallback(v) => return Err(v),
+            },
+        )
+    }
     /// `jv_array_get(jv_copy(frame_current(jq)->bc->constants), idx)`.
     #[inline(always)]
     fn constant(&self, prog: &Program, idx: u16) -> Value {
