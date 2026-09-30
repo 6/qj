@@ -264,7 +264,10 @@ pub(crate) fn consts(id: NativeId, pools: &Pools<'_>) -> Option<Vec<ConstRef>> {
         Limit => Some(vec![
             number(&pools.own(), 0.0)?,
             number(&pools.own(), 1.0)?,
-            string(&pools.own(), 0, "limit doesn't support negative count")?,
+            // `error("...")`'s message is its lambda's constant.
+            pools
+                .subs()
+                .find_map(|p| string(&p, 0, "limit doesn't support negative count"))?,
         ]),
         Paths0 | Paths1 | AsciiDowncase | AsciiUpcase | Recurse0 | Values | Nulls | Booleans
         | Numbers | Strings | Arrays | Objects | Iterables | Scalars | Add0 | Add1 | First1

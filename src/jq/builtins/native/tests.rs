@@ -382,6 +382,39 @@ const PROGRAMS: &[&str] = &[
     "[., ., ., .][0:2] as $v | $v | first(repeat(.)) | $$$$v | .[3] = 9",
     "[inputs]",
     "try [inputs, error(\"x\")] catch .",
+    // an error equal to a native's own label: the label's handler swallows it
+    "[first(error({\"__jq\":0}))]",
+    "[first(1, error({\"__jq\":0}))]",
+    "[first(error({\"__jq\":1}))]",
+    "[isempty(error({\"__jq\":0}))]",
+    "[any(error({\"__jq\":0}); .)]",
+    "[all(error({\"__jq\":0}); .)]",
+    "[any(.[]?; error({\"__jq\":0}))]",
+    "[all(.[]?; error({\"__jq\":0}))]",
+    "[IN(error({\"__jq\":0}))]",
+    "[IN(.[]?; error({\"__jq\":0}))]",
+    "[limit(3; error({\"__jq\":0}))]",
+    "[limit(3; 1, error({\"__jq\":0}))]",
+    "[limit(3; .[]?, error({\"__jq\":0}))]",
+    "[limit(3; .[]?, error({\"__jq\":1}))]",
+    "[label $f | first(error({\"__jq\":0}))]",
+    ".a |= error({\"__jq\":0})",
+    ".a |= error({\"__jq\":1})",
+    "(.a, .b) |= (if . == null then error({\"__jq\":0}) else empty end)",
+    "(.a, .b) |= (if . == null then error({\"__jq\":1}) else 5 end)",
+    ".[]? |= error({\"__jq\":0})",
+    ".[]? |= (if . == 1 then error({\"__jq\":1}) else . end)",
+    "(.. | numbers) |= error({\"__jq\":0})",
+    "(.[]?, .a?) |= (error({\"__jq\":0}), 1)",
+    "map_values(error({\"__jq\":0}))?",
+    "walk(if type == \"number\" then error({\"__jq\":0}) else . end)",
+    "walk(if type == \"number\" then error({\"__jq\":1}) else . end)",
+    "walk(if type == \"number\" then error({\"__jq\":2}) else . end)",
+    "walk(if . == 1 then error({\"__jq\":0}) elif . == null then empty else . end)",
+    "walk(if . == 1 then error({\"__jq\":1}) elif . == null then 9 else . end)",
+    "walk(if type == \"array\" then error({\"__jq\":0}) else . end)",
+    "walk(if type == \"object\" then error({\"__jq\":1}) else . end)",
+    "[walk(if type == \"number\" then (error({\"__jq\":0}), 1) else . end)]",
 ];
 
 const INPUTS: &[&str] = &[
@@ -413,6 +446,58 @@ fn edge_cases_match_the_definitions() {
         }
     }
     assert!(calls > 1000, "natives ran only {calls} times");
+}
+
+/// Every native runs (its constants resolve, so its definition is marked), else the
+/// tests comparing it with its definition would compare the definition with itself.
+#[test]
+fn every_native_runs() {
+    let dead = [
+        ("map(.)", "[1]"),
+        ("select(.)", "1"),
+        ("[limit(3; repeat(1))]", "null"),
+        (".a |= 1", "{}"),
+        (".a = 1", "{}"),
+        ("join(\",\")", "[\"a\"]"),
+        ("to_entries", "{\"a\":1}"),
+        ("from_entries", "[]"),
+        ("with_entries(.)", "{\"a\":1}"),
+        ("walk(.)", "[1]"),
+        ("[paths]", "[1]"),
+        ("[paths(.)]", "[1]"),
+        ("[tostream]", "[1]"),
+        ("ascii_downcase", "\"A\""),
+        ("ascii_upcase", "\"a\""),
+        ("[..]", "[1]"),
+        ("[.[] | values]", "[1]"),
+        ("[.[] | nulls]", "[1]"),
+        ("[.[] | booleans]", "[1]"),
+        ("[.[] | numbers]", "[1]"),
+        ("[.[] | strings]", "[1]"),
+        ("[.[] | arrays]", "[1]"),
+        ("[.[] | objects]", "[1]"),
+        ("[.[] | iterables]", "[1]"),
+        ("[.[] | scalars]", "[1]"),
+        ("add", "[1]"),
+        ("add(.[])", "[1]"),
+        ("flatten", "[[1]]"),
+        ("first(.[])", "[1]"),
+        ("[limit(3; .[]?)]", "[1,2,3,4]"),
+        ("isempty(.[])", "[1]"),
+        ("any(.[]; .)", "[1]"),
+        ("all(.[]; .)", "[1]"),
+        ("any(.)", "[1]"),
+        ("all(.)", "[1]"),
+        ("any", "[1]"),
+        ("all", "[1]"),
+        ("IN(1)", "1"),
+        ("IN(.[]; 1)", "[1]"),
+    ]
+    .into_iter()
+    .filter(|(program, input)| check(program, input) == 0)
+    .map(|(program, _)| program)
+    .collect::<Vec<_>>();
+    assert!(dead.is_empty(), "these don't run natively: {dead:?}");
 }
 
 /// `paths(f)` checks a type filter's predicate itself: the filter's native isn't

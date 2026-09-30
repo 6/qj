@@ -33,6 +33,8 @@
 //! Both abandon closures (`break`, and on errors), so they're off with `?//`.
 
 use super::Update;
+use crate::jq::builtins::binops::binop_plus;
+use crate::jq::builtins::general::f_length;
 use crate::jq::lang::execute::Jq;
 use crate::jq::lang::execute::native::{Closure, Outcome, Resume, Stop, Sub};
 use crate::jq::value::Value;
@@ -53,23 +55,21 @@ pub(super) fn modify(
         // `path(.[k])` is `[k]`, or INDEX's error; after the INDEX the path expression
         // holds nothing of the input.
         input.get(&k)?;
-        let mut root = input;
-        let mut dels = Vec::new();
-        modify_one(vm, &mut root, &mut dels, Value::from(vec![k]), &update)?;
-        return finish(root, dels);
+        let mut state = State::new(input);
+        state.step(vm, Value::from(vec![k]), &update)?;
+        return state.finish();
     }
     // `[., []]`: the value being updated and the paths to delete.
-    let mut root = input.clone();
-    let mut dels: Vec<Value> = Vec::new();
+    let mut state = State::new(input.clone());
     let mut r = vm.sub_start_args(path_fn, &[paths], input)?;
     while let Some((s, p)) = r {
-        if let Err(e) = modify_one(vm, &mut root, &mut dels, p, &update) {
+        if let Err(e) = state.step(vm, p, &update) {
             vm.sub_abandon(s);
             return Err(e);
         }
         r = vm.sub_next(s)?;
     }
-    finish(root, dels)
+    state.finish()
 }
 
 /// `_modify(.[]; update)` (`map_values`, `.[] |= f`), or `.[]?` if `opt`: the paths of
@@ -87,8 +87,7 @@ fn modify_each(vm: &mut Jq, input: Value, opt: bool, update: &Update) -> Result<
     };
     let is_array = matches!(input, Value::Array(_));
     let mut held = Some(input.clone());
-    let mut root = input;
-    let mut dels: Vec<Value> = Vec::new();
+    let mut state = State::new(input);
     for i in 0..n {
         let container = held.as_ref().expect("the container");
         let k = match container {
@@ -99,46 +98,119 @@ fn modify_each(vm: &mut Jq, input: Value, opt: bool, update: &Update) -> Result<
         if is_array && i + 1 == n {
             held = None;
         }
-        modify_one(vm, &mut root, &mut dels, Value::from(vec![k]), update)?;
+        state.step(vm, Value::from(vec![k]), update)?;
     }
     drop(held);
-    finish(root, dels)
+    state.finish()
 }
 
-/// `. as $dot | $dot[0] | delpaths($dot[1])`.
-fn finish(root: Value, dels: Vec<Value>) -> Result<Value, Stop> {
-    if dels.is_empty() {
-        // `delpaths([])` returns its input.
-        return Ok(root);
+/// The reduce's state, `[., []]`: the value being updated and the paths to delete.
+enum State {
+    /// `[root, dels]`, the state's shape as long as every body has an output.
+    Pair { root: Value, dels: Vec<Value> },
+    /// Any value (see [`other_step`]).
+    Other(Value),
+}
+
+impl State {
+    fn new(root: Value) -> State {
+        State::Pair {
+            root,
+            dels: Vec::new(),
+        }
     }
-    // `$dot[0] | delpaths($dot[1])`: `$dot` still holds the state, so delpaths works on
-    // a shared value (a uniquely owned array would be changed in place).
-    let held = root.clone();
-    let r = root.delpaths(&Value::from(dels));
-    drop(held);
+
+    /// The reduce body for path `p`:
+    ///
+    /// ```jq
+    /// . as $dot | null | label $out | ($dot[0] | getpath($p)) as $v
+    /// | (($$$$v | update | (., break $out) as $v | $$$$dot | setpath([0] + $p; $v)),
+    ///    ($$$$dot | setpath([1, (.[1] | length)]; $p)))
+    /// ```
+    fn step(&mut self, vm: &mut Jq, p: Value, update: &Update) -> Result<(), Stop> {
+        // `label $out`
+        let label = vm.gen_labels(1);
+        match self {
+            State::Pair { root, dels } => {
+                let v = root.getpath(&p)?;
+                match update.first(vm, v) {
+                    // setpath([0] + $p; $v)
+                    Ok(Some(u)) => *root = std::mem::take(root).setpath(&p, u)?,
+                    // setpath([1, (.[1] | length)]; $p)
+                    Ok(None) => dels.push(p),
+                    // The label swallows its own break: no output, so a `null` state.
+                    Err(e) if e.is_break_of(label) => *self = State::Other(Value::Null),
+                    Err(e) => return Err(e),
+                }
+            }
+            State::Other(dot) => {
+                let dot = std::mem::take(dot);
+                *self = State::Other(other_step(vm, dot, p, label, |vm, v| update.first(vm, v))?);
+            }
+        }
+        Ok(())
+    }
+
+    /// `. as $dot | $dot[0] | delpaths($dot[1])`.
+    fn finish(self) -> Result<Value, Stop> {
+        match self {
+            State::Pair { root, dels } => {
+                if dels.is_empty() {
+                    // `delpaths([])` returns its input.
+                    return Ok(root);
+                }
+                // `$dot` still holds the state, so delpaths works on a shared value (a
+                // uniquely owned array would be changed in place).
+                let held = root.clone();
+                let r = root.delpaths(&Value::from(dels));
+                drop(held);
+                Ok(r?)
+            }
+            State::Other(dot) => other_finish(dot),
+        }
+    }
+}
+
+/// `_modify`'s reduce body on a state `dot` of any shape, for path `p` in the body of
+/// label number `label`; `first` is the update's first output on a value. The state
+/// has another shape than `[., []]` only after an update raised its own label's
+/// break (`error({"__jq": n})`): the label swallows it, the body has no output, and
+/// the reduce's state becomes `null` (jq then usually ends with `delpaths`' "Paths
+/// must be specified as an array").
+pub(super) fn other_step(
+    vm: &mut Jq,
+    dot: Value,
+    p: Value,
+    label: u32,
+    first: impl FnOnce(&mut Jq, Value) -> Result<Option<Value>, Stop>,
+) -> Result<Value, Stop> {
+    // `($dot[0] | getpath($p)) as $v`
+    let v = dot.get(&Value::from(0))?.getpath(&p)?;
+    match first(vm, v) {
+        // `(., break $out) as $v | $$$$dot | setpath([0] + $p; $v)`
+        Ok(Some(u)) => {
+            let path = binop_plus(Value::from(vec![Value::from(0)]), p)?;
+            Ok(dot.setpath(&path, u)?)
+        }
+        // `$$$$dot | setpath([1, (.[1] | length)]; $p)`
+        Ok(None) => {
+            let n = f_length(vm, dot.get(&Value::from(1))?, &mut [])?;
+            Ok(dot.setpath(&Value::from(vec![Value::from(1), n]), p)?)
+        }
+        Err(e) if e.is_break_of(label) => Ok(Value::Null),
+        Err(e) => Err(e),
+    }
+}
+
+/// `. as $dot | $dot[0] | delpaths($dot[1])` on a state of any shape.
+pub(super) fn other_finish(dot: Value) -> Result<Value, Stop> {
+    let root = dot.get(&Value::from(0))?;
+    let dels = dot.get(&Value::from(1))?;
+    // (`$dot` holds the state meanwhile.)
+    let r = root.delpaths(&dels);
+    drop(dot);
     Ok(r?)
 }
-
-/// The reduce body for path `p`.
-fn modify_one(
-    vm: &mut Jq,
-    root: &mut Value,
-    dels: &mut Vec<Value>,
-    p: Value,
-    update: &Update,
-) -> Result<(), Stop> {
-    // `label $out`
-    vm.gen_labels(1);
-    let v = root.getpath(&p)?;
-    match update.first(vm, v)? {
-        // setpath([0] + $p; $v)
-        Some(u) => *root = std::mem::take(root).setpath(&p, u)?,
-        // setpath([1, (.[1] | length)]; $p)
-        None => dels.push(p),
-    }
-    Ok(())
-}
-
 /// `_assign(paths; $value)` on `input`: for each output of `value` (usually just one,
 /// read without running anything when it's pure), the input with every path set.
 pub(super) fn assign(

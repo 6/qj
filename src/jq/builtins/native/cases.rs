@@ -74,6 +74,11 @@ const SAFE_LEAVES: &[&str] = &[
     "(if type == \"string\" then ascii_downcase end)",
     "(if \"object\" == type then del(.a) else . end)",
     "(if type == \"array\" then .[1:] else . end)",
+    // A native's own label's break (the label swallows it).
+    "error({\"__jq\":0})",
+    "error({\"__jq\":1})",
+    "(if type == \"number\" then error({\"__jq\":0}) else . end)",
+    "(if . == null then error({\"__jq\":1}) else . end)",
     "(type == \"array\")",
     "(\"string\" == type)",
     "scalars",

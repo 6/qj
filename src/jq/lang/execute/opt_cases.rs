@@ -83,6 +83,9 @@ const LEAVES: &[&str] = &[
     "not",
     "empty",
     "error",
+    // The break of a label (natives' definitions allocate them).
+    "error({\"__jq\":0})",
+    "error({\"__jq\":1})",
     "(.a // 7)",
     "(input? // \"none\")",
     "nan",

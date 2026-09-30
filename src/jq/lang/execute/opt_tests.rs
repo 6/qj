@@ -274,6 +274,23 @@ const NATIVE_PROGRAMS: &[&str] = &[
     "sort_by(.a)?",
     "group_by(.)? | map(length)",
     "[limit(2; .[]? | select(. != null))]",
+    // An error equal to a native's own label is swallowed by the label's handler.
+    "[first(error({\"__jq\":0}))]",
+    "[first(1, error({\"__jq\":0}))]",
+    "[isempty(error({\"__jq\":0}))]",
+    "[any(.[]?; error({\"__jq\":0}))]",
+    "[all(error({\"__jq\":0}); .)]",
+    "[IN(.[]?; error({\"__jq\":0}))]",
+    "[limit(3; .[]?, error({\"__jq\":0}))]",
+    "[limit(3; .[]?, error({\"__jq\":1}))]",
+    ".a |= error({\"__jq\":0})",
+    "(.a, .b) |= (if . == null then error({\"__jq\":0}) else empty end)",
+    ".[]? |= (if . == 1 then error({\"__jq\":1}) else . end)",
+    "(.. | numbers) |= error({\"__jq\":0})",
+    "walk(if type == \"number\" then error({\"__jq\":0}) else . end)",
+    "walk(if type == \"number\" then error({\"__jq\":1}) else . end)",
+    "walk(if . == 1 then error({\"__jq\":0}) elif . == null then empty else . end)",
+    "walk(if type == \"object\" then error({\"__jq\":1}) else . end)",
 ];
 
 const INPUTS: &[&str] = &[
