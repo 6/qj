@@ -41,39 +41,29 @@
 //! A panic must not unwind out of an `extern "C"` function, so [`main`]
 //! catches it and exits 101, as the runtime would.
 //!
-//! # Why qj runs on a thread of its own
+//! # qj's own stack
 //!
 //! The main thread's stack is as big as `ulimit -s` says, and at a small
-//! enough limit qj's own frames used to run out where jq's don't: jq needs
-//! 17 KB for `jq -n 1` on macOS and 12 KB on Linux, qj needed more, and a few
-//! programs further up (a regex nested 60 deep, a deep `tojson`) needed up to
-//! twice jq's stack. So [`main`] does no more than jq's C start-up does
-//! before `main` — restore `SIGPIPE`, capture the arguments — and runs the
-//! rest on a thread with a large fixed stack ([`qj::cli::run::STACK_BYTES`]):
-//! qj's own frames never depend on `RLIMIT_STACK`, and only compat mode's
-//! models of jq's stack, which read it, decide whether a run dies of it
-//! (`src/compat.rs`).
+//! enough limit qj's own frames used to run out where jq's don't: jq's
+//! `jq -n 1` starts at 17 KB on macOS and 12 KB on Linux, qj needed more, and
+//! a few programs further up (a regex nested 60 deep, a deep `tojson`) needed
+//! up to twice jq's stack. So [`main`] does no more than jq's C start-up does
+//! before `main` — restore `SIGPIPE`, capture the arguments, and in compat
+//! mode check that jq's start-up would fit — and runs the rest with room to
+//! spare (`qj::cli::stack::run`): on the main thread's stack as it is when
+//! `RLIMIT_STACK` is 8 MB or more (the default on both platforms, and a
+//! hundred times what qj's deepest recursion needs), and below that on a stack
+//! of [`qj::cli::run::STACK_BYTES`] mapped for it, still on the main thread.
+//! qj's own frames never run out where jq's don't, and only compat mode's
+//! models of jq's stack, which read the limit, decide whether a run dies of
+//! it (`src/compat.rs`).
 //!
-//! Nothing else changes, because nothing qj does is tied to the main thread:
-//!
-//! * **Exit.** The thread ends the process itself (`std::process::exit`, as
-//!   the main thread did), so the exit path, `atexit` handlers and the stdout
-//!   flush in `close_stdout` are the same; the main thread only waits.
-//! * **Signals.** Dispositions are per process and the thread inherits the
-//!   signal mask. A signal raised on it — compat mode's `SIGSEGV`, an
-//!   `abort()`'s `SIGABRT`, a `SIGPIPE` from writing to a closed pipe — kills
-//!   the whole process exactly as on the main thread, with the same wait
-//!   status and core dump (`qj::compat::small_core_dump`).
-//! * **Output.** The stdout buffer that models jq's stdio is thread-local, and
-//!   everything that writes or flushes it (results, `--debug-trace`, the
-//!   flush before an `abort()` on macOS, the exit's `fclose`) runs on this
-//!   thread. stderr isn't buffered.
-//! * **Locale.** qj never calls `setlocale`: it installs the environment's
-//!   locale with `uselocale` around each libc call that needs it, on
-//!   whichever thread makes the call.
-//!
-//! If no thread can be had (a limit on processes or on address space), qj
-//! runs on the main thread as it used to.
+//! Nothing else changes: it is the same thread, with the same thread-local
+//! state (the stdout buffer that models jq's stdio, the locale installed per
+//! call with `uselocale`), signal mask and exit path. A signal raised on the
+//! mapped stack — compat mode's `SIGSEGV`, an `abort()`'s `SIGABRT`, a
+//! `SIGPIPE` — kills the process as it would anywhere, with the same wait
+//! status and core dump (`qj::compat::small_core_dump`).
 
 #![no_main]
 
@@ -109,21 +99,14 @@ pub unsafe extern "C" fn main(
     let args = unsafe { command_line(argc, argv) };
     // qj is the jq 1.8.1 port: jq's main.c (src/cli/run.rs) on the ported
     // core (src/jq), reading input through src/io, on a stack of its own (see
-    // the module docs). It exits the process itself; the thread returns only
-    // if it panicked, which the default hook has reported, and 101 is the
-    // exit status the runtime would give that.
-    let work = std::thread::Builder::new()
-        .stack_size(qj::cli::run::STACK_BYTES)
-        .spawn(move || qj::cli::run::main_with(args));
-    match work {
-        Ok(thread) => thread.join().unwrap_or(101),
-        Err(_) => {
-            // SAFETY: as above.
-            let args = unsafe { command_line(argc, argv) };
-            // A panic must not unwind out of an `extern "C"` function.
-            std::panic::catch_unwind(move || qj::cli::run::main_with(args)).unwrap_or(101)
-        }
-    }
+    // the module docs). It exits the process itself; this returns only if it
+    // panicked, which the default hook has reported, and 101 is the exit
+    // status the runtime would give that. (A panic must not unwind out of an
+    // `extern "C"` function: `run_on` and `catch_unwind` catch it.)
+    qj::cli::stack::run(qj::cli::run::STACK_BYTES, move || {
+        qj::cli::run::main_with(args)
+    })
+    .unwrap_or(101)
 }
 
 /// The command line as bytes.

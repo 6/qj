@@ -66,20 +66,21 @@ const JQ_ERROR_COMPILE: i32 = 3;
 const JQ_OK_NO_OUTPUT: i32 = -4;
 const JQ_ERROR_UNKNOWN: i32 = 5;
 
-/// The stack of every thread qj runs a program on: its own thread, which the
-/// `qj` binary starts as soon as it has its arguments (`src/main.rs`), and the
-/// parallel engine's workers ([`run_parallel`]).
+/// The stack of everything that runs a program: the parallel engine's workers
+/// ([`run_parallel`]), `--run-tests`' threads, and the main thread's work when
+/// `RLIMIT_STACK` is below 8 MB, which `src/main.rs` then moves to a stack of
+/// this size (`crate::cli::stack`).
 ///
 /// Fixed, so that qj's own frames never depend on `RLIMIT_STACK`: at any
 /// `ulimit -s`, the only stack overflows are the ones compat mode reproduces
 /// from its models of jq's stack (`src/compat.rs`), which read the limit.
-/// Reserved, not committed: a thread's stack is address space until it is
-/// touched, so this costs what the deepest recursion touches, not its size.
-/// qj's deepest recursions are bounded by jq's own limits (bison's
-/// `YYMAXDEPTH`, Oniguruma's parse depth, `MAX_PRINT_DEPTH`) or turn into loops
-/// past a few hundred levels (values, paths, modules), and the most any of them
-/// needs is about 100 KB in an optimized build and a few MB in a debug one,
-/// so this is a very wide margin.
+/// Reserved, not committed: a stack is address space until it is touched, so
+/// this costs what the deepest recursion touches, not its size — mapping 256
+/// MB costs what mapping 1 MB does. qj's deepest recursions are bounded by
+/// jq's own limits (bison's `YYMAXDEPTH`, Oniguruma's parse depth,
+/// `MAX_PRINT_DEPTH`) or turn into loops past a few hundred levels (values,
+/// paths, modules): the most any of them needs is about 100 KB in an
+/// optimized build and a few MB in a debug one.
 pub const STACK_BYTES: usize = 256 << 20;
 
 /// Runs qj on the new core with this process's arguments and exits.
