@@ -24,7 +24,9 @@ leniently or cover less, and jq_diff subsumes them.
 
 ```
 cargo test                                                              # fast suite
-cargo test --release jq_diff -- --ignored                               # THE GATE: strict differential vs jq 1.8.1 (scoreboard on stderr)
+cargo test --release jq_diff -- --ignored                               # THE GATE: strict differential vs jq 1.8.1, both scoreboards (on stderr)
+cargo test --release jq_diff_compat -- --ignored                        # only the compat scoreboard (QJ_JQ_COMPAT=1, nothing normalized)
+cargo test --release jq_diff -- --ignored --exact                       # only the default scoreboard
 JQ_DIFF_FILTER=onig.test JQ_DIFF_VERBOSE=1 cargo test --release jq_diff -- --ignored  # one suite, with details
 cargo test --release -- --ignored --nocapture                           # everything, older runners included
 cargo test --release --lib io:: -- --ignored                            # src/io's long differential tests (util.c port, jq binary, engine)
@@ -49,17 +51,25 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 ### jq_diff: the conformance gate
 
 `tests/jq_diff.rs` (`#[ignore]`) measures the definition of done in `docs/JQ_PORT_PLAN.md`,
-and is the gate for every change to qj's behavior. The default binary passes every case
-strictly except 7: qj's own help/version text (`corpus/cli_meta.toml`), which the plan
-exempts.
-It runs jq 1.8.1 and qj with identical argv, stdin, environment and cwd, and compares stdout
-bytes, exit code, and stderr with only the program name rewritten: a line-initial `qj:` to
-`jq:`, and the exact line `Use qj --help for help with command-line options,` (the usage hint
-after option errors) to `Use jq --help ...`. Nothing else is normalized, and jq's output is the
-only expectation. Levels: `pass` (all three match),
-`stdout` (stdout + exit code match), `fail`. A case counts as `skip` only when jq never
-finishes it (timeout, or the output or memory cap) **and** qj doesn't either; a qj that
-answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode.
+and is the gate for every change to qj's behavior. It runs jq 1.8.1 and qj with identical
+argv, stdin, environment and cwd, and compares stdout bytes, the exit code (or the signal, and
+the wait status's core-dump flag), and stderr. jq's output is the only expectation. Two
+scoreboards run the same cases, one after the other (`cargo test --release jq_diff --
+--ignored` runs both):
+- **`jq_diff`**, qj as it is: stderr is compared with only the program name rewritten, a
+  line-initial `qj:` to `jq:` and the exact line `Use qj --help for help with command-line
+  options,` (the usage hint after option errors) to `Use jq --help ...`. Every case passes
+  strictly except 7: qj's own help/version text (`corpus/cli_meta.toml`), which the plan
+  exempts in default mode.
+- **`jq_diff_compat`**, "be exactly jq": `QJ_JQ_COMPAT=1` for both tools (so `$ENV` stays
+  comparable), both started with `argv[0]` = `jq`, and **nothing normalized**. Every case
+  passes strictly, help and version text included.
+
+Levels: `pass` (all three match), `stdout` (stdout + exit code match), `fail`. Where jq never
+finishes a case (killed at the timeout, the output cap or the memory cap), qj matches only by
+not finishing the same way: the same cap, with byte-identical stdout and stderr up to it. That
+counts as a strict pass and is shown in the scoreboard's `unfin` column; anything else (an
+answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per suite and mode.
 - **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
   `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no
   expected output); `tests/jq_compat/corpus/*.toml` (CLI cases with any argv, files, env,
@@ -67,6 +77,11 @@ answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode
   format in `tests/jq_diff/cli.rs`). A CLI case with `merge = "file"` or
   `"pipe"` sends stderr where stdout goes (`>out 2>&1`, `2>&1 |`), which shows stdio's
   buffering order (`corpus/merged_output.toml`). Ids look like `upstream/man.test:280:compact`.
+  `os = "linux"` in a TOML case (`# jq_diff: os=linux` in a `.test` file) runs it on one OS
+  only, for what jq does on one platform and not the same way on the other
+  (`corpus/lgamma_glibc.test`, `corpus/debug_trace_macos.toml`); `mem_mb = 256` gives a TOML
+  case its own memory cap, so that a program that grows forever reaches it well before the
+  timeout in both tools (the `delpaths`-nan hangs).
   A case can't ask for a stack limit: Darwin refuses `setrlimit(RLIMIT_STACK)` in a process
   forked from a multi-threaded one, so a `stack_kb` option would need a shell per case.
   Cases near one of `QJ_JQ_COMPAT`'s stack-overflow thresholds therefore live in
@@ -81,24 +96,35 @@ answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode
   generated: `python3 tests/jq_compat/corpus/gen_builtin_matrix.py`.
 - **Knobs:** `JQ_DIFF_FILTER=a,b` (id substrings), `JQ_DIFF_MODES=compact,pretty,file,ndjson,fail,cli`,
   `JQ_DIFF_VERBOSE=1` (print every non-passing case), `JQ_DIFF_QJ_ENV="QJ_NO_SIMD_INPUT=1"` (extra env,
-  given to jq too so `$ENV` stays comparable), `JQ_DIFF_BASELINE=path`, `JQ_DIFF_UPDATE_BASELINE=1`,
-  `JQ_DIFF_JQ`/`JQ_DIFF_QJ` (binaries), `JQ_DIFF_TIMEOUT` (s, default 10), `JQ_DIFF_MEM_MB`
-  (per-process RSS cap, default 2048), `JQ_DIFF_JOBS`.
-- **Outputs:** `target/tmp/jq_diff/report.txt` (every non-passing case, jq vs qj stdout, stderr,
-  exit code), `results.tsv` (one line per case), `baseline_candidate.txt`.
+  given to jq too so `$ENV` stays comparable), `JQ_DIFF_BASELINE=path` and
+  `JQ_DIFF_COMPAT_BASELINE=path`, `JQ_DIFF_UPDATE_BASELINE=1`, `JQ_DIFF_JQ`/`JQ_DIFF_QJ` (binaries),
+  `JQ_DIFF_TIMEOUT` (s, default 10), `JQ_DIFF_MEM_MB` (per-process RSS cap, default 2048),
+  `JQ_DIFF_JOBS`. All of them apply to both scoreboards.
+- **Outputs:** `target/tmp/jq_diff/report.txt` (every non-passing case, and every `unfin`
+  one, jq vs qj stdout, stderr, exit code), `results.tsv` (one line per case),
+  `baseline_candidate.txt`; the compat scoreboard's are in `target/tmp/jq_diff/compat/`.
 - **Ratchet:** `tests/jq_compat/diff_baseline.txt` (macOS; `diff_baseline_linux.txt` on Linux)
-  lists each case at `pass` or `stdout`. The test fails when a listed case drops a level, and
+  and, for the compat scoreboard, `diff_baseline_compat.txt` (`diff_baseline_compat_linux.txt`)
+  list each case at `pass` or `stdout`. The test fails when a listed case drops a level, and
   prints cases that improved. After a fix, record the gains with
-  `JQ_DIFF_UPDATE_BASELINE=1 cargo test --release jq_diff -- --ignored` and commit the baseline
-  with the fix. Never regenerate the baseline to make a regression pass. Runs filtered with
-  `JQ_DIFF_FILTER`/`JQ_DIFF_MODES` update only their cases. Entries match by fingerprint, so
-  moving a case within its file is fine (but changing a case's files, argv or stdin makes it a
-  new case). To score a variant without the ratchet, point `JQ_DIFF_BASELINE` at a file that
-  doesn't exist: `JQ_DIFF_QJ_ENV=QJ_NO_SIMD_INPUT=1 JQ_DIFF_BASELINE=target/tmp/no_baseline.txt`.
-- CI runs it on Linux, ratcheting against `diff_baseline_linux.txt`. To record gains made on
-  Linux, commit the `baseline_candidate.txt` from the run's `jq-diff-linux` artifact.
-- jq results are cached in `tests/jq_compat/.cache/jq_diff.json` (invalidated automatically).
-  A full run takes ~10s cold and ~7s cached on 18 cores.
+  `JQ_DIFF_UPDATE_BASELINE=1 cargo test --release jq_diff -- --ignored` (both baselines) and
+  commit them with the fix. Never regenerate a baseline to make a regression pass. Runs
+  filtered with `JQ_DIFF_FILTER`/`JQ_DIFF_MODES` update only their cases. Entries match by
+  fingerprint, so moving a case within its file is fine (but changing a case's files, argv or
+  stdin makes it a new case). To score a variant without the ratchet, point the baseline at a
+  file that doesn't exist:
+  `JQ_DIFF_QJ_ENV=QJ_NO_SIMD_INPUT=1 JQ_DIFF_BASELINE=target/tmp/no_baseline.txt JQ_DIFF_COMPAT_BASELINE=target/tmp/no_baseline.txt`.
+- CI runs both scoreboards on Linux, ratcheting against the `_linux` baselines, and the compat
+  scoreboard on macOS. To record gains made on Linux, commit the `baseline_candidate.txt` files
+  from the run's `jq-diff-linux` artifact (the compat one is under `compat/`).
+- jq results are cached in `tests/jq_compat/.cache/jq_diff.json` and `jq_diff_compat.json`
+  (invalidated automatically). The two scoreboards take ~45s cold and ~18s cached on 18
+  cores, and about 5 minutes on GitHub's 4-core Linux runner.
+- **Core dumps:** the core-dump flag is compared, so a crash matches only if the kernel dumps
+  a core for both or for neither. On macOS the harness sets `ulimit -c 0` for everything it
+  starts (a macOS core is the whole address space); on Linux it leaves the limit alone, and a
+  pipe handler such as systemd-coredump dumps whatever the limit (qj's deliberate cores are a
+  few KB, see `compat::small_core_dump`).
 
 - **Unit tests:** `#[cfg(test)]` modules alongside code.
 - **Integration tests:** `tests/e2e.rs` — runs the `qj` binary against known JSON inputs.
@@ -326,10 +352,15 @@ Read by everything (`src/compat.rs`):
   (`load_library`, about 20,000 modules at 8 MB). Only the depth jq's own traversal
   reaches counts (`src/compat/depth.rs`). Natives, the VM's
   regions and tape evaluation are off here, so everything goes through the value layer.
-  Parallel processing stays on, and qj's help/version text and `qj:` name stay qj's. Read
-  once at start-up; set means anything but empty or `0`. `docs/COMPATIBILITY.md` has the
-  models per OS, the recursions that cannot overflow, and the one that isn't reproduced;
-  `tests/jq_compat/corpus/compat_mode.toml` and `tests/compat_mode.rs` are the tests.
+  It is jq's identity too: messages say `jq:` (`compat::prog_name`), and `-h`, the usage
+  after errors, `--version` (`jq-1.8.1`) and `--build-configuration` (the release binary's
+  `JQ_CONFIG` for the platform, also `$JQ_BUILD_CONFIGURATION`) are jq's text
+  (`src/cli/usage.rs`); glibc's `assert()` line carries `argv[0]`, as jq's does. Parallel
+  processing stays on. Read once at start-up; set means anything but empty or `0`.
+  `docs/COMPATIBILITY.md` has the models per OS, the recursions that cannot overflow, the
+  one that isn't reproduced, and jq's undefined behaviour, which has nothing to reproduce;
+  `tests/jq_compat/corpus/compat_mode.toml`, the compat scoreboard and `tests/compat_mode.rs`
+  are the tests.
   (It used to make the old evaluator imitate jq's number precision, which is simply how qj
   behaves now, in every mode.)
 
@@ -346,7 +377,7 @@ SIGPIPE handling and runs `qj::cli::run::main`.
 
 - `src/cli/` — the command line, a port of jq's `main.c` and `util.c`: option handling
   (`args.rs`: options, their errors and exit codes, colors, `-f`), qj's own help/version text
-  (`usage.rs`), the rest of `main.c` on the port (`run.rs`: compile, `process()`, output, exit
+  and jq's for compat mode (`usage.rs`), the rest of `main.c` on the port (`run.rs`: compile, `process()`, output, exit
   codes, and whether records can run in parallel), `util.c`'s plain input reader (`input.rs`,
   behind the `Reader` trait; `QJ_INPUT=util`) and `jq_test.c` (`run_tests.rs`, `--run-tests`)
 - `src/jq/` — the port of jq's core: `value/` (values and numbers, the printer, the JSON

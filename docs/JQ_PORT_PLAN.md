@@ -49,10 +49,12 @@ The root causes are structural, and they are the reason for the port:
    `limit`) must not go quadratic.
 
 **Help and version text** (`-h`, `--help`, `-V`, `--version`, `--build-configuration`) are
-qj's own and exempt from comparison. Everything else on the command line (option parsing,
-errors, exit codes) must match.
+qj's own by default and exempt from comparison. With `QJ_JQ_COMPAT=1` they are jq's, and the
+compat scoreboard compares them like everything else. Everything else on the command line
+(option parsing, errors, exit codes) must match.
 
-**stderr policy:** compared after replacing the program-name prefix (`qj:` for `jq:`).
+**stderr policy:** compared after replacing the program-name prefix (`qj:` for `jq:`); in
+compat mode, where the name is `jq`, not rewritten at all.
 Everything else must match, including runtime error messages (they are observable via
 `catch`) and `(at <file>:<line>)` locations. Syntax-error wording is tracked as a separate
 metric (bison's "expecting ..." lists are a long tail). Syntax-error *detection* and exit
@@ -318,11 +320,27 @@ interface scaffold before spawning it.
   documented in `docs/COMPATIBILITY.md`: crashes decided by jq's heap layout, jq's
   compiler overflowing on deeply nested programs below a 2 MB stack (the cost per level
   depends on the syntax), and the core dump on Linux.
+- 2026-09-30: **EX** (compat mode's identity, jq_diff's compat scoreboard, core dumps, jq's
+  undefined behaviour). With `QJ_JQ_COMPAT=1`, qj is jq by name and text: `jq:` in every
+  message, jq's `usage()`, `jq-1.8.1`, the release binary's `--build-configuration` for the
+  platform, and glibc's `assert()` line with `argv[0]`. jq_diff has a second scoreboard,
+  `jq_diff_compat`: compat mode for both tools, both started as `jq`, nothing normalized,
+  with its own baselines. A program jq never finishes now matches only when qj ends the same
+  way (same cap, same output up to it), and the core-dump flag is compared. qj's deliberate
+  crashes dump a core wherever jq's do, a few KB of it (`coredump_filter` 0). The three
+  undefined behaviours were settled with an 821-program corpus under repeated runs,
+  environment sizes, ASLR and allocator settings: `lgamma_r`'s sign is defined on glibc (Linux
+  cases added), the empty-stack trace reads zeroed memory on macOS (macOS cases added), and
+  everything else changes from run to run or with allocator settings, so jq has no behaviour
+  to conform to there (`docs/COMPATIBILITY.md`). jq_diff: **39,239/39,246 strict default and 39,246/39,246 compat on macOS,
+  39,263/39,270 and 39,270/39,270 on Linux** (the 7 defaults are the exempt help/version
+  text; each total includes the 4 delpaths-nan hangs and the OS-specific cases).
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
      aborting on macOS only, via an additive `Host` hook.
   2. `%Z` for pre-1900 local times depends on the order of earlier libc time calls in the
      process, so run programs that use localtime/strflocaltime/mktime sequentially.
-- Harness hygiene: jq's `lgamma_r` sign is random at 0, -0, NaN and ±inf (uninitialized in
-  jq), so exclude those inputs from the corpus.
+- Harness hygiene: jq's `lgamma_r` sign is random at 0, -0, NaN and ±inf on macOS
+  (uninitialized in jq, and Apple's libm doesn't write it), so the shared corpus excludes
+  those inputs; glibc always writes it, so `corpus/lgamma_glibc.test` has them, on Linux only.
