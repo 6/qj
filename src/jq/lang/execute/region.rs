@@ -298,8 +298,9 @@ pub(super) enum Op {
     JumpF { r: Reg, target: u32 },
     /// `JUMP`: continue at op `target`.
     Jump { target: u32 },
-    /// `BACKTRACK` (or a call of a function that only backtracks, like `empty`).
-    Backtrack,
+    /// `BACKTRACK` (or a call of a function that only backtracks, like `empty`), with
+    /// the registers `live` (bit `r`) holding values, which jq's unwinding frees.
+    Backtrack { live: u16 },
     /// `ERRORK`: raise the constant.
     ErrorK { k: *const Value },
     /// The end: push [`Region::exit`].
@@ -319,7 +320,8 @@ fn op_uses(op: &Op, r: Reg) -> bool {
         Op::Swap { a, b } => a == r || b == r,
         Op::Drop { r: x } | Op::JumpF { r: x, .. } => x == r,
         Op::StoreV { src, .. } | Op::Append { src, .. } => src == r,
-        Op::StoreK { .. } | Op::Jump { .. } | Op::Backtrack | Op::ErrorK { .. } | Op::Exit => false,
+        Op::Backtrack { live } => live & (1 << r) != 0,
+        Op::StoreK { .. } | Op::Jump { .. } | Op::ErrorK { .. } | Op::Exit => false,
         Op::Call {
             dst,
             input,
@@ -485,7 +487,11 @@ fn remap(
         Op::Jump { target } => Op::Jump {
             target: target + base,
         },
-        Op::Backtrack => Op::Backtrack,
+        Op::Backtrack { live } => Op::Backtrack {
+            live: (0..MAX_REGS)
+                .filter(|&r| live & (1 << r) != 0)
+                .fold(0, |m, r| m | 1 << map[r]),
+        },
         Op::ErrorK { k } => Op::ErrorK { k },
     })
 }
@@ -516,6 +522,16 @@ pub(super) enum Mode {
     /// As a whole function body, without a frame: the input is given, the result
     /// returned, and variables are only those of enclosing functions.
     Direct,
+}
+
+/// How a region's ops ended.
+enum End {
+    /// At [`Op::Exit`]: the exit registers hold the stack.
+    Exit,
+    /// Backtracking, with every register empty.
+    Clean,
+    /// Backtracking (for an error, or `INDEX_OPT`'s): registers may hold values.
+    Dirty,
 }
 
 /// Where a region's variables are.
@@ -650,6 +666,13 @@ impl<'a, 'c> Compiler<'a, 'c> {
     fn release(&mut self, r: Reg) {
         debug_assert!(self.free & (1 << r) == 0);
         self.free |= 1 << r;
+    }
+
+    /// The registers holding values: the stack's, and a direct region's input until it
+    /// is popped (every other one is empty).
+    fn live_regs(&self) -> u16 {
+        let input = u16::from(self.mode == Mode::Direct && self.entry == 0);
+        self.stack.iter().fold(input, |m, &r| m | 1 << r)
     }
 
     /// The index of the op that put a constant in `r`, if it is in the current
@@ -833,6 +856,8 @@ impl<'a, 'c> Compiler<'a, 'c> {
             return None;
         }
         let x = self.pop(false)?;
+        // What the caller holds meanwhile, which the callee's backtracking frees too.
+        let outer = self.live_regs();
         // The callee's registers: its input (0) is `x`, the others new.
         let mut map = [NO_REG; MAX_REGS];
         map[0] = x;
@@ -847,7 +872,10 @@ impl<'a, 'c> Compiler<'a, 'c> {
                 // (The last op: what follows the call comes next.)
                 continue;
             }
-            let op = remap(op, &map, base, level, nest, mode, &mut vars0)?;
+            let op = match remap(op, &map, base, level, nest, mode, &mut vars0)? {
+                Op::Backtrack { live } => Op::Backtrack { live: live | outer },
+                op => op,
+            };
             self.ops.push(op);
         }
         self.vars0 |= vars0;
@@ -1104,7 +1132,8 @@ impl<'a, 'c> Compiler<'a, 'c> {
                 self.live = false;
             }
             BACKTRACK => {
-                self.ops.push(Op::Backtrack);
+                let live = self.live_regs();
+                self.ops.push(Op::Backtrack { live });
                 self.live = false;
             }
             ERRORK => {
@@ -1128,7 +1157,8 @@ impl<'a, 'c> Compiler<'a, 'c> {
                     let r = self.pop(false)?;
                     self.ops.push(Op::Drop { r });
                     self.release(r);
-                    self.ops.push(Op::Backtrack);
+                    let live = self.live_regs();
+                    self.ops.push(Op::Backtrack { live });
                     self.live = false;
                     return Some(());
                 }
@@ -1234,7 +1264,7 @@ fn compile(
     let may_backtrack = ops.iter().any(|op| {
         matches!(
             op,
-            Op::Backtrack | Op::Index { opt: true, .. } | Op::IndexK { opt: true, .. }
+            Op::Backtrack { .. } | Op::Index { opt: true, .. } | Op::IndexK { opt: true, .. }
         )
     });
     Some((
@@ -1462,9 +1492,16 @@ impl Jq {
         regs: &mut Regs<N>,
     ) -> bool {
         let vars = Vars::Frame(self.curr_frame);
-        if !self.exec_ops(prog, r, regs, vars) {
-            regs.clear(r);
-            return false;
+        match self.exec_ops(prog, r, regs, vars) {
+            End::Exit => {}
+            End::Clean => {
+                regs.done(r);
+                return false;
+            }
+            End::Dirty => {
+                regs.clear(r);
+                return false;
+            }
         }
         for &x in &r.exit {
             let v = regs.take(x);
@@ -1504,9 +1541,16 @@ impl Jq {
         regs: &mut Regs<N>,
     ) -> Option<Value> {
         regs.put(0, input);
-        if !self.exec_ops(prog, r, regs, Vars::Env(env)) {
-            regs.clear(r);
-            return None;
+        match self.exec_ops(prog, r, regs, Vars::Env(env)) {
+            End::Exit => {}
+            End::Clean => {
+                regs.done(r);
+                return None;
+            }
+            End::Dirty => {
+                regs.clear(r);
+                return None;
+            }
         }
         let v = regs.take(r.exit[0]);
         regs.done(r);
@@ -1527,7 +1571,7 @@ impl Jq {
         self.stk.frame(fr).locals as usize + idx as usize
     }
 
-    /// The ops of a region. `false`: backtrack.
+    /// The ops of a region, and how they ended.
     #[inline(always)]
     fn exec_ops<const N: usize>(
         &mut self,
@@ -1535,7 +1579,7 @@ impl Jq {
         r: &Region,
         regs: &mut Regs<N>,
         vars: Vars,
-    ) -> bool {
+    ) -> End {
         let base0 = match vars {
             Vars::Frame(f) if r.vars0 => self.stk.frame(f).locals as usize,
             _ => 0,
@@ -1626,7 +1670,7 @@ impl Jq {
                         Ok(v) => regs.put(dst, v),
                         Err(e) => {
                             self.set_error(e.into_value());
-                            return false;
+                            return End::Dirty;
                         }
                     }
                 }
@@ -1646,7 +1690,7 @@ impl Jq {
                         Ok(v) => regs.put(dst, v),
                         Err(e) => {
                             self.set_error(e.into_value());
-                            return false;
+                            return End::Dirty;
                         }
                     }
                 }
@@ -1681,7 +1725,7 @@ impl Jq {
                         Ok(v) => regs.put(dst, v),
                         Err(e) => {
                             self.set_error(e.into_value());
-                            return false;
+                            return End::Dirty;
                         }
                     }
                 }
@@ -1696,7 +1740,7 @@ impl Jq {
                     let kv = regs.take(k);
                     match self.region_index(tv, kv, opt, self.subexp_nest + level) {
                         Some(v) => regs.put(dst, v),
-                        None => return false,
+                        None => return End::Dirty,
                     }
                 }
                 Op::IndexK {
@@ -1711,7 +1755,7 @@ impl Jq {
                     let k = unsafe { &*k };
                     match self.region_index_k(tv, k, opt, self.subexp_nest + level) {
                         Some(v) => regs.put(dst, v),
-                        None => return false,
+                        None => return End::Dirty,
                     }
                 }
                 Op::Insert { obj, k, v } => {
@@ -1727,7 +1771,7 @@ impl Jq {
                                 dump_string_trunc(&k, 15)
                             );
                             self.set_error(Value::from(msg));
-                            return false;
+                            return End::Dirty;
                         }
                     }
                 }
@@ -1746,14 +1790,22 @@ impl Jq {
                     i = target as usize;
                     continue;
                 }
-                Op::Backtrack => return false,
+                Op::Backtrack { live } => {
+                    // (jq's unwinding frees what the stack holds.)
+                    let mut live = live;
+                    while live != 0 {
+                        discard(regs.take(live.trailing_zeros() as Reg));
+                        live &= live - 1;
+                    }
+                    return End::Clean;
+                }
                 Op::ErrorK { k } => {
                     // SAFETY: as for `Op::Const`.
                     let v = unsafe { &*k }.clone();
                     self.set_error(v);
-                    return false;
+                    return End::Dirty;
                 }
-                Op::Exit => return true,
+                Op::Exit => return End::Exit,
             }
             i += 1;
         }
