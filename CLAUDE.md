@@ -291,8 +291,9 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
 - `QJ_NO_TAPE=1` — run every program on built values: turns off the evaluation of simple
   programs (paths, `.[]`, `.a?`, `.[]?`, `length`, `keys`, `type`, `has("k")`, `map`, `add`
   of numbers, `{...}`, `def f: ...;`, `select(... == c and ...)`, `select(... > c)`,
-  `select(.a | type == "t")`, and `not` or `.a == c` as values) on simdjson's tape
-  (`src/io/tape_eval.rs`; A/B checks).
+  `select(.a | type == "t")`, `not` or `.a == c` as values, the type filters such as
+  `numbers` and `values`, `isnan`, `isnormal`) on simdjson's tape (`src/io/tape_eval.rs`;
+  A/B checks).
 - `QJ_ENGINE_STATS=1` — after a parallel run, print the engine's counters to stderr (and how
   many ranges of mapped input were released).
 - `QJ_NO_NATIVE=1` — run jq's bytecode definitions of builtin.jq functions instead of the exact

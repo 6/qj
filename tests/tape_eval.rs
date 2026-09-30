@@ -107,6 +107,8 @@ const PROGRAMS: &[&str] = &[
     ".arr[] | .a | not",
     ".arr[] | .a == 1",
     ".arr[] | select(has(\"b\") and (.b | type != \"array\"))",
+    ".[] | scalars",
+    ".a.b[]? | isnormal",
 ];
 
 const OPTIONS: &[&[&str]] = &[

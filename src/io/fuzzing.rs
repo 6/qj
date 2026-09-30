@@ -384,6 +384,19 @@ pub const TAPE_PROGRAMS: &[&str] = &[
     "map(. > 1)",
     "{x: (.a and .b), y: (.a or .b)}",
     "select(has(\"a\") and (.b | not))",
+    ".[]? | numbers",
+    ".[]? | strings",
+    ".[]? | values",
+    ".[]? | nulls",
+    ".[]? | booleans",
+    ".[]? | scalars",
+    ".[]? | iterables",
+    ".[]? | normals",
+    ".[]? | finites",
+    "map(isnan)",
+    ".[]? | isinfinite",
+    ".[]? | isnormal",
+    ".[]? | isfinite",
 ];
 
 /// The tape evaluator (`super::tape_eval`) against the VM: `data[0]` picks

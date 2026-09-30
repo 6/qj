@@ -8,10 +8,12 @@
 //! truthiness or its comparison with a constant (`select(.type ==
 //! "PushEvent")`, `select(.n > 0)`, `select(.a | type == "object")`),
 //! combined with `and`, `or` and `not`, such conditions as values
-//! (`map(.a == 1)`, `not`), and of definitions without parameters of such
-//! programs (inlined where they're called, as jq resolves the calls), has
-//! outputs that are fully determined by its input, and can be computed on
-//! the tape ([`super::tape`]). Those outputs are what the jq VM would produce
+//! (`map(.a == 1)`, `not`), builtin.jq's type filters (`numbers`, `strings`,
+//! `values`, `scalars`, ...), `isnan`, `isinfinite`, `isnormal` and
+//! `isfinite`, and of definitions without parameters of such programs
+//! (inlined where they're called, as jq resolves the calls), has outputs
+//! that are fully determined by its input, and can be computed on the tape
+//! ([`super::tape`]). Those outputs are what the jq VM would produce
 //! on the value the builder makes of the input: every step follows the
 //! builtin or opcode it stands for (`jv_get` on objects, `EACH`,
 //! `INDEX_OPT`, `EACH_OPT`, `f_length`, `f_keys`, `f_type`, `jv_has`,
@@ -88,6 +90,11 @@ enum Expr {
     /// false else true end`), and comparisons with a constant, `and` and
     /// `or` outside `select` (`gen_and`, `gen_or`: `true` or `false`).
     Bool(Cond),
+    /// `isnan`, `isinfinite`, `isnormal` (`f_isnan` and the others: the
+    /// test on a number's `jv_number_value`, `false` for anything else)
+    /// and builtin.jq's `def isfinite: type == "number" and (isinfinite |
+    /// not);`.
+    NumberIs(fn(f64) -> bool),
 }
 
 /// A condition of `select`.
@@ -103,6 +110,9 @@ enum Cond {
     Not(Box<Cond>),
     /// `x | C` for a single-valued `x`: `C` on its output.
     Pipe(Box<Expr>, Box<Cond>),
+    /// Whether the value's kind is in a set ([`kind_bit`]s): the conditions
+    /// of builtin.jq's type filters ([`type_filter`]).
+    Kinds(u8),
 }
 
 #[derive(Debug)]
@@ -291,6 +301,23 @@ fn convert<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> O
                 Box::new(Expr::Identity),
                 Test::Truthy,
             )))),
+            ("isnan", []) => Expr::NumberIs(f64::is_nan),
+            ("isinfinite", []) => Expr::NumberIs(f64::is_infinite),
+            ("isnormal", []) => Expr::NumberIs(f64::is_normal),
+            ("isfinite", []) => Expr::NumberIs(is_finite),
+            (name, []) if type_filter(name).is_some() => {
+                Expr::Select(Cond::Kinds(type_filter(name)?))
+            }
+            // builtin.jq: `def normals: select(isnormal);`, `def finites:
+            // select(isfinite);`.
+            ("normals", []) => Expr::Select(Cond::Test(
+                Box::new(Expr::NumberIs(f64::is_normal)),
+                Test::Truthy,
+            )),
+            ("finites", []) => Expr::Select(Cond::Test(
+                Box::new(Expr::NumberIs(is_finite)),
+                Test::Truthy,
+            )),
             _ => return None,
         },
         // A comparison with a constant, `and`, `or`: the condition as a
@@ -473,7 +500,8 @@ fn single(e: &Expr) -> bool {
         | Expr::Add(_)
         | Expr::Type
         | Expr::Has(_)
-        | Expr::Bool(_) => true,
+        | Expr::Bool(_)
+        | Expr::NumberIs(_) => true,
         Expr::Index(t, _) => single(t),
         Expr::Pipe(a, b) => single(a) && single(b),
         Expr::Object(entries) => entries.iter().all(|(_, e)| single(e)),
@@ -520,7 +548,7 @@ fn const_string_lit(s: &ast::StringLit) -> Option<String> {
 
 /// jq's order of kinds (`jv_kind`'s): null < false < true < numbers <
 /// strings < arrays < objects.
-fn kind_rank(kind: Kind) -> u8 {
+const fn kind_rank(kind: Kind) -> u8 {
     match kind {
         Kind::Null => 0,
         Kind::False => 1,
@@ -530,6 +558,44 @@ fn kind_rank(kind: Kind) -> u8 {
         Kind::Array => 5,
         Kind::Object => 6,
     }
+}
+
+/// A kind's bit in a set of kinds ([`Cond::Kinds`]).
+const fn kind_bit(kind: Kind) -> u8 {
+    1 << kind_rank(kind)
+}
+
+/// Every kind.
+const ALL_KINDS: u8 = (1 << 7) - 1;
+
+/// builtin.jq's type filters that test only the kind, as the set of kinds
+/// they keep: `def numbers: select(type == "number");`, `def iterables:
+/// select(type|. == "array" or . == "object");`, `def scalars:
+/// select(type|. != "array" and . != "object");`, `def nulls: select(. ==
+/// null);` (only `null` equals `null`), `def values: select(. != null);`,
+/// and the others.
+fn type_filter(name: &str) -> Option<u8> {
+    let array = kind_bit(Kind::Array);
+    let object = kind_bit(Kind::Object);
+    let null = kind_bit(Kind::Null);
+    Some(match name {
+        "arrays" => array,
+        "objects" => object,
+        "iterables" => array | object,
+        "booleans" => kind_bit(Kind::False) | kind_bit(Kind::True),
+        "numbers" => kind_bit(Kind::Number),
+        "strings" => kind_bit(Kind::String),
+        "nulls" => null,
+        "values" => ALL_KINDS & !null,
+        "scalars" => ALL_KINDS & !(array | object),
+        _ => return None,
+    })
+}
+
+/// builtin.jq's `isfinite` on a number's value: `isinfinite | not`, which
+/// holds for NaN.
+fn is_finite(x: f64) -> bool {
+    !x.is_infinite()
 }
 
 /// `jv_kind_name`, which `f_type` returns.
@@ -692,6 +758,7 @@ impl Eval<'_, '_> {
                 let holds = self.cond(c, &input)?;
                 emit(TVal::Bool(holds))
             }
+            Expr::NumberIs(test) => emit(TVal::Bool(self.number_is(&input, *test))),
         }
     }
 
@@ -720,6 +787,17 @@ impl Eval<'_, '_> {
             TVal::Null => Ok(false),
             TVal::Object(entries) => Ok(entries.iter().any(|(k, _)| *k == key)),
             TVal::Number(_) | TVal::Str(_) | TVal::Bool(_) | TVal::Array(_) => Err(Decline),
+        }
+    }
+
+    /// `f_isnan` and the other number predicates: `test` on a number's
+    /// `jv_number_value` (for the document's numbers, the double its
+    /// literal converts to), `false` for anything else.
+    fn number_is(&self, v: &TVal<'_>, test: fn(f64) -> bool) -> bool {
+        match v {
+            TVal::Node(n) if self.doc.kind(*n) == Kind::Number => test(self.doc.number(*n).value()),
+            TVal::Number(x) => test(x.value()),
+            _ => false,
         }
     }
 
@@ -907,6 +985,7 @@ impl Eval<'_, '_> {
                 let v = self.single(x, input.clone())?;
                 self.cond(c, &v)?
             }
+            Cond::Kinds(set) => set & kind_bit(self.kind(input)) != 0,
         })
     }
 

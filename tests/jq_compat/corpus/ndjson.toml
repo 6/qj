@@ -130,6 +130,8 @@ programs = [
   '{t: (.type | type), h: has("a")}',
   '.type == "PushEvent"',
   ".type | not",
+  ".[] | scalars",
+  ".n | isnormal",
 ]
 
 [[sweep]]
@@ -202,4 +204,8 @@ programs = [
   ".type | length",
   "tojson",
   "map(type)",
+  ".n | isnan",
+  ".n | isinfinite",
+  "select(.n | isnan | not)",
+  ".[] | numbers",
 ]

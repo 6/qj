@@ -3,8 +3,10 @@
 # `keys_unsorted`, `type`, `has("k")`, `add`, `[...]`, `map`, `{...}` with
 # constant keys, `select` on truthiness or comparison with a constant (with
 # and, or, not, and `x | cond`), such conditions as values (`not`,
-# `.a == 1`), `.a?`, `.[]?`, and definitions without parameters (inlined,
-# shadowing builtins as in jq). Their output
+# `.a == 1`), the type filters (`numbers`, `values`, `scalars`, ...),
+# `isnan`, `isinfinite`, `isnormal`, `isfinite`, `.a?`, `.[]?`, and
+# definitions without parameters (inlined, shadowing builtins as in jq).
+# Their output
 # must be jq's for every output option (the tape printer re-implements jq's
 # layout), on single documents and on NDJSON (the parallel engine's workers
 # and the calling thread run them), and when an input declines the shortcut
@@ -143,6 +145,23 @@ programs = [
   ".arr[] | (.a and .b)",
   ".arr[] | (.a or .b)",
   '.arr[] | select(has("b") and (.b | type != "object"))',
+  ".[] | numbers",
+  ".[] | strings",
+  ".[] | values",
+  ".[] | nulls",
+  ".[] | booleans",
+  ".[] | arrays",
+  ".[] | objects",
+  ".[] | iterables",
+  ".[] | scalars",
+  ".a.b[] | normals",
+  ".a.b[] | finites",
+  ".a.b[] | isnan",
+  ".a.b[] | isinfinite",
+  ".a.b[] | isnormal",
+  ".a.b[] | isfinite",
+  "[.a.b[] | isnormal]",
+  "def numbers: .k1; numbers",
 ]
 
 [[sweep]]
@@ -201,6 +220,10 @@ programs = [
   "map(not)",
   ".a == 1",
   'select(has("b"))',
+  ".[] | numbers",
+  ".[] | values",
+  ".[]? | scalars",
+  ".[]? | isnormal",
 ]
 
 [[sweep]]
@@ -212,7 +235,7 @@ programs = [".", ".a", ".[]", "length", "keys", "{a, b}", "select(.a == 1)"]
 
 [[sweep]]
 name = "tape-types"
-note = "type, has, not and conditions as values on documents of every kind, some of which take jq's parser (NaN, infinities, numbers simdjson rejects)"
+note = "type, has, not, conditions as values, the type filters and the number predicates on documents of every kind, some of which take jq's parser (NaN, infinities, numbers simdjson rejects)"
 files = { "tape_types.json" = { path = "data/tape_types.json" } }
 variants = { c = ["-c", "{program}", "tape_types.json"], pretty = ["{program}", "tape_types.json"], raw = ["-r", "{program}", "tape_types.json"], join = ["-j", "{program}", "tape_types.json"], ascii = ["-ac", "{program}", "tape_types.json"], asciiraw = ["-ar", "{program}", "tape_types.json"], sorted = ["-S", "{program}", "tape_types.json"], tab = ["--tab", "{program}", "tape_types.json"], exit = ["-e", "-c", "{program}", "tape_types.json"], color = ["-C", "-c", "{program}", "tape_types.json"], seq = ["--seq", "-c", "{program}", "tape_types.json"], twice = ["-c", "{program}", "tape_types.json", "tape_types.json"] }
 programs = [
@@ -252,6 +275,24 @@ programs = [
   ".t or .f",
   "{eq: (.a == 1), ne: (.a != 1), lt: (.a < 2), gt: (.a > \"x\")}",
   '.[]? | select(has("a")) | debug',
+  ".[]? | numbers",
+  ".[]? | strings",
+  ".[]? | booleans",
+  ".[]? | nulls",
+  ".[]? | values",
+  ".[]? | scalars",
+  ".[]? | iterables",
+  ".[]? | arrays",
+  ".[]? | objects",
+  ".mix[] | scalars",
+  ".b[]? | normals",
+  ".b[]? | finites",
+  "[.b[]? | isnan]",
+  "[.b[]? | isinfinite]",
+  "[.b[]? | isnormal]",
+  "[.b[]? | isfinite]",
+  ".[]? | isnan",
+  ".[]? | select(isnan | not)",
 ]
 
 [[sweep]]
@@ -259,7 +300,7 @@ name = "tape-types-stdin"
 note = "The same through stdin"
 stdin = { path = "data/tape_types.json" }
 variants = { c = ["-c", "{program}"], raw = ["-r", "{program}"] }
-programs = ["type", "map(type)", 'select(.a | type == "number")', 'has("a")', "map(not)"]
+programs = ["type", "map(type)", 'select(.a | type == "number")', 'has("a")', "map(not)", ".[]? | scalars", ".[]? | isnan"]
 
 [[sweep]]
 name = "tape-types-compat"
@@ -267,14 +308,14 @@ note = "QJ_JQ_COMPAT=1 (exactly jq) with programs the tape evaluates"
 env = { QJ_JQ_COMPAT = "1" }
 files = { "tape_types.json" = { path = "data/tape_types.json" } }
 variants = { c = ["-c", "{program}", "tape_types.json"], raw = ["-r", "{program}", "tape_types.json"], exit = ["-e", "-c", "{program}", "tape_types.json"] }
-programs = ["type", "map(type)", 'select(type == "object") | .a', 'has("a")', "map(. == 1)"]
+programs = ["type", "map(type)", 'select(type == "object") | .a', 'has("a")', "map(. == 1)", ".[]? | values", ".b[]? | isnormal"]
 
 [[sweep]]
 name = "tape-types-trace"
 note = "--debug-trace (which prints every value's refcount) turns the tape off"
 stdin = '{"a":1,"b":[null,"x"]} [true] "s"'
 variants = { trace = ["-c", "--debug-trace", "{program}"], all = ["-c", "--debug-trace=all", "{program}"] }
-programs = ["type", "map(type)", 'has("a")', "not", ".a == 1"]
+programs = ["type", "map(type)", 'has("a")', "not", ".a == 1", ".[]? | scalars", ".[]? | isnan"]
 
 [[case]]
 name = "tape-deep"
