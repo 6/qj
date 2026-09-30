@@ -2,20 +2,20 @@
 
 `qj` is a fast, [`jq`](https://github.com/jqlang/jq)-compatible JSON processor powered by [simdjson](https://github.com/simdjson/simdjson).
 
-Benchmarked on M4 MacBook Pro:
+Benchmarked on M5 Max MacBook Pro:
 
-- **NDJSON (3.4GB):** `qj -c 'select(.type=="PushEvent")'` is 190ms vs `jq` 36.4s (**191x faster**)
-- **JSON (49MB):** `qj -c '.statuses | map({user, text})'` is 58ms vs `jq` 695ms (**12x faster**)
+- **NDJSON (3.4GB):** `qj -c 'select(.type=="PushEvent")'` is 163ms vs `jq` 32.2s (**198x faster**)
+- **JSON (49MB):** `qj -c '.statuses | map({user, text})'` is 35ms vs `jq` 646ms (**18x faster**)
 
 ## qj vs jq
 
 **Drop-in replacement.** qj is a port of jq 1.8.1 itself, so output, errors and exit codes match jq byte for byte: 100% feature coverage (181/181) and 100% pass rate on all of jq's official test suites. All filters, builtins, and flags. ([details](docs/COMPATIBILITY.md))
 
-**NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and direct evaluation of simple filters on simdjson's tape. It's often **~60–190x** faster than jq for common streaming filters, and **~25–30x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
+**NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and direct evaluation of simple filters on simdjson's tape. It's often **~95–200x** faster than jq for common streaming filters, and **~60–170x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
-**Large JSON files.** qj is 2-12x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~2x faster.
+**Large JSON files.** qj is 5-18x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~5x faster.
 
-**Memory usage.** qj trades memory for speed, using a ~90–340 MB sliding window for a 3.3 GB file vs jq's ~6 MB.
+**Memory usage.** qj trades memory for speed, using a ~80–410 MB sliding window for a 3.4 GB file vs jq's ~6 MB.
 
 ## Quick start
 
@@ -43,24 +43,24 @@ qj 'select(.type == "PushEvent")' 'data/*.ndjson.gz'
 
 ## Benchmarks
 
-Benchmarked on M4 MacBook Pro with [hyperfine](https://github.com/sharkdp/hyperfine) and compared against jq as well as two popular reimplementations ([jaq](https://github.com/01mf02/jaq) & [gojq](https://github.com/itchyny/gojq)).
+Benchmarked on M5 Max MacBook Pro with [hyperfine](https://github.com/sharkdp/hyperfine) and compared against jq as well as two popular reimplementations ([jaq](https://github.com/01mf02/jaq) & [gojq](https://github.com/itchyny/gojq)).
 
 **NDJSON** (3.4 GB GitHub Archive, 1.2M records):
 
 | Workload | qj (parallel) | qj (1 thread) | jq | jaq | gojq |
 |----------|---:|---------------:|---:|----:|----:|
-| `.actor.login` | **196 ms** | 1.02 s | 21.7 s | 8.2 s | 20.3 s |
-| `select(.type == "PushEvent")` | **190 ms** | 1.03 s | 36.4 s | 10.4 s | 22.8 s |
-| `{type,repo:.repo.name,actor:.actor.login}` | **332 ms** | 2.26 s | 23.4 s | 9.5 s | 20.7 s |
+| `.actor.login` | **144 ms** | 1.32 s | 18.0 s | 6.7 s | 17.2 s |
+| `select(.type == "PushEvent")` | **163 ms** | 1.68 s | 32.2 s | 8.7 s | 19.4 s |
+| `{type,repo:.repo.name,actor:.actor.login}` | **152 ms** | 1.46 s | 19.8 s | 7.8 s | 18.1 s |
 
 **Where the gap narrows:**
 
 | Scenario | vs jq | Why? | Faster alternative |
 |----------|------:|-----|-----|
-| Stdin (`cat file \| qj`) | ~9-17x | No mmap | Pass filename directly (~10x faster than stdin) |
-| Slurp mode (`-s`) | ~2-3x | No parallelism | Prefer Unix pipelines (~4x faster), e.g. `qj '.field' \| sort \| uniq -c` |
+| Stdin (`cat file \| qj`) | ~15-29x | No mmap | Pass filename directly (~6x faster than stdin) |
+| Slurp mode (`-s`) | ~5-6x | No parallelism | Prefer Unix pipelines (~5x faster), e.g. `qj '.field' \| sort \| uniq -c` |
 
-On single JSON files (49 MB) with no parallelism, qj is 2-25x faster than jq, 1-6x faster than jaq, and 2-10x faster than gojq. See [benches/](benches/) for full results.
+On single JSON files (49 MB) with no parallelism, qj is 5-28x faster than jq, 2-16x faster than jaq, and 4-12x faster than gojq. See [benches/](benches/) for full results.
 
 ## How it works
 
