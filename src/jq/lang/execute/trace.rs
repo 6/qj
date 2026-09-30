@@ -119,6 +119,13 @@ impl Jq {
                 dump_term(self.stk.value(param), true, 0, &mut out);
             }
             if self.debug_trace & JQ_DEBUG_TRACE_DETAIL != 0 {
+                // jq reads `*stack_block_next(&jq->stk, 0)` here when the data
+                // stack is empty (or shallower than the instruction's inputs):
+                // the last 4 bytes of its stack memory, which it never writes.
+                // On macOS they are 0 and the loop stops; with glibc's malloc
+                // they are leftovers, and jq dumps garbage or crashes (`[.[] |
+                // . * 2]` dies of SIGSEGV at its BACKTRACK). This stops, as on
+                // macOS.
                 loop {
                     param = self.next_or_zero(param);
                     if param == 0 {

@@ -628,8 +628,25 @@ fn traces_match_jq() {
     ] {
         check_trace(program, input, JQ_DEBUG_TRACE);
     }
-    check_trace("[.[] | . * 2]", "[1,2]", JQ_DEBUG_TRACE_ALL);
-    check_trace("reduce .[] as $x (0; . + $x)", "[1,2]", JQ_DEBUG_TRACE_ALL);
+    // `--debug-trace=all` prints the whole stack under each instruction.
+    for (program, input) in [
+        (".[] | . + 1", "[1,2]"),
+        ("try (1, error(\"x\"), 3) catch .", "null"),
+        ("{a: 1, b: .[]}", "[1,2]"),
+        ("def f: if . < 5 then . + 1 | f else . end; f", "0"),
+        ("path(.a | . + 1)", "{\"a\":1}"),
+    ] {
+        check_trace(program, input, JQ_DEBUG_TRACE_ALL);
+    }
+    // These also trace instructions that run with an empty data stack (the
+    // BACKTRACK after an APPEND or a STOREV), where jq reads 4 bytes it never
+    // wrote (see `trace_instruction`): 0 on macOS, so it prints no more, while
+    // with glibc they're leftover heap data and jq dies of SIGSEGV.
+    #[cfg(target_vendor = "apple")]
+    {
+        check_trace("[.[] | . * 2]", "[1,2]", JQ_DEBUG_TRACE_ALL);
+        check_trace("reduce .[] as $x (0; . + $x)", "[1,2]", JQ_DEBUG_TRACE_ALL);
+    }
 }
 
 // ---- performance ------------------------------------------------------------------
