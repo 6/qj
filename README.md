@@ -78,7 +78,7 @@ See [compatibility details](docs/COMPATIBILITY.md) for the full feature matrix, 
 
 Limitations vs jq:
 
-- Help and version text, and the program name in messages (`qj: error: ...`), are qj's own. Where jq crashes or hangs, qj returns a sane answer; set `QJ_JQ_COMPAT=1` to reproduce jq exactly, bugs included, and to turn off qj's extras (glob expansion, decompression, `--threads`).
+- Help and version text, and the program name in messages (`qj: error: ...`), are qj's own by default. Where jq crashes or hangs, qj returns a sane answer; set `QJ_JQ_COMPAT=1` to reproduce jq exactly, bugs included — including its name, help and version text — and to turn off qj's extras (glob expansion, decompression, `--threads`).
 - Single-document JSON >4 GB falls back to qj's port of jq's own parser (simdjson's limit). Same result, but slower than simdjson's fast path. **NDJSON (JSONL) is unaffected** since each line is parsed independently.
 
 ## Credits / Inspiration
