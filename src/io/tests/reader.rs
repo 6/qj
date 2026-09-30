@@ -20,8 +20,9 @@ fn field_bytes(c: &J, key: &str) -> Vec<u8> {
     panic!("case has no {key}: {c}")
 }
 
-const DELIVERIES: [Delivery; 5] = [
+const DELIVERIES: [Delivery; 6] = [
     Delivery::Whole,
+    Delivery::Bytes,
     Delivery::Stream { seed: 1, max: 1 },
     Delivery::Stream { seed: 2, max: 7 },
     Delivery::Stream { seed: 3, max: 100 },

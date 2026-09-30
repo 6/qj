@@ -54,7 +54,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::reader::{
-    CatchUp, Cut, InputReader, Record, TapeSink, window_line_number, window_line_record,
+    CatchUp, Cut, InputReader, Pin, Record, TapeSink, window_line_number, window_line_record,
 };
 use super::simd::SimdParser;
 use super::source::SharedBytes;
@@ -346,6 +346,8 @@ pub struct EngineStats {
 
 struct Job {
     id: u64,
+    /// The input: only `[start, end)` and the padding after it may be read
+    /// (see [`super::reader::Window`]).
     data: SharedBytes,
     base: usize,
     start: usize,
@@ -354,6 +356,9 @@ struct Job {
     line_start: usize,
     raw: bool,
     filename: Option<Arc<str>>,
+    /// Keeps the input from being released from `start` on while phase 1
+    /// reads it.
+    pin: Option<Pin>,
 }
 
 /// Where a record of a job ends in the job's buffers (see
@@ -576,7 +581,7 @@ fn worker_thread<F: WorkerFactory>(
             Ok(rx) => rx.recv(),
             Err(_) => return,
         };
-        let Ok(job) = job else { return };
+        let Ok(mut job) = job else { return };
         if board.closed() {
             continue;
         }
@@ -586,6 +591,9 @@ fn worker_thread<F: WorkerFactory>(
         let parsed = panic::catch_unwind(AssertUnwindSafe(|| {
             parse_job(&mut simd, &job, tape.as_deref_mut())
         }));
+        // Nothing reads the job's bytes after phase 1 (its values own
+        // theirs): the reader may release them.
+        job.pin = None;
         let parsed = match parsed {
             Ok(p) => p,
             Err(payload) => {
@@ -741,7 +749,10 @@ fn parse_job<'t>(
     job: &Job,
     mut tape: Option<&mut (dyn RecordTape + 't)>,
 ) -> ParsedJob {
-    let buf = job.data.padded();
+    // The job's bytes (and the padding after them): offset `a` is at
+    // `buf[a - base]`.
+    let base = job.start;
+    let buf = job.data.padded_from(job.start - job.base);
     let mut p = ParsedJob {
         items: Vec::new(),
         failed_at: None,
@@ -755,8 +766,7 @@ fn parse_job<'t>(
     let mut ls = job.line_start;
     while a < job.end {
         let b = a
-            + memchr::memchr(b'\n', &buf[a - job.base..job.end - job.base])
-                .expect("jobs end at a newline")
+            + memchr::memchr(b'\n', &buf[a - base..job.end - base]).expect("jobs end at a newline")
             + 1;
         let line = match &mut tape {
             Some(t) => {
@@ -765,9 +775,9 @@ fn parse_job<'t>(
                     out: &mut p.out,
                     marks: &mut p.marks,
                 };
-                window_line_record(simd, buf, job.base, a, b, job.raw, Some(&mut sink))
+                window_line_record(simd, buf, base, a, b, job.raw, Some(&mut sink))
             }
-            None => window_line_record(simd, buf, job.base, a, b, job.raw, None),
+            None => window_line_record(simd, buf, base, a, b, job.raw, None),
         };
         match line {
             Ok(None) => {}
@@ -1124,6 +1134,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 line_start: w.line_start,
                 raw: w.raw,
                 filename: self.reader.filename_text().map(Arc::from),
+                pin: w.pin,
             };
             if self.job_tx.send(job).is_err() {
                 panic!("worker threads exited");

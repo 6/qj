@@ -138,7 +138,7 @@ fn run_case(seed: u64, stats: &mut ReaderStats) -> Result<(), String> {
             seed: rng.next(),
             max: 1 + rng.below(5000),
         },
-        _ => Delivery::Whole,
+        _ => Delivery::Bytes,
     };
     for fast in [true, false] {
         let (mut r, msgs) = mem_reader(&names, files.clone(), opts, delivery, fast);
