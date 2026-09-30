@@ -1,0 +1,93 @@
+# Locales (format: tests/jq_diff/cli.rs). jq's main() calls
+# setlocale(LC_ALL, ""), so what the C library does for jq follows the
+# environment:
+#
+# - dates (strftime, strptime; LC_TIME), on macOS only: jq's Linux release
+#   binary links glibc statically, and there LC_TIME stays C;
+# - the text of errno messages (strerror) and of assert() failures, which
+#   glibc translates for LC_MESSAGES when the language's messages are installed
+#   (Apple's libc doesn't translate them);
+# - which bytes are letters (LC_CTYPE), which decides whether `-é` looks like
+#   an option (in UTF-8 locales on macOS, and in Latin-1 ones).
+#
+# A locale that isn't installed leaves jq in the C locale, and qj too. CI
+# installs German messages and a Latin-1 French locale on Linux.
+
+[[sweep]]
+name = "locale-de-dates"
+env = { LC_ALL = "de_DE.UTF-8" }
+variants = { n = ["-nc", "{program}"] }
+programs = [
+  '0 | strftime("%c | %x | %X | %r | %p | %A %B %a %b")',
+  '0 | strflocaltime("%c %Z | %x %X")',
+  '1425599507 | strftime("%A, %d. %B %Y")',
+  '"Donnerstag 1970" | strptime("%A %Y")',
+  '"Thursday 1970" | strptime("%A %Y")',
+  '"5. März 2015" | strptime("%d. %B %Y") | mktime',
+  '1425599507 | todate, (todate | fromdate)',
+]
+
+[[sweep]]
+name = "locale-en-dates"
+env = { LC_ALL = "en_US.UTF-8" }
+variants = { n = ["-nc", "{program}"] }
+programs = [
+  '0 | strftime("%c | %x | %X | %r | %p | %A %B %a %b")',
+  '0 | strflocaltime("%c %Z | %x %X")',
+  '"Thursday 1970" | strptime("%A %Y")',
+  '"Thu Jan  1 00:00:00 1970" | strptime("%c")',
+]
+
+# Latin-1 output isn't UTF-8: jq's strings repair it (U+FFFD).
+[[sweep]]
+name = "locale-fr-latin1-dates"
+env = { LC_ALL = "fr_FR.ISO-8859-1" }
+variants = { n = ["-nc", "{program}"] }
+programs = [
+  '86400 * 31 * 7 | strftime("%A %B")',
+  '0 | strftime("%c")',
+]
+
+[[sweep]]
+name = "locale-missing-dates"
+env = { LC_ALL = "xx_XX.UTF-8" }
+variants = { n = ["-nc", "{program}"] }
+programs = ['0 | strftime("%c | %x | %A %B")']
+
+# strerror in the environment's locale, from each place jq prints it: util.c's
+# "Could not open file" and read error, jv_load_file (--rawfile, --slurpfile,
+# -f).
+[[sweep]]
+name = "locale-de-errors"
+env = { LC_ALL = "de_DE.UTF-8" }
+files = { "dir/x" = "1" }
+variants = { input = ["-c", ".", "{program}"], rawfile = ["-n", "--rawfile", "x", "{program}", "1"], slurpfile = ["-n", "--slurpfile", "x", "{program}", "1"], from_file = ["-f", "{program}", "-n"] }
+programs = ["missing.json", "dir"]
+
+[[sweep]]
+name = "locale-fr-latin1-errors"
+env = { LC_ALL = "fr_FR.ISO-8859-1" }
+files = { "dir/x" = "1" }
+variants = { input = ["-c", ".", "{program}"], rawfile = ["-n", "--rawfile", "x", "{program}", "1"] }
+programs = ["missing.json", "dir"]
+
+[[sweep]]
+name = "locale-en-errors"
+env = { LC_ALL = "en_US.UTF-8" }
+files = { "dir/x" = "1" }
+variants = { input = ["-c", ".", "{program}"], rawfile = ["-n", "--rawfile", "x", "{program}", "1"] }
+programs = ["missing.json", "dir"]
+
+# jq's aborts (assert() failures), whose message glibc translates too.
+[[sweep]]
+name = "locale-de-abort"
+env = { LC_ALL = "de_DE.UTF-8" }
+variants = { n = ["-n", "{program}"] }
+programs = ['1 | _strindices("a")', '"x", (1e30 | strflocaltime("%c"))']
+
+# LC_CTYPE: is `é` a letter?
+[[sweep]]
+name = "locale-option-bytes"
+variants = { de = ["-n", "{program}", "1"] }
+env = { LC_ALL = "de_DE.UTF-8" }
+programs = ["-é", "-ä1"]
