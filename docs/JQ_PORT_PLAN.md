@@ -306,6 +306,18 @@ interface scaffold before spawning it.
   (`jv_dels`' double free, `--debug-trace=all` of an empty stack on glibc). Nor is
   `jv_equal`'s stack overflow in compat mode. qj's deliberate crashes don't dump core on
   Linux.
+- 2026-09-30: **CR merged** (`bd4aebc`). CR audited every recursive function in jq 1.8.1's
+  sources. `QJ_JQ_COMPAT=1` now reproduces jq's stack overflow in the five that deep values or
+  long paths can drive past the C stack: `jv_equal`/`jv_cmp`, `jv_contains`, object `*`,
+  `jv_setpath` and `delpaths_sorted`. Each has a model per OS, bisected against the jq
+  binary, and follows jq's traversal order. **MC merged** (`a1d968e`). The linker now runs as a
+  loop in jq's exact order, so long module chains no longer crash qj. It used to die at 7,679
+  chained modules, where jq answers up to 20,096. Compat mode reproduces jq's crash on such
+  chains with an exact model. jq_diff: **39,192/39,203 strict on both macOS and Linux**. The
+  rest are the 7 exempt help/version cases and 4 where both tools hang. Not reproduced, as
+  documented in `docs/COMPATIBILITY.md`: crashes decided by jq's heap layout, jq's
+  compiler overflowing on deeply nested programs below a 2 MB stack (the cost per level
+  depends on the syntax), and the core dump on Linux.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
