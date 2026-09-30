@@ -121,15 +121,44 @@ fn stack_limit_bytes() -> Option<u64> {
 
 /// Bytes of stack one `jv_free` frame uses on the way down a nested value
 /// (measured on macOS/arm64, see [`free_frame_budget`]).
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const FREE_FRAME_BYTES: u64 = 64;
 
 /// Bytes of the stack already in use when jq starts freeing a value, plus
 /// the guard page it cannot touch (measured, see [`free_frame_budget`]).
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const FREE_RESERVED_BYTES: u64 = 9664;
+
+/// On Linux/x86-64 (jq's release binary, built by gcc): 48 bytes a frame.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const FREE_FRAME_BYTES: u64 = 48;
+
+/// On Linux/x86-64: what the start of the stack takes, plus the most the
+/// kernel's randomization of the initial stack pointer can take (see
+/// [`free_frame_budget`]).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const FREE_RESERVED_BYTES: u64 = 10240;
 
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is
 /// the value's nesting depth plus one for the scalar at the bottom.
+///
+/// On Linux/x86-64, jq's release binary uses 48 bytes a frame, and the
+/// kernel starts the main thread's stack up to 8 KB below its top at random
+/// (`arch_align_stack`), so the deepest value jq survives changes from run
+/// to run, over about 170 levels. Measured 8 times per depth with
+/// `reduce range($n) as $i (null; [.]) | length`, in jq_diff's environment:
+///
+/// | `ulimit -s` | jq survives every run to | and no run from | this model |
+/// |---|---:|---:|---:|
+/// | 1024 KB | 21,650 | 21,810 | 21,631 |
+/// | 4096 KB | 87,170 | 87,330 | 87,167 |
+/// | 8192 KB (the usual default) | 174,575 | 174,725 | 174,548 |
+/// | 16384 KB (GitHub's runners) | 349,300 | 349,500 | 349,311 |
+///
+/// `(stack_bytes - 10240) / 48` takes the whole 8 KB, so, as on macOS, qj
+/// never survives where jq dies; in the window, it dies where jq only
+/// sometimes does. Other Linux targets use the macOS model, unmeasured.
 ///
 /// Bisected against jq 1.8.1 on macOS/arm64 with
 /// `reduce range($n) as $i (null; [.]) | length`, whose value needs `n + 1`
@@ -177,7 +206,15 @@ pub fn free_frame_budget() -> Option<u64> {
 /// without restructuring the comparison itself. Programs that make jq
 /// overflow while comparing still crash qj when the values are freed, but
 /// only past [`free_frame_budget`]. See `docs/COMPATIBILITY.md`.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub const COMPARE_MODEL: (u64, u64) = (128, 9856);
+
+/// On Linux/x86-64, `jv_equal` uses 144 bytes a frame: one bisection per
+/// limit found 7,249 at 1024 KB, 29,082 at 4096 KB, 58,210 at 8192 KB and
+/// 116,449 at 16384 KB, each somewhere in a window of about 60 levels that
+/// the randomized start of the stack moves it in (see [`free_frame_budget`]).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const COMPARE_MODEL: (u64, u64) = (144, 10240);
 
 /// The nesting depth of the deepest value in `items`, counted as jq counts
 /// `jv_free` frames: one for the value itself, plus the deepest child.
@@ -242,6 +279,7 @@ mod tests {
     /// `budget - 1`: exact at the default stack limit, one short at the
     /// others.
     #[test]
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     fn stack_models_match_the_measurements() {
         let free = |kb: u64| (kb * 1024 - FREE_RESERVED_BYTES) / FREE_FRAME_BYTES - 1;
         assert_eq!(free(8176), 130_664); // jq: 130,664
@@ -253,6 +291,41 @@ mod tests {
         assert_eq!(cmp(8176), 65_330); // jq: 65,330
         assert_eq!(cmp(1024), 8_114); // jq: 8,115
         assert_eq!(cmp(4096), 32_690); // jq: 32,691
+    }
+
+    /// On Linux/x86-64 jq's threshold moves between runs (see
+    /// [`free_frame_budget`]): the model stays at or below the depth every
+    /// measured run survived, by less than the width of the window.
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn stack_models_match_the_measurements() {
+        let free = |kb: u64| (kb * 1024 - FREE_RESERVED_BYTES) / FREE_FRAME_BYTES - 1;
+        // (ulimit -s, jq survived every run to, and no run from)
+        for (kb, always, never) in [
+            (1024, 21_650, 21_810),
+            (4096, 87_170, 87_330),
+            (8192, 174_575, 174_725),
+            (16384, 349_300, 349_500),
+        ] {
+            let deepest = free(kb);
+            assert!(deepest <= always + 25, "{kb} KB: {deepest} vs {always}");
+            assert!(never - deepest <= 200, "{kb} KB: {deepest} vs {never}");
+        }
+        let (frame, reserved) = COMPARE_MODEL;
+        let cmp = |kb: u64| (kb * 1024 - reserved) / frame - 1;
+        // One run each, somewhere in a window of about 60 levels.
+        for (kb, jq) in [
+            (1024, 7_249),
+            (4096, 29_082),
+            (8192, 58_210),
+            (16384, 116_449),
+        ] {
+            assert!(
+                cmp(kb) <= jq && jq - cmp(kb) <= 60,
+                "{kb} KB: {} vs {jq}",
+                cmp(kb)
+            );
+        }
     }
 
     /// The frame count is jq's `jv_free` recursion depth, and the walk is
