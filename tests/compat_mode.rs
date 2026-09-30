@@ -815,7 +815,16 @@ fn a_syntax_error_after_deep_nesting_crashes_where_jqs_actions_do() {
 /// its own; in compat mode it dies at jq's depth instead.
 #[test]
 fn printing_a_deep_value_crashes_where_jqs_printer_does() {
-    for stack_kb in [48, 64] {
+    // At these stacks qj's own frames count too, and an unoptimized build's are
+    // several times an optimized one's, so it overflows before the model's
+    // threshold; only an optimized build shows where the model puts it (CI
+    // runs the suite with --release).
+    let stacks: &[u64] = if cfg!(debug_assertions) {
+        &[]
+    } else {
+        &[48, 64]
+    };
+    for &stack_kb in stacks {
         // `reduce range(n) as $i (0;[.])` nests n arrays around a 0, which
         // takes n + 1 frames to print.
         let deepest = Site::Print.frame_budget_at(stack_kb * 1024, 0) - 1;
