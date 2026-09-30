@@ -23,9 +23,8 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read};
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// An input's bytes, possibly followed by readable padding (which lets
 /// simdjson parse texts that end at the end of the input without a copy).

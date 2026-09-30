@@ -12,8 +12,8 @@ use super::generate::Gen;
 use super::{Delivery, MemFile, Rng, events, mem_reader};
 use crate::io::parallel::{self, DumpFactory, EngineOptions, RecordSink, RecordTape};
 use crate::io::parallel::{RecordMeta, RecordWorker, WorkerFactory};
-use crate::io::reader::ReaderOptions;
-use crate::io::source::{InputBytes, Mmap, page_size};
+use crate::io::reader::{InputReader, ReaderOptions};
+use crate::io::source::{InputBytes, Mmap, Opened, Opener, SharedBytes, page_size};
 use crate::io::tape::{Doc, NodeKind};
 use crate::io::tape_eval::Decline;
 use crate::jq::value::{DumpOptions, Error};
@@ -154,6 +154,39 @@ fn reader_releases_behind_itself() {
             );
         }
     }
+}
+
+/// jq's parser copies what it's fed, so the reader releases the input while
+/// the parser reads a text it takes long to finish, or never does: without
+/// RS, `--seq` reads all of NDJSON as one text, abandoned at the end.
+#[test]
+fn reader_releases_inside_long_parses() {
+    struct One(Option<SharedBytes>);
+    impl Opener for One {
+        fn open(&mut self, _: &std::ffi::OsStr) -> std::io::Result<Opened> {
+            Ok(Opened::Whole(self.0.take().expect("opened once")))
+        }
+    }
+    let data = ndjson(9, 1 << 20, 0);
+    let map: SharedBytes = std::sync::Arc::new(Mmap::copy_of(&data, 0).unwrap());
+    let opts = ReaderOptions {
+        seq: true,
+        ..Default::default()
+    };
+    let mut r = InputReader::with_opener(vec!["f".into()], opts, Box::new(One(Some(map.clone()))));
+    r.set_release_step(1);
+    let first = r.next();
+    assert!(
+        matches!(&first, Some(Err(e)) if e.to_string().contains("Unfinished abandoned text")),
+        "{first:?}"
+    );
+    // (Releasing up to 0 releases nothing more: it tells how far it went.)
+    let released = map.release(0);
+    assert!(
+        released > data.len() - (64 << 10),
+        "released {released} of {}",
+        data.len()
+    );
 }
 
 /// Declines every record (so workers build values), after sleeping in

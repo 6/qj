@@ -865,6 +865,9 @@ impl InputReader {
             && let Some(c) = chunk.take()
         {
             self.advance(c.end, false);
+            // (jq's parser copied it: a text it takes long to finish, or
+            // never does, as without RS for --seq, needn't stay resident.)
+            self.release_consumed();
         }
         if self.cur.is_none() || self.jq_eof {
             self.leave_current();
