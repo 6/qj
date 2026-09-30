@@ -102,6 +102,9 @@ pub fn jq_testsuite(lib_dirs: Option<&[Vec<u8>]>, verbose: bool, args: &[Vec<u8>
         }
         i += 1;
     }
+    // QJ_JQ_COMPAT=1: jq's test loop holds large buffers on its stack, below
+    // which everything it compiles and runs has less.
+    crate::compat::running_tests();
     if let Some(code) = run_jq_tests(lib_dirs, verbose, Stream::new(testdata), skip, take) {
         return Outcome::Exit(code);
     }
@@ -199,6 +202,7 @@ fn run_jq_tests(
             line.extend_from_slice(&program);
             line.extend_from_slice(format!("' at line number {lineno}\n").as_bytes());
             print(&line);
+            crate::compat::compiling();
             let compiled = match jq_compile_args(&program, &opts) {
                 Ok(bc) => {
                     match &mut jq {

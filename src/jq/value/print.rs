@@ -767,7 +767,11 @@ impl Printer<'_> {
     }
 }
 
-fn printer(opts: &DumpOptions) -> Printer<'_> {
+/// A printer for `opts`, whose depth compat mode checks against jq's stack as
+/// [`Site::Print`](crate::compat::Site::Print) (`main.c`'s output path) or
+/// [`Site::Dump`](crate::compat::Site::Dump) (everything that dumps while the
+/// program runs, from deeper in jq's stack).
+fn printer(opts: &DumpOptions, site: crate::compat::Site) -> Printer<'_> {
     let (pretty, tab, spaces) = match opts.indent {
         Indent::Compact => (false, false, 0),
         Indent::Spaces(n) => (true, false, n as usize),
@@ -779,13 +783,13 @@ fn printer(opts: &DumpOptions) -> Printer<'_> {
         pretty,
         tab,
         refcounts: false,
-        frames: crate::compat::frames_available(crate::compat::Site::Print),
+        frames: crate::compat::frames_available(site),
     }
 }
 
 /// Appends the dump of `v` to `out` (`jv_dump_term` into a buffer).
 pub fn dump_to_vec(v: &Value, opts: &DumpOptions, out: &mut Vec<u8>) {
-    printer(opts)
+    printer(opts, crate::compat::Site::Dump)
         .term(v, 0, out)
         .expect("writing to a Vec cannot fail");
 }
@@ -793,7 +797,7 @@ pub fn dump_to_vec(v: &Value, opts: &DumpOptions, out: &mut Vec<u8>) {
 /// [`dump_to_vec`] into a [`DumpSink`], which may write the dump out as it
 /// grows.
 pub fn dump_to_sink<S: DumpSink>(v: &Value, opts: &DumpOptions, sink: &mut S) {
-    printer(opts)
+    printer(opts, crate::compat::Site::Print)
         .term(v, 0, &mut Streaming(sink))
         .expect("a DumpSink cannot fail");
 }
@@ -804,7 +808,7 @@ pub fn dump<W: Write>(v: &Value, opts: &DumpOptions, w: &mut W) -> io::Result<()
         buf: Vec::with_capacity(4096),
         w,
     };
-    printer(opts).term(v, 0, &mut sink)?;
+    printer(opts, crate::compat::Site::Dump).term(v, 0, &mut sink)?;
     sink.w.write_all(&sink.buf)
 }
 
@@ -817,7 +821,7 @@ pub fn dump_refcounted<W: Write>(v: &Value, opts: &DumpOptions, w: &mut W) -> io
         buf: Vec::with_capacity(256),
         w,
     };
-    let mut p = printer(opts);
+    let mut p = printer(opts, crate::compat::Site::Dump);
     p.refcounts = true;
     p.term(v, 0, &mut sink)?;
     sink.w.write_all(&sink.buf)
@@ -841,7 +845,7 @@ pub fn dump_string_trunc(v: &Value, bufsize: usize) -> String {
         limit: bufsize,
     };
     // An early stop only happens once the output is known to be too long.
-    let _ = printer(&DumpOptions::default()).term(v, 0, &mut sink);
+    let _ = printer(&DumpOptions::default(), crate::compat::Site::Dump).term(v, 0, &mut sink);
     let mut out = sink.buf;
     // strlen(): the dump never contains NUL (it is escaped).
     let len = out.len();

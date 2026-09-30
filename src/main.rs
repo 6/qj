@@ -102,6 +102,8 @@ pub unsafe extern "C" fn main(
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    // QJ_JQ_COMPAT=1: on a stack too small for jq to start, die as it does.
+    qj::compat::starting();
 
     // SAFETY: argc and argv are the C runtime's, valid for this call.
     let args = unsafe { command_line(argc, argv) };

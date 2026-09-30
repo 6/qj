@@ -290,6 +290,14 @@ unsafe extern "C" fn collect_name(
 fn compile(pattern: &str, options: u32) -> Result<Compiled, Error> {
     init();
     let bytes = pattern.as_bytes();
+    // QJ_JQ_COMPAT=1: Oniguruma recurses over the pattern's nesting, and jq's
+    // stack may not hold it (qj's own thread's always does). Compiling is
+    // deterministic, so checking a cached regex once is checking every use.
+    crate::compat::compiling_regex(
+        bytes,
+        options & onig::ONIG_OPTION_EXTEND != 0,
+        options & onig::ONIG_OPTION_IGNORECASE != 0,
+    );
     let mut raw: onig::OnigRegex = ptr::null_mut();
     let mut einfo = onig::OnigErrorInfo {
         enc: ptr::null_mut(),

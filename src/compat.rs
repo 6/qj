@@ -23,15 +23,23 @@
 //!
 //! jq frees, compares, merges and walks paths through values by recursing in
 //! C, so a value or path deep enough overflows its stack and the process dies
-//! of `SIGSEGV`. qj's value layer does all of it iteratively and has no such
-//! limit, so in compat mode it measures the depth jq's recursion would have
-//! reached and raises the same signal at the same point in the program.
+//! of `SIGSEGV`; so does a program, a chain of modules or a regex nested deep
+//! enough, and on a small enough stack jq can't even start. qj's value layer
+//! does all of it iteratively, and everything else runs on a thread with a
+//! large stack of its own (`src/main.rs`), so in compat mode qj measures the
+//! depth jq's recursion would have reached and raises the same signal at the
+//! same point in the program.
 //!
-//! [`Site`] lists the recursions, with the bytes a level and the bytes
-//! reserved measured for each; `docs/COMPATIBILITY.md` has the tables and the
-//! sites that cannot overflow at all.
+//! jq's stack is `RLIMIT_STACK` as the kernel applies it, less what argv and
+//! the environment take at its top ([`area_of`]), and each model is the bytes
+//! a level and the bytes the stack holds before the first, measured against
+//! the jq binary. [`Site`] lists the recursions; [`starting`], [`compiling`]
+//! and [`running_tests`] are the fixed needs of jq's start-up, its compiler
+//! and its test loop; `docs/COMPATIBILITY.md` has the tables and the sites
+//! that cannot overflow at all.
 
 mod depth;
+mod regex;
 
 use std::os::raw::c_int;
 use std::sync::OnceLock;
@@ -165,36 +173,128 @@ pub fn spin_forever<T: Clone>(keep: &T) -> ! {
 // jq's C stack
 // ---------------------------------------------------------------------------
 
-/// `getrlimit(RLIMIT_STACK)`: the size of the main thread's stack, which is
-/// what `ulimit -s` sets and what limits jq's recursion. `None` when it is
-/// unlimited or unreadable.
-fn stack_limit_bytes() -> Option<u64> {
-    static BYTES: OnceLock<Option<u64>> = OnceLock::new();
-    *BYTES.get_or_init(|| {
-        // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
-        let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
-        if unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } != 0 {
-            return None;
+/// `getrlimit(RLIMIT_STACK)`: what `ulimit -s` sets, which is the size of a
+/// process's main thread's stack. `None` when it is unlimited or unreadable.
+fn rlimit_stack() -> Option<u64> {
+    // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } != 0 {
+        return None;
+    }
+    // `rlim_t` is `u64` on macOS and Linux.
+    let cur: u64 = lim.rlim_cur;
+    (cur != libc::RLIM_INFINITY && cur != 0).then_some(cur)
+}
+
+/// `RLIMIT_STACK` as the kernel applies it to a main thread's stack.
+///
+/// Linux grows the stack's mapping a page at a time for as long as the whole
+/// mapping fits in the limit, so the limit rounds down to a page. macOS
+/// reserves the stack and makes what is past the limit, rounded down to a
+/// page, inaccessible, so the limit rounds *up* to a page: on arm64, with
+/// 16 KB pages, `ulimit -s 17` gives a 32 KB stack.
+pub fn effective_limit(rlimit: u64) -> u64 {
+    // SAFETY: sysconf has no preconditions.
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .ok()
+        .filter(|&p| p > 0)
+        .unwrap_or(4096);
+    if cfg!(target_os = "linux") {
+        rlimit / page * page
+    } else {
+        rlimit.div_ceil(page) * page
+    }
+}
+
+/// What `argv` and the environment take at the top of a main thread's stack:
+/// every string with its NUL, and the `NULL`-terminated arrays of pointers to
+/// them.
+///
+/// The kernel puts more there — the executable's path, the auxiliary vector
+/// (Linux) or the apple strings (macOS), alignment — but that is the same for
+/// every run of the same binary, and the models' bases include it (for jq's
+/// release binaries at the paths mise installs them to).
+pub fn area_of<'a>(
+    argv: impl IntoIterator<Item = &'a [u8]>,
+    env: impl IntoIterator<Item = &'a [u8]>,
+) -> u64 {
+    const PTR: u64 = size_of::<usize>() as u64;
+    let mut bytes = 0;
+    for strings in [
+        argv.into_iter().collect::<Vec<_>>(),
+        env.into_iter().collect::<Vec<_>>(),
+    ] {
+        bytes += (strings.len() as u64 + 1) * PTR;
+        bytes += strings.iter().map(|s| s.len() as u64 + 1).sum::<u64>();
+    }
+    bytes
+}
+
+/// The C environment, as `environ` holds it: `NAME=value` strings.
+fn environ_strings() -> Vec<Vec<u8>> {
+    #[cfg(target_vendor = "apple")]
+    // SAFETY: _NSGetEnviron returns the address of the process's `environ`.
+    let mut p = unsafe { *libc::_NSGetEnviron() } as *const *const libc::c_char;
+    #[cfg(not(target_vendor = "apple"))]
+    let mut p = {
+        unsafe extern "C" {
+            static environ: *const *const libc::c_char;
         }
-        // `rlim_t` is `u64` on macOS and Linux.
-        let cur: u64 = lim.rlim_cur;
-        if cur == libc::RLIM_INFINITY || cur == 0 {
-            None
-        } else {
-            Some(cur)
+        // SAFETY: reading the C runtime's `environ` pointer.
+        unsafe { environ }
+    };
+    let mut out = Vec::new();
+    if p.is_null() {
+        return out;
+    }
+    // SAFETY: `environ` is a NULL-terminated array of NUL-terminated strings,
+    // and nothing changes it while this runs (it runs at start-up).
+    unsafe {
+        while !(*p).is_null() {
+            out.push(std::ffi::CStr::from_ptr(*p).to_bytes().to_vec());
+            p = p.add(1);
         }
+    }
+    out
+}
+
+/// [`area_of`] this process's arguments and environment as they were when it
+/// started, which [`starting`] reads before anything could change them.
+fn own_area() -> u64 {
+    static AREA: OnceLock<u64> = OnceLock::new();
+    *AREA.get_or_init(|| {
+        use std::os::unix::ffi::OsStringExt;
+        let argv: Vec<Vec<u8>> = std::env::args_os().map(OsStringExt::into_vec).collect();
+        let env = environ_strings();
+        area_of(
+            argv.iter().map(Vec::as_slice),
+            env.iter().map(Vec::as_slice),
+        )
     })
 }
 
-/// A recursion in jq 1.8.1 that a deep enough value or path can drive past
-/// its C stack, killing the process with `SIGSEGV`.
+/// The stack jq's own code would have in this process: the limit as the
+/// kernel applies it, less what argv and the environment take at its top.
+/// `None` when the stack is unlimited, where jq doesn't overflow either.
 ///
-/// Every one of them is a loop with an explicit stack in qj, so in compat
-/// mode qj measures the depth jq's recursion would have reached and dies
-/// where jq does. The model of each is a number of bytes a level and a
-/// number of bytes reserved ([`Site::model`]), bisected against the jq
-/// binary; `docs/COMPATIBILITY.md` lists them, and the recursions that
-/// cannot overflow.
+/// Counting the environment is what lets one model fit every environment: a
+/// larger one moves jq's thresholds down by exactly its size (a level of
+/// `jv_free` per 64 bytes on macOS), and an interactive shell's is several KB
+/// larger than a test harness's.
+fn stack_bytes() -> Option<u64> {
+    static BYTES: OnceLock<Option<u64>> = OnceLock::new();
+    *BYTES.get_or_init(|| Some(effective_limit(rlimit_stack()?).saturating_sub(own_area())))
+}
+
+/// A recursion in jq 1.8.1 that a deep enough value, path, program or regex
+/// can drive past its C stack, killing the process with `SIGSEGV`.
+///
+/// Every one of them is a loop with an explicit stack in qj, or a recursion
+/// of qj's own on its own large stack, so in compat mode qj measures the
+/// depth jq's recursion would have reached and dies where jq does. The model
+/// of each is a number of bytes a level and a number of bytes reserved
+/// ([`Site::model`]), measured against the jq binary; `docs/COMPATIBILITY.md`
+/// lists them, and the recursions that cannot overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Site {
     /// `jv_free` → `jvp_array_free`/`jvp_object_free`: value nesting.
@@ -240,67 +340,87 @@ pub enum Site {
     /// `expand_call_arglist` (`compile.c`): one frame per nested argument of a
     /// C function, inside [`Site::Compile`].
     ExpandArgs,
-    /// `jv_dump_term` (`jv_print.c`): one frame per level of the value being
-    /// printed, at most `MAX_PRINT_DEPTH + 1` (257) of them — below that depth
-    /// jq writes `<skipped: too deep>` instead of descending.
+    /// `jv_dump_term` (`jv_print.c`) from `main.c`'s output path: one frame
+    /// per level of the value being printed, at most `MAX_PRINT_DEPTH + 2`
+    /// (258) of them — the level past `MAX_PRINT_DEPTH` writes `<skipped: too
+    /// deep>` instead of descending.
     ///
-    /// The cap means this can only overflow on a stack of about 80 KB or less,
-    /// which is why `docs/COMPATIBILITY.md` used to call it safe; it is the one
-    /// recursion here whose depth is bounded by jq's own code rather than by
-    /// the value.
+    /// The cap means this can only overflow on a stack of about 80 KB or less;
+    /// it is the one recursion here whose depth is bounded by jq's own code
+    /// rather than by the value.
     Print,
+    /// `jv_dump_term` while the program runs: `tojson`, `tostring`, `@json`,
+    /// `@text`, string interpolation, `debug`, `stderr`, error messages. The
+    /// same frames as [`Site::Print`], from deeper in jq's stack (the VM, the
+    /// builtin, `jv_dump_string`): the worst of those call sites.
+    Dump,
+    /// Oniguruma's parser (`prs_alts` → `prs_branch` → `prs_exp` → `prs_bag`
+    /// …), compiling a regex for `test`, `match`, `capture`, `sub` and the
+    /// rest: one level for the pattern and one per group open at once, of any
+    /// kind (`src/compat/regex.rs`).
+    RegexParse,
+    /// Oniguruma's walks over the parsed pattern (`tune_tree`,
+    /// `compile_tree`, …): one level per node on the way down, where a
+    /// capturing group, a lookaround, a quantifier, an alternation and a
+    /// sequence are each a node.
+    RegexTree,
 }
 
 impl Site {
     /// The bytes of stack a level of this recursion costs, and the bytes the
-    /// start of the stack takes before any of them starts ([`STACK_MARGIN`]
-    /// not included).
+    /// stack holds before its first level: from the top of the stack, beyond
+    /// what argv and the environment take ([`area_of`]), and at the worst of
+    /// the depths and call sites measured.
     ///
     /// The frame bytes are exact: they are what the prologue of jq's own
-    /// function reserves in the release binary's disassembly, and the deepest
-    /// value or program jq survives is linear in `ulimit -s` with that slope at
-    /// every limit measured. The base is [`WORST_BASE_BYTES`] for the six
-    /// recursions over values, which share one figure; the other four have
-    /// their own, because what they hold where the stack runs out is different
-    /// enough that folding it into the shared figure would cost every site
-    /// levels for nothing.
+    /// function reserves in the release binary's disassembly, and the stack
+    /// jq needs is linear in the depth with that slope at every depth
+    /// measured. The bases were measured by padding the environment at a
+    /// fixed limit until jq no longer answered, at 16 random depths per site;
+    /// where the base moves from one depth to the next (by up to 600 bytes: a
+    /// slow path of the allocator at the deepest level), it is the largest
+    /// seen. The six recursions over values share one base, the largest of
+    /// theirs ([`VALUE_BASE_BYTES`]), so that one driven from inside another
+    /// ([`Descent`]) is charged it, and [`STACK_MARGIN`], once.
     const fn model(self) -> (u64, u64) {
-        // macOS/arm64 (jq's release binary, built by Apple clang), bisected
-        // with the programs in `docs/COMPATIBILITY.md` at `ulimit -s` 1024,
-        // 2048, 4096, 8176 and 16384 KB.
+        // macOS/arm64 (jq's release binary, built by Apple clang).
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let (frame, base) = match self {
-            Site::Free => (64, WORST_BASE_BYTES),
-            Site::Compare => (128, WORST_BASE_BYTES),
-            Site::Contains => (176, WORST_BASE_BYTES),
-            Site::Merge => (112, WORST_BASE_BYTES),
-            Site::Setpath => (144, WORST_BASE_BYTES),
-            Site::Delpaths => (240, WORST_BASE_BYTES),
-            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES),
-            Site::Bind => (112, BIND_BASE_BYTES),
-            Site::Compile => (176, COMPILE_BASE_BYTES),
-            Site::ExpandArgs => (192, COMPILE_BASE_BYTES),
-            Site::Print => (256, PRINT_BASE_BYTES),
+        let m = match self {
+            Site::Free => (64, VALUE_BASE_BYTES),
+            Site::Compare => (128, VALUE_BASE_BYTES),
+            Site::Contains => (176, VALUE_BASE_BYTES),
+            Site::Merge => (112, VALUE_BASE_BYTES),
+            Site::Setpath => (144, VALUE_BASE_BYTES),
+            Site::Delpaths => (240, VALUE_BASE_BYTES),
+            Site::Modules => (416, 11_136),
+            Site::Bind => (112, 8_704),
+            Site::Compile => (176, 3_440),
+            Site::ExpandArgs => (192, 3_440),
+            Site::Print => (256, 2_976),
+            Site::Dump => (256, 4_064),
+            Site::RegexParse => (784, 4_848),
+            Site::RegexTree => (624, 4_400),
         };
-        // Linux/x86-64 (jq's release binary, built by gcc), bisected the same
-        // way at 1024, 4096, 8192 and 16384 KB with the stack randomization
-        // off, so that the thresholds are deterministic; STACK_MARGIN then
-        // covers the randomization.
+        // Linux/x86-64 (jq's release binary, built by gcc, glibc linked
+        // statically), measured with the kernel's stack randomization off.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let (frame, base) = match self {
-            Site::Free => (48, WORST_BASE_BYTES),
-            Site::Compare => (144, WORST_BASE_BYTES),
-            Site::Contains => (176, WORST_BASE_BYTES),
-            Site::Merge => (128, WORST_BASE_BYTES),
-            Site::Setpath => (160, WORST_BASE_BYTES),
-            Site::Delpaths => (240, WORST_BASE_BYTES),
-            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES),
-            Site::Bind => (112, BIND_BASE_BYTES),
-            Site::Compile => (224, COMPILE_BASE_BYTES),
-            Site::ExpandArgs => (224, COMPILE_BASE_BYTES),
-            Site::Print => (304, PRINT_BASE_BYTES),
+        let m = match self {
+            Site::Free => (48, VALUE_BASE_BYTES),
+            Site::Compare => (144, VALUE_BASE_BYTES),
+            Site::Contains => (176, VALUE_BASE_BYTES),
+            Site::Merge => (128, VALUE_BASE_BYTES),
+            Site::Setpath => (160, VALUE_BASE_BYTES),
+            Site::Delpaths => (240, VALUE_BASE_BYTES),
+            Site::Modules => (464, 7_776),
+            Site::Bind => (112, 7_328),
+            Site::Compile => (224, 1_696),
+            Site::ExpandArgs => (224, 1_696),
+            Site::Print => (304, 1_424),
+            Site::Dump => (304, 2_176),
+            Site::RegexParse => (784, 3_600),
+            Site::RegexTree => (560, 2_912),
         };
-        (frame, base)
+        m
     }
 
     /// The recursions jq drives from inside this one: comparing a path element
@@ -357,15 +477,16 @@ impl Site {
     /// [`Site::frame_budget`] with `outer` bytes of the stack already held by a
     /// recursion this one runs inside, whose own base was `outer_base`.
     ///
-    /// The two bases cover the same start of the stack — both begin at `main` —
-    /// so only the larger is charged, and [`STACK_MARGIN`] only once. Charging
-    /// both would take the margin twice, and at the outer site's own threshold
-    /// that leaves the inner one nothing at all.
+    /// The two bases cover the same start of the stack — both begin at the top
+    /// — so only the larger is charged, and [`STACK_MARGIN`] only once.
+    /// Charging both would take the margin twice, and at the outer site's own
+    /// threshold that leaves the inner one nothing at all.
     fn budget_below(self, outer: u64, outer_base: u64) -> Option<u64> {
-        Some(self.budget_at(stack_limit_bytes()?, outer, outer_base))
+        Some(self.budget_at(stack_bytes()?, outer, outer_base))
     }
 
-    /// [`Site::budget_below`] for a stack of `stack_bytes`.
+    /// [`Site::budget_below`] for `stack_bytes` of stack beyond argv and the
+    /// environment.
     fn budget_at(self, stack_bytes: u64, outer: u64, outer_base: u64) -> u64 {
         let (frame, base) = self.model();
         let reserved = base.max(outer_base) + STACK_MARGIN;
@@ -373,157 +494,195 @@ impl Site {
         levels.saturating_sub(self.headroom_levels())
     }
 
-    /// [`Site::frame_budget`] for a stack of `stack_bytes`, with `outer` bytes
-    /// of it already held. Public so that a test can size a value, a program or
-    /// a chain of modules for a process it starts under a different
+    /// [`Site::frame_budget`] for `stack_bytes` of stack beyond argv and the
+    /// environment (the effective limit less [`area_of`] them), with `outer`
+    /// bytes of it already held. Public so that a test can size a value, a
+    /// program or a chain of modules for a process it starts with a different
     /// `RLIMIT_STACK`.
     pub fn frame_budget_at(self, stack_bytes: u64, outer: u64) -> u64 {
         self.budget_at(stack_bytes, outer, 0)
     }
 }
 
-/// Bytes held back from every site's budget, on top of what the bisections
-/// measured, so that qj dies no later than jq would.
+/// Bytes held back from every model, on top of what the measurements found,
+/// so that qj dies no later than jq would.
 ///
-/// On macOS it covers the environment: argv and the environment sit on top of
-/// jq's stack, so its threshold drops by about a level per 64 bytes of them
-/// (a `jv_free` threshold of 130,760 in the harness's five variables, 130,664
-/// in an interactive shell — 6 KB more). The bisections use the harness's
-/// environment, so the margin is what a larger one can take.
+/// On macOS it covers what the models don't count: jq's executable path, which
+/// the kernel puts on its stack too (`executable_path=`), and allocator slow
+/// paths deeper than any the measurements met. With the environment counted
+/// ([`stack_bytes`]) the rest is deterministic: the same limit, environment
+/// and program give jq the same threshold in every run.
 ///
-/// On Linux it covers the kernel's randomization of the initial stack
-/// pointer (`arch_align_stack`), which is up to 8 KB and moves jq's threshold
-/// from run to run; the bisections switch it off (`setarch -R`). The
-/// environment is not covered there as well: jq's window already moves by
-/// more than a large environment costs.
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const STACK_MARGIN: u64 = 6144;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const STACK_MARGIN: u64 = 8384;
+/// On Linux it covers the kernel's randomization of the initial stack pointer
+/// as well (`arch_align_stack`: up to 8,191 bytes, then 16-byte alignment),
+/// which moves jq's thresholds from run to run: the models sit below the
+/// bottom of that window, so qj never survives where jq can die, and inside
+/// the window it dies where jq only sometimes does.
+const STACK_MARGIN: u64 = MARGIN_BYTES + RANDOMIZATION_BYTES;
 
-/// Bytes of stack that are gone before any of the six recursions over values
-/// starts: what the start of the stack takes where the bisections measured the
-/// most of it (`jv_cmp` from `sort`, 4,096 bytes on macOS and 3,856 on Linux).
-///
-/// One number for the six, rather than each site's own measurement, so that a
-/// recursion jq drives from inside another ([`Descent`]) is charged the same
-/// base — and so [`STACK_MARGIN`] — once. Charged twice it would run out where
-/// jq still has the margin's worth of stack, and qj would die where jq answers.
-/// The cost is that a site whose base is smaller than the worst one loses a few
-/// more levels: at most 576 bytes on macOS and 2,000 on Linux, which is 9 and
-/// 42 levels of `jv_free`.
-///
-/// The four recursions that are not over values keep their own bases, which are
-/// different enough to be worth the arithmetic in [`Site::budget_below`].
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const WORST_BASE_BYTES: u64 = 4096;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const WORST_BASE_BYTES: u64 = 3856;
+/// [`STACK_MARGIN`] less the randomization.
+const MARGIN_BYTES: u64 = 512;
 
-/// [`Site::Modules`]: bytes of stack a module in a chain of imports costs jq,
-/// and what the level where the stack runs out holds — `find_lib`, reading the
-/// file, and above all bison's three `YYINITDEPTH` (200) arrays for parsing it.
-/// Measured on both platforms (see `docs/COMPATIBILITY.md`); nothing else jq
-/// recurses over has a base cost anywhere near this.
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const MODULE_FRAME_BYTES: u64 = 416;
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const MODULE_BASE_BYTES: u64 = 12000;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const MODULE_FRAME_BYTES: u64 = 464;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const MODULE_BASE_BYTES: u64 = 8304;
+/// The most `arch_align_stack` can take from the top of the stack on Linux:
+/// `sp -= get_random_u32_below(8192); sp &= ~0xf`.
+#[cfg(target_os = "linux")]
+const RANDOMIZATION_BYTES: u64 = 8191 + 15;
+#[cfg(not(target_os = "linux"))]
+const RANDOMIZATION_BYTES: u64 = 0;
 
-/// [`Site::Bind`]: what the stack holds when jq's deepest binding walk starts.
-///
-/// Those walks are parser.y's actions, so this is `main` → `jq_compile_args` →
-/// `load_program` → `jq_parse` → `yyparse` → the action → `block_bind_subblock`,
-/// and `yyparse` alone is 5,616 bytes on macOS and 5,696 on Linux: its three
-/// `YYINITDEPTH` (200) arrays for the states, values and locations. Bisected
-/// against jq's binaries (see `docs/COMPATIBILITY.md`): the deepest binding
-/// walk jq survives is `(stack - this) / 112` frames at every stack limit
-/// measured, which pins it to 8,976 bytes on macOS and 7,536 on Linux.
-///
-/// A program whose deepest binding walk is `builtins_bind`'s rather than a
-/// parser action's has about 8 KB more stack than this (no `yyparse` frame),
-/// and there qj gives up 74 levels it needn't.
+/// The base the six recursions over values share: the largest any of them
+/// was measured with, at any depth, so that one run inside another is
+/// charged the same base once. On macOS that is `jv_object_merge_recursive`'s
+/// 3,896 bytes, where the allocator took a slow path at the deepest level (it
+/// is 3,304 at most depths); on Linux `jv_cmp`'s from `sort`, 3,148 (glibc's
+/// allocator never moved a base). The cost is that a site measured with a
+/// smaller base loses up to 752 bytes on macOS (12 levels of `jv_free`) and
+/// 1,604 on Linux (33).
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const BIND_BASE_BYTES: u64 = 8976;
+const VALUE_BASE_BYTES: u64 = 3_904;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const BIND_BASE_BYTES: u64 = 7536;
-
-/// [`Site::Compile`] and [`Site::ExpandArgs`]: what the stack holds when
-/// `block_compile` calls `compile` for the top-level function — `main` →
-/// `jq_compile_args` → `block_compile`, plus what the deepest level of
-/// `compile` itself calls below the recursion (`expand_call_arglist`'s own
-/// callees, `jv_mem_calloc`, `block_free`).
-///
-/// This is the stack held *before* `compile`'s first frame. `compile` starts by
-/// calling `expand_call_arglist`, so at its deepest level there is always a
-/// frame of [`Site::ExpandArgs`] on top of it, and that is where jq's stack
-/// actually runs out: the two together reproduce the depth of nested `def`s jq
-/// survives at every limit measured, which pins this to 3,552 bytes on macOS.
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const COMPILE_BASE_BYTES: u64 = 3552;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const COMPILE_BASE_BYTES: u64 = 1856;
-
-/// [`Site::Print`]: what the stack holds when `jv_dump_term` starts, from
-/// `main` through the output path. Bisected with `reduce range(n) as $i
-/// (0;[.])`, whose value takes `n + 1` frames to print: on macOS the deepest
-/// jq survives is 113 at 32 KB of stack, 177 at 48 KB and 241 at 64 KB, which
-/// is 256 bytes a level over a base of 3,584. (The steps are 16 KB because
-/// that is the page size on arm64 macOS, which `RLIMIT_STACK` is rounded up
-/// to.) On Linux it is 304 bytes a level over a base of 1,696: 101 levels at
-/// 32 KB, 155 at 48 KB, 209 at 64 KB and 235 at 72 KB.
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const PRINT_BASE_BYTES: u64 = 3584;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const PRINT_BASE_BYTES: u64 = 1696;
+const VALUE_BASE_BYTES: u64 = 3_152;
 
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is
 /// the value's nesting depth plus one for the scalar at the bottom.
 ///
-/// On macOS/arm64 it is 64 bytes a frame. Bisected against jq 1.8.1 with
-/// `reduce range($n) as $i (null; [.]) | length`, whose value needs `n + 1`
-/// frames, in the differential harness's environment:
-///
-/// | `ulimit -s` | deepest `n` jq survives | this model |
-/// |---|---:|---:|
-/// | 1024 KB | 16,328 | 16,223 |
-/// | 4096 KB | 65,480 | 65,375 |
-/// | 8176 KB (this machine's default) | 130,760 | 130,655 |
-/// | 16384 KB | 262,088 | 261,983 |
-///
-/// The threshold is exactly linear in the stack size, and the model sits
-/// [`RESERVED_BYTES`] below it — 105 levels here, of which 96 are
-/// [`STACK_MARGIN`] — because argv and the environment sit on top of jq's
-/// stack and take about a level per 64 bytes: with an interactive shell's
-/// environment jq survives 130,664 at the default limit rather than 130,760.
-/// Erring short means qj never survives where jq dies.
-///
-/// Which operation frees the value shifts jq's threshold by a frame or two
-/// as well (130,760 through a builtin such as `length`, 130,763 from
-/// `main.c`'s output path, 130,757 through `tojson`); the model follows the
-/// first.
-///
-/// On Linux/x86-64, jq's release binary uses 48 bytes a frame, and the kernel
-/// starts the main thread's stack up to 8 KB below its top at random
-/// (`arch_align_stack`), so the deepest value jq survives moves from run to
-/// run, over about 170 levels. With the randomization off (`setarch -R`) the
-/// threshold is 21,806 at 1024 KB, 87,342 at 4096 KB, 174,723 at 8192 KB and
-/// 349,486 at 16384 KB; sampling 10 runs per depth with it on, jq survived
-/// every run up to about 160 levels below that and no run above it. The model
-/// takes the whole 8 KB, so it lands below the bottom of that window
-/// (21,589 / 87,125 / 174,506 / 349,269): qj never survives where jq dies,
-/// and inside the window it dies where jq only sometimes does.
-///
-/// Other targets use the macOS model, unmeasured.
+/// On macOS/arm64 it is 64 bytes a frame, on Linux/x86-64 48. Other targets
+/// use the macOS model, unmeasured.
 ///
 /// `None` when the stack is unlimited, where jq doesn't overflow either.
 pub fn free_frame_budget() -> Option<u64> {
     Site::Free.frame_budget()
+}
+
+// ---------------------------------------------------------------------------
+// jq's start
+// ---------------------------------------------------------------------------
+
+/// What jq needs before it does anything at all: on macOS, dyld's start-up
+/// (19,272 bytes beyond argv and the environment for jq's release binary,
+/// every program alike — jq's own start needs less); on Linux, where jq is
+/// linked statically, glibc's start-up and `main.c`'s option handling up to
+/// the help text, the version or a usage error (5,172).
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const START_BYTES: u64 = 19_280;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const START_BYTES: u64 = 5_184;
+
+/// What jq needs to compile a program that doesn't nest, and to run one
+/// that doesn't recurse: the deepest point of `jq_compile_args` for the
+/// builtins, which every program has (9,244 to 9,252 bytes on Linux), or of
+/// the syntax error it reports (9,460). Nothing in the small-stack corpus of
+/// dates, formats, sorting, regex matching, `--stream`, `-s` or modules goes
+/// deeper without a recursion that has a model of its own. Below the
+/// start-up's need on macOS, where it matters only inside `--run-tests`.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const COMPILE_BYTES: u64 = 11_904;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const COMPILE_BYTES: u64 = 9_472;
+
+/// What `--run-tests` holds above everything it compiles and runs: its test
+/// loop's buffers (`jq_test.c`'s `prog`, `buf` and error buffer) and the
+/// frames to them. Measured as the stack a deep program needs in a test file
+/// less what it needs run as a program: 28,496 bytes on macOS and 12,648 on
+/// Linux for the compiler's recursions, 128 and 112 less for the rest.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const RUN_TESTS_BYTES: u64 = 28_496;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const RUN_TESTS_BYTES: u64 = 12_656;
+
+/// What `--run-tests` needs for a file of tests that don't nest: 40,392
+/// bytes on macOS and 23,796 on Linux, the same whether they pass or fail.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const RUN_TESTS_FLOOR_BYTES: u64 = 40_400;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const RUN_TESTS_FLOOR_BYTES: u64 = 23_808;
+
+/// Whether `bytes` of stack, at what the recursions around this point hold
+/// ([`OUTER`]), fit in jq's.
+fn fits(bytes: u64) -> bool {
+    let Some(stack) = stack_bytes() else {
+        return true;
+    };
+    let (outer, _) = OUTER.with(std::cell::Cell::get);
+    bytes + STACK_MARGIN + outer <= stack
+}
+
+/// The `qj` binary's first act (`src/main.rs`): in compat mode, where jq's
+/// start-up would overflow its stack, die as it does — of `SIGSEGV`, with
+/// nothing written.
+///
+/// It also reads what argv and the environment take ([`own_area`]) before
+/// anything can change the environment.
+pub fn starting() {
+    if !exactly_jq() {
+        return;
+    }
+    own_area();
+    if !fits(START_BYTES) {
+        die_of_stack_overflow();
+    }
+    // jq frees values natively below this depth; see `native_drop_limit`.
+    if let Some(budget) = Site::Free.frame_budget() {
+        let limit = u32::try_from(budget.saturating_sub(1)).unwrap_or(u32::MAX);
+        NATIVE_DROP_LIMIT.fetch_min(limit, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// jq is compiling a program (`jq_compile_args`, or a test's `jq_compile`):
+/// in compat mode, die if its stack can't hold the compile of what every
+/// program has, the builtins.
+pub fn compiling() {
+    if exactly_jq() && !fits(COMPILE_BYTES) {
+        die_of_stack_overflow();
+    }
+}
+
+/// `--run-tests` is starting: in compat mode, die where jq's test loop
+/// wouldn't fit ([`RUN_TESTS_FLOOR_BYTES`]); everything it compiles and runs
+/// from here on runs below its buffers ([`RUN_TESTS_BYTES`]).
+pub fn running_tests() {
+    if !exactly_jq() {
+        return;
+    }
+    if !fits(RUN_TESTS_FLOOR_BYTES) {
+        die_of_stack_overflow();
+    }
+    let (bytes, base) = OUTER.with(std::cell::Cell::get);
+    OUTER.with(|b| b.set((bytes + RUN_TESTS_BYTES, base)));
+}
+
+/// jq compiles a regex (`f_match` → `onig_new`), with Oniguruma's options: in
+/// compat mode, die where its parser or its walks over the parsed pattern
+/// would overflow jq's stack.
+pub fn compiling_regex(pattern: &[u8], extended: bool, ignorecase: bool) {
+    if !exactly_jq() {
+        return;
+    }
+    let parse = frames_available(Site::RegexParse);
+    let tree = frames_available(Site::RegexTree);
+    if parse == u64::MAX {
+        return;
+    }
+    let d = regex::depths(pattern, extended, ignorecase);
+    // The parser has a level for the pattern itself, and one per group.
+    if d.parse + 1 > parse || d.tree > tree {
+        die_of_stack_overflow();
+    }
+}
+
+/// The deepest `src/jq/value/array.rs` frees a value natively before it hands
+/// the rest to its iterative loop, which checks it against jq's stack
+/// ([`freeing_iteratively`]). 256 levels by default; in compat mode on a stack
+/// where jq's `jv_free` has fewer frames than that, one short of them, so
+/// that a value too deep for jq always reaches the check.
+static NATIVE_DROP_LIMIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(crate::jq::value::array::MAX_DROP_RECURSION);
+
+/// [`NATIVE_DROP_LIMIT`].
+#[inline]
+pub fn native_drop_limit() -> u32 {
+    NATIVE_DROP_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The nesting depth of the deepest value in `items`, counted as jq counts
@@ -724,111 +883,126 @@ mod tests {
         assert!(!is_on(None));
     }
 
-    /// The deepest value each model survives at `kb` KB of stack: the budget
-    /// is in frames, and the programs the bisections used need `n + 1` of
-    /// them for a value nested `n` deep, so it is `budget - 1`.
-    fn deepest(site: Site, kb: u64) -> u64 {
-        site.frame_budget_at(kb * 1024, 0) - 1
+    #[test]
+    fn the_area_is_the_strings_and_their_pointers() {
+        let s = |v: &[&'static str]| v.iter().map(|x| x.as_bytes()).collect::<Vec<_>>();
+        // Two NULL pointers and nothing else.
+        assert_eq!(area_of(s(&[]), s(&[])), 16);
+        // "jq\0" "-n\0" "1\0" and four pointers; "A=1\0" and two.
+        assert_eq!(
+            area_of(s(&["jq", "-n", "1"]), s(&["A=1"])),
+            3 + 3 + 2 + 32 + 4 + 16
+        );
     }
 
-    /// Every site's model against the depths bisected from the jq 1.8.1
-    /// binary, at the worst of the call sites measured (see
-    /// `docs/COMPATIBILITY.md` for the programs and the full tables), with the
-    /// bytes each site's base cost measured.
-    ///
-    /// `(site, bytes a level, base bytes, deepest n jq survives at each of the
-    /// stack limits in [`LIMITS`])`.
+    #[test]
+    fn the_limit_rounds_as_the_kernel_does() {
+        // SAFETY: sysconf has no preconditions.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+        assert_eq!(effective_limit(8 * page), 8 * page);
+        if cfg!(target_os = "linux") {
+            assert_eq!(effective_limit(8 * page + 1), 8 * page);
+            assert_eq!(effective_limit(8 * page - 1), 7 * page);
+        } else {
+            assert_eq!(effective_limit(8 * page + 1), 9 * page);
+            assert_eq!(effective_limit(8 * page - 1), 8 * page);
+        }
+    }
+
+    /// What the jq 1.8.1 binary needs at each site, beyond what argv and the
+    /// environment take, over 16 random depths each (`docs/COMPATIBILITY.md`
+    /// has the programs): `(site, bytes a level, the base at most depths, the
+    /// largest base at any depth)`. A site with more than one call site
+    /// measured (`jv_cmp` from `==` and from `sort`, the printer from each
+    /// builtin that dumps) lists each.
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    const LIMITS: &[u64] = &[1024, 2048, 4096, 8176, 16384];
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    const MEASURED: &[(Site, u64, u64, &[u64])] = &[
-        (
-            Site::Free,
-            64,
-            3520,
-            &[16_328, 32_712, 65_480, 130_760, 262_088],
-        ),
-        (
-            Site::Compare,
-            128,
-            4096,
-            &[8_159, 16_351, 32_735, 65_375, 131_039],
-        ),
-        (
-            Site::Contains,
-            176,
-            3840,
-            &[5_935, 11_893, 23_809, 47_547, 95_303],
-        ),
-        (
-            Site::Merge,
-            112,
-            3616,
-            &[9_329, 18_692, 37_416, 74_719, 149_764],
-        ),
-        (
-            Site::Setpath,
-            144,
-            3808,
-            &[7_255, 14_537, 29_101, 58_114, 116_481],
-        ),
-        (
-            Site::Delpaths,
-            240,
-            3664,
-            &[4_353, 8_722, 17_460, 34_868, 69_889],
-        ),
-        (
-            Site::Modules,
-            416,
-            12000,
-            &[2_491, 5_012, 10_053, 20_096, 40_300],
-        ),
+    const MEASURED: &[(Site, u64, u64, u64)] = &[
+        (Site::Free, 64, 3_160, 3_160),
+        (Site::Compare, 128, 3_128, 3_128),
+        (Site::Compare, 128, 3_448, 3_448),
+        (Site::Contains, 176, 3_336, 3_336),
+        (Site::Merge, 112, 3_304, 3_896),
+        (Site::Setpath, 144, 3_192, 3_640),
+        (Site::Delpaths, 240, 3_192, 3_704),
+        (Site::Modules, 416, 11_128, 11_128),
+        (Site::Bind, 112, 8_696, 8_696),
+        (Site::Compile, 176, 3_176, 3_432),
+        (Site::Print, 256, 2_920, 2_967),
+        (Site::Dump, 256, 3_288, 3_336),
+        (Site::Dump, 256, 4_008, 4_056),
+        (Site::Dump, 256, 3_704, 3_704),
+        (Site::RegexParse, 784, 4_840, 4_840),
+        (Site::RegexTree, 624, 4_392, 4_392),
+    ];
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    const MEASURED: &[(Site, u64, u64, u64)] = &[
+        (Site::Free, 48, 1_548, 1_548),
+        (Site::Compare, 144, 1_548, 1_548),
+        (Site::Compare, 144, 3_148, 3_148),
+        (Site::Contains, 176, 1_676, 1_676),
+        (Site::Merge, 128, 2_028, 2_028),
+        (Site::Setpath, 160, 1_692, 1_692),
+        (Site::Delpaths, 240, 1_708, 1_708),
+        (Site::Modules, 464, 7_772, 7_772),
+        (Site::Bind, 112, 7_324, 7_324),
+        (Site::Compile, 224, 1_692, 1_692),
+        (Site::Print, 304, 1_404, 1_412),
+        (Site::Dump, 304, 1_644, 1_836),
+        (Site::Dump, 304, 2_172, 2_172),
+        (Site::Dump, 304, 1_772, 1_964),
+        (Site::RegexParse, 784, 3_596, 3_596),
+        (Site::RegexTree, 560, 2_908, 2_908),
     ];
 
-    /// On Linux/x86-64 the kernel's randomization of the initial stack pointer
-    /// moves jq's threshold from run to run (see [`free_frame_budget`]), so
-    /// the bisections switch it off (`setarch -R`) and [`STACK_MARGIN`] covers
-    /// the whole 8 KB: the models sit at or under the bottom of jq's window.
+    /// How far below jq a model may sit, beyond [`STACK_MARGIN`]: what the
+    /// shared base of the value sites costs the one measured with the
+    /// smallest base.
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    const SHARED_BASE_COST: u64 = 800;
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    const LIMITS: &[u64] = &[1024, 4096, 8192, 16384];
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    const MEASURED: &[(Site, u64, u64, &[u64])] = &[
-        (Site::Free, 48, 1856, &[21_806, 87_342, 174_723, 349_486]),
-        (Site::Compare, 144, 3856, &[7_254, 29_100, 58_227, 116_481]),
-        (Site::Contains, 176, 2128, &[5_945, 23_819, 47_650, 95_312]),
-        (Site::Merge, 128, 2304, &[8_173, 32_749, 65_517, 131_053]),
-        (Site::Setpath, 160, 2176, &[6_539, 26_200, 52_415, 104_843]),
-        (Site::Delpaths, 240, 2224, &[4_359, 17_466, 34_943, 69_895]),
-        (Site::Modules, 464, 8304, &[2_241, 9_021, 18_060, 36_139]),
-    ];
+    const SHARED_BASE_COST: u64 = 1_620;
 
-    /// Each model is short of jq by the margin, plus what this site's base
-    /// cost is below the worst one, plus the rounding of a level — which is
-    /// what keeps qj from surviving where jq dies.
+    /// Every model against the measurements: never below what jq needs at any
+    /// depth measured (so qj never survives where jq dies), and above it by no
+    /// more than the margin and what a shared base costs.
     #[test]
     fn stack_models_match_the_measurements() {
-        for &(site, frame, base, measured) in MEASURED {
-            assert_eq!(site.model().0, frame, "{site:?}: bytes a level");
-            let reserved = site.model().1 + STACK_MARGIN;
-            assert!(base <= reserved, "{site:?}: base above what it reserves");
-            // What the model holds back beyond this site's own base cost: the
-            // margin, what its base is below the figure it shares (nothing for
-            // `Modules`, which has its own), and the levels a driving site
-            // gives up for what it drives.
-            let allowance = (reserved - base) + site.headroom_levels() * frame;
-            for (kb, jq) in LIMITS.iter().zip(measured) {
-                let model = deepest(site, *kb);
-                assert!(model <= *jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
-                let short = (jq - model) * frame;
+        for &(site, frame, typical, worst) in MEASURED {
+            let (model_frame, base) = site.model();
+            assert_eq!(model_frame, frame, "{site:?}: bytes a level");
+            assert!(base >= worst, "{site:?}: base {base} below jq's {worst}");
+            let short = base + STACK_MARGIN - typical;
+            assert!(
+                short <= STACK_MARGIN + SHARED_BASE_COST,
+                "{site:?}: {short} bytes below jq"
+            );
+            // At every depth that fits, the model's need is jq's plus that
+            // much: the budget in levels is exactly what jq's need allows.
+            for stack in [48 << 10, 256 << 10, 1 << 20, 8 << 20] {
+                let levels = site.frame_budget_at(stack, 0) + site.headroom_levels();
+                let jq_levels = stack.saturating_sub(worst) / frame;
                 assert!(
-                    short >= allowance && short < allowance + 2 * frame,
-                    "{site:?} at {kb} KB: {model} is {short} B below jq's {jq}, \
-                     not {allowance}..{}",
-                    allowance + 2 * frame
+                    levels <= jq_levels,
+                    "{site:?} at {stack}: {levels} > {jq_levels}"
                 );
             }
         }
+    }
+
+    /// The fixed needs against the measurements.
+    #[test]
+    fn start_compile_and_run_tests_cover_jq() {
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        let (start, compile, run_tests_trivial, run_tests_offset) =
+            (19_272, 11_896, 40_392, 28_496);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let (start, compile, run_tests_trivial, run_tests_offset) = (5_172, 9_460, 23_796, 12_648);
+        assert!(START_BYTES >= start && START_BYTES - start <= 16);
+        assert!(COMPILE_BYTES >= compile && COMPILE_BYTES - compile <= 16);
+        assert!(RUN_TESTS_BYTES >= run_tests_offset && RUN_TESTS_BYTES - run_tests_offset <= 16);
+        assert!(RUN_TESTS_FLOOR_BYTES >= run_tests_trivial);
+        assert!(RUN_TESTS_FLOOR_BYTES - run_tests_trivial <= 16);
+        assert!(COMPILE_BYTES + RUN_TESTS_BYTES <= RUN_TESTS_FLOOR_BYTES + 16);
     }
 
     /// Every site whose recursion jq drives from inside another one, and where
@@ -862,7 +1036,7 @@ mod tests {
                 outer.headroom_levels() > 0,
                 "{outer:?} should give up a level"
             );
-            for kb in LIMITS {
+            for kb in [256u64, 1024, 4096, 8192, 16384] {
                 let deepest = outer.frame_budget_at(kb * 1024, 0);
                 let held = deepest * outer.model().0;
                 for &inner in inners {
@@ -874,7 +1048,7 @@ mod tests {
                 }
             }
         }
-        for &(site, _, _, _) in MEASURED {
+        for &(site, ..) in MEASURED {
             assert_eq!(
                 !site.drives().is_empty(),
                 DRIVEN.iter().any(|(s, _)| *s == site),
@@ -895,7 +1069,7 @@ mod tests {
             Site::Setpath,
             Site::Delpaths,
         ];
-        match stack_limit_bytes() {
+        match rlimit_stack() {
             // The test binary's stack is the shell's, which is never
             // unlimited on macOS; on Linux CI it could be.
             None => assert!(sites.iter().all(|s| s.frame_budget().is_none())),
@@ -937,7 +1111,7 @@ mod tests {
         // on macOS; on Linux CI it could be, so accept either answer.
         match free_frame_budget() {
             Some(d) => assert!(d > 1000, "implausible depth limit {d}"),
-            None => assert!(stack_limit_bytes().is_none()),
+            None => assert!(rlimit_stack().is_none()),
         }
     }
 }

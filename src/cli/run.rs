@@ -1128,6 +1128,8 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
         env: None,
         attrs,
     };
+    // QJ_JQ_COMPAT=1: on a stack too small for jq's compiler, die as it does.
+    crate::compat::compiling();
     let bc = match jq_compile_args(&program, &copts) {
         Ok(bc) => bc,
         Err(e) => {
