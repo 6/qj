@@ -112,7 +112,7 @@ fn globs_expand_by_default_and_not_in_compat_mode() {
     assert_eq!(code(&compat), Some(2));
     assert_eq!(
         stderr(&compat),
-        "qj: error: Could not open file g*.json: No such file or directory\n"
+        "jq: error: Could not open file g*.json: No such file or directory\n"
     );
     assert_eq!(stdout(&compat), "");
 }
@@ -127,7 +127,7 @@ fn gzip_is_decompressed_by_default_and_not_in_compat_mode() {
     let compat = run_in(dir.path(), true, &["-c", ".", "c.json.gz"]);
     assert_eq!(code(&compat), Some(5));
     assert!(
-        stderr(&compat).starts_with("qj: parse error:"),
+        stderr(&compat).starts_with("jq: parse error:"),
         "{}",
         stderr(&compat)
     );
@@ -150,7 +150,7 @@ fn qj_only_options_are_unknown_in_compat_mode() {
         assert_eq!(code(&compat), Some(2), "{args:?}");
         let name = args[0].split('=').next().unwrap();
         assert!(
-            stderr(&compat).starts_with(&format!("qj: Unknown option {}", args[0])),
+            stderr(&compat).starts_with(&format!("jq: Unknown option {}", args[0])),
             "{args:?} ({name}): {}",
             stderr(&compat)
         );
@@ -164,6 +164,86 @@ fn compat_mode_leaves_ordinary_runs_alone() {
         let o = run_in(dir.path(), compat, &["-c", ".a", "g1.json"]);
         assert_eq!(code(&o), Some(0), "compat={compat}: {}", stderr(&o));
         assert_eq!(stdout(&o), "1\n", "compat={compat}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Identity: qj's name and text by default, jq's in compat mode
+// ---------------------------------------------------------------------------
+
+#[test]
+fn version_and_build_configuration_are_jqs_in_compat_mode() {
+    let plain = run(false, &["--version"]);
+    assert_eq!(
+        stdout(&plain),
+        format!("qj {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    let compat = run(true, &["--version"]);
+    assert_eq!(
+        (code(&compat), stdout(&compat).as_str()),
+        (Some(0), "jq-1.8.1\n")
+    );
+
+    let plain = run(false, &["--build-configuration"]);
+    assert!(stdout(&plain).starts_with("qj "), "{}", stdout(&plain));
+    let compat = run(true, &["--build-configuration"]);
+    assert!(
+        stdout(&compat).starts_with("--host="),
+        "{}",
+        stdout(&compat)
+    );
+    // `$JQ_BUILD_CONFIGURATION` is the same text.
+    let var = run(true, &["-nr", "$JQ_BUILD_CONFIGURATION"]);
+    assert_eq!(stdout(&var), stdout(&compat));
+}
+
+#[test]
+fn help_and_usage_are_jqs_in_compat_mode() {
+    let plain = run(false, &["-h"]);
+    assert!(stdout(&plain).starts_with("qj - "), "{}", stdout(&plain));
+    let compat = run(true, &["-h"]);
+    assert_eq!(code(&compat), Some(0));
+    let help = stdout(&compat);
+    assert!(help.starts_with("jq - commandline JSON processor [version 1.8.1]\n\nUsage:\tjq "));
+    assert!(!help.contains("qj"), "{help}");
+
+    // `usage(2, 1)`: no program, `-f` given.
+    let compat = run(true, &["-f"]);
+    assert_eq!(code(&compat), Some(2));
+    assert!(stderr(&compat).starts_with("jq - commandline JSON processor"));
+    assert!(stderr(&compat).ends_with("For listing the command options, use jq --help.\n"));
+
+    // die()'s hint.
+    let plain = run(false, &["--bogus"]);
+    assert_eq!(
+        stderr(&plain),
+        "qj: Unknown option --bogus\nUse qj --help for help with command-line options,\n\
+         or see the jq manpage, or online docs  at https://jqlang.org\n"
+    );
+    let compat = run(true, &["--bogus"]);
+    assert_eq!(
+        stderr(&compat),
+        "jq: Unknown option --bogus\nUse jq --help for help with command-line options,\n\
+         or see the jq manpage, or online docs  at https://jqlang.org\n"
+    );
+}
+
+#[test]
+fn messages_say_jq_in_compat_mode() {
+    for (args, qj, jq) in [
+        (
+            &["-n", "error(\"x\")"][..],
+            "qj: error (at <unknown>): x\n",
+            "jq: error (at <unknown>): x\n",
+        ),
+        (
+            &["-n", "1 +"][..],
+            "qj: error: syntax error, unexpected end of file at <top-level>, line 1, column 3:\n    1 +\n      ^\nqj: 1 compile error\n",
+            "jq: error: syntax error, unexpected end of file at <top-level>, line 1, column 3:\n    1 +\n      ^\njq: 1 compile error\n",
+        ),
+    ] {
+        assert_eq!(stderr(&run(false, args)), qj, "{args:?}");
+        assert_eq!(stderr(&run(true, args)), jq, "{args:?}");
     }
 }
 

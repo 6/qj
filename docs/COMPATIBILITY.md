@@ -12,9 +12,22 @@ interpreter, builtins (the C ones and `builtin.jq`), and `main.c`. See
 The gate is the jq_diff harness (`tests/jq_diff.rs`), run with
 `cargo test --release jq_diff -- --ignored`. It runs jq 1.8.1 and qj with the same
 arguments, stdin, environment and working directory. It then compares stdout byte for
-byte, the exit code, and stderr. jq's own output is the only expectation; the
-expected-output lines in the test files are never used. The only rewriting is qj's
-name in messages (see [Exemptions](#exemptions)).
+byte, the exit code — or the signal, and whether the kernel dumped a core — and stderr.
+jq's own output is the only expectation; the expected-output lines in the test files are
+never used.
+
+It keeps two scoreboards over the same cases:
+
+- **qj as it is.** The only rewriting is qj's name in messages (see
+  [Exemptions](#exemptions)).
+- **`QJ_JQ_COMPAT=1`** ([Being exactly jq](#being-exactly-jq)), given to both tools, both
+  started as `argv[0]` = `jq`, and **nothing rewritten at all**: qj's name, help and
+  version text are compared like everything else.
+
+Where jq never finishes a case — it runs past the 10 s timeout, the 16 MB output cap or
+the 2 GB memory cap — its output up to that point is the expectation: qj matches only if
+it is stopped by the same cap, with the same bytes on stdout and stderr. Anything else,
+an answer included, is a failure.
 
 The cases come from three places:
 
@@ -36,28 +49,36 @@ The cases come from three places:
   - command-line cases: options and their errors, exit codes, input and output modes,
     adversarial NDJSON, and the programs qj evaluates on simdjson's tape without building
     values (`corpus/tape.toml`, under every output option)
-- **A ratchet**, `tests/jq_compat/diff_baseline.txt` (`diff_baseline_linux.txt` on
-  Linux), which fails the run when any case gets worse.
+- **Ratchets**, `tests/jq_compat/diff_baseline.txt` and `diff_baseline_compat.txt`
+  (`diff_baseline_linux.txt` and `diff_baseline_compat_linux.txt` on Linux), which fail
+  the run when any case gets worse on either scoreboard.
 
-Results against jq 1.8.1, the same on macOS (arm64, against jq's macOS release binary)
-and on Linux (x86-64 with glibc 2.39, against its Linux release binary, which links glibc
-statically):
+Results against jq 1.8.1 on macOS (arm64, against jq's macOS release binary) and on Linux
+(x86-64 with glibc 2.39, against its Linux release binary, which links glibc statically).
+Byte-exact means stdout, exit code (or signal and core dump) and stderr all match:
 
-| Cases | Count | Byte-exact (stdout, exit code, stderr) |
-|---|--:|--:|
-| jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 36,312 | 36,301 |
-| **Total** | **39,215** | **39,204** |
+| | Cases | qj as it is | `QJ_JQ_COMPAT=1` |
+|---|--:|--:|--:|
+| **macOS** total | 39,258 | **39,251** | **39,258 (100%)** |
+| &nbsp;&nbsp;jq's own suites | 2,903 | 2,903 | 2,903 |
+| &nbsp;&nbsp;qj's corpus | 36,355 | 36,348 | 36,355 |
+| **Linux** total | 39,282 | **39,275** | **39,282 (100%)** |
+| &nbsp;&nbsp;jq's own suites | 2,903 | 2,903 | 2,903 |
+| &nbsp;&nbsp;qj's corpus | 36,379 | 36,372 | 36,379 |
 
-The 7 cases that differ are all qj's own help, version and usage text; see
-[Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
-them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
-required is that qj not finish either. Across modes, the counts are 15,483 compact, 6,529
-pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,113 command-line cases. The
-command-line cases include some that merge stdout and stderr into one file or pipe,
-checking that output and error messages interleave exactly as jq's stdio buffering
-interleaves them, and some that start the tool with standard descriptors closed
-(`corpus/cli_closed_fds.toml`).
+The 7 cases qj's default mode doesn't match are all its own help, version and usage text
+(see [Exemptions](#exemptions)); with `QJ_JQ_COMPAT=1` they match too. Each count includes
+four cases jq never finishes (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`: jq
+grows until the memory cap stops it), which qj matches by growing until the same cap stops
+it. The two platforms differ by the cases that run on one of them only, where jq does
+something on one platform that it can't do the same way on the other
+([jq's undefined behaviour](#jqs-undefined-behaviour)): 67 on Linux
+(`corpus/lgamma_glibc.test`) and 43 on macOS (`corpus/debug_trace_macos.toml`). Across
+modes, the counts on macOS are 15,483 compact, 6,529 pretty, 6,529 file, 4,542 NDJSON, 19
+`%%FAIL`, and 6,156 command-line cases. The command-line cases include some that merge
+stdout and stderr into one file or pipe, checking that output and error messages interleave
+exactly as jq's stdio buffering interleaves them, and some that start the tool with standard
+descriptors closed (`corpus/cli_closed_fds.toml`).
 
 The older runners also pass with the default binary. They're either lenient (they compare
 outputs as JSON, with numbers as f64) or narrower, and jq_diff covers what they check:
@@ -89,20 +110,25 @@ French messages and a Latin-1 locale for it.
 
 ## Exemptions
 
-- **Help and version text.** qj has its own output for `-h`/`--help`, `-V`/`--version`,
-  `--build-configuration` (and `$JQ_BUILD_CONFIGURATION`), and for the usage summary
-  printed after usage errors.
-- **qj's name.** qj's messages say `qj:` where jq's say `jq:`
-  (`qj: error (at <stdin>:0): ...`). The hint after an option error says
-  `Use qj --help ...`. jq_diff maps both back before comparing stderr, and rewrites
-  nothing else.
+The first two are qj's own identity, and only by default: with `QJ_JQ_COMPAT=1` qj says
+and prints exactly what jq does, and the compat scoreboard compares it unrewritten.
+
+- **Help and version text.** By default qj has its own output for `-h`/`--help`,
+  `-V`/`--version`, `--build-configuration` (and `$JQ_BUILD_CONFIGURATION`), and for the
+  usage summary printed after usage errors.
+- **qj's name.** By default qj's messages say `qj:` where jq's say `jq:`
+  (`qj: error (at <stdin>:0): ...`), and the hint after an option error says
+  `Use qj --help ...`. The default scoreboard maps both back before comparing stderr, and
+  rewrites nothing else.
 - **jq's own nondeterminism.** When jq's output doesn't depend only on its input, there's
-  nothing to match. For example, jq's `lgamma_r` returns an uninitialized sign for 0, -0,
-  NaN and ±infinity, so the corpus leaves out those inputs. `now` reads the clock.
+  nothing to match: `now` reads the clock, and three of jq's bugs read memory it never
+  wrote or had freed, with outcomes that change from run to run or with allocator settings
+  that change nothing a program means. [jq's undefined behaviour](#jqs-undefined-behaviour)
+  has the evidence, platform by platform, and what qj does.
 - **jq's crashes and hangs.** Where jq 1.8.1 crashes or never finishes, the result
-  depends on the stack limit or the heap layout rather than on jq's semantics, so by
-  default qj returns a sane answer instead. `QJ_JQ_COMPAT=1` reproduces jq's behaviour;
-  see [Being exactly jq](#being-exactly-jq).
+  depends on the stack limit rather than on jq's semantics, so by default qj returns a
+  sane answer instead. `QJ_JQ_COMPAT=1` reproduces jq's behaviour; see
+  [Being exactly jq](#being-exactly-jq).
 
   | Program | jq 1.8.1 | qj, default | qj, `QJ_JQ_COMPAT=1` |
   |---|---|---|---|
@@ -114,46 +140,53 @@ French messages and a Latin-1 locale for it.
   | a value printed on a stack of about 80 KB or less, e.g. one nested 242 levels deep at `ulimit -s 64` | SIGSEGV in the printer, before the `MAX_PRINT_DEPTH` cap can stop it | the answer | SIGSEGV at the same depth |
   | a chain of more than about 20,000 imported modules (8 MB stack; 18,000 on Linux) | SIGSEGV | the answer, however long the chain | SIGSEGV at the same depth |
   | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
-  | `[1,2] \| try delpaths([[{}]]) catch .` | prints the error, then SIGSEGV | prints the error, exit 0 | prints the error, exit 0 |
-  | `delpaths([[{"start":1}],[0]])` over two inputs, e.g. `[1] {}` | the first input's error, then `Assertion failed: (JVP_HAS_KIND(a, JV_KIND_STRING))` on the second, exit 134 | both inputs' errors, exit 5 | both inputs' errors, exit 5 |
-  | `--debug-trace=all` of an instruction that runs with an empty data stack, e.g. the BACKTRACK after `[.[] \| . * 2]`'s APPEND | reads 4 bytes of its stack memory it never wrote as the next stack entry: on macOS they are 0, and nothing more is printed; with glibc they are leftover heap data, and jq prints garbage or dies of SIGSEGV | the trace jq prints on macOS | the same |
-
-  The last three are not reproduced in either mode, because there is nothing to reproduce.
-  In the trace, what jq reads is whatever its allocator left in that memory, so jq_diff's
-  `--debug-trace=all` cases stay off it. The two `delpaths` rows are the same bug: jq frees
-  the key twice in `jv_dels`' slice-delete error path. In the second of them, the key is a
-  program constant, so later inputs run on freed memory.
-  Whether that kills jq, and how, is decided by the heap, not by the program: `[1,2]` with an empty `{}` dies, while
-  `[1]`, `[1,2,3]`, `[1,2,3,4]`, `[range(2)]`, `{"start":"x"}` as the key, and even
-  wrapping the same expression in an array (`[[1,2] | try delpaths([[{}]]) catch .]`) all
-  exit 0 — 20 runs each, no variation. Crashing at the site would invent failures where
-  jq succeeds.
 
   jq's deliberate aborts, which come from `assert()` and are deterministic, are
   reproduced in **both** modes, including macOS stdio flushing the output produced before
-  the abort.
+  the abort. jq's undefined behaviour is not, because there is nothing deterministic to
+  reproduce — see [jq's undefined behaviour](#jqs-undefined-behaviour). One face of it is
+  worth naming here: `jv_dels`' double free can make jq **spin forever** (not only crash or
+  answer). On macOS, `delpaths([[{"start":1}]])` over the inputs `[1] [1]` prints the first
+  input's error and then loops on the second at 98% CPU with its resident size flat — so,
+  unlike `delpaths([[nan]])`, a memory cap doesn't stop it, only a timeout. qj reports both
+  errors and exits 5. (It never spins on Linux.)
 
   A reproduced crash is jq's in everything jq_diff compares: the signal, the exit status
-  a shell reports (139 for SIGSEGV, 134 for SIGABRT) and the output lost with it. One thing
-  differs, on Linux systems that collect core dumps: qj tells the kernel not to dump its
-  core first, so a shell reports jq's crash as `Segmentation fault (core dumped)` and qj's
-  as `Segmentation fault`. A core of a deliberate crash shows nothing wrong, and qj's is
-  big: its allocator reserves about 1 GB of address space, which a core handler such as
-  systemd-coredump reads in full (1.5 s a crash on GitHub's runners, 50 ms for jq's).
+  a shell reports (139 for SIGSEGV, 134 for SIGABRT), the output lost with it, and the
+  core dump. The kernel decides whether to dump qj's core exactly as it does for jq's (the
+  signal, `ulimit -c`, `core_pattern`), so a shell reports `Segmentation fault (core
+  dumped)` for both or for neither, and the wait status carries the same flag. What goes
+  into the core is qj's own business, because a core of a deliberate crash shows nothing
+  wrong: before dying, qj writes `0` to `/proc/self/coredump_filter`, so the core has the
+  registers and the list of mappings but no memory. That keeps out the 1 GB of address
+  space qj's allocator reserves, which a pipe handler such as systemd-coredump used to
+  read in full. On GitHub's Ubuntu runner, which hands every core to systemd-coredump
+  whatever `ulimit -c` says, every crash of both tools is `(core dumped)`; qj's take 70
+  to 180 ms and are stored as 5 KB (45 KB as files), where jq's take 90 to 900 ms and are
+  stored as 1 to 3 MB (0.4 to 74 MB as files).
 
 ## Being exactly jq
 
 `QJ_JQ_COMPAT=1` makes qj a drop-in jq 1.8.1, bugs included. It
 
-- reproduces the crashes and hangs in the table above, and
+- reproduces the crashes and hangs in the table above,
 - turns off qj's own additions: glob expansion (jq opens the pattern as a file name and
   fails), `.gz`/`.zst` decompression (jq reads the bytes and fails to parse them), and
-  `--threads`, `--jsonl` and `--debug-timing` (jq's `Unknown option`, exit 2).
+  `--threads`, `--jsonl` and `--debug-timing` (jq's `Unknown option`, exit 2), and
+- is jq by name and text: every message starts with `jq:`, the hint after an option
+  error says `Use jq --help`, `-h` and the usage after errors are jq's `usage()`,
+  `--version` prints `jq-1.8.1`, and `--build-configuration` (and
+  `$JQ_BUILD_CONFIGURATION`) prints the configure line of jq's release binary for the
+  platform, e.g. `--host=arm64-apple-darwin23.6.0 --disable-docs ...` on macOS arm64 and
+  `--host=x86_64-linux-gnu --disable-docs ...` on Linux x86-64. jq 1.8.1 never prints its
+  `argv[0]` — `main.c` spells out `jq` in every message, and uses `argv[0]` only for
+  `$ORIGIN` — so neither does qj. The one line of jq's output that carries it comes from
+  glibc: `assert()` prints the last component of `argv[0]`, and in compat mode qj's does
+  too, from its own.
 
-Parallel processing stays on: it isn't observable. qj's help and version text and the
-`qj:` name in messages stay qj's own, as the exemptions above say. Everything else is
-unchanged — compat mode is not a different evaluator, and the default is already
-jq-exact for every program that doesn't reach one of jq's own bugs.
+Parallel processing stays on: it isn't observable. Everything else is unchanged — compat
+mode is not a different evaluator, and the default is already jq-exact for every program
+that doesn't reach one of jq's own bugs.
 
 The variable is read once at start-up, and counts as set unless it is empty or `0`.
 
@@ -437,6 +470,120 @@ groups, backtracking, character classes, `gsub`), glibc's `qsort`/`msort` and it
 `@base64d`, `tojson`/`fromjson`, `@csv`/`@uri`/`@sh`, `--stream`, `-s` and `-R`. The
 printer is the one that does overflow, and compat mode models it (above); the JSON parser
 keeps its stack on the heap, so deep *input* only reaches `jv_free`, which is modelled too.
+
+## jq's undefined behaviour
+
+Three bugs in jq 1.8.1 read memory that jq never wrote, or had already freed:
+
+- **`jv_dels`' double free.** Deleting a slice of an array whose bounds aren't numbers
+  (`delpaths([[{}]])`, `{"start":1}` without an `"end"`, ...) fails with `Array/string
+  slice indices must be integers`, but on the way out `jv_dels` frees the key a second
+  time: `parse_slice` had consumed it already. When the key is a program constant, the
+  constant then points at freed memory, which jq frees again at exit, or reads when a
+  later input reaches it.
+- **`--debug-trace=all` with an empty data stack.** For an instruction that runs with
+  nothing on the data stack, such as the `BACKTRACK` after `[.[] | . * 2]`'s `APPEND`, the
+  trace reads `*stack_block_next(&jq->stk, 0)`: the 4 bytes at the top of the data stack's
+  allocation, which nothing ever writes. 0 ends the line; anything else is followed as an
+  offset into the stack, and what is there is printed as a value.
+- **`lgamma_r`'s sign.** `LIBM_DA(lgamma_r)` hands libm the address of an `int` it never
+  initializes, and prints what libm leaves there as the sign.
+
+Whether jq's outcome is a function of the program and its input at all was settled per
+platform with a corpus of 821 programs that reach one of the three (369, 264 and 188 of
+them). They vary the containers and their sizes, constants against values computed at run
+time, bound variables and `--argjson`, the other paths deleted alongside, what runs before
+and after, several inputs, the output options, and for the trace the size of the first
+frame. Each ran against jq's release binary under settings that change nothing a program
+means: 5 times as it is; with the environment 1, 4 and 16 KB larger; with ASLR off
+(`setarch -R` on Linux, `posix_spawn` with `_POSIX_SPAWN_DISABLE_ASLR` on macOS); and
+under allocator settings: `MallocNanoZone=0`, `MallocScribble=1` and
+`MallocGuardEdges=1` on macOS, `MALLOC_PERTURB_=85` and `170` and
+`GLIBC_TUNABLES=glibc.malloc.tcache_count=0` on glibc. That is 22 runs a program on macOS
+and 21 on Linux. It was run on two macOS machines (macOS 27 on an M5 Max, and GitHub's
+macos-26 runner) and the Linux runner (GitHub's Ubuntu 24.04, x86-64), with the same
+conclusions on each; the numbers below are from the M5 Max and the Ubuntu runner:
+
+| | macOS | Linux |
+|---|---|---|
+| the double free (369) | **changes from run to run** for 7 programs on the M5 Max, 31 on the macos-26 runner; each of the other settings changes a handful. On a second input, the freed key decides the outcome: exit 0, SIGABRT, SIGSEGV, or a flat spin — deterministic per program | the same in every run, environment and ASLR setting; **`tcache_count=0` changes 128** |
+| the empty-stack trace (264, of which 166 read the word) | the same in every run, environment, ASLR, `MallocNanoZone=0` and `MallocGuardEdges=1` setting: the word is 0 in all 166; **`MallocScribble=1` kills all 166** | the same in every run, environment and ASLR setting: the word is 0 in 89, and 77 die (74 of SIGSEGV, 3 of an `assert()`); **`MALLOC_PERTURB_` kills the 89 too, `tcache_count=0` changes 41** |
+| `lgamma_r`'s sign (188) | **changes from run to run** in all 183 that reach it | defined after all: glibc writes the sign for every input, the same under every setting |
+
+So there is jq behaviour to conform to in two places, and qj conforms to both:
+
+- **`lgamma_r` on Linux.** qj calls glibc's `lgamma_r` as jq does, and matches jq in all
+  188 programs. They're jq_diff cases now, on Linux (`corpus/lgamma_glibc.test`).
+- **The trace on macOS, as macOS runs it.** The memory jq reads comes to it zeroed, so its
+  trace is the one qj prints, which reads 0: qj matches jq in all 264 programs, and 43 that
+  read the word are jq_diff cases now, on macOS (`corpus/debug_trace_macos.toml`). But
+  this is jq's allocator speaking, not jq: `MallocScribble=1`, which fills new
+  allocations with `0xAA`, kills every program that reads the word. (That is also how the
+  166 were told from the 98 that never read it.)
+
+Everywhere else jq doesn't conform to itself, and qj gives the answer jq gives when the
+memory happens to be harmless: the double free reports its error and carries on, the trace
+reads 0, and `lgamma_r`'s sign is what libm writes, or 0 where Apple's libm writes nothing.
+Reproducing more would mean reproducing jq's heap — glibc's tcache and bins, or
+libmalloc's zones, fed exactly jq's allocations — to know what a freed or never-written
+block holds, and even that would be wrong for anyone who runs jq with one of the settings
+above. In detail:
+
+**macOS.** The sign is the low half of a heap pointer, which moves with every run, with
+ASLR off too:
+
+```
+$ for i in 1 2 3; do jq -nc '[0, -0, nan, infinite, -infinite] | map(lgamma_r)'; done
+[[1.7976931348623157e+308,52549124],[1.7976931348623157e+308,52549124],[null,52549124],...
+[[1.7976931348623157e+308,58480132],[1.7976931348623157e+308,58480132],[null,58480132],...
+[[1.7976931348623157e+308,87954948],[1.7976931348623157e+308,87954948],[null,87954948],...
+```
+
+`jq -nc '[1] | try delpaths([[{}]]) catch .'`, run 100 times, prints the error every time,
+then exits 0 in 51 runs and dies of SIGSEGV in 49. With `[1,2]` all 100 runs die, with
+`[1,2,3]` none; `[1,2,3,4] | try delpaths([[{}]]) catch .` exits 0 in 200 runs out of 200,
+which is why it stays a jq_diff case (`corpus/compat_mode.toml`). With two inputs, the
+second runs into the freed constant, and what it does then is decided by what is in that
+memory — deterministic per program, and a third outcome on top of "exits 0" and "SIGSEGV":
+`delpaths([[{"start":1}],[0]])` over `[1] {}` prints the first input's error and then
+aborts on the second in all 100 runs (`Assertion failed: (JVP_HAS_KIND(a, JV_KIND_STRING)),
+function jvp_string_ptr`), while `delpaths([[{"start":1}]])` over `[1] [1]` prints the
+first error and then **spins forever** on the second (98% CPU, resident size flat — not the
+growing hang of `delpaths([[nan]])`, so only a timeout stops it, not a memory cap), in every
+one of 22 runs and on file input as well as stdin. qj reports both inputs' errors and exits 5.
+
+`jq -c --debug-trace=all '[.[] | . * 2]' <<< '[1,2]'` prints the trace and exits 0; with
+`MallocScribble=1` it dies of SIGSEGV, having printed nothing.
+
+**Linux** (`jq` is `jq-linux-amd64`). Here the double free is the same from run to run:
+
+```
+$ jq -nc '[] | try delpaths([[{}]]) catch .'; echo "exit $?"
+"Array/string slice indices must be integers"
+exit 0
+$ GLIBC_TUNABLES=glibc.malloc.tcache_count=0 jq -nc '[] | try delpaths([[{}]]) catch .'; echo "exit $?"
+"Array/string slice indices must be integers"
+corrupted double-linked list
+exit 134
+```
+
+With glibc's per-thread cache on, the freed key goes into it, and jq's second release only
+decrements what is now the cache's bookkeeping; with it off, glibc's consistency checks find
+the damage. The setting turns 90 of the 369 programs from exit 0 into `corrupted
+double-linked list`, 8 into `malloc(): unsorted double linked list corrupted`, and others
+into assertion failures. Under the default settings, every program with one input exits
+the way qj does, and so does `delpaths([[{"start":1}],[0]])` over `[1] {}` — both errors,
+exit 5 — which aborts on macOS; 12 programs whose second input reaches the freed key abort
+(`jvp_object_get_slot: Assertion ... failed`, e.g. `delpaths([[{"start":1}]])` over
+`[1] [1]`), where qj reports both errors.
+
+`jq -c --debug-trace=all '[.[]]' <<< '[1,2]'` dies of SIGSEGV in every run, with ASLR on
+or off; with `tcache_count=0` it prints the trace and exits 0, while
+`[.[] | select(. > 1)]` does the opposite. With `MALLOC_PERTURB_=85`,
+`jq -nc --debug-trace=all '[range(10)] | [.[]]'` goes from exit 0 to SIGSEGV.
+
+`ub_corpus.py`, `ub_run.py` and `ub_analyze.py` on the `ci/ex-identity-debug` branch
+(`.github/ci-debug/ex/`) generate the corpus, run it under every setting and summarize it.
 
 ## Numbers
 

@@ -1696,7 +1696,7 @@ pub(crate) fn window_line_number(nl_before: u64, line_start: usize, b: usize, e:
 
 fn default_message_sink(m: InputMessage) {
     use std::io::Write;
-    let _ = io::stderr().write_all(&m.render("qj"));
+    let _ = io::stderr().write_all(&m.render(crate::compat::prog_name()));
 }
 
 enum ChunkAt {

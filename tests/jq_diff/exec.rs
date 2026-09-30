@@ -13,7 +13,13 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Status {
     Exit(i32),
+    /// Killed by a signal, without a core dump.
     Signal(i32),
+    /// Killed by a signal, and the kernel dumped its core (`WCOREDUMP`): a
+    /// shell says `Segmentation fault (core dumped)`. Whether it does is up to
+    /// the kernel's settings (`ulimit -c`, `core_pattern`) as they apply to
+    /// the process, so it is part of what a crash looks like.
+    CoreDumped(i32),
     Timeout,
     /// stdout or stderr exceeded the capture limit; the process was killed.
     OutputLimit,
@@ -26,6 +32,7 @@ impl std::fmt::Display for Status {
         match self {
             Status::Exit(c) => write!(f, "{c}"),
             Status::Signal(s) => write!(f, "signal {s}"),
+            Status::CoreDumped(s) => write!(f, "signal {s} (core dumped)"),
             Status::Timeout => write!(f, "timeout"),
             Status::OutputLimit => write!(f, "output limit exceeded"),
             Status::MemoryLimit => write!(f, "memory limit exceeded"),
@@ -35,6 +42,8 @@ impl std::fmt::Display for Status {
 
 pub struct Spec<'a> {
     pub bin: &'a Path,
+    /// `argv[0]`, when it isn't `bin` itself.
+    pub arg0: Option<&'a str>,
     pub args: &'a [String],
     pub cwd: &'a Path,
     /// The complete environment (the child's environment is cleared first).
@@ -132,13 +141,26 @@ fn rss_bytes(_pid: u32) -> Option<u64> {
     None
 }
 
+/// Kill the child and everything it started. The child leads its own process
+/// group ([`run`] sets `process_group(0)`), so `killpg` reaches any helper it
+/// forked — e.g. `sh -c 'yes'` that outlived a plain `kill` and kept writing
+/// to a deleted merged tempfile, filling the disk. `Child::kill` as well, in
+/// case the group wasn't set.
 fn kill(child: &Mutex<Child>) {
     if let Ok(mut c) = child.lock() {
+        // SAFETY: killpg sends a signal to a process group; a negative or
+        // recycled pgid at worst signals nothing (the child is reaped only
+        // after the watchdog is joined, so its pid can't be reused yet).
+        unsafe {
+            libc::killpg(c.id() as libc::pid_t, libc::SIGKILL);
+        }
         let _ = c.kill();
     }
 }
 
-/// Read until EOF, or until more than `cap` bytes arrived (then kill the child).
+/// Read until EOF, or until more than `cap` bytes arrived: then kill the
+/// child, keeping exactly the first `cap` bytes, so that what two tools wrote
+/// up to the cap compares the same however the pipe split it into reads.
 fn read_capped(mut r: impl Read, cap: usize, child: &Mutex<Child>, over: &AtomicBool) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
@@ -146,7 +168,9 @@ fn read_capped(mut r: impl Read, cap: usize, child: &Mutex<Child>, over: &Atomic
         match r.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
-                if buf.len() + n > cap {
+                let room = cap - buf.len();
+                if n > room {
+                    buf.extend_from_slice(&chunk[..room]);
                     over.store(true, Ordering::SeqCst);
                     kill(child);
                     break;
@@ -160,13 +184,42 @@ fn read_capped(mut r: impl Read, cap: usize, child: &Mutex<Child>, over: &Atomic
     buf
 }
 
+/// On macOS, sets this process's `ulimit -c` to 0 (once), which every tool it
+/// starts inherits. macOS dumps a core only when that limit asks for one, into
+/// `/cores`, and a core there is the whole address space, a GB or more: a
+/// run of crash cases must never fill the disk. Linux keeps the limit it was
+/// given, because a pipe handler such as systemd-coredump ignores it there,
+/// and whether the kernel dumps is compared ([`Status::CoreDumped`]).
+fn no_core_files_on_macos() {
+    #[cfg(target_os = "macos")]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            // SAFETY: getrlimit writes and setrlimit reads a valid rlimit.
+            unsafe {
+                let mut lim: libc::rlimit = std::mem::zeroed();
+                if libc::getrlimit(libc::RLIMIT_CORE, &mut lim) == 0 {
+                    lim.rlim_cur = 0;
+                    libc::setrlimit(libc::RLIMIT_CORE, &lim);
+                }
+            }
+        });
+    }
+}
+
 pub fn run(spec: &Spec) -> Result<Output, String> {
     let io_err = |e: std::io::Error| format!("{}: {e}", spec.bin.display());
     let mut cmd = Command::new(spec.bin);
+    if let Some(arg0) = spec.arg0 {
+        cmd.arg0(arg0);
+    }
     cmd.args(spec.args)
         .current_dir(spec.cwd)
         .env_clear()
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
+        // The child leads its own process group, so [`kill`] can `killpg`
+        // everything it starts (a `sh -c 'yes'` grandchild, a worker jq).
+        .process_group(0)
         .stdin(if spec.stdin.is_some() {
             Stdio::piped()
         } else {
@@ -192,6 +245,7 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
             merged_pipe = Some(r);
         }
     }
+    no_core_files_on_macos();
     if !spec.close_fds.is_empty() {
         let fds: Vec<i32> = spec.close_fds.to_vec();
         // SAFETY: runs in the forked child between the dup2s and exec;
@@ -302,6 +356,13 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
         f.take(spec.max_output as u64 + 1)
             .read_to_end(&mut out)
             .map_err(io_err)?;
+        // Past the cap is past the cap, whether the watchdog saw it before
+        // the child exited or not: keep exactly the first `max_output` bytes,
+        // as `read_capped` does.
+        if out.len() > spec.max_output {
+            out.truncate(spec.max_output);
+            over.store(true, Ordering::SeqCst);
+        }
         (out, Vec::new())
     } else if let Some(pipe) = merged_pipe {
         (
@@ -343,6 +404,8 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
         Status::OutputLimit
     } else if let Some(code) = status.code() {
         Status::Exit(code)
+    } else if status.core_dumped() {
+        Status::CoreDumped(status.signal().unwrap_or(-1))
     } else {
         Status::Signal(status.signal().unwrap_or(-1))
     };
@@ -361,6 +424,7 @@ mod tests {
         let args = vec!["-c".to_string(), script.to_string()];
         run(&Spec {
             bin: Path::new("/bin/sh"),
+            arg0: None,
             args: &args,
             cwd: Path::new("/"),
             env: &[("PATH".into(), "/usr/bin:/bin".into())],
@@ -378,6 +442,7 @@ mod tests {
         let args = vec!["-c".to_string(), script.to_string()];
         run(&Spec {
             bin: Path::new("/bin/sh"),
+            arg0: None,
             args: &args,
             cwd: Path::new("/"),
             env: &[("PATH".into(), "/usr/bin:/bin".into())],
@@ -454,6 +519,7 @@ mod tests {
         ];
         let o = run(&Spec {
             bin: Path::new("/usr/bin/perl"),
+            arg0: None,
             args: &args,
             cwd: Path::new("/"),
             env: &[],
@@ -468,8 +534,25 @@ mod tests {
         assert_eq!(o.status, Status::MemoryLimit);
     }
 
+    /// Whether the kernel dumps the shell's core is up to its settings (on
+    /// GitHub's Linux runners systemd-coredump takes every one, whatever
+    /// `ulimit -c` says), so either status is right; the signal is 11.
     #[test]
     fn signal_is_reported() {
+        let o = sh("kill -SEGV $$", None, 5000, 1 << 16);
+        assert!(
+            matches!(o.status, Status::Signal(11) | Status::CoreDumped(11)),
+            "{:?}",
+            o.status
+        );
+    }
+
+    /// With a core-size limit of 0 and a file `core_pattern`, a kernel dumps
+    /// nothing; macOS always has a file pattern (and the harness sets the
+    /// limit to 0 there anyway), so its status must say so.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_core_is_dumped_on_macos() {
         let o = sh("kill -SEGV $$", None, 5000, 1 << 16);
         assert_eq!(o.status, Status::Signal(11));
     }
@@ -478,6 +561,7 @@ mod tests {
     fn environment_is_exactly_the_given_one() {
         let o = run(&Spec {
             bin: Path::new("/usr/bin/env"),
+            arg0: None,
             args: &[],
             cwd: Path::new("/"),
             env: &[("B".into(), "2".into()), ("A".into(), "1".into())],

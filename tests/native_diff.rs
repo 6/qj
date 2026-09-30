@@ -54,6 +54,7 @@ fn run_qj(program: &str, input: &str, natives: bool, max_rss: u64) -> (Status, V
     let cwd = std::env::temp_dir();
     let spec = Spec {
         bin,
+        arg0: None,
         args: &args,
         cwd: &cwd,
         env: &env,

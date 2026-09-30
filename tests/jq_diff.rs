@@ -1,43 +1,56 @@
 //! jq_diff: strict differential conformance harness, qj vs jq 1.8.1.
 //!
 //! Every case runs jq and qj with identical argv, stdin, environment and
-//! working directory, and compares stdout bytes, exit code, and stderr after
-//! rewriting the program name: a line-initial `qj:` prefix to `jq:`, and the
-//! usage-hint line `Use qj --help for help with command-line options,` to
-//! jq's. Nothing else is normalized. jq's results are the only expectations:
-//! the `.test` files' expected-output lines are never used.
+//! working directory, and compares stdout bytes, exit code (or the signal,
+//! and whether the kernel dumped a core), and stderr. jq's results are the
+//! only expectations: the `.test` files' expected-output lines are never used.
+//!
+//! Two scoreboards run the same cases, one after the other:
+//! - `jq_diff`: qj as it is. stderr is compared after rewriting the program
+//!   name: a line-initial `qj:` prefix to `jq:`, and the usage-hint line
+//!   `Use qj --help for help with command-line options,` to jq's. Nothing else
+//!   is normalized.
+//! - `jq_diff_compat`: `QJ_JQ_COMPAT=1` (given to both tools, so `$ENV` stays
+//!   comparable), both started as `argv[0]` = `jq`, and nothing normalized at
+//!   all: qj has to be jq, name, help and version text included.
 //!
 //! Levels: `pass` (all three equal), `stdout` (stdout + exit code equal,
-//! stderr differs), `fail`. A case is skipped only when jq never finishes
-//! (timeout, or the output or memory cap) *and* neither does qj; a qj that
-//! answers where jq hangs is a `fail`.
+//! stderr differs), `fail`. Where jq never finishes (killed at the timeout,
+//! the output cap or the memory cap), qj matches only by not finishing the
+//! same way: the same cap, and the same stdout and stderr up to it. That is a
+//! pass, shown in the scoreboard's `unfin` column; anything else is a fail.
 //!
 //! Case sources (see `tests/jq_diff/cases.rs` for modes):
 //! - `tests/jq_compat/*.test`: jq 1.8.1's own suites (`upstream/...`).
 //! - `tests/jq_compat/corpus/*.test`: qj's corpus in the same format.
 //! - `tests/jq_compat/corpus/*.toml`: CLI cases (`tests/jq_diff/cli.rs`).
 //!
-//! Run: `cargo test --release jq_diff -- --ignored` (the scoreboard goes to
-//! stderr and is visible without `--nocapture`). Environment knobs:
+//! Run: `cargo test --release jq_diff -- --ignored` runs both scoreboards;
+//! `cargo test --release jq_diff_compat -- --ignored` only compat's, and
+//! `cargo test --release jq_diff -- --ignored --exact` only the default one.
+//! (The scoreboards go to stderr and are visible without `--nocapture`.)
+//! Environment knobs:
 //! - `JQ_DIFF_FILTER=a,b`: only cases whose id contains one of the substrings
 //!   (ids look like `upstream/man.test:280:compact`).
 //! - `JQ_DIFF_MODES=compact,pretty,file,ndjson,fail,cli`: subset of modes.
 //! - `JQ_DIFF_VERBOSE=1`: print every non-passing case with its program,
 //!   input, and jq vs qj stdout/stderr/exit code.
-//! - `JQ_DIFF_QJ_ENV="K=V K2=V2"`: extra environment (e.g. `QJ_CORE=old`).
+//! - `JQ_DIFF_QJ_ENV="K=V K2=V2"`: extra environment (e.g. `QJ_NO_TAPE=1`).
 //!   It is given to jq too, so `env`/`$ENV` output stays comparable.
-//! - `JQ_DIFF_BASELINE=path`: ratchet baseline (default
-//!   `tests/jq_compat/diff_baseline.txt` on macOS,
-//!   `tests/jq_compat/diff_baseline_<os>.txt` elsewhere).
-//! - `JQ_DIFF_UPDATE_BASELINE=1`: rewrite the baseline from this run.
+//! - `JQ_DIFF_BASELINE=path`, `JQ_DIFF_COMPAT_BASELINE=path`: ratchet
+//!   baselines (defaults `tests/jq_compat/diff_baseline.txt` and
+//!   `diff_baseline_compat.txt` on macOS, `diff_baseline_<os>.txt` and
+//!   `diff_baseline_compat_<os>.txt` elsewhere).
+//! - `JQ_DIFF_UPDATE_BASELINE=1`: rewrite the baselines from this run.
 //! - `JQ_DIFF_JQ`, `JQ_DIFF_QJ`: binaries (default: `jq` on PATH, cargo's qj).
 //! - `JQ_DIFF_TIMEOUT` (seconds, default 10), `JQ_DIFF_MEM_MB` (resident
 //!   memory cap per process, default 2048), `JQ_DIFF_JOBS` (parallelism).
 //!
 //! The test fails when a case in the baseline drops to a lower level. Full
 //! details of every non-passing case are written to
-//! `target/tmp/jq_diff/report.txt`, one line per case to `results.tsv`, and
-//! the baseline this run would produce to `baseline_candidate.txt`.
+//! `target/tmp/jq_diff/report.txt` (compat: `target/tmp/jq_diff/compat/`),
+//! one line per case to `results.tsv`, and the baseline this run would
+//! produce to `baseline_candidate.txt`.
 
 #[path = "jq_diff/baseline.rs"]
 mod baseline;
@@ -75,6 +88,78 @@ macro_rules! say {
     }};
 }
 
+/// Which scoreboard a run is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Board {
+    /// qj as it is, with its name mapped back to jq's in stderr.
+    Default,
+    /// `QJ_JQ_COMPAT=1` for both tools, both started as `jq`, and nothing
+    /// normalized.
+    Compat,
+}
+
+impl Board {
+    fn name(self) -> &'static str {
+        match self {
+            Board::Default => "jq_diff",
+            Board::Compat => "jq_diff_compat",
+        }
+    }
+
+    /// The environment variable naming this board's baseline, and its
+    /// default for this OS.
+    fn baseline(self) -> (&'static str, String) {
+        let (var, stem) = match self {
+            Board::Default => ("JQ_DIFF_BASELINE", "diff_baseline"),
+            Board::Compat => ("JQ_DIFF_COMPAT_BASELINE", "diff_baseline_compat"),
+        };
+        let file = if std::env::consts::OS == "macos" {
+            format!("tests/jq_compat/{stem}.txt")
+        } else {
+            format!("tests/jq_compat/{stem}_{}.txt", std::env::consts::OS)
+        };
+        (var, file)
+    }
+
+    /// Where jq's results are cached. One file per board: a complete run
+    /// prunes what it didn't run, which would be the other board's entries.
+    fn cache_file(self) -> &'static str {
+        match self {
+            Board::Default => "tests/jq_compat/.cache/jq_diff.json",
+            Board::Compat => "tests/jq_compat/.cache/jq_diff_compat.json",
+        }
+    }
+
+    /// Where the reports go, under the shared work directory.
+    fn out_dir(self, work: &Path) -> PathBuf {
+        match self {
+            Board::Default => work.to_path_buf(),
+            Board::Compat => work.join("compat"),
+        }
+    }
+
+    /// `argv[0]` for both tools (`None`: the binary's path).
+    fn arg0(self) -> Option<&'static str> {
+        match self {
+            Board::Default => None,
+            Board::Compat => Some("jq"),
+        }
+    }
+
+    /// Whether stderr's program name is mapped back to jq's.
+    fn normalizes(self) -> bool {
+        self == Board::Default
+    }
+
+    /// Environment this board adds for both tools, ahead of `JQ_DIFF_QJ_ENV`.
+    fn env(self) -> Vec<(String, String)> {
+        match self {
+            Board::Default => Vec::new(),
+            Board::Compat => vec![("QJ_JQ_COMPAT".into(), "1".into())],
+        }
+    }
+}
+
 struct Config {
     filters: Vec<String>,
     modes: Vec<Mode>,
@@ -98,7 +183,7 @@ fn env_nonempty(name: &str) -> Option<String> {
 }
 
 impl Config {
-    fn from_env() -> Result<Config, String> {
+    fn from_env(board: Board) -> Result<Config, String> {
         let filters = env_nonempty("JQ_DIFF_FILTER")
             .map(|f| f.split(',').map(|s| s.trim().to_string()).collect())
             .unwrap_or_default();
@@ -109,7 +194,7 @@ impl Config {
                 .map(|s| Mode::parse(s.trim()).ok_or_else(|| format!("unknown mode {s:?}")))
                 .collect::<Result<_, _>>()?,
         };
-        let extra_env = env_nonempty("JQ_DIFF_QJ_ENV")
+        let user_env = env_nonempty("JQ_DIFF_QJ_ENV")
             .map(|e| {
                 e.split_whitespace()
                     .map(|kv| {
@@ -121,12 +206,9 @@ impl Config {
             })
             .transpose()?
             .unwrap_or_default();
-        let default_baseline = if std::env::consts::OS == "macos" {
-            "tests/jq_compat/diff_baseline.txt".to_string()
-        } else {
-            format!("tests/jq_compat/diff_baseline_{}.txt", std::env::consts::OS)
-        };
-        let baseline = root().join(env_nonempty("JQ_DIFF_BASELINE").unwrap_or(default_baseline));
+        let extra_env = board.env().into_iter().chain(user_env).collect();
+        let (baseline_var, default_baseline) = board.baseline();
+        let baseline = root().join(env_nonempty(baseline_var).unwrap_or(default_baseline));
         let timeout = env_nonempty("JQ_DIFF_TIMEOUT")
             .map(|t| {
                 t.parse::<f64>()
@@ -278,6 +360,7 @@ struct Ctx<'a> {
     env: Vec<(String, String)>,
     timeout: Duration,
     max_rss: u64,
+    board: Board,
 }
 
 fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, Vec<u8>, Duration) {
@@ -285,24 +368,29 @@ fn observe(ctx: &Ctx, bin: &Path, job: &Job, keep_verbatim: bool) -> (Observed, 
     let started = Instant::now();
     let out = exec::run(&exec::Spec {
         bin,
+        arg0: ctx.board.arg0(),
         args: &job.inv.args,
         cwd: &ctx.work.join(&job.inv.cwd),
         env: &env,
         stdin: job.inv.stdin.as_deref(),
         timeout: ctx.timeout,
         max_output: MAX_OUTPUT,
-        max_rss: ctx.max_rss,
+        max_rss: job.inv.mem_mb.map_or(ctx.max_rss, |mb| mb << 20),
         merge: job.inv.merge,
         close_fds: &job.inv.close_fds,
     })
     .unwrap_or_else(|e| panic!("{}: {e}", job.id));
     let elapsed = started.elapsed();
-    let normalized = compare::normalize_stderr(&out.stderr);
-    // Merged, stdout carries stderr's messages too.
-    let stdout = if job.inv.merge == exec::Merge::No {
-        out.stdout
+    let (normalized, stdout) = if !ctx.board.normalizes() {
+        (out.stderr.clone(), out.stdout)
+    } else if job.inv.merge == exec::Merge::No {
+        (compare::normalize_stderr(&out.stderr), out.stdout)
     } else {
-        compare::normalize_merged(&out.stdout)
+        // Merged, stdout carries stderr's messages too.
+        (
+            compare::normalize_stderr(&out.stderr),
+            compare::normalize_merged(&out.stdout),
+        )
     };
     (
         Observed {
@@ -333,8 +421,8 @@ fn run_job(ctx: &Ctx, cache: &cache::Cache, key: &str, jq: &Path, qj: &Path, job
             (o, Some(t))
         }
     };
-    // qj runs even when jq never finished: there is nothing to compare, but
-    // qj must not finish either (see `compare::classify`).
+    // qj runs even when jq never finished: it must not finish either, and in
+    // the same way (see `compare::classify`).
     let (qj_obs, qj_raw_err, qj_time) = observe(ctx, qj, job, true);
     let verdict = compare::classify(&jq_obs, &qj_obs);
     let detail = (verdict != Verdict::Level(Level::Pass)).then_some((jq_obs, qj_obs, qj_raw_err));
@@ -372,7 +460,7 @@ fn describe(job: &Job, outcome: &Outcome, max: usize) -> String {
         Verdict::Level(Level::Fail) => "FAIL",
         Verdict::Level(Level::Stdout) => "STDERR",
         Verdict::Level(Level::Pass) => "PASS",
-        Verdict::Skipped(_) => "SKIP",
+        Verdict::Unfinished => "UNFINISHED (a pass: neither tool finished, the same way)",
     };
     let _ = writeln!(s, "{label} {}  ({})", job.id, job.origin);
     if let Some(p) = &job.program {
@@ -386,9 +474,6 @@ fn describe(job: &Job, outcome: &Outcome, max: usize) -> String {
     let _ = writeln!(s, "  argv:    {:?}", job.inv.args);
     if !job.inv.env.is_empty() {
         let _ = writeln!(s, "  env:     {:?}", job.inv.env);
-    }
-    if let Verdict::Skipped(why) = outcome.verdict {
-        let _ = writeln!(s, "  skipped: {why}");
     }
     if let Some((jq, qj, qj_err)) = &outcome.detail {
         let _ = writeln!(
@@ -412,12 +497,15 @@ fn describe(job: &Job, outcome: &Outcome, max: usize) -> String {
 #[derive(Default, Clone, Copy)]
 struct Tally {
     cases: usize,
+    /// Strict: stdout, exit code and stderr match, including `unfinished`.
     pass: usize,
+    /// Of `pass`: programs jq never finishes, which qj didn't finish the same
+    /// way.
+    unfinished: usize,
     stdout_only: usize,
     /// stdout-only cases where jq exited 3 (compile error wording).
     compile_err: usize,
     fail: usize,
-    skip: usize,
 }
 
 impl Tally {
@@ -425,6 +513,10 @@ impl Tally {
         self.cases += 1;
         match outcome.verdict {
             Verdict::Level(Level::Pass) => self.pass += 1,
+            Verdict::Unfinished => {
+                self.pass += 1;
+                self.unfinished += 1;
+            }
             Verdict::Level(Level::Stdout) => {
                 self.stdout_only += 1;
                 if matches!(&outcome.detail, Some((jq, _, _)) if jq.status == exec::Status::Exit(3))
@@ -433,39 +525,37 @@ impl Tally {
                 }
             }
             Verdict::Level(Level::Fail) => self.fail += 1,
-            Verdict::Skipped(_) => self.skip += 1,
         }
     }
 
     fn merge(&mut self, o: &Tally) {
         self.cases += o.cases;
         self.pass += o.pass;
+        self.unfinished += o.unfinished;
         self.stdout_only += o.stdout_only;
         self.compile_err += o.compile_err;
         self.fail += o.fail;
-        self.skip += o.skip;
     }
 
     fn row(&self, label: &str, mode: &str) -> String {
-        let judged = self.cases - self.skip;
         let pct = |n: usize| {
-            if judged == 0 {
+            if self.cases == 0 {
                 0.0
             } else {
-                n as f64 * 100.0 / judged as f64
+                n as f64 * 100.0 / self.cases as f64
             }
         };
         let out = self.pass + self.stdout_only;
         format!(
-            "{label:<34} {mode:<8} {:>6} {:>6} {:>6.1}% {:>6} {:>6.1}% {:>6} {:>5} {:>5}",
+            "{label:<34} {mode:<8} {:>6} {:>6} {:>6.1}% {:>5} {:>6} {:>6.1}% {:>6} {:>5}",
             self.cases,
             self.pass,
             pct(self.pass),
+            self.unfinished,
             out,
             pct(out),
             self.fail,
             self.compile_err,
-            self.skip
         )
     }
 }
@@ -485,8 +575,8 @@ fn scoreboard(jobs: &[&Job], outcomes: &[Outcome]) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{:<34} {:<8} {:>6} {:>6} {:>7} {:>6} {:>7} {:>6} {:>5} {:>5}",
-        "group", "mode", "cases", "strict", "", "out", "", "fail", "cerr", "skip"
+        "{:<34} {:<8} {:>6} {:>6} {:>7} {:>5} {:>6} {:>7} {:>6} {:>5}",
+        "group", "mode", "cases", "strict", "", "unfin", "out", "", "fail", "cerr"
     );
     let mut by_mode: BTreeMap<Mode, Tally> = BTreeMap::new();
     let mut by_source: Vec<(&str, Tally)> = Vec::new();
@@ -547,36 +637,62 @@ fn binary_identity(path: &Path) -> String {
     )
 }
 
+/// The two scoreboards never run at once: each already runs a job per core,
+/// and libtest would start them side by side.
+static ONE_BOARD_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The default scoreboard: qj as it is.
 #[test]
 #[ignore]
 fn jq_diff() {
+    run_board(Board::Default);
+}
+
+/// The compat scoreboard: `QJ_JQ_COMPAT=1`, both tools started as `jq`, and
+/// nothing normalized.
+#[test]
+#[ignore]
+fn jq_diff_compat() {
+    run_board(Board::Compat);
+}
+
+fn run_board(board: Board) {
+    // A board that failed poisons the lock; the other still runs.
+    let _one = ONE_BOARD_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let started = Instant::now();
-    let cfg = Config::from_env().unwrap_or_else(|e| panic!("jq_diff: {e}"));
+    let name = board.name();
+    let cfg = Config::from_env(board).unwrap_or_else(|e| panic!("{name}: {e}"));
 
     let Some(jq) = cfg
         .jq
         .clone()
         .or_else(|| find_on_path("jq").map(resolve_shim))
     else {
-        say!("jq_diff: skipped: jq not found on PATH (set JQ_DIFF_JQ)");
+        say!("{name}: skipped: jq not found on PATH (set JQ_DIFF_JQ)");
         return;
     };
     let version = jq_version(&jq).unwrap_or_default();
     if version != REQUIRED_JQ {
         say!(
-            "jq_diff: skipped: {} is {version:?}, need {REQUIRED_JQ} (set JQ_DIFF_JQ)",
+            "{name}: skipped: {} is {version:?}, need {REQUIRED_JQ} (set JQ_DIFF_JQ)",
             jq.display()
         );
         return;
     }
 
     // Work directory: cwd for every case, HOME, test modules, input files.
+    // Both boards share it (outputs can contain its path); each writes its
+    // reports to its own directory.
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("jq_diff");
+    let out_dir = board.out_dir(&work);
+    std::fs::create_dir_all(&out_dir).expect("create the report directory");
     let modules_src = root().join("tests/jq_compat/modules");
     sync_dir(&modules_src, &work.join("modules")).expect("copy modules");
     std::fs::create_dir_all(work.join("home")).expect("create home");
 
-    let all_jobs = cases::collect(root(), &cfg.modes).unwrap_or_else(|e| panic!("jq_diff: {e}"));
+    let all_jobs = cases::collect(root(), &cfg.modes).unwrap_or_else(|e| panic!("{name}: {e}"));
     let jobs: Vec<&Job> = all_jobs.iter().filter(|j| cfg.selects(j)).collect();
     materialize(&work, &jobs).expect("write input files");
 
@@ -602,7 +718,7 @@ fn jq_diff() {
         max_output: MAX_OUTPUT,
         max_rss: cfg.max_rss,
     };
-    let cache_path = root().join("tests/jq_compat/.cache/jq_diff.json");
+    let cache_path = root().join(board.cache_file());
     let cache = cache::Cache::load(&cache_path, header);
 
     let ctx = Ctx {
@@ -610,8 +726,12 @@ fn jq_diff() {
         env,
         timeout: cfg.timeout,
         max_rss: cfg.max_rss,
+        board,
     };
-    let keys: Vec<String> = jobs.iter().map(|j| j.inv.key(&cfg.extra_env)).collect();
+    let keys: Vec<String> = jobs
+        .iter()
+        .map(|j| j.inv.key(&cfg.extra_env, board.arg0()))
+        .collect();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(cfg.jobs)
         .build()
@@ -625,7 +745,7 @@ fn jq_diff() {
 
     let keep: HashSet<String> = keys.iter().cloned().collect();
     if let Err(e) = cache.save(&cache_path, cfg.complete().then_some(&keep)) {
-        say!("jq_diff: warning: could not save cache: {e}");
+        say!("{name}: warning: could not save cache: {e}");
     }
 
     // Reports.
@@ -634,7 +754,7 @@ fn jq_diff() {
     for (job, outcome) in jobs.iter().zip(&outcomes) {
         let level = match outcome.verdict {
             Verdict::Level(l) => l.name(),
-            Verdict::Skipped(_) => "skip",
+            Verdict::Unfinished => "unfinished",
         };
         let _ = writeln!(
             tsv,
@@ -651,11 +771,11 @@ fn jq_diff() {
             }
         }
     }
-    let _ = std::fs::write(work.join("report.txt"), &report);
-    let _ = std::fs::write(work.join("results.tsv"), &tsv);
+    let _ = std::fs::write(out_dir.join("report.txt"), &report);
+    let _ = std::fs::write(out_dir.join("results.tsv"), &tsv);
 
     say!(
-        "\njq_diff: {version} vs {} | {} cases ({} selected) | {} jobs | {:.1}s | jq cache: {} loaded{}, {} new",
+        "\n{name}: {version} vs {} | {} cases ({} selected) | {} jobs | {:.1}s | jq cache: {} loaded{}, {} new",
         cfg.qj.display(),
         all_jobs.len(),
         jobs.len(),
@@ -669,12 +789,17 @@ fn jq_diff() {
         },
         cache.misses()
     );
+    match board {
+        Board::Default => say!("{name}: qj's name in stderr mapped back to jq's"),
+        Board::Compat => say!("{name}: argv[0] = jq for both tools, nothing normalized"),
+    }
     if !cfg.extra_env.is_empty() {
-        say!("jq_diff: extra env: {:?}", cfg.extra_env);
+        say!("{name}: extra env: {:?}", cfg.extra_env);
     }
     say!(
-        "strict = stdout + exit code + stderr match; out = stdout + exit code match;\n\
-         cerr = stderr-only cases where jq exited 3 (compile error wording)\n"
+        "strict = stdout + exit code + stderr match; unfin = of those, programs jq never\n\
+         finishes that qj didn't finish either, the same way; out = stdout + exit code\n\
+         match; cerr = stderr-only cases where jq exited 3 (compile error wording)\n"
     );
     say!("{}", scoreboard(&jobs, &outcomes));
     // Slow cases are where a loaded machine could turn a result into a
@@ -705,9 +830,9 @@ fn jq_diff() {
     slowest("qj", |o| o.qj_time);
     say!(
         "details: {}\n         {}\n         {}",
-        work.join("report.txt").display(),
-        work.join("results.tsv").display(),
-        work.join("baseline_candidate.txt").display()
+        out_dir.join("report.txt").display(),
+        out_dir.join("results.tsv").display(),
+        out_dir.join("baseline_candidate.txt").display()
     );
 
     // Ratchet.
@@ -717,10 +842,7 @@ fn jq_diff() {
         .map(|(job, o)| baseline::Current {
             id: &job.id,
             fp: &job.fp,
-            level: match o.verdict {
-                Verdict::Level(l) => Some(l),
-                Verdict::Skipped(_) => None,
-            },
+            level: Some(o.verdict.level()),
         })
         .collect();
     let rel_baseline = cfg
@@ -731,7 +853,7 @@ fn jq_diff() {
         .to_string();
     let old = match std::fs::read_to_string(&cfg.baseline) {
         Ok(text) => {
-            Some(baseline::parse(&text).unwrap_or_else(|e| panic!("jq_diff: {rel_baseline}: {e}")))
+            Some(baseline::parse(&text).unwrap_or_else(|e| panic!("{name}: {rel_baseline}: {e}")))
         }
         Err(_) => None,
     };
@@ -740,13 +862,13 @@ fn jq_diff() {
     // (e.g. for CI to publish a baseline for its platform).
     let new = baseline::update(old.as_deref().unwrap_or(&[]), &current, !cfg.complete());
     let rendered = baseline::render(&new);
-    let _ = std::fs::write(work.join("baseline_candidate.txt"), &rendered);
+    let _ = std::fs::write(out_dir.join("baseline_candidate.txt"), &rendered);
 
     if cfg.update_baseline {
         std::fs::write(&cfg.baseline, &rendered).expect("write baseline");
         let passing = new.iter().filter(|e| e.level == Level::Pass).count();
         say!(
-            "\njq_diff: wrote {rel_baseline}: {} entries ({passing} pass, {} stdout)",
+            "\n{name}: wrote {rel_baseline}: {} entries ({passing} pass, {} stdout)",
             new.len(),
             new.len() - passing
         );
@@ -755,7 +877,7 @@ fn jq_diff() {
 
     let Some(old) = old else {
         say!(
-            "\njq_diff: no baseline at {rel_baseline}; nothing to ratchet against.\n\
+            "\n{name}: no baseline at {rel_baseline}; nothing to ratchet against.\n\
              Create it with JQ_DIFF_UPDATE_BASELINE=1, or commit baseline_candidate.txt."
         );
         return;
@@ -763,7 +885,7 @@ fn jq_diff() {
     let d = baseline::diff(&old, &current);
     if !d.improvements.is_empty() {
         say!(
-            "\njq_diff: {} cases improved on {rel_baseline}:",
+            "\n{name}: {} cases improved on {rel_baseline}:",
             d.improvements.len()
         );
         for (id, before, now) in d.improvements.iter().take(200) {
@@ -776,7 +898,7 @@ fn jq_diff() {
     }
     if cfg.complete() && !d.unmatched.is_empty() {
         say!(
-            "\njq_diff: {} baseline entries match no case (edited or removed); \
+            "\n{name}: {} baseline entries match no case (edited or removed); \
              refresh with JQ_DIFF_UPDATE_BASELINE=1:",
             d.unmatched.len()
         );
@@ -786,20 +908,20 @@ fn jq_diff() {
     }
     if !d.regressions.is_empty() {
         say!(
-            "\njq_diff: {} REGRESSIONS against {rel_baseline}:",
+            "\n{name}: {} REGRESSIONS against {rel_baseline}:",
             d.regressions.len()
         );
         for (id, before, now) in &d.regressions {
             say!("  {id}: {} -> {}", before.name(), now.name());
         }
         panic!(
-            "jq_diff: {} cases regressed (details in {})",
+            "{name}: {} cases regressed (details in {})",
             d.regressions.len(),
-            work.join("report.txt").display()
+            out_dir.join("report.txt").display()
         );
     }
     say!(
-        "\njq_diff: no regressions against {rel_baseline} ({} entries)",
+        "\n{name}: no regressions against {rel_baseline} ({} entries)",
         old.len()
     );
 }

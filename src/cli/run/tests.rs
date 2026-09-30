@@ -144,7 +144,7 @@ fn named_arguments_and_args() {
         format!(
             "{{\"x\":\"1\",\"y\":{{\"a\":2}},\"ARGS\":{{\"positional\":[\"a\"],\
              \"named\":{{\"x\":\"1\",\"y\":{{\"a\":2}}}}}},\"JQ_BUILD_CONFIGURATION\":{}}}",
-            Value::from(crate::cli::usage::BUILD_CONFIGURATION).to_json()
+            Value::from(crate::cli::usage::build_configuration()).to_json()
         )
     );
     // main.c's sharing, which --debug-trace shows (tests/jq_fuzz found qj's

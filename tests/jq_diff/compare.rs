@@ -1,11 +1,12 @@
 //! Output representation, stderr normalization and case classification.
 //!
-//! The only normalization is on stderr, for the program name: a `qj:` prefix
-//! at the start of a line is rewritten to `jq:`, and the exact line
-//! `Use qj --help for help with command-line options,` (the usage hint after
-//! option errors) to `Use jq --help ...` (on both sides, so user text that
-//! happens to look like these compares equal too). stdout and exit codes are
-//! compared exactly.
+//! The default scoreboard's only normalization is on stderr, for the program
+//! name: a `qj:` prefix at the start of a line is rewritten to `jq:`, and the
+//! exact line `Use qj --help for help with command-line options,` (the usage
+//! hint after option errors) to `Use jq --help ...` (on both sides, so user
+//! text that happens to look like these compares equal too). stdout and exit
+//! codes are compared exactly. The compat scoreboard (`QJ_JQ_COMPAT=1`, where
+//! qj's name is jq's) normalizes nothing at all.
 
 use crate::exec::Status;
 use crate::hash;
@@ -181,12 +182,25 @@ impl Level {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Level(Level),
-    /// jq never finished, and neither did qj: there is no output to compare,
-    /// only the fact that both refuse to terminate.
-    Skipped(&'static str),
+    /// jq never finished, and neither did qj, in the same way: killed by the
+    /// same cap (the timeout, the output cap or the memory cap), with the same
+    /// bytes on stdout and stderr up to that point. As strict as a pass, and
+    /// recorded as one; the scoreboard counts these in a column of their own.
+    Unfinished,
+}
+
+impl Verdict {
+    /// The level the ratchet records: matching a program jq never finishes
+    /// is a pass.
+    pub fn level(self) -> Level {
+        match self {
+            Verdict::Level(l) => l,
+            Verdict::Unfinished => Level::Pass,
+        }
+    }
 }
 
 /// Whether the tool was killed because it would not finish: it ran past the
@@ -200,14 +214,15 @@ fn hit_a_limit(status: &Status) -> bool {
 
 pub fn classify(jq: &Observed, qj: &Observed) -> Verdict {
     // Where jq never finishes (`[1] | delpaths([[nan]])` loops forever,
-    // growing an array as it goes), its output can't be an expectation. What
-    // can be checked is that qj doesn't finish either: with `QJ_JQ_COMPAT=1`
-    // it reproduces the hang, so a qj that produces an answer here is a real
-    // difference, not something to skip. Which limit ended each tool depends
-    // on how fast it allocates, so any of the three counts.
+    // growing an array as it goes), what it did before it was killed is the
+    // expectation: `QJ_JQ_COMPAT=1` reproduces the hang, so qj has to end the
+    // same way — the same cap, and the same output up to it (exactly the cap's
+    // worth of stdout, when that is the cap). An answer, a crash, another cap
+    // or other output is a difference like any other.
     if hit_a_limit(&jq.status) {
-        return if hit_a_limit(&qj.status) {
-            Verdict::Skipped("neither tool finished")
+        return if qj.status == jq.status && jq.stdout.same(&qj.stdout) && jq.stderr.same(&qj.stderr)
+        {
+            Verdict::Unfinished
         } else {
             Verdict::Level(Level::Fail)
         };
@@ -300,22 +315,38 @@ mod tests {
         );
         let hang = obs(Status::Timeout, "", "");
         let hog = obs(Status::MemoryLimit, "", "");
+        let flood = obs(Status::OutputLimit, "1\n1\n", "");
         assert_eq!(
             classify(&obs(Status::Exit(0), "", ""), &hog),
             Verdict::Level(Level::Fail)
         );
-        // Where jq never finishes, qj must not finish either; which limit
-        // ended each of them doesn't matter.
-        for jq in [&hang, &hog] {
-            for qj in [&hang, &hog, &obs(Status::OutputLimit, "", "")] {
-                assert_eq!(classify(jq, qj), Verdict::Skipped("neither tool finished"));
-            }
+        // The core-dump flag is part of the status.
+        let dumped = obs(Status::CoreDumped(11), "", "");
+        assert_eq!(classify(&dumped, &crash), Verdict::Level(Level::Fail));
+        assert_eq!(
+            classify(&dumped, &dumped.clone()),
+            Verdict::Level(Level::Pass)
+        );
+        // Where jq never finishes, qj must not finish either, and in the same
+        // way: the same cap, and the same output up to it.
+        for jq in [&hang, &hog, &flood] {
+            assert_eq!(classify(jq, &jq.clone()), Verdict::Unfinished);
+            assert_eq!(classify(jq, &crash), Verdict::Level(Level::Fail));
             assert_eq!(
                 classify(jq, &obs(Status::Exit(0), "1\n", "")),
                 Verdict::Level(Level::Fail)
             );
-            assert_eq!(classify(jq, &crash), Verdict::Level(Level::Fail));
+            for other in [&hang, &hog, &flood] {
+                if other.status != jq.status {
+                    assert_eq!(classify(jq, other), Verdict::Level(Level::Fail));
+                }
+            }
         }
+        let flood_err = obs(Status::OutputLimit, "1\n1\n", "qj: x\n");
+        assert_eq!(classify(&flood, &flood_err), Verdict::Level(Level::Fail));
+        let flood_other = obs(Status::OutputLimit, "1\n2\n", "");
+        assert_eq!(classify(&flood, &flood_other), Verdict::Level(Level::Fail));
+        assert_eq!(Verdict::Unfinished.level(), Level::Pass);
     }
 
     #[test]

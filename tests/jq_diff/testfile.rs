@@ -11,14 +11,17 @@
 //!   next skipped line.
 //!
 //! jq_diff never uses the expected lines (jq itself is the oracle); they are
-//! kept for display. The parser also reads one qj-specific directive, which jq
-//! treats as an ordinary comment:
+//! kept for display. The parser also reads qj-specific directives, which jq
+//! treats as ordinary comments:
 //!
 //! ```text
 //! # jq_diff: modes=compact,file
+//! # jq_diff: os=linux
 //! ```
 //!
-//! It restricts the modes in which the file's filter/input cases run.
+//! `modes` restricts the modes in which the file's filter/input cases run;
+//! `os` the operating systems (`std::env::consts::OS`: `linux`, `macos`), for
+//! behaviour jq has on one platform and not on another.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -48,6 +51,8 @@ pub struct TestFile {
     pub cases: Vec<Case>,
     /// Modes from a `# jq_diff: modes=...` directive, if present.
     pub modes: Option<Vec<String>>,
+    /// Operating systems from a `# jq_diff: os=...` directive, if present.
+    pub os: Option<Vec<String>>,
 }
 
 fn skipline(line: &str) -> bool {
@@ -82,6 +87,13 @@ pub fn parse(content: &str) -> Result<TestFile, String> {
                     match kv.split_once('=') {
                         Some(("modes", v)) => {
                             out.modes = Some(v.split(',').map(str::to_string).collect())
+                        }
+                        Some(("os", v)) => {
+                            let os: Vec<String> = v.split(',').map(str::to_string).collect();
+                            if let Some(bad) = os.iter().find(|o| !crate::cli::known_os(o)) {
+                                return Err(format!("line {lineno}: unknown os {bad:?}"));
+                            }
+                            out.os = Some(os)
                         }
                         _ => {
                             return Err(format!("line {lineno}: unknown jq_diff directive {kv:?}"));
@@ -279,6 +291,14 @@ mod tests {
     fn last_line_without_newline() {
         let f = parse(".\n1\n1").unwrap();
         assert_eq!(f.cases, vec![normal(1, ".", "1", &["1"])]);
+    }
+
+    #[test]
+    fn os_directive() {
+        let f = parse("# jq_diff: os=linux\n.\n1\n").unwrap();
+        assert_eq!(f.os, Some(vec!["linux".into()]));
+        assert_eq!(parse(".\n1\n").unwrap().os, None);
+        assert!(parse("# jq_diff: os=plan9\n").is_err());
     }
 
     #[test]
