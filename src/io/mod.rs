@@ -55,6 +55,10 @@
 //! * `set_fast_path(false)` (or `QJ_NO_SIMD_INPUT=1`): everything through
 //!   jq's parser port, for A/B checks. `stats()` tells how values were
 //!   produced.
+//! * `set_release_step(n)`: a memory-mapped input's pages are given back
+//!   once nothing can read them anymore (see "Residency" below), in steps
+//!   of `n` bytes (default 8 MB, `QJ_RELEASE_STEP`; 0 never, as
+//!   `QJ_NO_RELEASE=1`).
 //!
 //! * [`SharedReader`]: the reader shared by the main loop and the VM, as
 //!   jq's single input state is. It implements
@@ -72,6 +76,19 @@
 //! Streams are read incrementally: a record is returned as soon as its line
 //! is complete (when jq's `fgets` would have it), and memory stays bounded
 //! by the largest text plus the read size.
+//!
+//! ## Residency
+//!
+//! A memory-mapped file stays mapped whole (for the kernel's read-ahead),
+//! but the reader releases it as it goes: the pages before the lowest
+//! position anything can still read are made inaccessible and leave the
+//! resident set ([`source`]'s module docs). That position is the reader's
+//! own (it never reads behind it: jq's parser copies its chunks, values own
+//! their bytes, a [`reader::TapeSink`] has printed what it printed) or the
+//! start of a parallel job whose worker hasn't finished parsing it (the
+//! engine's jobs pin their start). So for input of many texts, the resident
+//! input is the engine's window plus a release step, whatever the file's
+//! size; a single text is resident whole while it's read.
 //!
 //! ## Parallel processing: [`parallel::run`]
 //!
