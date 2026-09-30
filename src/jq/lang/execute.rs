@@ -65,6 +65,7 @@
 //!   `Invalid path expression ...` when a value doesn't come from the path.
 
 pub mod driver;
+pub(crate) mod native;
 mod program;
 mod run;
 mod stack;
@@ -124,7 +125,7 @@ pub type MsgCallback = Box<dyn FnMut(&Value)>;
 /// An error being raised (`jq->error` when it is an invalid with a message): the
 /// message, wrapped `wraps` times by `TRY_END` (jq nests `jv_invalid_with_msg`).
 #[derive(Clone, Debug)]
-struct Raised {
+pub(crate) struct Raised {
     msg: Value,
     wraps: u32,
 }
@@ -163,6 +164,13 @@ pub struct Jq {
     /// `$HOME` for module lookups by `modulemeta` (jq calls `get_home()` there).
     home: Option<String>,
     trace_out: Option<Box<dyn Write>>,
+
+    /// Whether natives may run (`native.rs`).
+    natives: bool,
+    /// How many native calls are active (each is a Rust call of the interpreter loop).
+    native_depth: u32,
+    /// The fork point `stack_restore` popped last (checked by sub-run bases).
+    last_fork: StackPtr,
 }
 
 impl Jq {
@@ -193,6 +201,9 @@ impl Jq {
             err_cb: None,
             home: std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()),
             trace_out: None,
+            natives: !native::disabled_by_env(),
+            native_depth: 0,
+            last_fork: 0,
         }
     }
 

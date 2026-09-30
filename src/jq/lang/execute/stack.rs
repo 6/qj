@@ -16,6 +16,7 @@
 //! only freed once every block allocated after it is gone, so its entries are then at
 //! the top of the arenas and are truncated with it.
 
+use super::native::Suspended;
 use crate::jq::value::Value;
 
 /// jq's `stack_ptr`: a block pointer, `0` meaning none.
@@ -26,7 +27,7 @@ pub(super) const NO_RETADDR: u32 = u32::MAX;
 
 /// `struct closure`: a function body plus the frame it closes over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Closure {
+pub(crate) struct Closure {
     /// The callee's function id (jq's `struct bytecode*`).
     pub func: u32,
     /// The closed frame (jq's `env`).
@@ -51,20 +52,27 @@ pub(super) struct Frame {
 }
 
 /// `struct forkpoint`: a saved machine state to resume from when backtracking.
+///
+/// The saved `value_at_path` is kept in [`Stack::saved_paths`] when it isn't `null`
+/// (only inside path expressions), which keeps every block small.
 pub(super) struct ForkPoint {
     pub saved_data_stack: StackPtr,
     pub saved_curr_frame: StackPtr,
-    pub path_len: usize,
+    pub path_len: u32,
     pub subexp_nest: i32,
-    pub value_at_path: Value,
     /// Global pc of the instruction that made the fork point.
     pub return_address: u32,
+    /// Whether the saved `value_at_path` is on [`Stack::saved_paths`] (else `null`).
+    pub saved_path: bool,
 }
 
 enum Block {
     Value(Value),
     Frame(Frame),
     Fork(ForkPoint),
+    /// A suspended native generator, on the data stack below its resume fork point
+    /// (like `RANGE`'s upper bound): see `native.rs`.
+    Native(Box<Suspended>),
 }
 
 struct Slot {
@@ -81,23 +89,26 @@ pub(super) struct Stack {
     pub closures: Vec<Closure>,
     /// Local variables of every live frame (`union frame_entry` locals).
     pub locals: Vec<Value>,
+    /// The `value_at_path`s fork points saved that aren't `null`, in fork point order
+    /// (fork points are popped last in, first out).
+    pub saved_paths: Vec<Value>,
 }
 
 impl Stack {
     /// The stack pointer of the last allocated block (`s->limit`), `0` when empty.
-    #[inline]
+    #[inline(always)]
     pub fn limit(&self) -> StackPtr {
         self.slots.len() as StackPtr
     }
 
     /// `stack_pop_will_free`.
-    #[inline]
+    #[inline(always)]
     pub fn pop_will_free(&self, p: StackPtr) -> bool {
         p == self.limit()
     }
 
     /// `*stack_block_next(s, p)`.
-    #[inline]
+    #[inline(always)]
     pub fn next(&self, p: StackPtr) -> StackPtr {
         self.slots[p as usize - 1].next
     }
@@ -111,12 +122,14 @@ impl Stack {
     /// `stack_reset`: frees the region (keeping its capacity for the next run).
     pub fn reset(&mut self) {
         debug_assert!(self.slots.is_empty(), "stack freed while not empty");
+        debug_assert!(self.saved_paths.is_empty());
         self.slots.clear();
         self.closures.clear();
         self.locals.clear();
+        self.saved_paths.clear();
     }
 
-    #[inline]
+    #[inline(always)]
     fn push_block(&mut self, next: StackPtr, block: Block) -> StackPtr {
         self.slots.push(Slot { next, block });
         self.limit()
@@ -126,14 +139,14 @@ impl Stack {
 
     /// `stack_push`'s block operation: pushes `v` on the list headed by `top`, returning
     /// the new head.
-    #[inline]
+    #[inline(always)]
     pub fn push_value(&mut self, top: StackPtr, v: Value) -> StackPtr {
         self.push_block(top, Block::Value(v))
     }
 
     /// `stack_pop`: moves the value out when the block is freed, else copies it.
     /// Returns the value and the new list head.
-    #[inline]
+    #[inline(always)]
     pub fn pop_value(&mut self, top: StackPtr) -> (Value, StackPtr) {
         if self.pop_will_free(top) {
             let slot = self.slots.pop().expect("non-empty stack");
@@ -152,7 +165,7 @@ impl Stack {
 
     /// `stack_popn`: like [`Stack::pop_value`], but a block that stays alive gets `null`
     /// instead of keeping a copy (the saved fork point sees `null`).
-    #[inline]
+    #[inline(always)]
     pub fn popn_value(&mut self, top: StackPtr) -> (Value, StackPtr) {
         if self.pop_will_free(top) {
             self.pop_value(top)
@@ -165,8 +178,138 @@ impl Stack {
         }
     }
 
+    // ---- combined operations ----------------------------------------------------------
+    //
+    // Pop-then-push sequences done in one step. When the popped block is the last
+    // allocated one, jq's pop frees it and the push allocates the same position again,
+    // so the value can be replaced in place; otherwise the popped block stays (for a fork
+    // point) and jq's pop takes a copy that is then freed, which is no change at all.
+
+    /// The value of block `p`, mutably (it must be a value block).
+    #[inline(always)]
+    fn value_mut(&mut self, p: StackPtr) -> &mut Value {
+        match &mut self.slots[p as usize - 1].block {
+            Block::Value(v) => v,
+            _ => unreachable!("not a value block"),
+        }
+    }
+
+    /// `jv_free(stack_pop(jq))`: returns the new head.
+    #[inline(always)]
+    pub fn drop_value(&mut self, top: StackPtr) -> StackPtr {
+        if self.pop_will_free(top) {
+            let slot = self.slots.pop().expect("non-empty stack");
+            debug_assert!(matches!(slot.block, Block::Value(_)));
+            slot.next
+        } else {
+            self.next(top)
+        }
+    }
+
+    /// `jv_free(stack_pop(jq)); stack_push(jq, v)`: returns the new head.
+    #[inline(always)]
+    pub fn replace_value(&mut self, top: StackPtr, v: Value) -> StackPtr {
+        if self.pop_will_free(top) {
+            *self.value_mut(top) = v;
+            top
+        } else {
+            let next = self.next(top);
+            self.push_value(next, v)
+        }
+    }
+
+    /// `jv_free(stack_popn(jq)); stack_push(jq, v)` (a kept block gets `null`).
+    #[inline(always)]
+    pub fn replace_value_n(&mut self, top: StackPtr, v: Value) -> StackPtr {
+        if self.pop_will_free(top) {
+            *self.value_mut(top) = v;
+            top
+        } else {
+            let next = self.next(top);
+            *self.value_mut(top) = Value::Null;
+            self.push_value(next, v)
+        }
+    }
+
+    /// `v = stack_pop(jq); stack_push(jq, jv_copy(v)); stack_push(jq, v)` (`DUP`).
+    #[inline(always)]
+    pub fn dup_value(&mut self, top: StackPtr) -> StackPtr {
+        let v = self.value(top).clone();
+        if self.pop_will_free(top) {
+            self.push_value(top, v)
+        } else {
+            let next = self.next(top);
+            let t = self.push_value(next, v.clone());
+            self.push_value(t, v)
+        }
+    }
+
+    /// `v2 = stack_pop(jq); stack_push(jq, v); stack_push(jq, v2)` (`PUSHK_UNDER`).
+    #[inline(always)]
+    pub fn push_under(&mut self, top: StackPtr, v: Value) -> StackPtr {
+        if self.pop_will_free(top) {
+            let v2 = std::mem::replace(self.value_mut(top), v);
+            self.push_value(top, v2)
+        } else {
+            let v2 = self.value(top).clone();
+            let next = self.next(top);
+            let t = self.push_value(next, v);
+            self.push_value(t, v2)
+        }
+    }
+
+    /// `a = stack_pop(jq); b = stack_pop(jq); stack_push(jq, a); stack_push(jq, b)`
+    /// (`SUBEXP_END`): swaps the top two values.
+    #[inline(always)]
+    pub fn swap_values(&mut self, top: StackPtr) -> StackPtr {
+        let below = self.next(top);
+        if self.pop_will_free(top) && below == top - 1 {
+            // Both are freed and reallocated in place.
+            let (lo, hi) = self.slots.split_at_mut(top as usize - 1);
+            match (&mut lo[below as usize - 1].block, &mut hi[0].block) {
+                (Block::Value(b), Block::Value(a)) => std::mem::swap(a, b),
+                _ => unreachable!("not value blocks"),
+            }
+            top
+        } else {
+            let (a, t) = self.pop_value(top);
+            let (b, t) = self.pop_value(t);
+            let t = self.push_value(t, a);
+            self.push_value(t, b)
+        }
+    }
+
+    /// Pushes a suspended native generator on the data stack headed by `top`.
+    #[inline(always)]
+    pub fn push_native(&mut self, top: StackPtr, s: Box<Suspended>) -> StackPtr {
+        self.push_block(top, Block::Native(s))
+    }
+
+    /// Pops the suspended native generator at `top`, which must be the last allocated
+    /// block (its resume fork point was just restored). Returns it and the new head.
+    #[inline(always)]
+    pub fn pop_native(&mut self, top: StackPtr) -> (Box<Suspended>, StackPtr) {
+        debug_assert!(self.pop_will_free(top));
+        let slot = self.slots.pop().expect("non-empty stack");
+        match slot.block {
+            Block::Native(s) => (s, slot.next),
+            _ => unreachable!("pop_native on a non-native block"),
+        }
+    }
+
+    /// Drops the block `p` of the data stack (a value or a suspended native generator)
+    /// when it is the last allocated one, returning the new head (`stack_restore`'s
+    /// `jv_free(stack_pop(jq))`).
+    #[inline(always)]
+    pub fn drop_data(&mut self, p: StackPtr) -> StackPtr {
+        debug_assert!(self.pop_will_free(p));
+        let slot = self.slots.pop().expect("non-empty stack");
+        debug_assert!(matches!(slot.block, Block::Value(_) | Block::Native(_)));
+        slot.next
+    }
+
     /// The value in block `p` (`*(jv*)stack_block(s, p)`).
-    #[inline]
+    #[inline(always)]
     pub fn value(&self, p: StackPtr) -> &Value {
         match &self.slots[p as usize - 1].block {
             Block::Value(v) => v,
@@ -178,12 +321,12 @@ impl Stack {
 
     /// Allocates a frame block whose `next` is `caller`, with room for its entries
     /// (the caller fills in the closures and locals).
-    #[inline]
+    #[inline(always)]
     pub fn push_frame(&mut self, caller: StackPtr, frame: Frame) -> StackPtr {
         self.push_block(caller, Block::Frame(frame))
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn frame(&self, p: StackPtr) -> &Frame {
         match &self.slots[p as usize - 1].block {
             Block::Frame(f) => f,
@@ -191,7 +334,7 @@ impl Stack {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn frame_mut(&mut self, p: StackPtr) -> &mut Frame {
         match &mut self.slots[p as usize - 1].block {
             Block::Frame(f) => f,
@@ -201,7 +344,7 @@ impl Stack {
 
     /// `frame_pop`'s block operation: frees the frame (and its locals) when it is the
     /// last allocated block. Returns the caller frame (`next`).
-    #[inline]
+    #[inline(always)]
     pub fn pop_frame(&mut self, p: StackPtr) -> StackPtr {
         if self.pop_will_free(p) {
             let slot = self.slots.pop().expect("non-empty stack");
@@ -223,14 +366,14 @@ impl Stack {
     // ---- fork points ------------------------------------------------------------
 
     /// Allocates a fork point whose `next` is `fork_top`.
-    #[inline]
+    #[inline(always)]
     pub fn push_fork(&mut self, fork_top: StackPtr, fork: ForkPoint) -> StackPtr {
         self.push_block(fork_top, Block::Fork(fork))
     }
 
     /// Pops the fork point `p`, which must be the last allocated block (as it always is
     /// in `stack_restore`). Returns it and the next fork point.
-    #[inline]
+    #[inline(always)]
     pub fn pop_fork(&mut self, p: StackPtr) -> (ForkPoint, StackPtr) {
         debug_assert!(self.pop_will_free(p));
         let slot = self.slots.pop().expect("non-empty stack");
@@ -250,7 +393,7 @@ mod tests {
         // Keep blocks small: every pushed value, frame and fork point is one slot.
         assert!(std::mem::size_of::<Value>() <= 24);
         assert!(
-            std::mem::size_of::<Slot>() <= 64,
+            std::mem::size_of::<Slot>() <= 40,
             "{}",
             std::mem::size_of::<Slot>()
         );
@@ -269,8 +412,8 @@ mod tests {
                 saved_curr_frame: 0,
                 path_len: 0,
                 subexp_nest: 0,
-                value_at_path: Value::Null,
                 return_address: 0,
+                saved_path: false,
             },
         );
         assert!(!s.pop_will_free(b));
