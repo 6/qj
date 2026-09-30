@@ -150,6 +150,10 @@ pub(crate) struct Sub {
     base: StackPtr,
 }
 
+/// [`Sub::base`] of a closure run as a direct region (`region.rs`): it pushed
+/// nothing, and it has no more outputs.
+const DIRECT: StackPtr = StackPtr::MAX;
+
 /// What the interpreter loop stopped on.
 pub(super) enum Exit {
     /// The top-level program produced a value.
@@ -477,6 +481,20 @@ impl Jq {
         #[cfg(test)]
         SUB_RUNS.with(|c| c.set(c.get() + 1));
         let prog = self.prog.clone();
+        // A closure whose body is a region runs without a frame or fork points (its
+        // jq run would leave nothing on the stack but the base; see `sub_idle`).
+        if self.opt
+            && args.is_empty()
+            && let Some(d) = prog.funcs[f.func as usize].direct
+        {
+            return match self.run_direct(&prog, &prog.regions[d as usize], f.env, input) {
+                Some(v) => Ok(Some((Sub { base: DIRECT }, v))),
+                None => match self.error.take() {
+                    Some(e) => Err(Stop::Raise(e)),
+                    None => Ok(None),
+                },
+            };
+        }
         let pos = (self.stk_top, self.curr_frame);
         self.stack_save(prog.subrun_base_pc as usize, pos);
         let base = self.fork_top;
@@ -507,6 +525,9 @@ impl Jq {
     #[inline]
     fn pop_base(&mut self, s: &Sub) {
         debug_assert!(self.sub_idle(s));
+        if s.base == DIRECT {
+            return;
+        }
         let pc = self.stack_restore().expect("sub-run base fork point");
         debug_assert_eq!(pc, self.prog.subrun_base_pc as usize);
         debug_assert_eq!(self.last_fork, s.base);
@@ -534,7 +555,7 @@ impl Jq {
     /// produce more, and (in jq) nothing of it holds values alive any more. Finish it
     /// with [`Jq::sub_finish`].
     pub(crate) fn sub_idle(&self, s: &Sub) -> bool {
-        self.fork_top == s.base
+        self.fork_top == s.base || s.base == DIRECT
     }
 
     /// Ends a sub-run that is [`Jq::sub_idle`] (pops its base fork point).

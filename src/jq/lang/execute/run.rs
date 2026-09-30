@@ -3,6 +3,7 @@
 
 use super::native::{Applied, Exit};
 use super::program::{Program, pseudo};
+use super::region::REGION_BASE;
 use super::stack::{Closure, ForkPoint, Frame, NO_RETADDR, StackPtr};
 use super::{Jq, Raised, label_object};
 use crate::jq::builtins::CResult;
@@ -92,7 +93,7 @@ impl Jq {
     }
 
     #[inline]
-    fn popn(&mut self) -> Value {
+    pub(super) fn popn(&mut self) -> Value {
         let (v, top) = self.stk.popn_value(self.stk_top);
         self.stk_top = top;
         v
@@ -319,7 +320,7 @@ impl Jq {
 
     /// `set_error(jq, jv_invalid_with_msg(msg))`.
     #[inline]
-    fn set_error(&mut self, msg: Value) {
+    pub(super) fn set_error(&mut self, msg: Value) {
         self.error = Some(Raised { msg, wraps: 0 });
     }
 
@@ -360,7 +361,9 @@ impl Jq {
         mut backtracking: bool,
         base: StackPtr,
     ) -> Exit {
-        let code: &[u16] = &prog.code;
+        // The trace prints the original instructions; regions only in `fast_code`.
+        let opt = !TRACE && self.opt;
+        let code: &[u16] = if opt { &prog.fast_code } else { &prog.code };
 
         // `goto do_backtrack`.
         macro_rules! backtrack {
@@ -505,6 +508,22 @@ impl Jq {
                     let v = code[pc + 1];
                     pc += 2;
                     let var = self.local_var(prog, v, level);
+                    // Another value: jq pops the bound and pushes it back, which puts
+                    // it in the same block when it is the last one. Leave it there.
+                    if !raising
+                        && self.stk.pop_will_free(self.stk_top)
+                        && let (Value::Number(c), Value::Number(m)) =
+                            (&self.stk.locals[var], self.stk.value(self.stk_top))
+                        && c.value() < m.value()
+                    {
+                        let cur = c.value();
+                        let curr =
+                            std::mem::replace(&mut self.stk.locals[var], Value::number(cur + 1.0));
+                        let spos = (self.stk.next(self.stk_top), self.curr_frame);
+                        self.stack_save(pc - 3, spos);
+                        self.push(curr);
+                        continue;
+                    }
                     let max = self.pop();
                     if raising {
                         drop(max);
@@ -909,6 +928,40 @@ impl Jq {
                     let mut retaddr = (pc + 2 + nclosures * 2) as u32;
                     let mut retdata = self.stk_top;
                     let cl = self.make_closure(prog, code, pc);
+                    // A function whose body is a region runs without a frame: jq's
+                    // frame would be freed by the body's RET before anything else ran.
+                    if opt
+                        && nclosures == 0
+                        && let Some(d) = prog.funcs[cl.func as usize].direct
+                    {
+                        let r = &prog.regions[d as usize];
+                        if opcode == op::CALL_JQ {
+                            match self.run_direct(prog, r, cl.env, input) {
+                                Some(v) => {
+                                    self.push(v);
+                                    pc = retaddr as usize;
+                                    continue;
+                                }
+                                None => backtrack!(),
+                            }
+                        }
+                        // A tail call pops the caller's frame first (freeing its
+                        // locals, which is observable), and returns to its caller. The
+                        // top level's return yields instead: leave that to the frame.
+                        let f = *self.stk.frame(self.curr_frame);
+                        if f.retaddr != NO_RETADDR {
+                            self.frame_pop();
+                            debug_assert_eq!(self.stk_top, f.retdata);
+                            match self.run_direct(prog, r, cl.env, input) {
+                                Some(v) => {
+                                    self.push(v);
+                                    pc = f.retaddr as usize;
+                                    continue;
+                                }
+                                None => backtrack!(),
+                            }
+                        }
+                    }
                     // A builtin.jq definition with a native implementation (tail calls
                     // only without arguments, which jq would resolve after the pop).
                     let native = match prog.funcs[cl.func as usize].native {
@@ -953,8 +1006,21 @@ impl Jq {
                 }
 
                 op::RET => {
-                    let value = self.pop();
                     let f = *self.stk.frame(self.curr_frame);
+                    // When a fork point keeps the frame (a generator) and the value's
+                    // block is the last one, jq frees that block, keeps the frame, and
+                    // pushes the value into the same block with the same `next` (the
+                    // frame's retdata): only the current frame changes.
+                    if f.retaddr != NO_RETADDR
+                        && self.stk.pop_will_free(self.stk_top)
+                        && self.curr_frame + 1 != self.stk_top
+                    {
+                        debug_assert_eq!(self.stk.next(self.stk_top), f.retdata);
+                        pc = f.retaddr as usize;
+                        self.curr_frame = self.stk.next(self.curr_frame);
+                        continue;
+                    }
+                    let value = self.pop();
                     debug_assert_eq!(self.stk_top, f.retdata);
                     if f.retaddr != NO_RETADDR {
                         // function return
@@ -995,6 +1061,16 @@ impl Jq {
                     Applied::Halted => halted!(),
                     Applied::Fallback(_) => unreachable!(),
                 },
+
+                // A region (`region.rs`): the instructions from pc - 1 to its end.
+                op if op >= REGION_BASE && opt => {
+                    let r = &prog.regions[(op - REGION_BASE) as usize];
+                    if self.run_region(prog, r) {
+                        pc = r.end as usize;
+                    } else {
+                        backtrack!();
+                    }
+                }
 
                 _ => {
                     let name = Opcode::from_u16(opcode % NUM_OPCODES as u16)

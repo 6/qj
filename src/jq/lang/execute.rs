@@ -67,12 +67,17 @@
 pub mod driver;
 pub(crate) mod native;
 mod program;
+mod region;
 mod run;
 mod stack;
 mod trace;
 
 #[cfg(test)]
 mod disasm;
+#[cfg(test)]
+mod opt_cases;
+#[cfg(test)]
+mod opt_tests;
 #[cfg(test)]
 mod suites;
 #[cfg(test)]
@@ -167,6 +172,9 @@ pub struct Jq {
 
     /// Whether natives may run (`native.rs`).
     natives: bool,
+    /// Whether the optimized code runs (`region.rs`): regions in the interpreter
+    /// loop, and closures whose body is a region called without a frame.
+    opt: bool,
     /// How many native calls are active (each is a Rust call of the interpreter loop).
     native_depth: u32,
     /// The fork point `stack_restore` popped last (checked by sub-run bases).
@@ -202,6 +210,7 @@ impl Jq {
             home: std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()),
             trace_out: None,
             natives: !native::disabled_by_env(),
+            opt: !region::disabled_by_env(),
             native_depth: 0,
             last_fork: 0,
         }
