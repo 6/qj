@@ -41,10 +41,12 @@ as it goes (`src/io/source.rs`). So for input of many texts (NDJSON, or texts on
 another), the input resident at a time is about the parallel engine's window
 (`QJ_WINDOW_SIZE`, threads × 8 MB, at most 128 MB) plus an 8 MB release step, whatever the
 file's size. The window's jobs also hold their output until it's written in order, and, for
-programs run on the VM, the values parsed ahead. On a 3.3 GB NDJSON file with 18 threads,
-peak RSS is about 90 MB for `.actor.login`, 130 MB for `select(.type == "PushEvent")`,
-160–200 MB for `-c .` and 250–340 MB for `select(.actor.login | test("bot"))`; with
-`--threads 1` it's 13–18 MB. (jq: 6 MB.)
+programs run on the VM, the values parsed ahead. On the 3.4 GB GH Archive NDJSON file with
+18 threads (final M5 Max runs), peak RSS is about 80–90 MB for `.actor.login` and
+`select(.type == "PushEvent")`, and up to about 210 MB for `-c .`, pretty output and
+`select(.actor.login | test("bot"))`, with output to a file or `/dev/null`. Output into a
+pipe that's read slower than qj writes raises those peaks to about 360–410 MB, because
+finished jobs wait in memory. With `--threads 1` it's 13–18 MB. (jq: 6 MB.)
 
 It isn't bounded that way for:
 

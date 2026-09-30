@@ -5,12 +5,16 @@ concurrency:
 
 on:
   push:
-    branches: [main]
+    # ci/** branches run the checks without a pull request (e.g. to verify
+    # Linux before merging to main).
+    branches: [main, 'ci/**']
   pull_request:
 
 jobs:
   build-and-test:
-    timeout-minutes: 15
+    # The jq 1.8.1 port's suites (jq_diff's ~37k cases, fuzz-found corpora,
+    # iai-callgrind) take far longer than the old 15 minutes on hosted runners.
+    timeout-minutes: 60
     strategy:
       matrix:
         os: [ubuntu-24.04, macos-26]
