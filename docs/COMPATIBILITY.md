@@ -237,8 +237,8 @@ On macOS/arm64, bisected against jq's release binary at `ulimit -s` 1024, 2048, 
 | `jv_equal` / `jv_cmp` | 128 | 65,375 | 65,327 |
 | `jv_contains` | 176 | 47,547 | 47,510 |
 | `jv_object_merge_recursive` | 112 | 74,719 | 74,659 |
-| `jv_setpath` | 144 | 58,114 | 58,068 |
-| `delpaths_sorted` | 240 | 34,868 | 34,840 |
+| `jv_setpath` | 144 | 58,114 | 58,067 |
+| `delpaths_sorted` | 240 | 34,868 | 34,839 |
 
 On Linux/x86-64 (jq's release binary, built by gcc), bisected at 1024, 4096, 8192 and
 16384 KB with the kernel's stack randomization off (`setarch -R`), which is what makes
@@ -250,8 +250,8 @@ the numbers repeatable. The last two columns are the 16 MB of GitHub's runners:
 | `jv_equal` / `jv_cmp` | 144 | 116,481 | 116,422 |
 | `jv_contains` | 176 | 95,312 | 95,254 |
 | `jv_object_merge_recursive` | 128 | 131,053 | 130,975 |
-| `jv_setpath` | 160 | 104,843 | 104,780 |
-| `delpaths_sorted` | 240 | 69,895 | 69,853 |
+| `jv_setpath` | 160 | 104,843 | 104,779 |
+| `delpaths_sorted` | 240 | 69,895 | 69,852 |
 
 The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
 threshold is 28 to 217 levels below jq's. What it covers is different on each:
@@ -278,6 +278,10 @@ Three smaller reasons the two can't agree to the last frame:
   has to be charged once, not once per recursion, so every site reserves what the *worst*
   site's base cost measured (`jv_cmp` from `sort`) rather than its own. That costs the
   other sites up to 576 bytes on macOS and 2,000 on Linux — 9 and 42 levels of `jv_free`.
+  A site that drives others also gives up its last level, so that a frame of what it
+  drives still fits where it stops: without that, comparing two *shallow* path elements at
+  the deepest `delpaths` level the model allows would look like an overflow, and qj would
+  die where jq is nowhere near its stack.
 - which call site reaches the recursion shifts it by a frame or two — `jv_free` reaches
   130,760 through a builtin such as `length`, 130,763 from `main.c`'s output path and
   130,757 through `tojson`; `jv_cmp` 65,379 through `==` and 65,375 through `sort`. Each

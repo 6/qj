@@ -214,13 +214,29 @@ impl Site {
         (frame, RESERVED_BYTES)
     }
 
-    /// How deep jq's recursion can go here before its stack runs out, in the
+    /// Whether jq drives other recursions from inside this one: comparing a
+    /// path element or freeing a value it deleted or replaced, a level at a
+    /// time. Such a site gives up its last level, so that the frame of
+    /// whatever it does at the level it reaches still fits — its own frame is
+    /// at least as big as theirs, so one level is enough.
+    const fn drives_others(self) -> bool {
+        matches!(self, Site::Merge | Site::Setpath | Site::Delpaths)
+    }
+
+    /// How deep jq's recursion can go here, from the start of the run, in the
     /// levels [`depth`] counts. `None` when the stack is unlimited, where jq
     /// doesn't overflow either.
     pub fn frame_budget(self) -> Option<u64> {
+        self.budget_below(0)
+    }
+
+    /// [`Site::frame_budget`] with `outer` bytes of the stack already held by
+    /// a recursion this one runs inside.
+    fn budget_below(self, outer: u64) -> Option<u64> {
         let bytes = stack_limit_bytes()?;
         let (frame, reserved) = self.model();
-        Some(bytes.saturating_sub(reserved) / frame)
+        let levels = bytes.saturating_sub(reserved.saturating_add(outer)) / frame;
+        Some(levels.saturating_sub(self.drives_others() as u64))
     }
 }
 
@@ -372,10 +388,7 @@ fn budget_of(site: Site) -> Option<u64> {
     if !exactly_jq() {
         return None;
     }
-    let bytes = stack_limit_bytes()?;
-    let (frame, reserved) = site.model();
-    let outer = OUTER_BYTES.with(std::cell::Cell::get);
-    Some(bytes.saturating_sub(reserved.saturating_add(outer)) / frame)
+    site.budget_below(OUTER_BYTES.with(std::cell::Cell::get))
 }
 
 /// Hook for `src/jq/value/deep.rs`: `jv_equal(a, b)`.
@@ -498,7 +511,7 @@ mod tests {
     /// them for a value nested `n` deep, so it is `budget - 1`.
     fn deepest(site: Site, kb: u64) -> u64 {
         let (frame, reserved) = site.model();
-        (kb * 1024 - reserved) / frame - 1
+        (kb * 1024 - reserved) / frame - 1 - site.drives_others() as u64
     }
 
     /// Every site's model against the depths bisected from the jq 1.8.1
@@ -574,7 +587,8 @@ mod tests {
         for &(site, frame, base, measured) in MEASURED {
             assert_eq!(site.model().0, frame, "{site:?}: bytes a level");
             assert!(base <= WORST_BASE_BYTES, "{site:?}: base above the worst");
-            let allowance = STACK_MARGIN + (WORST_BASE_BYTES - base);
+            let allowance =
+                STACK_MARGIN + (WORST_BASE_BYTES - base) + site.drives_others() as u64 * frame;
             for (kb, jq) in LIMITS.iter().zip(measured) {
                 let model = deepest(site, *kb);
                 assert!(model <= *jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
@@ -586,6 +600,46 @@ mod tests {
                     allowance + 2 * frame
                 );
             }
+        }
+    }
+
+    /// What jq drives from inside each recursion: `delpaths_sorted` compares
+    /// path elements and frees the values it deletes, `jv_setpath` and
+    /// `jv_object_merge_recursive` free the value they replace.
+    const DRIVEN: &[(Site, &[Site])] = &[
+        (Site::Delpaths, &[Site::Compare, Site::Free]),
+        (Site::Setpath, &[Site::Free]),
+        (Site::Merge, &[Site::Free]),
+    ];
+
+    /// At the deepest level a driving site allows, there has to be room for
+    /// one frame of everything it drives — otherwise the inner recursion would
+    /// look like an overflow at the level jq reaches happily, and qj would die
+    /// where jq answers. Giving up one level is what buys the room, and this
+    /// checks that one level is enough at every stack limit measured.
+    #[test]
+    fn a_driving_site_leaves_room_for_one_frame_of_what_it_drives() {
+        for &(outer, inners) in DRIVEN {
+            assert!(outer.drives_others(), "{outer:?} should give up a level");
+            let (frame, reserved) = outer.model();
+            for kb in LIMITS {
+                let avail = kb * 1024 - reserved;
+                let left = avail - (avail / frame - 1) * frame;
+                for &inner in inners {
+                    let inner_frame = inner.model().0;
+                    assert!(
+                        left >= inner_frame,
+                        "{outer:?} at {kb} KB leaves {left} B, under {inner:?}'s {inner_frame}"
+                    );
+                }
+            }
+        }
+        for &(site, _, _, _) in MEASURED {
+            assert_eq!(
+                site.drives_others(),
+                DRIVEN.iter().any(|(s, _)| *s == site),
+                "{site:?}: drives_others disagrees with DRIVEN"
+            );
         }
     }
 
