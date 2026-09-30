@@ -67,6 +67,9 @@ pub(super) type Reg = u8;
 /// The most registers a region uses (a power of two: indexes are masked with it).
 pub(super) const MAX_REGS: usize = 16;
 
+/// The register file of regions that use at most this many (a power of two).
+const SMALL_REGS: usize = 4;
+
 /// [`Op::Binop`]'s `input` when the copy of an operand it would free was never made.
 const NO_REG: Reg = u8::MAX;
 
@@ -376,22 +379,22 @@ enum Vars {
 /// A region's register file. The compiler only writes a register that is empty (every
 /// value is either on its stack or consumed), so writing needs no free, and after a
 /// region exits every register is empty again: only backtracking frees them.
-struct Regs(ManuallyDrop<[Value; MAX_REGS]>);
+struct Regs<const N: usize>(ManuallyDrop<[Value; N]>);
 
-impl Regs {
+impl<const N: usize> Regs<N> {
     #[inline(always)]
-    fn new() -> Regs {
-        Regs(ManuallyDrop::new([const { Value::Null }; MAX_REGS]))
+    fn new() -> Regs<N> {
+        Regs(ManuallyDrop::new([const { Value::Null }; N]))
     }
 
     #[inline(always)]
     fn get(&self, r: Reg) -> &Value {
-        &self.0[r as usize & (MAX_REGS - 1)]
+        &self.0[r as usize & (N - 1)]
     }
 
     #[inline(always)]
     fn get_mut(&mut self, r: Reg) -> &mut Value {
-        &mut self.0[r as usize & (MAX_REGS - 1)]
+        &mut self.0[r as usize & (N - 1)]
     }
 
     /// Writes an empty register.
@@ -410,8 +413,7 @@ impl Regs {
 
     #[inline(always)]
     fn swap(&mut self, a: Reg, b: Reg) {
-        self.0
-            .swap(a as usize & (MAX_REGS - 1), b as usize & (MAX_REGS - 1));
+        self.0.swap(a as usize & (N - 1), b as usize & (N - 1));
     }
 
     /// After backtracking: frees what the registers hold, as unwinding jq's stack
@@ -1037,6 +1039,30 @@ pub(super) fn compile(
     ))
 }
 
+/// The positions of `code[start..end]` (one function) that the interpreter can reach
+/// other than by falling through: branch targets (`JUMP`, `JUMP_F`, and the second
+/// branch of `FORK`, `TRY_BEGIN` and `DESTRUCTURE_ALT`) and return addresses (after
+/// `CALL_JQ`).
+fn entry_points(code: &[u16], start: usize, end: usize) -> std::collections::HashSet<usize> {
+    use Opcode::*;
+    let mut out = std::collections::HashSet::new();
+    let mut pc = start;
+    while pc < end {
+        let len = bytecode_operation_length(&code[pc..end]).max(1);
+        match Opcode::from_u16(code[pc]) {
+            Some(JUMP | JUMP_F | FORK | TRY_BEGIN | DESTRUCTURE_ALT) => {
+                out.insert(pc + 2 + code[pc + 1] as usize);
+            }
+            Some(CALL_JQ) => {
+                out.insert(pc + len);
+            }
+            _ => {}
+        }
+        pc += len;
+    }
+    out
+}
+
 /// Builds `prog.regions`, `prog.fast_code` and each function's direct region.
 pub(super) fn optimize(prog: &mut Program) {
     let mut regions = Vec::new();
@@ -1056,21 +1082,25 @@ pub(super) fn optimize(prog: &mut Program) {
     for func in 0..prog.funcs.len() {
         let f = &prog.funcs[func];
         let (start, end) = (f.base as usize, f.base as usize + f.bc.code.len());
+        let entries = entry_points(&prog.code, start, end);
+        // Positions inside a region run only when something jumps or returns there
+        // (the region runs its own copy of them otherwise).
+        let mut covered = start;
         let mut pc = start;
         while pc < end {
             let len = bytecode_operation_length(&prog.code[pc..end]).max(1);
             if regions.len() >= (u16::MAX - REGION_BASE) as usize {
                 break;
             }
-            match compile(prog, func as u32, pc, Mode::Loop) {
-                Some((r, n)) if n >= MIN_LOOP_INSTRS => {
-                    let next = r.end as usize;
-                    fast[pc] = REGION_BASE + regions.len() as u16;
-                    regions.push(r);
-                    pc = next;
-                }
-                _ => pc += len,
+            if (pc >= covered || entries.contains(&pc))
+                && let Some((r, n)) = compile(prog, func as u32, pc, Mode::Loop)
+                && n >= MIN_LOOP_INSTRS
+            {
+                covered = covered.max(r.end as usize);
+                fast[pc] = REGION_BASE + regions.len() as u16;
+                regions.push(r);
             }
+            pc += len;
         }
     }
     for (f, d) in prog.funcs.iter_mut().zip(direct) {
@@ -1141,9 +1171,23 @@ impl Jq {
     pub(super) fn run_region(&mut self, prog: &Program, r: &Region) -> bool {
         #[cfg(test)]
         REGION_RUNS.with(|c| c.set(c.get() + 1));
-        let mut regs = Regs::new();
+        // (Most regions need few registers: a small file is quicker to set up.)
+        if r.nregs as usize <= SMALL_REGS {
+            self.run_region_with(prog, r, &mut Regs::<SMALL_REGS>::new())
+        } else {
+            self.run_region_with(prog, r, &mut Regs::<MAX_REGS>::new())
+        }
+    }
+
+    #[inline(always)]
+    fn run_region_with<const N: usize>(
+        &mut self,
+        prog: &Program,
+        r: &Region,
+        regs: &mut Regs<N>,
+    ) -> bool {
         let vars = Vars::Frame(self.curr_frame);
-        if !self.exec_ops(prog, r, &mut regs, vars) {
+        if !self.exec_ops(prog, r, regs, vars) {
             regs.clear(r);
             return false;
         }
@@ -1168,9 +1212,24 @@ impl Jq {
     ) -> Option<Value> {
         #[cfg(test)]
         DIRECT_RUNS.with(|c| c.set(c.get() + 1));
-        let mut regs = Regs::new();
+        if r.nregs as usize <= SMALL_REGS {
+            self.run_direct_with(prog, r, env, input, &mut Regs::<SMALL_REGS>::new())
+        } else {
+            self.run_direct_with(prog, r, env, input, &mut Regs::<MAX_REGS>::new())
+        }
+    }
+
+    #[inline(always)]
+    fn run_direct_with<const N: usize>(
+        &mut self,
+        prog: &Program,
+        r: &Region,
+        env: StackPtr,
+        input: Value,
+        regs: &mut Regs<N>,
+    ) -> Option<Value> {
         regs.put(0, input);
-        if !self.exec_ops(prog, r, &mut regs, Vars::Env(env)) {
+        if !self.exec_ops(prog, r, regs, Vars::Env(env)) {
             regs.clear(r);
             return None;
         }
@@ -1178,7 +1237,6 @@ impl Jq {
         regs.done(r);
         Some(v)
     }
-
     /// The local slot of variable `idx` at `level`; `base0` is the current frame's
     /// first local (when `vars` is a frame).
     #[inline(always)]
@@ -1196,7 +1254,13 @@ impl Jq {
 
     /// The ops of a region. `false`: backtrack.
     #[inline(always)]
-    fn exec_ops(&mut self, prog: &Program, r: &Region, regs: &mut Regs, vars: Vars) -> bool {
+    fn exec_ops<const N: usize>(
+        &mut self,
+        prog: &Program,
+        r: &Region,
+        regs: &mut Regs<N>,
+        vars: Vars,
+    ) -> bool {
         let base0 = match vars {
             Vars::Frame(f) if r.vars0 => self.stk.frame(f).locals as usize,
             _ => 0,
