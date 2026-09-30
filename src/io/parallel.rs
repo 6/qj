@@ -35,6 +35,14 @@
 //! sink would, as they're made ([`RecordWorker::process_direct`],
 //! [`WorkerFactory::new_direct_tape`]): a large output isn't held.
 //!
+//! **Memory.** At most [`EngineOptions::window_bytes`] of input is in jobs
+//! not handed to the sink yet. Only phase 1 reads a job's input (values own
+//! their bytes, and a [`RecordTape`] writes its output into the job's
+//! buffer), and a job cut from a memory-mapped input pins its start until
+//! its worker is done with phase 1, even after the job was cancelled: the
+//! reader releases the input only before the lowest pin and its own
+//! position (see [`super::reader`]), so what's resident is about the window.
+//!
 //! **When not to use it.** The engine is only correct when records are
 //! independent. The CLI must process sequentially (`threads: 0`, or its
 //! own loop over a [`super::SharedReader`]) for programs that read input
@@ -399,7 +407,17 @@ enum FromWorker {
 struct Board {
     state: Mutex<BoardState>,
     cv: Condvar,
+    /// Output buffers the calling thread has written out, for workers to
+    /// reuse: a job's output then grows in a buffer that has grown before,
+    /// and buffers freed on the calling thread don't pile up in the worker
+    /// threads' allocator caches.
+    buffers: Mutex<Vec<Vec<u8>>>,
+    /// How many are kept (one per worker).
+    keep_buffers: usize,
 }
+
+/// Output buffers larger than this aren't kept for reuse.
+const MAX_POOLED: usize = 4 << 20;
 
 #[derive(Default)]
 struct BoardState {
@@ -422,6 +440,27 @@ impl Board {
 
     fn closed(&self) -> bool {
         self.state.lock().expect("board").closed
+    }
+
+    /// An empty output buffer, reused if one is there.
+    fn take_buffer(&self) -> Vec<u8> {
+        self.buffers
+            .lock()
+            .expect("board")
+            .pop()
+            .unwrap_or_default()
+    }
+
+    /// Keeps `buf` for reuse, if there's room.
+    fn give_buffer(&self, mut buf: Vec<u8>) {
+        if buf.capacity() == 0 || buf.capacity() > MAX_POOLED {
+            return;
+        }
+        buf.clear();
+        let mut buffers = self.buffers.lock().expect("board");
+        if buffers.len() < self.keep_buffers {
+            buffers.push(buf);
+        }
     }
 
     /// Waits for job `id`'s decision (cancelled once the board is closed).
@@ -503,7 +542,10 @@ pub fn run_with<F: WorkerFactory, S: RecordSink>(
     let (job_tx, job_rx) = mpsc::channel::<Job>();
     let job_rx = Mutex::new(job_rx);
     let (msg_tx, msg_rx) = mpsc::channel::<FromWorker>();
-    let board = Board::default();
+    let board = Board {
+        keep_buffers: opts.threads,
+        ..Board::default()
+    };
     let mut panic_payload = None;
     /// Releases the workers however the calling thread leaves the scope
     /// (including by panicking, so that the scope's join can't hang).
@@ -588,8 +630,12 @@ fn worker_thread<F: WorkerFactory>(
         let id = job.id;
         // Phase 1: parse (bounded work, no user code; a tape program only
         // makes output).
+        let tape_out = match tape {
+            Some(_) => board.take_buffer(),
+            None => Vec::new(),
+        };
         let parsed = panic::catch_unwind(AssertUnwindSafe(|| {
-            parse_job(&mut simd, &job, tape.as_deref_mut())
+            parse_job(&mut simd, &job, tape.as_deref_mut(), tape_out)
         }));
         // Nothing reads the job's bytes after phase 1 (its values own
         // theirs): the reader may release them.
@@ -618,6 +664,7 @@ fn worker_thread<F: WorkerFactory>(
             return;
         }
         let Some(start_nl) = board.wait(id) else {
+            board.give_buffer(parsed.out);
             continue; // cancelled
         };
         // Phase 2: the program, on values that are known to be records.
@@ -658,7 +705,7 @@ fn worker_thread<F: WorkerFactory>(
             }
             let w = worker.get_or_insert_with(|| factory.new_worker());
             let mut r = JobResult {
-                out: Vec::new(),
+                out: board.take_buffer(),
                 err: Vec::new(),
                 marks: Vec::new(),
                 recs: Vec::with_capacity(items.len()),
@@ -700,6 +747,7 @@ fn worker_thread<F: WorkerFactory>(
                     status,
                 });
             }
+            board.give_buffer(tape_out);
             r
         }));
         let msg = match run {
@@ -748,6 +796,7 @@ fn parse_job<'t>(
     simd: &mut SimdParser,
     job: &Job,
     mut tape: Option<&mut (dyn RecordTape + 't)>,
+    out: Vec<u8>,
 ) -> ParsedJob {
     // The job's bytes (and the padding after them): offset `a` is at
     // `buf[a - base]`.
@@ -756,7 +805,7 @@ fn parse_job<'t>(
     let mut p = ParsedJob {
         items: Vec::new(),
         failed_at: None,
-        out: Vec::new(),
+        out,
         marks: Vec::new(),
         lines: 0,
     };
@@ -989,6 +1038,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
         self.in_flight -= slot.end - slot.start;
         self.stats.worker_records += r.recs.len() as u64;
         self.sink.records(&r.out, &r.err, &r.marks, &r.recs)?;
+        self.board.give_buffer(r.out);
         // Everything before the line the worker didn't take was consumed
         // like the fast path would; the reader reads on from there.
         match r.failed_at {
