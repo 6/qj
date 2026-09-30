@@ -36,9 +36,25 @@
 //!
 //! The fast path never consumes a NUL byte, so its view of a chunk and jq's
 //! (`strlen`-truncated) view agree up to wherever it hands over.
+//!
+//! # What stays resident
+//!
+//! A stream's buffer drops consumed bytes as it's refilled. A memory-mapped
+//! input is released instead, from the start up to the lowest position
+//! anything can still read ([`InputReader`]'s `release_consumed`): the
+//! reader itself reads nothing before its position (the start of the chunk
+//! last fed to jq's parser, which copies its chunks, or of a text whose end
+//! is still being looked for), values own their bytes (strings, number
+//! literals, keys), and what a [`TapeSink`] prints from the text is written
+//! before the reader moves on. The only other readers are the parallel
+//! engine's jobs, which hold a `Pin` at their start while their worker
+//! parses them (see `InputReader::cut`): even a job the engine has
+//! cancelled, because the reader read on past its start, until its worker
+//! is done with it.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::simd::{Rejected, SimdParser};
 use super::source::{FsOpener, InputMessage, Opened, Opener, SharedBytes, os_bytes};
@@ -56,6 +72,11 @@ const PAD: usize = 64;
 
 /// Largest single read from a stream (and the initial buffer size).
 const READ_SIZE: usize = 1 << 20;
+
+/// A memory-mapped input is released in steps of this many bytes (see
+/// `release_consumed`; `QJ_RELEASE_STEP` overrides it, `QJ_NO_RELEASE`
+/// turns releasing off).
+pub(crate) const RELEASE_STEP: usize = 8 << 20;
 
 /// Room guaranteed for each read from a stream.
 const MIN_READ: usize = 64 << 10;
@@ -88,8 +109,8 @@ impl ReaderOptions {
 /// The current input's bytes and read state.
 struct FileData {
     kind: DataKind,
-    /// Absolute offset of the first buffered byte (streams drop consumed
-    /// bytes).
+    /// Absolute offset of the first byte that may be read: streams drop
+    /// consumed bytes, and whole inputs may be released up to here.
     base: usize,
     /// Absolute end of the bytes available so far.
     end: usize,
@@ -98,12 +119,19 @@ struct FileData {
     /// The read error that ended this input (`ferror`), reported when the
     /// input is left, like jq's next `read_more`.
     error: Option<io::Error>,
-    /// Start of the line containing `end` (the last line seen so far).
+    /// Start of the line containing `end` (the last line seen so far; only
+    /// for streams, as a whole input is at EOF).
     last_line_start: usize,
+    /// The bytes can be released ([`super::source::InputBytes::release`]).
+    releasable: bool,
 }
 
 enum DataKind {
-    Whole(SharedBytes),
+    Whole {
+        bytes: SharedBytes,
+        /// The jobs that may be reading `bytes` (see [`InputReader::cut`]).
+        pins: Arc<Pins>,
+    },
     Stream {
         reader: Box<dyn Read>,
         /// Buffered bytes `[base, end)`, followed by `PAD` readable bytes.
@@ -115,18 +143,18 @@ enum DataKind {
 impl FileData {
     fn new(opened: Opened) -> FileData {
         match opened {
-            Opened::Whole(bytes) => {
-                let len = bytes.data().len();
-                let last_line_start = memchr::memrchr(b'\n', bytes.data()).map_or(0, |i| i + 1);
-                FileData {
-                    kind: DataKind::Whole(bytes),
-                    base: 0,
-                    end: len,
-                    eof: true,
-                    error: None,
-                    last_line_start,
-                }
-            }
+            Opened::Whole(bytes) => FileData {
+                end: bytes.data().len(),
+                releasable: bytes.releasable(),
+                kind: DataKind::Whole {
+                    bytes,
+                    pins: Arc::default(),
+                },
+                base: 0,
+                eof: true,
+                error: None,
+                last_line_start: 0,
+            },
             Opened::Stream { reader, fd } => FileData {
                 kind: DataKind::Stream {
                     reader,
@@ -138,6 +166,7 @@ impl FileData {
                 eof: false,
                 error: None,
                 last_line_start: 0,
+                releasable: false,
             },
         }
     }
@@ -148,7 +177,7 @@ impl FileData {
     #[inline]
     fn buf(&self) -> &[u8] {
         match &self.kind {
-            DataKind::Whole(b) => b.padded(),
+            DataKind::Whole { bytes, .. } => bytes.padded_from(self.base),
             DataKind::Stream { buf, .. } => buf,
         }
     }
@@ -345,6 +374,9 @@ pub struct InputReader {
     tape: Option<Box<dyn TapeSink>>,
     /// Whether the current call may use `tape`.
     tape_on: bool,
+    /// A memory-mapped input is released once this many bytes before the
+    /// reader's position can be (0: never; see `release_consumed`).
+    release_step: usize,
 }
 
 /// What [`InputReader::next_record`] read: a value, or a text whose outputs
@@ -426,11 +458,19 @@ impl InputReader {
             generation: 0,
             tape: None,
             tape_on: false,
+            release_step: release_step_from_env(),
         };
         if !r.fast {
             r.enter_slow();
         }
         r
+    }
+
+    /// Releases a memory-mapped input in steps of `step` bytes (rounded up
+    /// to whole pages when memory is given back; 0 never releases). See
+    /// `QJ_RELEASE_STEP`.
+    pub fn set_release_step(&mut self, step: usize) {
+        self.release_step = step;
     }
 
     /// Where `Could not open file` and read-error messages go. The default
@@ -626,12 +666,44 @@ impl InputReader {
 
     /// Reads more of the current input (blocking).
     fn fill(&mut self) {
-        let keep = match self.pending_scan {
-            Some(s) => s.start.min(self.fp.pos),
-            None => self.fp.pos,
-        };
+        let keep = self.keep();
         if let Some(cur) = &mut self.cur {
             cur.fill(keep, true, 0);
+        }
+    }
+
+    /// The first byte of the current input the reader can still read: its
+    /// position (for jq's parser, the start of the chunk it was fed last,
+    /// which it copied), or the start of a text whose end it's looking for.
+    #[inline]
+    fn keep(&self) -> usize {
+        match self.pending_scan {
+            Some(s) => s.start.min(self.fp.pos),
+            None => self.fp.pos,
+        }
+    }
+
+    /// Releases the current input (if it's memory-mapped) up to what the
+    /// reader and the jobs cut from it can still read (see the module
+    /// docs), once that is at least `release_step` bytes further than the
+    /// last time. Called between records, never while a slice of the input
+    /// is held.
+    #[inline]
+    fn release_consumed(&mut self) {
+        let keep = self.keep();
+        let step = self.release_step;
+        let Some(cur) = self.cur.as_mut() else {
+            return;
+        };
+        if !cur.releasable || step == 0 || keep < cur.base.saturating_add(step) {
+            return;
+        }
+        let DataKind::Whole { bytes, pins } = &cur.kind else {
+            return;
+        };
+        let upto = pins.first().map_or(keep, |p| p.min(keep));
+        if upto > cur.base {
+            cur.base = bytes.release(upto);
         }
     }
 
@@ -694,6 +766,7 @@ impl InputReader {
     }
 
     fn next_json(&mut self) -> Option<Result<Record, Error>> {
+        self.release_consumed();
         loop {
             if self.ended {
                 return None;
@@ -792,6 +865,9 @@ impl InputReader {
             && let Some(c) = chunk.take()
         {
             self.advance(c.end, false);
+            // (jq's parser copied it: a text it takes long to finish, or
+            // never does, as without RS for --seq, needn't stay resident.)
+            self.release_consumed();
         }
         if self.cur.is_none() || self.jq_eof {
             self.leave_current();
@@ -951,9 +1027,24 @@ impl InputReader {
             // More than one text on this line, or a text spanning lines.
             self.no_line_try_until = line_end;
             // A large input is often one document: try the whole rest once
-            // before scanning for the text's end.
+            // before scanning for the text's end. Unless the text ends within
+            // the first 1/1024 of the rest (texts one after another, or a
+            // text spanning lines among NDJSON): the parse would read all of
+            // the rest, only to fail, and leave a mapped input resident.
+            // (Scanning finds the end of a valid text exactly, so this parses
+            // what trying the rest would have: that text alone.)
             if cur.eof && !self.tried_rest && cur.end - p >= 1 << 16 {
                 self.tried_rest = true;
+                let mut probe = ExtentScan {
+                    start: p,
+                    pos: p,
+                    depth: 0,
+                    in_string: false,
+                };
+                if let Some(e) = scan_extent(cur, &mut probe, p + (cur.end - p) / 1024) {
+                    self.pending_scan = None;
+                    return self.fast_text(p, e);
+                }
                 let mut t = cur.end;
                 while t > p && matches!(cur.at(t - 1), b' ' | b'\t' | b'\r' | b'\n') {
                     t -= 1;
@@ -1080,6 +1171,8 @@ impl InputReader {
     fn next_raw(&mut self) -> Option<Result<Value, Error>> {
         let mut value: Option<String> = None;
         loop {
+            // (Between chunks: the bytes of the last one were copied.)
+            self.release_consumed();
             match self.raw_chunk() {
                 Some((a, b, has_nl)) => {
                     let cur = self.cur.as_ref().expect("an open input");
@@ -1194,10 +1287,7 @@ impl InputReader {
         {
             return None;
         }
-        let keep = match self.pending_scan {
-            Some(s) => s.start.min(self.fp.pos),
-            None => self.fp.pos,
-        };
+        let keep = self.keep();
         let cur = self.cur.as_mut()?;
         if matches!(cur.kind, DataKind::Stream { .. }) && !cur.eof {
             // (Room for a job of `max` and for extending one to `min`.)
@@ -1227,13 +1317,18 @@ impl InputReader {
         }
         // (The job's worker counts its newlines: this thread only looks at
         // the bytes around job boundaries.)
-        let (data, base) = match &cur.kind {
-            DataKind::Whole(b) => (b.clone(), 0),
+        let (data, base, pin) = match &cur.kind {
+            // The job reads the input from `start` on: it isn't released
+            // there until the pin is dropped.
+            DataKind::Whole { bytes, pins } => {
+                let pin = cur.releasable.then(|| Pins::pin(pins, start));
+                (bytes.clone(), 0, pin)
+            }
             DataKind::Stream { buf, .. } => {
                 let mut copy = Vec::with_capacity(end - start + PAD);
                 copy.extend_from_slice(&buf[start - cur.base..end - cur.base]);
                 copy.resize(end - start + PAD, 0);
-                (std::sync::Arc::new(copy) as SharedBytes, start)
+                (Arc::new(copy) as SharedBytes, start, None)
             }
         };
         let window = Window {
@@ -1244,6 +1339,7 @@ impl InputReader {
             line_start: at.line_start,
             generation: at.generation,
             raw: self.opts.raw,
+            pin,
         };
         let next = Cut {
             generation: at.generation,
@@ -1271,15 +1367,22 @@ impl InputReader {
     }
 
     /// Records up to `upto` (a line start within the last job) were
-    /// processed by the engine: move past them as the fast path would have.
+    /// processed by the engine, and their output handed to the sink: move
+    /// past them as the fast path would have.
     pub(crate) fn commit(&mut self, upto: usize) {
         self.advance(upto, true);
+        self.release_consumed();
     }
 
     /// [`InputReader::commit`] of a whole job, which ends just after a
     /// newline at `end` and holds `lines` newlines from the reader's
     /// position on (its worker counted them): no second scan of its bytes.
     pub(crate) fn commit_job(&mut self, end: usize, lines: u64) {
+        self.commit_lines(end, lines);
+        self.release_consumed();
+    }
+
+    fn commit_lines(&mut self, end: usize, lines: u64) {
         let from = self.fp.pos;
         if end <= from || lines == 0 {
             return self.advance(end, true);
@@ -1338,6 +1441,16 @@ impl InputReader {
         }
     }
 
+    /// Where the current input is released up to (0 for streams, and for
+    /// inputs that can't be released).
+    #[cfg(test)]
+    pub(crate) fn released(&self) -> usize {
+        match &self.cur {
+            Some(cur) if cur.releasable => cur.base,
+            _ => 0,
+        }
+    }
+
     /// Bytes held for the current input's stream buffer (0 for inputs
     /// read whole).
     #[cfg(test)]
@@ -1359,7 +1472,9 @@ impl InputReader {
 pub(crate) struct Window {
     /// The bytes; absolute offset `p` is at `data[p - base]`, and at least
     /// `PAD` readable bytes follow `end` unless it is the end of a whole
-    /// input.
+    /// input. Only the bytes from `start` on may be read
+    /// (`data.padded_from(start - base)`): the reader may have released the
+    /// input before.
     pub(crate) data: SharedBytes,
     pub(crate) base: usize,
     pub(crate) start: usize,
@@ -1371,6 +1486,62 @@ pub(crate) struct Window {
     pub(crate) generation: u64,
     /// `-R`: lines are strings.
     pub(crate) raw: bool,
+    /// Keeps the reader from releasing a memory-mapped input from `start`
+    /// on: drop it once the window's bytes are read for good.
+    pub(crate) pin: Option<Pin>,
+}
+
+/// The starts of the jobs that may be reading a memory-mapped input (a
+/// multiset): the reader doesn't release it from the lowest on.
+#[derive(Default)]
+pub(crate) struct Pins(Mutex<Vec<usize>>);
+
+impl Pins {
+    fn pin(pins: &Arc<Pins>, at: usize) -> Pin {
+        pins.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(at);
+        Pin {
+            pins: pins.clone(),
+            at,
+        }
+    }
+
+    /// The lowest pinned position.
+    fn first(&self) -> Option<usize> {
+        let pins = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        pins.iter().copied().min()
+    }
+}
+
+/// A job's claim on the input from its start on (see [`Pins`]); dropping it
+/// lets the reader release the input there.
+pub(crate) struct Pin {
+    pins: Arc<Pins>,
+    at: usize,
+}
+
+impl Drop for Pin {
+    fn drop(&mut self) {
+        let mut pins = self.pins.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = pins.iter().position(|&p| p == self.at) {
+            pins.swap_remove(i);
+        }
+    }
+}
+
+/// The release step from the environment: `QJ_NO_RELEASE` (set) is 0
+/// (never), `QJ_RELEASE_STEP=N` is N bytes (at least 1: a page at a time,
+/// as soon as possible; for tests), otherwise [`RELEASE_STEP`].
+fn release_step_from_env() -> usize {
+    if std::env::var_os("QJ_NO_RELEASE").is_some() {
+        return 0;
+    }
+    std::env::var("QJ_RELEASE_STEP")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map_or(RELEASE_STEP, |n| n.max(1))
 }
 
 /// A position in an input where a job of whole lines starts, with its

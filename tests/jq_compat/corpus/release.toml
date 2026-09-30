@@ -1,0 +1,175 @@
+# Memory-mapped input released as it's consumed (src/io/source.rs, `release_consumed`
+# in src/io/reader.rs): large-ish NDJSON with tiny windows and QJ_RELEASE_STEP=1, so
+# pages are given back one at a time, as soon as the reader and the parallel engine's
+# jobs allow, and any stale read of released input faults. Format: tests/jq_diff/cli.rs.
+#
+# The input (a.ndjson, ~2.4 MB, and b.ndjson, which continues a.ndjson's last text) mixes
+# strict records the workers take with everything that makes the reader take over: texts
+# spanning lines (a 40 KB pretty-printed array spanning pages), two texts on a line, lines
+# longer than jq's 4095-byte fgets chunks, CRLF, blank and whitespace-only lines, `nan`,
+# big integers and 1e1000 (jq's parser), then a text left open at the end of
+# a.ndjson (a parse error alone, finished by b.ndjson after it). Programs run on the tape,
+# on the VM, and with input_line_number/input_filename (answered from each record's
+# position), each with a window of 16 KB (4 KB jobs), 1 MB and the default.
+
+[[sweep]]
+name = "window"
+note = "Parallel programs over mapped input released a page at a time"
+env = { QJ_RELEASE_STEP = "1", QJ_WINDOW_SIZE = "16K" }
+files = { "a.ndjson" = { repeat = [
+  ['''{"id":1,"type":"PushEvent","actor":{"login":"alice","id":10},"repo":{"name":"a/b"},"payload":{"size":3,"commits":[{"sha":"x1","message":"fix \"quotes\" and \\ backslash"}]},"n":1.50,"big":12345678901234567890}
+{"id":2,"type":"IssuesEvent","actor":{"login":"bob-bot","id":11},"payload":{"action":"opened"},"n":-0,"e":1e2,"s":"é ☃ \u0001 é"}
+{"id":3,"type":"PushEvent","actor":{"login":"carol"},"a":{"b":{"c":[1,2,{"d":null}]}},"dup":1,"dup":2}
+[1,2,3]
+"a string record"
+42
+null
+{
+  "id": 4,
+  "type": "Pretty",
+  "actor": {"login": "dave"}
+}
+{"id":5,"type":"PushEvent"} {"id":6,"type":"WatchEvent"}
+
+   {"id":7,"type":"PushEvent","actor":{"login":"eve-bot"}}
+{"id":8,"n":nan,"type":"NanEvent"}
+{"id":9,"big":100000000000000000001,"s":"\ud83d\ude00"}
+''', 700],
+  ["{\"id\":10,\"type\":\"CrlfEvent\"}\r\n\t{\"id\":11,\"actor\":{\"login\":\"tab\"}}\t\r\n  \r\n", 40],
+  ['{"id":12,"type":"LongEvent","s":"', 1], ["x", 6000], ['"}' , 1], ["\n", 1],
+  ['''{"id":13,"type":"PushEvent","actor":{"login":"frank"},"payload":{"size":1}}
+''', 1500],
+  ["[", 1], ["\n  1,", 8000], ["\n  2\n]\n", 1],
+  ['''{"id":14,"type":"PushEvent","actor":{"login":"grace-bot"}}
+{"id":15,"type":"ForkEvent","actor":{"login":"heidi"},"n":[1e1000]}
+''', 3000],
+  ['{"id":16,"type":"LongEvent","s":"', 1], ["y", 9000], ['"} {"id":17}' , 1], ["\n", 1],
+  ['''{"id":18,"type":"PushEvent","actor":{"login":"ivan"}}
+''', 2000],
+  ['{"id":99,"tail":', 1],
+] }, "b.ndjson" = { repeat = [
+  ["true}\n", 1],
+  ['''{"id":20,"type":"PushEvent","actor":{"login":"judy"}}
+{"id":21,"type":"WatchEvent"}
+''', 1500],
+  ['{"id":22}', 1],
+] } }
+variants = { a = ["-c", "{program}", "a.ndjson"], ab = ["-c", "{program}", "a.ndjson", "b.ndjson"], pretty = ["{program}", "b.ndjson"] }
+programs = [
+  ".",
+  ".id",
+  ".actor.login",
+  'select(.type == "PushEvent") | .id',
+  "length",
+  "[.id, input_line_number]",
+  "input_filename",
+  ".id | tostring",
+  'select(.actor.login | test("bot")) | .id',
+]
+
+[[sweep]]
+name = "window-1m"
+note = "The same with a 1 MB window (256 KB jobs), and with the default window"
+env = { QJ_RELEASE_STEP = "1", QJ_WINDOW_SIZE = "1" }
+files = { "a.ndjson" = { repeat = [
+  ['''{"id":1,"type":"PushEvent","actor":{"login":"alice","id":10},"repo":{"name":"a/b"},"payload":{"size":3,"commits":[{"sha":"x1","message":"fix \"quotes\" and \\ backslash"}]},"n":1.50,"big":12345678901234567890}
+{"id":2,"type":"IssuesEvent","actor":{"login":"bob-bot","id":11},"payload":{"action":"opened"},"n":-0,"e":1e2,"s":"é ☃ \u0001 é"}
+{
+  "id": 4,
+  "type": "Pretty",
+  "actor": {"login": "dave"}
+}
+{"id":5,"type":"PushEvent"} {"id":6,"type":"WatchEvent"}
+{"id":8,"n":nan,"type":"NanEvent"}
+''', 3000],
+  ["[", 1], ["\n  1,", 8000], ["\n  2\n]\n", 1],
+  ['''{"id":13,"type":"PushEvent","actor":{"login":"frank-bot"},"payload":{"size":1}}
+''', 20000],
+  ['{"id":99}', 1],
+] } }
+variants = { c = ["-c", "{program}", "a.ndjson"], twice = ["-c", "{program}", "a.ndjson", "a.ndjson"] }
+programs = [
+  ".",
+  ".actor.login",
+  "[.id, input_line_number, input_filename]",
+  'select(.actor.login | test("bot")) | .id',
+]
+
+[[sweep]]
+name = "window-default"
+note = "Page-at-a-time releases with the default window"
+env = { QJ_RELEASE_STEP = "1" }
+files = { "a.ndjson" = { repeat = [
+  ['''{"id":13,"type":"PushEvent","actor":{"login":"frank-bot"},"payload":{"size":1}}
+{"id":14,"type":"WatchEvent","actor":{"login":"grace"}}
+''', 25000],
+  ["{\n\"id\": 15\n}\n", 1],
+  ['''{"id":16,"type":"PushEvent"}
+''', 10000],
+] } }
+variants = { c = ["-c", "{program}", "a.ndjson"] }
+programs = [
+  ".",
+  ".actor.login",
+  "[.id, input_line_number]",
+  'select(.actor.login | test("bot")) | .id',
+]
+
+[[sweep]]
+name = "sequential"
+note = "What the reader releases on its own: programs that read input themselves, slurp, raw lines, --stream and --seq (jq's parser)"
+env = { QJ_RELEASE_STEP = "1", QJ_WINDOW_SIZE = "16K" }
+files = { "a.ndjson" = { repeat = [
+  ['''{"id":1,"type":"PushEvent","actor":{"login":"alice"},"s":"é ☃"}
+{
+  "id": 4,
+  "n": [nan, 1.50, 100000000000000000001]
+}
+{"id":5} {"id":6}
+''', 4000],
+  ['{"id":12,"s":"', 1], ["x", 6000], ['"}' , 1], ["\n", 1],
+  ['''{"id":13}
+''', 5000],
+] } }
+variants = { c = ["-c", "{program}", "a.ndjson"], n = ["-n", "-c", "{program}", "a.ndjson"], slurp = ["-s", "-c", "{program}", "a.ndjson"], raw = ["-R", "-c", "{program}", "a.ndjson"], stream = ["--stream", "-c", "{program}", "a.ndjson"], seq = ["--seq", "-c", "{program}", "a.ndjson"] }
+programs = [
+  ".",
+  "length",
+  "[inputs] | length",
+  "input_line_number",
+  "reduce inputs as $x (0; . + 1)",
+  ".id?, (input | .id?)",
+]
+
+[[sweep]]
+name = "concatenated"
+note = "Pretty-printed texts one after another: the first ends early (so the rest isn't tried as one document), or is 6 KB (tried, and fails)"
+env = { QJ_RELEASE_STEP = "1", QJ_WINDOW_SIZE = "16K" }
+files = { "p.json" = { repeat = [
+  ['''{
+  "id": 1,
+  "type": "PushEvent",
+  "actor": {
+    "login": "alice",
+    "n": [1.50, -0, 1e2]
+  }
+}
+[
+  1,
+  {"id": 2, "s": "é ☃"}
+] "str" 3
+''', 3000],
+] }, "big-first.json" = { repeat = [
+  ["[\n", 1], ["  {\"id\": 0, \"v\": [1, 2, 3]},\n", 200], ["  {}\n]\n", 1],
+  ['''{
+  "id": 4,
+  "actor": {"login": "bob"}
+}
+''', 5000],
+] } }
+variants = { p = ["-c", "{program}", "p.json"], bf = ["-c", "{program}", "big-first.json"], both = ["{program}", "p.json", "big-first.json"] }
+programs = [
+  ".",
+  ".id?",
+  "[.id?, input_line_number]",
+]

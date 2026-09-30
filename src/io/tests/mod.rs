@@ -9,6 +9,7 @@ mod generate;
 mod live;
 mod reader;
 mod reference;
+mod release;
 mod simd;
 mod stream;
 mod tape;
@@ -99,10 +100,26 @@ pub(crate) enum MemFile {
 /// How an in-memory input is delivered to the reader.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Delivery {
-    /// All at once, like a memory-mapped file.
+    /// All at once, as a memory-mapped file is: in a mapping that the reader
+    /// releases as it goes (with [`mem_reader`], a page as soon as it can),
+    /// starting at a pseudo-random offset in its first page (so a page
+    /// boundary falls within even a small input). Reading released bytes
+    /// faults.
     Whole,
+    /// All at once, from a `Vec` (never released).
+    Bytes,
     /// As a stream, in reads of 1..=max bytes (pseudo-random).
     Stream { seed: u64, max: usize },
+}
+
+/// `data` in a releasable mapping whose first page boundary falls at a
+/// pseudo-random offset within it (from `seed`), for [`Delivery::Whole`].
+pub(crate) fn mapped(data: Vec<u8>, seed: u64) -> Opened {
+    let page = crate::io::source::page_size();
+    let boundary =
+        1 + Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1).below(data.len().clamp(1, page));
+    let map = crate::io::source::Mmap::copy_of(&data, page - boundary).expect("anonymous mapping");
+    Opened::Whole(Arc::new(map))
 }
 
 /// Serves named in-memory inputs.
@@ -168,8 +185,9 @@ impl Opener for MemOpener {
             MemFile::ReadError(d, code) => (d, Some(code)),
         };
         match (self.delivery, error) {
-            (Delivery::Whole, None) => Ok(Opened::Whole(Arc::new(data))),
-            (Delivery::Whole, Some(_)) => Ok(Opened::Stream {
+            (Delivery::Whole, None) => Ok(mapped(data, self.opened as u64)),
+            (Delivery::Bytes, None) => Ok(Opened::Whole(Arc::new(data))),
+            (Delivery::Whole | Delivery::Bytes, Some(_)) => Ok(Opened::Stream {
                 reader: Box::new(ChunkedReader {
                     data,
                     pos: 0,
@@ -204,6 +222,8 @@ pub(crate) fn mem_reader(
     let names: Vec<OsString> = names.iter().map(OsString::from).collect();
     let mut r = InputReader::with_opener(names, opts, Box::new(MemOpener::new(files, delivery)));
     r.set_fast_path(fast);
+    // Released as soon as possible, so that a stale read faults.
+    r.set_release_step(1);
     let msgs = Rc::new(RefCell::new(Vec::new()));
     let sink = msgs.clone();
     r.set_message_sink(Box::new(move |m: InputMessage| {

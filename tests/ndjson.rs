@@ -1748,3 +1748,95 @@ fn ndjson_key_order_preserved() {
         "{\"z\":1,\"a\":2}\n{\"b\":3,\"a\":4}\n{\"m\":5,\"c\":6,\"a\":7}\n"
     );
 }
+
+// --- Residency of memory-mapped input ---
+
+/// Peak resident size in bytes of `qj args` (output discarded), from
+/// `wait4`; the process is killed after `timeout`.
+fn peak_rss(args: &[&str], env: &[(&str, &str)], timeout: std::time::Duration) -> u64 {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
+    cmd.args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let child = cmd.spawn().expect("failed to run qj");
+    let pid = child.id() as libc::pid_t;
+    let start = std::time::Instant::now();
+    loop {
+        let mut status = 0;
+        // SAFETY: wait4 on our own child, with valid out-pointers.
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        let r = unsafe { libc::wait4(pid, &mut status, libc::WNOHANG, &mut ru) };
+        if r == pid {
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "qj {args:?}: status {status}"
+            );
+            // (Bytes on macOS, KB on Linux.)
+            let unit = if cfg!(target_os = "macos") { 1 } else { 1024 };
+            return ru.ru_maxrss as u64 * unit;
+        }
+        if start.elapsed() > timeout {
+            // SAFETY: killing our own child.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            panic!("qj {args:?} took more than {timeout:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// A memory-mapped NDJSON file is released as it's read: peak RSS stays
+/// near the window (16 MB here) whatever the file's size (128 MB), on the
+/// tape, on the VM, with large output and sequentially; with
+/// `QJ_NO_RELEASE=1` the whole file is resident.
+/// `cargo test --release --test ndjson mapped_input_residency -- --ignored`
+#[test]
+#[ignore]
+fn mapped_input_residency_is_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.ndjson");
+    {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        let pad = "x".repeat(150);
+        let mut i = 0u64;
+        while f.get_ref().metadata().unwrap().len() < 128 << 20 {
+            for _ in 0..10_000 {
+                writeln!(
+                    f,
+                    r#"{{"id":{i},"type":"PushEvent","actor":{{"login":"user{i}"}},"s":"{pad}"}}"#
+                )
+                .unwrap();
+                i += 1;
+            }
+            f.flush().unwrap();
+        }
+    }
+    let p = path.to_str().unwrap();
+    let timeout = std::time::Duration::from_secs(120);
+    let window = [("QJ_WINDOW_SIZE", "16")];
+    for args in [
+        &["--threads", "4", ".actor.login", p][..],
+        &["--threads", "4", "-c", ".", p],
+        &[
+            "--threads",
+            "4",
+            "-c",
+            r#"select(.actor.login | test("9$")) | .id"#,
+            p,
+        ],
+        &["--threads", "1", ".id", p],
+    ] {
+        let rss = peak_rss(args, &window, timeout);
+        eprintln!("{args:?}: peak RSS {} MB", rss >> 20);
+        assert!(rss < 64 << 20, "{args:?}: peak RSS {} MB", rss >> 20);
+    }
+    let rss = peak_rss(
+        &["--threads", "4", ".actor.login", p],
+        &[("QJ_WINDOW_SIZE", "16"), ("QJ_NO_RELEASE", "1")],
+        timeout,
+    );
+    eprintln!("QJ_NO_RELEASE: peak RSS {} MB", rss >> 20);
+    assert!(rss > 128 << 20, "QJ_NO_RELEASE: peak RSS {} MB", rss >> 20);
+}

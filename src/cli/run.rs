@@ -1574,6 +1574,16 @@ impl crate::io::parallel::RecordSink for MainLoop {
     }
 }
 
+/// `QJ_WINDOW_SIZE` in bytes: `N` MB, or `NK` KB; `None` unless positive.
+fn window_size(s: &str) -> Option<usize> {
+    let (digits, unit) = match s.strip_suffix(['K', 'k']) {
+        Some(digits) => (digits, 1 << 10),
+        None => (s, 1 << 20),
+    };
+    let n: usize = digits.parse().ok().filter(|&n| n > 0)?;
+    n.checked_mul(unit)
+}
+
 /// The input loop of `run_program` on src/io's parallel record engine.
 fn run_parallel(
     plan: ParallelPlan,
@@ -1602,22 +1612,27 @@ fn run_parallel(
         threads: plan.threads,
         ..crate::io::parallel::EngineOptions::default()
     };
-    // QJ_WINDOW_SIZE=N: at most N MB of input in flight (as for the old core).
-    if let Some(mb) = std::env::var("QJ_WINDOW_SIZE")
+    // QJ_WINDOW_SIZE=N: at most N MB of input in flight (as for the old core),
+    // or N KB with a K suffix (for tests). Jobs are at most a quarter of it,
+    // so that several are in flight.
+    if let Some(bytes) = std::env::var("QJ_WINDOW_SIZE")
         .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&mb| mb > 0)
+        .as_deref()
+        .and_then(window_size)
     {
-        engine.window_bytes = mb << 20;
+        engine.window_bytes = bytes;
+        engine.max_job_bytes = engine.max_job_bytes.min((bytes / 4).max(1));
+        engine.min_window = engine.min_window.min(engine.max_job_bytes);
     }
     let factory = PortFactory { plan, p, tape };
     let stats = crate::io::parallel::run_with(&mut reader, &factory, main, &mut sink, &engine);
     if std::env::var_os("QJ_ENGINE_STATS").is_some() {
         write_stderr(
             format!(
-                "{PROG}: {} threads, {stats:?}, {:?}\n",
+                "{PROG}: {} threads, {stats:?}, {:?}, {} input releases\n",
                 engine.threads,
-                reader.stats()
+                reader.stats(),
+                crate::io::source::releases()
             )
             .as_bytes(),
         );

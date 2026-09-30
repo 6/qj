@@ -138,7 +138,7 @@ fn run_case(seed: u64, stats: &mut ReaderStats) -> Result<(), String> {
             seed: rng.next(),
             max: 1 + rng.below(5000),
         },
-        _ => Delivery::Whole,
+        _ => Delivery::Bytes,
     };
     for fast in [true, false] {
         let (mut r, msgs) = mem_reader(&names, files.clone(), opts, delivery, fast);
@@ -263,6 +263,100 @@ fn large_documents_match_util_c() {
     }
     eprintln!("large documents: {stats:?}");
     assert!(stats.fast_values > 20, "{stats:?}");
+}
+
+/// Large inputs of texts spanning lines, one after another or among
+/// NDJSON: where the fast path doesn't try the whole rest as one document
+/// because the first text ends early in it (and where it does, and fails).
+#[test]
+fn concatenated_texts_match_util_c() {
+    const LIMIT: usize = 100_000;
+    let mut stats = ReaderStats::default();
+    for seed in 0..24u64 {
+        let mut rng = Rng(seed.wrapping_mul(0xD6E8FEB86659FD93) | 1);
+        let weird = [0, 0, 3, 20][seed as usize % 4];
+        let mut g = gen_input::Gen { r: &mut rng, weird };
+        let mut data = Vec::new();
+        // NDJSON first, sometimes (the first text spanning lines is then
+        // further in).
+        if seed % 3 == 1 {
+            while data.len() < 5_000 {
+                g.value(&mut data, 1, false);
+                data.push(b'\n');
+            }
+        }
+        // Then texts of all sizes, most spanning lines, some large. The
+        // first is tiny for even seeds (it ends within the first 1/1024 of
+        // the rest, so the rest isn't tried as one document), and 0.1-3 KB
+        // for odd ones (the rest is tried, and fails).
+        let target = 70_000 + (seed as usize % 4) * 60_000;
+        let tiny: [&[u8]; 3] = [b"[\n1\n]", b"{\"a\":\n2}", b"[\n\"s\",\n{}\n]"];
+        let mut i = 0;
+        while data.len() < target {
+            let start = data.len();
+            if i == 0 && seed % 2 == 0 {
+                data.extend_from_slice(tiny[g.r.below(3)]);
+            } else {
+                let big = i > 0 && g.r.chance(1, 40);
+                data.push(b'[');
+                loop {
+                    let pretty = g.r.chance(3, 4);
+                    g.value(&mut data, 1, pretty);
+                    if data.len() - start > if big { 20_000 } else { 100 + g.r.below(3_000) } {
+                        break;
+                    }
+                    data.extend_from_slice(b",\n ");
+                }
+                data.extend_from_slice(b"\n]");
+            }
+            data.extend_from_slice([&b"\n"[..], b" ", b"\n\n", b"\r\n"][g.r.below(4)]);
+            i += 1;
+        }
+        let (names, files) = if seed % 4 == 3 {
+            let cut = data.len() / 3;
+            (
+                vec!["a", "b"],
+                vec![
+                    ("a".into(), super::MemFile::Data(data[..cut].to_vec())),
+                    ("b".into(), super::MemFile::Data(data[cut..].to_vec())),
+                ],
+            )
+        } else {
+            (
+                vec!["a"],
+                vec![("a".into(), super::MemFile::Data(data.clone()))],
+            )
+        };
+        let mut reference =
+            RefInput::new(&names, files.clone(), false, false, ParseFlags::default());
+        let want = ref_events(&mut reference, LIMIT);
+        for delivery in [
+            Delivery::Whole,
+            Delivery::Bytes,
+            Delivery::Stream { seed, max: 9_000 },
+        ] {
+            let (mut r, msgs) = mem_reader(
+                &names,
+                files.clone(),
+                ReaderOptions::default(),
+                delivery,
+                true,
+            );
+            let got = events(&mut r, &msgs, LIMIT);
+            assert!(
+                got == want,
+                "seed {seed} {delivery:?}\n  got:\n    {}\n  want:\n    {}",
+                describe(&got),
+                describe(&want)
+            );
+            let s = r.stats();
+            stats.fast_values += s.fast_values;
+            stats.parser_results += s.parser_results;
+            stats.handovers += s.handovers;
+        }
+    }
+    eprintln!("concatenated texts: {stats:?}");
+    assert!(stats.fast_values > 1000, "{stats:?}");
 }
 
 /// The fuzz target's check (`io::fuzzing`) over generated inputs, so the

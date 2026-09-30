@@ -35,9 +35,28 @@ that comes back must first be proven equivalent to jq (see JQ_PORT_PLAN.md).
 
 ## Memory
 
-Like jq, qj builds the whole value of each input text in memory. For NDJSON the parallel
-engine keeps a bounded window of input in flight (`QJ_WINDOW_SIZE`, see `CLAUDE.md`), and
-memory-mapped files are read as the kernel pages them in.
+Like jq, qj builds the whole value of each input text in memory. Regular files are
+memory-mapped, and the reader gives back the pages of a file that nothing can read anymore
+as it goes (`src/io/source.rs`). So for input of many texts (NDJSON, or texts one after
+another), the input resident at a time is about the parallel engine's window
+(`QJ_WINDOW_SIZE`, threads × 8 MB, at most 128 MB) plus an 8 MB release step, whatever the
+file's size. The window's jobs also hold their output until it's written in order, and, for
+programs run on the VM, the values parsed ahead. On a 3.3 GB NDJSON file with 18 threads,
+peak RSS is about 90 MB for `.actor.login`, 130 MB for `select(.type == "PushEvent")`,
+160–200 MB for `-c .` and 250–340 MB for `select(.actor.login | test("bot"))`; with
+`--threads 1` it's 13–18 MB. (jq: 6 MB.)
+
+It isn't bounded that way for:
+
+- **A single large text** (one big document, or a huge line): it's resident whole while it's
+  read, since its value needs all of it.
+- **Large texts one after another, the first more than 1/1024 of the file:** the reader tries
+  the rest of the file as one document first (a large input often is one), which reads all
+  of it.
+- **`QJ_NO_RELEASE=1`**, which keeps mapped input resident (for A/B checks).
+
+Streams (pipes, `.gz`/`.zst` files, and files with `QJ_NO_MMAP=1`) are read into a buffer that
+holds the unfinished text and, in the parallel engine, the window: bounded, as before.
 
 ## qj's additions
 

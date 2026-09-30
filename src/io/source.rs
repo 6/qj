@@ -5,21 +5,54 @@
 //! `fgets` chunking, NUL truncation, line counting, error messages) is
 //! emulated by [`super::reader`], which works the same for every kind of
 //! source.
+//!
+//! # Giving memory back
+//!
+//! A memory-mapped file stays mapped whole (one mapping, advised
+//! `MADV_SEQUENTIAL`, so the kernel reads ahead), but its pages are resident
+//! once read, and without help the resident set grows to the size of the
+//! file. So the reader *releases* what nothing can read anymore
+//! ([`InputBytes::release`]; see `release_consumed` in [`super::reader`] for
+//! when): the whole pages before that point are made inaccessible with
+//! `mprotect(PROT_NONE)`, which on macOS takes them out of the process's
+//! resident set (`madvise` doesn't, for file mappings), followed on Linux by
+//! `madvise(MADV_DONTNEED)`, which does it there. The mapping itself stays,
+//! so the address range is never reused, and a stale read of released bytes
+//! faults instead of seeing other data.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// An input's bytes, possibly followed by readable padding (which lets
 /// simdjson parse texts that end at the end of the input without a copy).
 pub trait InputBytes: Send + Sync {
-    /// The data.
+    /// The data. For bytes that can be released, only before the first
+    /// [`InputBytes::release`].
     fn data(&self) -> &[u8];
     /// The data followed by whatever padding is readable after it (the
-    /// padding's contents don't matter).
+    /// padding's contents don't matter). The same restriction applies.
     fn padded(&self) -> &[u8] {
         self.data()
+    }
+    /// [`InputBytes::padded`] from data offset `from` on, which must not be
+    /// before the offset the last [`InputBytes::release`] returned.
+    fn padded_from(&self, from: usize) -> &[u8] {
+        &self.padded()[from..]
+    }
+    /// Whether [`InputBytes::release`] gives memory back.
+    fn releasable(&self) -> bool {
+        false
+    }
+    /// Declares the data before `upto` dead: nothing reads it again (a read
+    /// of the whole pages it covers faults from now on), and its memory is
+    /// given back. Returns the offset the readable data starts at now: the
+    /// largest `upto` so far (0 if these bytes can't be released).
+    fn release(&self, upto: usize) -> usize {
+        let _ = upto;
+        0
     }
 }
 
@@ -239,7 +272,8 @@ pub(crate) fn open_borrowed_fd(fd: i32) -> io::Result<Opened> {
 
 /// A read-only private memory map of (part of) a file, followed by at
 /// least one page of readable zeros: simdjson's padding, so that a text
-/// ending at the end of the file is parsed in place.
+/// ending at the end of the file is parsed in place. Its data can be
+/// released from the start (see the module docs).
 pub struct Mmap {
     map: *mut libc::c_void,
     /// The whole reservation, padding included.
@@ -247,19 +281,86 @@ pub struct Mmap {
     /// Offset of the data within the mapping (the map starts page-aligned).
     skip: usize,
     len: usize,
+    page: usize,
+    /// Data offset before which nothing may be read ([`InputBytes::release`]).
+    start: AtomicUsize,
+    /// Bytes at the start of the mapping made inaccessible (whole pages).
+    released: Mutex<usize>,
 }
 
-// SAFETY: the mapping is read-only and never remapped while shared.
+// SAFETY: the mapping is read-only; it is only ever made inaccessible, in
+// ranges that nothing reads anymore (see `release`).
 unsafe impl Send for Mmap {}
 unsafe impl Sync for Mmap {}
 
+/// Ranges of mappings made inaccessible so far, in the whole process (for
+/// diagnostics and tests).
+static RELEASES: AtomicU64 = AtomicU64::new(0);
+
+/// How many times a range of a memory-mapped input was given back so far.
+pub fn releases() -> u64 {
+    RELEASES.load(Ordering::Relaxed)
+}
+
+/// The system's page size.
+pub(crate) fn page_size() -> usize {
+    // SAFETY: sysconf is always safe to call.
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+}
+
 impl Mmap {
+    fn new(map: *mut libc::c_void, map_len: usize, skip: usize, len: usize) -> Mmap {
+        Mmap {
+            map,
+            map_len,
+            skip,
+            len,
+            page: page_size(),
+            start: AtomicUsize::new(0),
+            released: Mutex::new(0),
+        }
+    }
+
+    /// An anonymous mapping holding a copy of `data` (which may be empty),
+    /// starting `skip` bytes into its first page (`skip` is taken modulo the
+    /// page size), set up and released exactly like a file's: for tests of
+    /// what reads input when, where a stale read faults.
+    #[cfg(unix)]
+    pub(crate) fn copy_of(data: &[u8], skip: usize) -> Option<Mmap> {
+        let page = page_size();
+        let skip = skip % page;
+        let map_len = (skip + data.len())
+            .div_ceil(page)
+            .checked_add(1)?
+            .checked_mul(page)?;
+        // SAFETY: a fresh anonymous reservation; checked for MAP_FAILED.
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                map_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        if map == libc::MAP_FAILED {
+            return None;
+        }
+        // SAFETY: the reservation is writable for map_len > skip + len bytes,
+        // then made read-only.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), (map as *mut u8).add(skip), data.len());
+            libc::mprotect(map, map_len, libc::PROT_READ);
+        }
+        Some(Mmap::new(map, map_len, skip, data.len()))
+    }
+
     /// Maps `len` (> 0) bytes of `fd` starting at `offset`, plus padding.
     /// `None` if mmap fails.
     #[cfg(unix)]
     fn map(fd: i32, offset: usize, len: usize) -> Option<Mmap> {
-        // SAFETY: sysconf is always safe to call.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        let page = page_size();
         let start = offset / page * page;
         let skip = offset - start;
         let file_len = skip + len;
@@ -301,12 +402,7 @@ impl Mmap {
         }
         // SAFETY: advice on our own mapping.
         unsafe { libc::madvise(map, file_len, libc::MADV_SEQUENTIAL) };
-        Some(Mmap {
-            map,
-            map_len,
-            skip,
-            len,
-        })
+        Some(Mmap::new(map, map_len, skip, len))
     }
 }
 
@@ -316,14 +412,61 @@ impl InputBytes for Mmap {
     }
 
     fn padded(&self) -> &[u8] {
-        // SAFETY: the mapping has map_len readable bytes for the lifetime of
-        // self, and skip < map_len.
+        debug_assert_eq!(
+            self.start.load(Ordering::Relaxed),
+            0,
+            "the whole input, after some of it was released"
+        );
+        self.padded_from(0)
+    }
+
+    fn padded_from(&self, from: usize) -> &[u8] {
+        debug_assert!(
+            from >= self.start.load(Ordering::Relaxed) && from <= self.len,
+            "reading released input"
+        );
+        // SAFETY: the mapping has map_len bytes, readable from skip + start
+        // on for the lifetime of self (release only protects bytes before
+        // start), and skip + from <= skip + len < map_len.
         unsafe {
             std::slice::from_raw_parts(
-                (self.map as *const u8).add(self.skip),
-                self.map_len - self.skip,
+                (self.map as *const u8).add(self.skip + from),
+                self.map_len - self.skip - from,
             )
         }
+    }
+
+    fn releasable(&self) -> bool {
+        true
+    }
+
+    fn release(&self, upto: usize) -> usize {
+        let upto = upto.min(self.len);
+        let mut released = self
+            .released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = self.start.load(Ordering::Relaxed);
+        if upto <= start {
+            return start;
+        }
+        self.start.store(upto, Ordering::Relaxed);
+        // The whole pages before `upto` (the rest of its page stays).
+        let end = (self.skip + upto) / self.page * self.page;
+        if end > *released {
+            // SAFETY: [released, end) is part of our mapping, and nothing
+            // reads it anymore (the caller's promise). A failure leaves the
+            // pages as they were, which is harmless.
+            unsafe {
+                let p = (self.map as *mut u8).add(*released).cast();
+                libc::mprotect(p, end - *released, libc::PROT_NONE);
+                #[cfg(target_os = "linux")]
+                libc::madvise(p, end - *released, libc::MADV_DONTNEED);
+            }
+            *released = end;
+            RELEASES.fetch_add(1, Ordering::Relaxed);
+        }
+        upto
     }
 }
 
