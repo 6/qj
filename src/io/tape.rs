@@ -530,6 +530,16 @@ impl<'a> Doc<'a> {
         None
     }
 
+    /// Whether an object has `key` (once or more).
+    pub fn has_key(&self, object: Node, key: &str) -> bool {
+        debug_assert_eq!(tag(self.word(object)), b'{');
+        self.for_each_key(
+            object,
+            |k| if self.str(k) == key { Err(()) } else { Ok(()) },
+        )
+        .is_err()
+    }
+
     /// [`Doc::get`] for a key that occurs more than once.
     fn get_last(&self, object: Node, key: &str) -> Option<Node> {
         let mut found = None;

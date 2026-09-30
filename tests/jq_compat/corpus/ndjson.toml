@@ -122,6 +122,16 @@ programs = [
   "$__loc__",
   "input_filename",
   "[., input]",
+  # type, has, not and the type filters, on the tape
+  "map(type)",
+  ".[] | type",
+  'select(.type | type == "string")',
+  'select(has("n"))',
+  '{t: (.type | type), h: has("a")}',
+  '.type == "PushEvent"',
+  ".type | not",
+  ".[] | scalars",
+  ".n | isnormal",
 ]
 
 [[sweep]]
@@ -193,4 +203,9 @@ programs = [
   'has("n")',
   ".type | length",
   "tojson",
+  "map(type)",
+  ".n | isnan",
+  ".n | isinfinite",
+  "select(.n | isnan | not)",
+  ".[] | numbers",
 ]
