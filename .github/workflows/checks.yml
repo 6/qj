@@ -49,9 +49,9 @@ jobs:
       - name: Compat suites
         if: matrix.os == 'ubuntu-24.04'
         run: |
-          # Strict differential run against jq 1.8.1. It ratchets against
-          # tests/jq_compat/diff_baseline_linux.txt; until that file exists it
-          # only reports (commit baseline_candidate.txt from the artifact).
+          # Strict differential run against jq 1.8.1, ratcheting against
+          # tests/jq_compat/diff_baseline_linux.txt. After a fix, record the
+          # gains from the jq-diff-linux artifact's baseline_candidate.txt.
           JQ_DIFF_JQ="$(mise which jq)" cargo test --release jq_diff -- --ignored
 
       - name: Upload jq_diff results
