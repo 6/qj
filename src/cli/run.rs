@@ -99,6 +99,10 @@ pub(super) struct Stdout {
     buf: Vec<u8>,
     /// The buffer size; 0 until the first write, when stdio allocates it.
     size: usize,
+    /// Whether anything was written yet: stdio allocates the buffer at the
+    /// first write that isn't empty, and until then glibc counts no space
+    /// in it (see [`Stdout::fwrite`]).
+    allocated: bool,
     line_buffered: bool,
     /// `ferror(stdout)`: the last write error.
     error: Option<io::Error>,
@@ -109,6 +113,7 @@ thread_local! {
         RefCell::new(Stdout {
             buf: Vec::new(),
             size: 0,
+            allocated: false,
             line_buffered: false,
             error: None,
         })
@@ -186,6 +191,7 @@ impl Stdout {
     /// buffer, so all whole buffers but the last one are out; a terminal also
     /// gets every complete line.
     fn settle(&mut self) {
+        self.allocated |= !self.buf.is_empty();
         if self.line_buffered
             && let Some(nl) = memchr::memrchr(b'\n', &self.buf)
         {
@@ -199,6 +205,10 @@ impl Stdout {
 
     /// Output written a character or token at a time (`jv_dumpf`, `printf`).
     pub(super) fn write(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.allocated = true;
         let size = self.size();
         let (have, total) = (self.buf.len(), self.buf.len() + bytes.len());
         let out = total.saturating_sub(1) / size * size;
@@ -224,12 +234,18 @@ impl Stdout {
     /// (on a terminal, as [`Stdout::write`]). Large writes differ from the
     /// same bytes written piecemeal in when the last buffer goes out.
     fn fwrite(&mut self, data: &[u8]) {
+        // (An empty fwrite does nothing, not even allocate the buffer.)
+        if data.is_empty() {
+            return;
+        }
         let size = self.size();
+        let allocated = self.allocated;
         // (Anything shorter than the buffer goes out as if piecemeal; so does
         // everything on a line-buffered glibc stream, approximately.)
         if data.len() < size || (self.line_buffered && cfg!(target_os = "linux")) {
             return self.write(data);
         }
+        self.allocated = true;
         if self.line_buffered {
             // FreeBSD/macOS __sfvwrite, line buffered: the same, a line at a
             // time, and a buffer holding a newline is written out.
@@ -264,8 +280,12 @@ impl Stdout {
         if cfg!(target_os = "linux") {
             // glibc _IO_new_file_xsputn: fill the buffer; if more is left,
             // write the full buffer, then whole blocks directly, and buffer
-            // the rest.
-            let fill = (size - self.buf.len()).min(data.len());
+            // the rest. Before the first write there is no buffer yet, and
+            // it counts as having no space: whole blocks of the data go
+            // straight out (`-j` of 4096 bytes is written at once, where
+            // after an earlier write it would fill the buffer and stay).
+            let space = if allocated { size - self.buf.len() } else { 0 };
+            let fill = space.min(data.len());
             self.buf.extend_from_slice(&data[..fill]);
             let rest = &data[fill..];
             if !rest.is_empty() {
