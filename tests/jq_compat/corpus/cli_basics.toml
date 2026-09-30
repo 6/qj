@@ -270,3 +270,32 @@ stdin = "{}\n"
 name = "runtime-error"
 args = [".a"]
 stdin = "5\n"
+
+# Programs nested as deeply as bison will parse, which is where jq's compiler
+# recurses deepest (`docs/COMPATIBILITY.md`). qj compiles them iteratively, and
+# the same cases run under `QJ_JQ_COMPAT=1` in `corpus/compat_mode.toml`, where
+# qj follows jq's recursion instead.
+[[case]]
+name = "deep-closures"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [["select(", 4900], ["true", 1], [")", 4900]] } }
+
+[[case]]
+name = "deep-defs"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [["def f: ", 3300], ["1", 1], ["; f", 3300]] } }
+
+[[case]]
+name = "deep-binops"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [[".", 1], [" + .", 9900]] } }
+
+[[case]]
+name = "deep-closures-syntax-error"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [
+    ["select(", 4900],
+    ["true", 1],
+    [")", 4900],
+    [" | %%%", 1],
+] } }
