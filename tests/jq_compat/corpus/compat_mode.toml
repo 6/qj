@@ -598,3 +598,76 @@ note = "jq's double free here only kills it for some heap layouts; see docs/COMP
 # `QJ_JQ_COMPAT=0` is off, so qj expands this glob and jq doesn't: a
 # deliberate difference, and not a case here. `src/cli/args/tests.rs` checks
 # it instead.
+
+# ---------------------------------------------------------------------------
+# The compiler's recursions. At a normal stack limit every program bison will
+# parse compiles in both tools; the thresholds themselves need a small
+# `ulimit -s`, which a case here can't ask for (see CLAUDE.md), so they live in
+# `tests/compat_mode.rs`. These check that nothing fires early — in compat mode
+# the binding walks are jq's own, down to the lambda bound to itself.
+# ---------------------------------------------------------------------------
+
+# 4,900 nested closures: two `block_bind_subblock_inner` frames a level, which
+# is what needs a 2 MB stack in jq. Bison stops at 4,990.
+[[case]]
+name = "deep-closures-compile"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [["select(", 4900], ["true", 1], [")", 4900]] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+# The same nesting through a C function's arguments, which bison reduces as it
+# goes: not bounded by YYMAXDEPTH at all, only by how long a program is.
+[[case]]
+name = "deep-binops-compile"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [[".", 1], [" + .", 9900]] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+# 3,300 nested definitions: one `compile` frame a level, and binding does not
+# descend them (a definition bound to itself has `any_unbound == 0`). Bison
+# stops at 3,330.
+[[case]]
+name = "deep-defs-compile"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [["def f: ", 3300], ["1", 1], ["; f", 3300]] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+# Nested closures thrown away by a syntax error: jq's actions have bound all of
+# it as bison reduced, and qj replays that lowering, so both report the error.
+[[case]]
+name = "deep-closures-syntax-error"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [
+    ["select(", 4900],
+    ["true", 1],
+    [")", 4900],
+    [" | %%%", 1],
+] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "deep-binops-syntax-error"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [[".", 1], [" + .", 9900], [" | %%%", 1]] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+# A nested constant folded during the parse: what `jv_free` recurses over at
+# the end of the run is the program's own constant, not any input.
+[[case]]
+name = "deep-array-constant"
+args = ["-nc", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [["[", 9900], ["1", 1], ["]", 9900]] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+# `dump_disassembly` recurses over the same subfunction tree `compile` does.
+[[case]]
+name = "deep-defs-disassembled"
+args = ["-nc", "--debug-dump-disasm", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [["def f: ", 200], ["1", 1], ["; f", 200]] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "deep-closures-disassembled"
+args = ["-nc", "--debug-dump-disasm", "-f", "prog.jq"]
+files = { "prog.jq" = { repeat = [["select(", 200], ["true", 1], [")", 200]] } }
+env = { QJ_JQ_COMPAT = "1" }

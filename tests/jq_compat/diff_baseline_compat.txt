@@ -9668,6 +9668,10 @@ pass corpus/cli_basics.toml:args-positional:cli f63188481094
 pass corpus/cli_basics.toml:ascii-output-keys:cli 32bec4cdd6f3
 pass corpus/cli_basics.toml:compact-object:cli e6bf416fc291
 pass corpus/cli_basics.toml:compact-slurp:cli e72ca0cc2f3a
+pass corpus/cli_basics.toml:deep-binops:cli fa7935614def
+pass corpus/cli_basics.toml:deep-closures-syntax-error:cli 48467ec72035
+pass corpus/cli_basics.toml:deep-closures:cli 856c0398c6fe
+pass corpus/cli_basics.toml:deep-defs:cli 92ea48dd4a2c
 pass corpus/cli_basics.toml:dot-object:cli 1b4f77301729
 pass corpus/cli_basics.toml:env-has-home:cli d6ba826d27d0
 pass corpus/cli_basics.toml:env-home:cli 51b2a172ac05
@@ -11231,6 +11235,14 @@ pass corpus/compat_mode.toml:compare-stops-at-the-first-difference:cli 8effcd543
 pass corpus/compat_mode.toml:contains-past-every-model:cli e83d29bb4f21
 pass corpus/compat_mode.toml:contains-shallow:cli 5931caf0022b
 pass corpus/compat_mode.toml:debug-timing-is-unknown:cli 1e9f2d59d52a
+pass corpus/compat_mode.toml:deep-array-constant:cli da94c126431f
+pass corpus/compat_mode.toml:deep-binops-compile:cli c9b45faf7727
+pass corpus/compat_mode.toml:deep-binops-syntax-error:cli c781dd0ca90a
+pass corpus/compat_mode.toml:deep-closures-compile:cli a61a6b682909
+pass corpus/compat_mode.toml:deep-closures-disassembled:cli d22b667709e9
+pass corpus/compat_mode.toml:deep-closures-syntax-error:cli ec83631519b8
+pass corpus/compat_mode.toml:deep-defs-compile:cli 907f60b42024
+pass corpus/compat_mode.toml:deep-defs-disassembled:cli 1ab16036b14c
 pass corpus/compat_mode.toml:deep-input-hits-the-parser-limit:cli ca83b699c07f
 pass corpus/compat_mode.toml:deep-path-element-compared-inside-delpaths:cli 254b1a797614
 pass corpus/compat_mode.toml:deep-value-discarded:cli 426d24bd3cfc

@@ -861,4 +861,14 @@ impl ParseHooks for CompileHooks<'_> {
             None
         }
     }
+
+    /// `QJ_JQ_COMPAT=1`: lower what the parser reduced before it failed, so that
+    /// the binding recursion reaches the depth jq's actions reached while bison
+    /// was reducing (see [`ParseHooks::replay_reduced`]). The blocks are
+    /// abandoned in the compiler's arena, as jq's are freed.
+    fn replay_reduced(&mut self, nodes: &[&Node]) {
+        for n in nodes {
+            Lowerer::new(self.c, self.lf).lower(n);
+        }
+    }
 }
