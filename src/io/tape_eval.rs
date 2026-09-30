@@ -4,8 +4,10 @@
 //! iteration (`.[]`, `.[]?`), pipes, `length`, `keys`, `keys_unsorted`,
 //! array collection (`[...]`, `map(...)`), object construction with constant
 //! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its equality
-//! with a constant (`select(.type == "PushEvent")`) has outputs that are
-//! fully determined by its input, and can be computed on the tape
+//! with a constant (`select(.type == "PushEvent")`), and of definitions
+//! without parameters of such programs (inlined where they're called, as
+//! jq resolves the calls), has outputs that are fully determined by its
+//! input, and can be computed on the tape
 //! ([`super::tape`]). Those outputs are what the jq VM would produce on the
 //! value the builder makes of the input: every step follows the builtin or
 //! opcode it stands for (`jv_get` on objects, `EACH`, `INDEX_OPT`,
@@ -117,7 +119,8 @@ impl TapeProgram {
         let ProgramBody::Main(node) = &program.body else {
             return None;
         };
-        let expr = convert(node)?;
+        let mut budget = INLINE_BUDGET;
+        let expr = convert(node, &Scope::TOP, &mut budget)?;
         Some(TapeProgram { expr })
     }
 
@@ -140,8 +143,44 @@ impl TapeProgram {
     }
 }
 
+/// The definitions (without parameters) an expression of the program sees:
+/// the innermost, then the ones around it. jq resolves a call by name and
+/// arity to the innermost definition in scope, and a definition's body sees
+/// the definitions before it and itself.
+struct Scope<'a, 'p> {
+    /// `def name: body;` (`None` at the top: builtins only).
+    def: Option<(&'a str, &'a ast::Node)>,
+    parent: Option<&'p Scope<'a, 'p>>,
+}
+
+impl<'a> Scope<'a, '_> {
+    const TOP: Scope<'static, 'static> = Scope {
+        def: None,
+        parent: None,
+    };
+
+    /// The body of the innermost definition of `name` (without
+    /// parameters), and the scope it sees.
+    fn find(&self, name: &str) -> Option<(&'a ast::Node, &Self)> {
+        let mut s = self;
+        loop {
+            if let Some((n, body)) = s.def
+                && n == name
+            {
+                return Some((body, s));
+            }
+            s = s.parent?;
+        }
+    }
+}
+
+/// How many calls of definitions a program may inline (each call anew, so
+/// a recursive definition doesn't qualify, nor definitions that call each
+/// other too often).
+const INLINE_BUDGET: usize = 64;
+
 /// The program's AST as an [`Expr`], if it qualifies.
-fn convert(n: &ast::Node) -> Option<Expr> {
+fn convert<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Expr> {
     Some(match &n.kind {
         NodeKind::Identity => Expr::Identity,
         NodeKind::Index {
@@ -152,7 +191,7 @@ fn convert(n: &ast::Node) -> Option<Expr> {
             let key = const_string(key)?;
             let target = Box::new(match target {
                 None => Expr::Identity,
-                Some(t) => convert(t)?,
+                Some(t) => convert(t, scope, budget)?,
             });
             if *optional {
                 Expr::IndexOpt(target, key)
@@ -161,14 +200,34 @@ fn convert(n: &ast::Node) -> Option<Expr> {
             }
         }
         NodeKind::Each { target, optional } => {
-            let target = Box::new(convert(target)?);
+            let target = Box::new(convert(target, scope, budget)?);
             if *optional {
                 Expr::EachOpt(target)
             } else {
                 Expr::Each(target)
             }
         }
-        NodeKind::Pipe(a, b) => Expr::Pipe(Box::new(convert(a)?), Box::new(convert(b)?)),
+        NodeKind::Pipe(a, b) => Expr::Pipe(
+            Box::new(convert(a, scope, budget)?),
+            Box::new(convert(b, scope, budget)?),
+        ),
+        // A definition without parameters is inlined where it's called
+        // (below); one with parameters makes the program not qualify.
+        NodeKind::FuncDef { def, rest } => {
+            if !def.params.is_empty() {
+                return None;
+            }
+            let inner = Scope {
+                def: Some((&def.name, &def.body)),
+                parent: Some(scope),
+            };
+            return convert(rest, &inner, budget);
+        }
+        NodeKind::Call { name, args, .. } if args.is_empty() && scope.find(name).is_some() => {
+            let (body, s) = scope.find(name)?;
+            *budget = budget.checked_sub(1)?;
+            return convert(body, s, budget);
+        }
         NodeKind::Call { name, args, .. } => match (name.as_str(), args.as_slice()) {
             ("length", []) => Expr::Length,
             ("keys", []) => Expr::Keys { sorted: true },
@@ -176,19 +235,23 @@ fn convert(n: &ast::Node) -> Option<Expr> {
             // builtin.jq: `def map(f): [.[] | f];`
             ("map", [f]) => Expr::Collect(Box::new(Expr::Pipe(
                 Box::new(Expr::Each(Box::new(Expr::Identity))),
-                Box::new(convert(f)?),
+                Box::new(convert(f, scope, budget)?),
             ))),
             // builtin.jq: `def select(f): if f then . else empty end;`
-            ("select", [f]) => select(f)?,
+            ("select", [f]) => select(f, scope, budget)?,
             _ => return None,
         },
-        NodeKind::Array(Some(e)) => Expr::Collect(Box::new(convert(e)?)),
+        NodeKind::Array(Some(e)) => Expr::Collect(Box::new(convert(e, scope, budget)?)),
         NodeKind::Object(pairs) => {
             let mut entries: Vec<(String, Expr)> = Vec::with_capacity(pairs.len());
             for p in pairs {
                 let (key, value) = match &p.kind {
-                    DictPairKind::Named { key, value } => (key.clone(), convert(value)?),
-                    DictPairKind::Str { key, value } => (const_string_lit(key)?, convert(value)?),
+                    DictPairKind::Named { key, value } => {
+                        (key.clone(), convert(value, scope, budget)?)
+                    }
+                    DictPairKind::Str { key, value } => {
+                        (const_string_lit(key)?, convert(value, scope, budget)?)
+                    }
                     // `{a}` is `{a: .a}`, `{"a"}` is `{"a": .["a"]}`.
                     DictPairKind::NameShorthand(key) => (
                         key.clone(),
@@ -213,7 +276,15 @@ fn convert(n: &ast::Node) -> Option<Expr> {
 }
 
 /// `select(f)` for the tests handled here.
-fn select(f: &ast::Node) -> Option<Expr> {
+fn select<'a>(f: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> Option<Expr> {
+    // `select(f)` with `def f: ...;` is `select` of f's body.
+    if let NodeKind::Call { name, args, .. } = &f.kind
+        && args.is_empty()
+        && let Some((body, s)) = scope.find(name)
+    {
+        *budget = budget.checked_sub(1)?;
+        return select(body, s, budget);
+    }
     if let NodeKind::Binary {
         op: op @ (BinOp::Eq | BinOp::Ne),
         lhs,
@@ -226,7 +297,7 @@ fn select(f: &ast::Node) -> Option<Expr> {
             (Some(c), None) => (rhs, c),
             _ => return None,
         };
-        let e = convert(e)?;
+        let e = convert(e, scope, budget)?;
         if !single(&e) {
             return None;
         }
@@ -237,7 +308,7 @@ fn select(f: &ast::Node) -> Option<Expr> {
         };
         return Some(Expr::Select(Box::new(e), test));
     }
-    let e = convert(f)?;
+    let e = convert(f, scope, budget)?;
     if !single(&e) {
         return None;
     }

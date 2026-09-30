@@ -272,6 +272,22 @@ const PROGRAMS: &[&str] = &[
     "[.[]? | length]",
     ".[]? | keys",
     "{a} | .a[]?",
+    "def f: .a; f",
+    "def f: .a; def g: f | .b; g",
+    "def keys: .a; keys",
+    "def f: length; def length: .a; f",
+    "def f: length; def length: .a; [f] | length",
+    "def f: .a; def f: .b; f",
+    "def f: def g: .a; g | length; f",
+    "def is_one: .a == 1; select(is_one)",
+    "def is_x: .a != \"x\"; .[] | select(is_x)",
+    "def f: .[]; [f]",
+    "def select: .; select(.a)",
+    "def f: .a; map(f)",
+    "def f: .a?; [.[] | f]",
+    "def f: {a}; f | .a",
+    "def keys: .a; map(keys)",
+    "def f: .a; {x: f}",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -497,6 +513,16 @@ fn only_simple_programs_qualify() {
         assert!(TapeProgram::new(p.as_bytes()).is_some(), "{p}");
     }
     for p in [
+        "def f: f; f",
+        "def f: .a | f; f",
+        "def f(x): x; f(.a)",
+        "def map(f): 1; map(.a)",
+        "def f: 1; f",
+        "def f: .a; f, f",
+        "def f: $__loc__; f",
+        "def f: input; f",
+        "def f: .; def g: f | f; def h: g | g; def i: h | h; def j: i | i; \
+         def k: j | j; def l: k | k; def m: l | l; m",
         "(.a)?",
         "try .a",
         ".a[]?.b?[0]",
@@ -504,7 +530,6 @@ fn only_simple_programs_qualify() {
         "select(.a?)",
         ".[0]",
         ".a, .b",
-        "def f: .; f",
         "map(.a, .b)",
         "{a: .[]}",
         "{a: select(.b)}",

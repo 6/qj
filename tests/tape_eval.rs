@@ -86,6 +86,9 @@ const PROGRAMS: &[&str] = &[
     "[.[]?]",
     "[.[][]?]",
     ".s[]?",
+    "def f: .arr; f[] | .a",
+    "def keys: .k1; keys",
+    "def is_one: .a == 1; .arr[] | select(is_one)",
 ];
 
 const OPTIONS: &[&[&str]] = &[

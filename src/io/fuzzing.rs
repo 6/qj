@@ -333,6 +333,9 @@ pub const TAPE_PROGRAMS: &[&str] = &[
     ".[][]?",
     "[.[].a?]",
     "map(.a[]?)",
+    "def f: .a; f",
+    "def keys: .b; [keys]",
+    "def t: .a == 1; map(select(t))",
 ];
 
 /// The tape evaluator (`super::tape_eval`) against the VM: `data[0]` picks

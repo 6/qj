@@ -1,7 +1,8 @@
 # Programs qj evaluates on simdjson's tape, without building values
 # (src/io/tape_eval.rs): paths, `.[]`, pipes, `length`, `keys`,
 # `keys_unsorted`, `[...]`, `map`, `{...}` with constant keys, `select`
-# on truthiness or equality with a constant, and `.a?`, `.[]?`. Their output
+# on truthiness or equality with a constant, `.a?`, `.[]?`, and definitions
+# without parameters (inlined, shadowing builtins as in jq). Their output
 # must be jq's for every output option (the tape printer re-implements jq's
 # layout), on single documents and on NDJSON (the parallel engine's workers
 # and the calling thread run them), and when an input declines the shortcut
@@ -70,6 +71,14 @@ programs = [
   ".arr | map(.b[]?)",
   ".a?.b",
   ".a.b[]? | .x",
+  "def f: .arr; f[] | .a",
+  "def keys: .k1; keys",
+  "def f: keys; def keys: .k1; [f, keys] | length",
+  "def f: keys; def keys: .k1; f",
+  "def f: .a; def f: .arr; f | length",
+  "def is_x: .a == \"x\"; .arr[] | select(is_x) | .b",
+  "def select: .s; select(.a)",
+  "def f: .; def g: f | f; def h: g | g; def i: h | h; def j: i | i; def k: j | j; def l: k | k; def m: l | l; m | .s",
 ]
 
 [[sweep]]
@@ -102,6 +111,9 @@ programs = [
   "[.[] | .a?]",
   ".a[]? | .a?",
   "map(.b?)",
+  "def f: .a; f",
+  "def length: .b; length",
+  "def is_one: .a == 1; select(is_one)",
 ]
 
 [[sweep]]
