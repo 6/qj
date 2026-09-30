@@ -139,6 +139,8 @@ and prints exactly what jq does, and the compat scoreboard compares it unrewritt
   | a deeply nested *program*: 4,990 nested `select(...)` below `ulimit -s` 2 MB, or a long enough left-associative chain (`. + . + …`) at any limit — 37,335 terms at 8 MB | SIGSEGV while compiling | the answer | SIGSEGV at the same nesting |
   | a value printed on a stack of about 80 KB or less, e.g. one nested 242 levels deep at `ulimit -s 64` | SIGSEGV in the printer, before the `MAX_PRINT_DEPTH` cap can stop it | the answer | SIGSEGV at the same depth |
   | a chain of more than about 20,000 imported modules (8 MB stack; 18,000 on Linux) | SIGSEGV | the answer, however long the chain | SIGSEGV at the same depth |
+  | a regex nested deeper than the stack allows Oniguruma's parser or its walks over the parsed pattern, e.g. 60 nested groups at `ulimit -s 48` | SIGSEGV while compiling the regex | the answer | SIGSEGV at the same nesting |
+  | a stack too small for jq to start (macOS: 16 KB or less, where dyld itself can't run; Linux: about 5 KB to print its help, 9 KB to compile a program) or for `--run-tests`' buffers (40 KB on macOS, 24 KB on Linux) | SIGSEGV, with nothing written | the answer, wherever its own start-up fits (see [Small stacks](#small-stacks)) | SIGSEGV |
   | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
 
   jq's deliberate aborts, which come from `assert()` and are deterministic, are
@@ -217,8 +219,16 @@ stack. qj does all six with a loop, and compat mode reproduces each one's crash:
 | `jv_setpath` (`setpath`, `=`, `\|=`, `+=`, …) | the length of the path | yes |
 | `delpaths_sorted` (`delpaths`, `del`) | the length of the paths, a level at a time | yes |
 | `jv_getpath` (`getpath`, `path`) | the length of the path | **not needed**: it is a tail call, and both release compilers turn it into a loop. `[range(1000000)\|0] as $p \| null \| getpath($p)` answers `null` at `ulimit -s 256` on macOS and on Linux |
-| `jv_dump_term` (the printer) | the nesting of the value, **capped at `MAX_PRINT_DEPTH` (256)**, below which it writes `<skipped: too deep>` | yes — the cap keeps it inside any ordinary stack, but 257 frames of 256 bytes (304 on Linux) still need about 68 KB, and below that jq dies |
+| `jv_dump_term` (the printer) | the nesting of the value, **capped at `MAX_PRINT_DEPTH` (256)**, below which it writes `<skipped: too deep>` | yes — the cap keeps it inside any ordinary stack, but 258 frames of 256 bytes (304 on Linux) still need about 68 KB, and below that jq dies. Twice: from `main.c`'s output, and, from deeper in the stack, while the program runs (`tojson`, `tostring`, `@json`, `@text`, string interpolation, `debug`, `stderr`, error messages) |
 | `load_library` ↔ `process_dependencies` (`linker.c`) | the length of a chain of `import`s or `include`s, one module a level | yes |
+
+**In Oniguruma**, which jq links in for its regex builtins, two recursions follow a
+pattern's nesting: the parser (`prs_alts` → `prs_branch` → `prs_exp` → `prs_bag` → …, a
+level per group of any kind) and the walks over the parsed tree (`tune_tree`,
+`compile_tree`, …, a level per node). jq's parse depth limit (1,024, two a group) stops
+the parser at 511 nested groups, which needs about 400 KB of stack: below that, a nested
+enough pattern kills jq. Compat mode follows the pattern as the parser does
+(`src/compat/regex.rs`) and reproduces both.
 
 The JSON parser is not in the list: `jv_parse` keeps its own stack on the heap and stops
 at `MAX_PARSING_DEPTH` (10,000), so input alone cannot drive any of these past 10,000
@@ -289,103 +299,110 @@ defining `def f: 1 + m::f;` answers `n - 1` up to 4,095 and `n - 4097` from 4,09
 
 ### How exact the stack-overflow emulation is
 
-Each site has its own frame, so each has its own threshold, and each is modelled as
-`(stack_bytes - base - margin) / frame` levels. `frame` is exact — it is the prologue's
-own figure, and the deepest value or program jq survives is linear in `ulimit -s` with
-that slope at every limit measured. `base` is what is left over at the *worst* of the call
-sites measured, and the margin keeps qj from ever surviving where jq dies.
+jq's stack is `RLIMIT_STACK` as the kernel applies it, less what the kernel puts at its
+top for argv and the environment. The kernel rounds the limit *down* to a page on Linux,
+where the stack's mapping grows a page at a time while it fits, and *up* to one on
+macOS, which makes what lies past the limit inaccessible a page at a time: pages are 16
+KB on arm64, so `ulimit -s 17` gives a 32 KB stack there. argv and the environment take
+every string with its NUL and the arrays of pointers to them. Compat mode counts both
+for its own process (`compat::effective_limit`, `compat::area_of`), which are jq's when
+qj runs in its place: a larger environment moves every threshold down by exactly its
+size, and a smaller one up.
 
-The six recursions over values share one `base` (see below). The other four have their
-own: the module chain's level where the stack runs out is *parsing a module*, with bison's
-three `YYINITDEPTH` (200) arrays on it, and binding's deepest walks are parser.y's actions,
-which run inside `yyparse` — 5,616 bytes of arrays on macOS, 5,696 on Linux — while
-`compile` runs after the parse, with less on the stack than any value site.
+What is left is linear in every depth jq recurses to: `base + levels × frame`. `frame` is
+what the prologue of jq's own function reserves in the release binary, and `base` is what
+the stack holds before the first level, from the top: the same at every depth and every
+limit, but for one thing — on macOS the allocator takes a slow path at the deepest level
+at some depths, which puts up to 600 bytes more on the stack there. Both were measured by
+padding the environment at a fixed limit until jq no longer answered, which is
+byte-exact and free of macOS's 16 KB rounding, at 16 random depths per site (on Linux with
+the kernel's stack randomization off, `setarch -R`). Each model takes the largest base any
+depth showed, and qj dies once `base + levels × frame + margin` is more than jq's stack
+has.
 
-| site | base (macOS / Linux) | what it holds |
-|---|--:|---|
-| the six over values | 4,096 / 3,856 | `jv_cmp` from `sort`: the VM and the builtin below it |
-| `load_library` (modules) | 12,000 / 8,304 | `find_lib`, the file, and `yyparse`'s arrays for the module |
-| `block_bind_subblock_inner` | 8,976 / 7,536 | `load_program` → `jq_parse` → `yyparse` → the action |
-| `compile` / `expand_call_arglist` | 3,552 / 1,856 | `jq_compile_args` → `block_compile` |
-| `jv_dump_term` | 3,584 / 1,696 | `main`'s output path |
+The margin is what the models can't see. On macOS it is 512 bytes, for jq's executable
+path (the kernel puts that on the stack too, in the apple strings) and allocator paths no
+measurement met; with the environment counted, the rest is deterministic, and the same
+limit, environment and program give jq the same threshold in every run. On Linux it is
+those 512 bytes plus the kernel's randomization of the initial stack pointer
+(`arch_align_stack`: up to 8,191 bytes, then 16-byte alignment), 8,718 in all: jq's
+thresholds move from run to run by up to 8,206 bytes (171 levels of `jv_free`), and the
+model sits below the bottom of that window, so qj never survives where jq can die, and
+inside the window it dies where jq only sometimes does.
 
-On macOS/arm64, bisected against jq's release binary at `ulimit -s` 1024, 2048, 4096,
-8176 and 16384 KB (the compiler's sites at 128, 256, 384, 512, 576, 1024 and 2048 KB, and
-the printer at 32, 48 and 64 KB — the frames are large enough that its thresholds need a
-tiny stack). The last two columns are the default 8176 KB, except for the sites whose
-depth is bounded before that, where they are the limit in brackets:
+The models, in bytes beyond argv and the environment. "jq's base" is the one at most
+depths, with the largest one any depth showed in brackets; the last column is how many
+levels short of jq's threshold qj's is, everywhere (on Linux, below the bottom of jq's
+window, whose width follows):
 
-| site | bytes a level | deepest jq survives | qj, `QJ_JQ_COMPAT=1` |
-|---|--:|--:|--:|
-| `jv_free` | 64 | 130,760 | 130,655 |
-| `jv_equal` / `jv_cmp` | 128 | 65,375 | 65,327 |
-| `jv_contains` | 176 | 47,547 | 47,510 |
-| `jv_object_merge_recursive` | 112 | 74,719 | 74,659 |
-| `jv_setpath` | 144 | 58,114 | 58,067 |
-| `delpaths_sorted` | 240 | 34,868 | 34,839 |
-| `load_library` (modules) | 416 | 20,096 | 20,079 |
-| `block_bind_subblock_inner` (nested `select`, at 256 KB) | 112 | 1,129 | 1,102 |
-| `compile` (nested `def`, at 256 KB) | 176 | 1,467 | 1,429 |
-| `jv_dump_term` (at 64 KB) | 256 | 241 | 217 |
+macOS/arm64 (jq's release binary, built by Apple clang):
 
-On Linux/x86-64 (jq's release binary, built by gcc), bisected at 1024, 4096, 8192 and
-16384 KB (the module chain also at 2048; the compiler's sites at 256, 512, 1024 and 2048
-KB) with the kernel's stack randomization off (`setarch -R`), which is what makes the
-numbers repeatable. The last two columns are the 16 MB of GitHub's runners, or the limit
-in brackets:
+| site | bytes a level | jq's base | the model's base | qj short of jq |
+|---|--:|--:|--:|--:|
+| `jv_free` | 64 | 3,160 | 3,904 | 20 levels |
+| `jv_equal` | 128 | 3,128 | 3,904 | 11 levels |
+| `jv_cmp` (`sort`) | 128 | 3,448 | 3,904 | 8 levels |
+| `jv_contains` | 176 | 3,336 | 3,904 | 7 levels |
+| `jv_object_merge_recursive` | 112 | 3,304 (3,896) | 3,904 | 4–10 levels |
+| `jv_setpath` | 144 | 3,192 (3,640) | 3,904 | 5–9 levels |
+| `delpaths_sorted` | 240 | 3,192 (3,704) | 3,904 | 2–6 levels |
+| `load_library` (modules) | 416 | 11,128 | 11,136 | 2 levels |
+| `block_bind_subblock_inner` | 112 | 8,696 | 8,704 | 5 levels |
+| `compile` / `expand_call_arglist` | 176 / 192 | 3,176 (3,432) | 3,440 | 2–5 levels |
+| `jv_dump_term` from `main.c` | 256 | 2,920 (2,967) | 2,976 | 2–3 levels |
+| `jv_dump_term` while the program runs | 256 | 3,288 (4,056) | 4,064 | 2–6 levels |
+| Oniguruma's parser (a group) | 784 | 4,840 | 4,848 | 1 level |
+| Oniguruma's tree walks (a node) | 624 | 4,392 | 4,400 | 1 level |
 
-| site | bytes a level | deepest jq survives | qj, `QJ_JQ_COMPAT=1` |
-|---|--:|--:|--:|
-| `jv_free` | 48 | 349,486 | 349,269 |
-| `jv_equal` / `jv_cmp` | 144 | 116,481 | 116,422 |
-| `jv_contains` | 176 | 95,312 | 95,254 |
-| `jv_object_merge_recursive` | 128 | 131,053 | 130,975 |
-| `jv_setpath` | 160 | 104,843 | 104,779 |
-| `delpaths_sorted` | 240 | 69,895 | 69,852 |
-| `load_library` (modules) | 464 | 36,139 | 36,117 |
-| `block_bind_subblock_inner` (nested `select`, at 256 KB) | 112 | 1,136 | 1,099 |
-| `compile` (nested `def`, at 256 KB) | 224 | 1,160 | 1,113 |
-| `jv_dump_term` (at 64 KB) | 304 | 209 | 181 |
+Linux/x86-64 (jq's release binary, built by gcc, glibc linked statically):
 
-The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
-threshold is 13 to 223 levels below jq's. What it covers is different on each:
+| site | bytes a level | jq's base | the model's base | qj short of jq |
+|---|--:|--:|--:|--:|
+| `jv_free` | 48 | 1,548 | 3,152 | 45 levels, + 171 of window |
+| `jv_equal` | 144 | 1,548 | 3,152 | 15 levels, + 57 |
+| `jv_cmp` (`sort`) | 144 | 3,148 | 3,152 | 4 levels, + 57 |
+| `jv_contains` | 176 | 1,676 | 3,152 | 12 levels, + 47 |
+| `jv_object_merge_recursive` | 128 | 2,028 | 3,152 | 13 levels, + 65 |
+| `jv_setpath` | 160 | 1,692 | 3,152 | 13 levels, + 52 |
+| `delpaths_sorted` | 240 | 1,708 | 3,152 | 9 levels, + 35 |
+| `load_library` (modules) | 464 | 7,772 | 7,776 | 2 levels, + 18 |
+| `block_bind_subblock_inner` | 112 | 7,324 | 7,328 | 5 levels, + 74 |
+| `compile` / `expand_call_arglist` | 224 / 224 | 1,692 | 1,696 | 3 levels, + 37 |
+| `jv_dump_term` from `main.c` | 304 | 1,404 (1,412) | 1,424 | 2 levels, + 27 |
+| `jv_dump_term` while the program runs | 304 | 1,644 (2,172) | 2,176 | 1–4 levels, + 27 |
+| Oniguruma's parser (a group) | 784 | 3,596 | 3,600 | 1 level, + 11 |
+| Oniguruma's tree walks (a node) | 560 | 2,908 | 2,912 | 1 level, + 15 |
 
-- **macOS: the environment.** argv and the environment sit on top of jq's stack, so its
-  threshold drops by about a level per 64 bytes of them — `jv_free` reaches 130,760 in
-  the harness's five variables and 130,664 under an interactive shell's, 6 KB more. The
-  bisections use the harness's environment, so the margin is what a larger one can take.
-- **Linux: the kernel.** `arch_align_stack` starts the main thread's stack up to 8 KB
-  below its top at random, so jq's threshold moves from run to run over about 170 levels
-  for `jv_free` and 57 for `jv_equal`. Sampling 10 runs per depth at 8 MB, jq survived
-  every run up to about 160 levels below the deterministic threshold and no run above it.
-  The model takes the whole 8 KB, so it lands at or below the bottom of that window:
-  inside it, qj dies where jq only sometimes does.
+At the default 8,176 KB on macOS, in jq_diff's environment (about 350 bytes of argv and
+environment), jq frees a value 130,760 levels deep, and compat-mode qj one 130,740 deep;
+the model before the environment was counted stopped at 130,655, because its 6 KB margin
+had to cover whatever environment it might be run in. Checked at every depth tried, from a
+few hundred levels (tens of KB of stack) to 100,000 (6.4 MB): qj's need is jq's plus the
+margin above, never less.
 
-Three smaller reasons the two can't agree to the last frame:
+Two smaller reasons the two can't agree to the last frame:
 
-- **One reserve for every site.** jq drives some of these recursions from *inside*
-  another: `delpaths_sorted` compares path elements and frees values a level at a time,
-  `jv_object_merge_recursive` frees the value it replaces, `load_library` parses and binds
-  a module at every level, and `compile` expands a call list at every level. qj charges the
-  inner recursion the stack the outer one holds, so the same value kills it sooner the
-  deeper the paths go — two paths ending in a value 64,000 levels deep are compared fine at
-  the top and kill jq (and qj) a thousand `delpaths` levels down. For that to work the
-  margin has to be charged once, not once per recursion, so the six value sites all reserve
-  what the *worst* of them measured (`jv_cmp` from `sort`) rather than their own, and where
-  an inner site has a base of its own only the larger of the two is charged. That costs the
-  other value sites up to 576 bytes on macOS and 2,000 on Linux — 9 and 42 levels of
-  `jv_free`. A site that drives others also gives up as many of its own levels as the
-  deepest thing it drives needs to start, which is one level everywhere except the module
-  chain on Linux, where binding's base is 976 bytes above the chain's and it costs three.
-  Without that, comparing two *shallow* path elements at the deepest `delpaths` level the
-  model allows would look like an overflow, and qj would die where jq is nowhere near its
-  stack.
-- which call site reaches the recursion shifts it by a frame or two — `jv_free` reaches
-  130,760 through a builtin such as `length`, 130,763 from `main.c`'s output path and
-  130,757 through `tojson`; `jv_cmp` 65,379 through `==` and 65,375 through `sort`. Each
-  model follows the worst.
-- the bytes a level don't always divide the stack evenly, which costs one more level at
-  some limits.
+- **One base for the six sites over values.** jq drives some of these recursions from
+  *inside* another: `delpaths_sorted` compares path elements and frees values a level at a
+  time, `jv_object_merge_recursive` frees the value it replaces, `load_library` parses and
+  binds a module at every level, and `compile` expands a call list at every level. qj
+  charges the inner recursion the stack the outer one holds, so the same value kills it
+  sooner the deeper the paths go — two paths ending in a value 64,000 levels deep are
+  compared fine at the top and kill jq (and qj) a thousand `delpaths` levels down. For
+  that to work the margin has to be charged once, not once per recursion, so the six value
+  sites all reserve the largest base any of them showed (`jv_object_merge_recursive`'s on
+  macOS, `jv_cmp`'s from `sort` on Linux), and where an inner site has a base of its own
+  only the larger of the two is charged. That is most of the table's last column: it costs
+  `jv_free` 12 levels on macOS and 33 on Linux. A site that drives others also gives up as
+  many of its own levels as the deepest thing it drives needs to start, which is one level
+  everywhere except the module chain on Linux. Without that, comparing two *shallow* path
+  elements at the deepest `delpaths` level the model allows would look like an overflow,
+  and qj would die where jq is nowhere near its stack.
+- **The printer's call sites.** `main.c` prints a result from shallower in jq's stack than
+  a builtin that dumps a value while the program runs (`tojson`, `@json`, string
+  interpolation, `debug`, `stderr`, error messages), by 368 to 1,136 bytes on macOS and 240
+  to 768 on Linux, so the two are separate models (`Site::Print` and `Site::Dump`), the
+  latter at the worst of its call sites.
 
 Only the depth jq *reaches* counts, so qj follows jq's traversal rather than the nesting
 of the values:
@@ -429,11 +446,12 @@ nesting:
   value of any depth prints on a stack that holds the cap.
 
 `src/compat.rs` has the models and the unit tests, `src/compat/depth.rs` the traversals,
-`tests/jq_compat/corpus/compat_mode.toml` the differential cases, and
-`tests/compat_mode.rs` tests that size their depths from `ulimit -s`.
+`src/compat/regex.rs` Oniguruma's depths, `tests/jq_compat/corpus/compat_mode.toml` the
+differential cases, and `tests/compat_mode.rs` tests that size their depths from the stack
+limit and from the child's exact argv and environment.
 
 The sites are independent, which is observable: at the default limit on macOS a value
-nested between 65,328 and 130,655 levels deep kills jq (and qj) while it is compared and
+nested between 65,370 and 130,740 levels deep kills jq (and qj) while it is compared and
 not while it is freed, so `$a == $b` dies where `$a | length` answers.
 
 The whole emulation is checked against the jq binary the same way it was measured: for
@@ -441,35 +459,74 @@ every shape that drives one of the recursions — 24 of them over values, from `
 `bsearch` to `del` to a chain of `import`s, and 18 over programs, from nested `select` to
 a binop chain to nested `def`s to a syntax error after deep nesting — the deepest value or
 program each tool survives is bisected at several stack limits, and qj's is never above
-jq's, and never more than the margin's worth of levels below it (13 to 106 at 256 KB and
-1 MB on macOS, 43 to 223 at 256 KB and at 1, 8 and 16 MB on Linux). Below the
-threshold the two answer the same thing, and shapes where jq's traversal stops early agree
-at every depth. Over 53 program shapes at nine depths each, at `ulimit -s` 256 KB, 1 MB
-and 8 MB, there is no shape where the two disagree about whether the program compiles.
+jq's. Below the threshold the two answer the same thing, and shapes where jq's traversal
+stops early agree at every depth. Over 53 program shapes at nine depths each, at `ulimit
+-s` 256 KB, 1 MB and 8 MB, there is no shape where the two disagree about whether the
+program compiles. [Small stacks](#small-stacks) has the check of everything else, down to
+8 KB.
 
 ### Small stacks
 
-jq itself needs very little: `jq -n 1` runs at `ulimit -s` **17 KB** on macOS/arm64 and
-**12 KB** on Linux/x86-64 (in jq_diff's five-variable environment; argv and the environment
-sit on the stack too). Below that it dies of `SIGSEGV` with nothing on stdout, the same way
-in every run — 8 runs at each of 8, 12, 14 and 16 KB, no variation.
+On a small enough stack the question is what a whole run needs, not one recursion, and
+three of jq's needs are fixed rather than a depth, in bytes beyond argv and the
+environment, measured as the models were:
 
-qj needs a little more of its own: 17 KB on macOS and 16 KB on Linux by default, 19 and 18
-KB in compat mode. Between jq's floor and qj's, qj crashes where jq answers. The same is
-true of a few programs further up, where qj's *own* recursion (not a model of jq's) is what
-runs out: on Linux jq compiles 60 nested regex groups at 52 KB and qj needs 72, and
-`reduce range(100) as $i (0;[.]) | tojson` needs 17 KB in jq and 33 in qj on macOS. These
-are qj's own frames in Rust and in its Oniguruma; there is nothing of jq's to model, and at
-these limits nothing else runs either.
+| | macOS/arm64 | Linux/x86-64 |
+|---|--:|--:|
+| to start at all, whatever the program (macOS: dyld; Linux: glibc's start-up and `main.c` up to the help text, the version or a usage error) | 19,272 | 5,164–5,172 |
+| to compile a program, the builtins included, or report its syntax error | less than dyld's | 9,244–9,460 |
+| `--run-tests` for tests that don't nest (its loop keeps three buffers of 4 KB or more on the stack) | 40,106–40,392 | 23,796 |
+| what `--run-tests` holds above everything it compiles and runs | 28,496 | 12,648 |
 
-Otherwise, at every limit from 20 KB up, a corpus of runtime code with big frames but
-bounded recursion behaves the same in both: decNumber and dtoa (`9E999999999`, `1e308 *
-10`), `vfprintf` through `error` and `@text`, Oniguruma's compiler and matcher (nested
-groups, backtracking, character classes, `gsub`), glibc's `qsort`/`msort` and its `alloca`
-(`sort`, `group_by`, `unique` over 20,000 elements), `strptime`/`strftime`/`strflocaltime`,
-`@base64d`, `tojson`/`fromjson`, `@csv`/`@uri`/`@sh`, `--stream`, `-s` and `-R`. The
-printer is the one that does overflow, and compat mode models it (above); the JSON parser
-keeps its stack on the heap, so deep *input* only reaches `jv_free`, which is modelled too.
+On macOS nothing runs below 17 KB — `ulimit -s 16` kills `/bin/echo` as well — and jq's own
+start-up needs less than dyld's; with the rounding to 16 KB pages, `jq -n 1` starts at
+every limit from 17 KB up in an environment of up to 13 KB. On Linux jq starts at 8 KB and
+compiles from 12 KB (with the randomization off; with it on, 13 runs in 40 answer at 12
+KB, 37 at 16 KB, and every one from 20 KB). Compat mode checks the three at the same points
+of the run (`compat::starting`, `compat::compiling`, `compat::running_tests`), with the
+margin above, and below them dies of `SIGSEGV` with nothing written, as jq does, in every
+run.
+
+**qj's own stack.** qj's frames used to be on the main thread's stack too, and at these
+limits they ran out where jq's didn't: `qj -n 1` needed 17 KB on macOS and 16 KB on Linux
+(19 and 18 in compat mode), a regex nested 60 deep 72 KB on Linux against jq's 52, and a
+`tojson` 100 levels deep 33 KB on macOS against jq's 17. Now, below 8 MB (the default on
+both), qj moves to a stack of its own before it does anything — 256 MB of address space,
+committed as it is touched, still on the main thread (`src/cli/stack.rs`) — so nothing of
+qj's own ever runs out, in either mode, and only compat mode's models decide whether a run
+dies of the limit. What runs before qj's `main` is the platform's: on macOS dyld, which
+needs what jq's needs give or take the length of the executable's path; on Linux the
+dynamic loader, which needs 6,226–6,234 bytes, 1 KB more than jq's static start-up needs to
+print its help and 3 KB less than anything jq compiles. So with the kernel's randomization
+on, `qj -h`, `qj --version`, `qj --build-configuration` or a usage error can crash at 8–12
+KB in a run where jq's would have answered; for everything else qj needs less than jq. (A
+statically linked qj needs 5,179 bytes to start, jq's own figure but for its path's
+length.)
+
+The check is a corpus of 121 programs: every modelled recursion; regexes (nested groups
+of every kind, backtracking, classes, `gsub`, `capture`, `scan`, `splits`); `tojson`,
+`walk`; dates (`strptime`, `strftime`, `strflocaltime`, `mktime`, `localtime`); `@base64d`
+and the other formats; decNumber and dtoa; `vfprintf` through `error` and `@text`; `sort`,
+`group_by`, `unique_by`, `min_by` over 20,000 elements; `--stream`, `-s`, `-R`, `--seq`;
+deep and wide input; parse errors; modules; `--run-tests`, `-f`, `--args`, `--slurpfile`,
+`$__loc__`, `input`, `halt_error`, and every output option. For each program the stack
+each tool needs beyond argv and the environment was measured byte-exact, and each tool was
+run at every limit from 8 KB to 256 KB (on macOS 8, 16, 32, 48, … 256; on Linux every 4 KB
+to 32 KB, then 40, 48, … 256), in jq_diff's environment:
+
+| | macOS | Linux |
+|---|---|---|
+| limits × programs | 13 × 121 | 20 × 121 |
+| compat mode needs less than jq (could survive where jq dies) | never | never |
+| compat mode dies where jq answers in every run (a conservative window) | 2 cells: a value 3,000 deep, freed and parsed, at 192 KB | 6 cells: `--run-tests`, freeing 300 levels, printing and dumping 60 to 100, at 24 to 40 KB |
+| compat mode dies where jq answers in some runs (the randomization) | — | at every such limit, by design |
+| where both answer, a different stdout, stderr or status | never | never |
+| qj as it is crashes where jq answers | never, its path's length aside | never with the randomization off; with it on, `-h`, `--version`, `--build-configuration` and a usage error at 8–12 KB (the dynamic loader) |
+| qj as it is answers differently from jq | never | never |
+
+Program by program, compat mode needs what jq does plus 528 bytes on macOS where dyld's
+floor decides and 528 to 1,472 elsewhere, and on Linux, beyond the randomization's 8,206,
+507 to 2,187 bytes: the margin and the shared base of the value sites.
 
 ## jq's undefined behaviour
 
