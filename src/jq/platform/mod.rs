@@ -102,8 +102,9 @@ impl std::error::Error for Error {}
 /// instruction does then is what jq does: aarch64's `fcvtzs` saturates and maps NaN to
 /// 0 (Rust's `as`), x86-64's `cvttsd2si` returns `i64::MIN` ("integer indefinite").
 pub(crate) fn c_double_to_i64(d: f64) -> i64 {
+    // [-2^63, 2^63): `i64::MIN as f64` is exactly -2^63.
     #[cfg(target_arch = "x86_64")]
-    if !(-9.223_372_036_854_775_808e18..9.223_372_036_854_775_808e18).contains(&d) {
+    if !((i64::MIN as f64)..-(i64::MIN as f64)).contains(&d) {
         return i64::MIN;
     }
     d as i64
