@@ -882,6 +882,11 @@ fn tape_program(
     p: &Process,
 ) -> Option<TapeProgram> {
     if std::env::var_os("QJ_NO_TAPE").is_some()
+        // QJ_JQ_COMPAT=1 wants jq's own behaviour everywhere, including the
+        // stack it would have run out of (`src/compat.rs`), which only the
+        // value layer can model. As with natives and the VM's regions, the
+        // tape path is off there.
+        || crate::compat::exactly_jq()
         || opts.null_input
         || opts.slurp
         || opts.raw_input

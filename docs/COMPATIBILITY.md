@@ -46,14 +46,14 @@ statically):
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 36,222 | 36,211 |
-| **Total** | **39,125** | **39,114** |
+| qj's corpus | 36,259 | 36,248 |
+| **Total** | **39,162** | **39,151** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
 them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
 required is that qj not finish either. Across modes, the counts are 15,483 compact, 6,529
-pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,023 command-line cases. The
+pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,060 command-line cases. The
 command-line cases include some that merge stdout and stderr into one file or pipe,
 checking that output and error messages interleave exactly as jq's stdio buffering
 interleaves them, and some that start the tool with standard descriptors closed
@@ -108,7 +108,10 @@ French messages and a Latin-1 locale for it.
   |---|---|---|---|
   | `[1] \| delpaths([[nan]])` | hangs, growing ~1.2 GB/s | `[]` | hangs, growing |
   | a value nested deeper than the C stack allows, e.g. `reduce range(200000) as $i (null; [.]) \| length` | SIGSEGV | `1` | SIGSEGV at the same depth |
+  | a value or path that drives one of jq's other recursions past its stack: comparing (`==`, `<`, `sort`, `group_by`, `unique`, `min`, `max`, `bsearch`, `-`, `index`), `contains`/`inside`, object `*`, `setpath`/`=`/`\|=`, `delpaths`/`del` | SIGSEGV, at a depth of its own (each recursion has a different frame) | the answer | SIGSEGV at the same depth |
   | a module that imports itself, directly or through others | SIGSEGV | `qj: error: ... imports itself (import cycle)`, exit 3 | SIGSEGV |
+  | a deeply nested *program*, below `ulimit -s` 2 MB (e.g. 4,990 nested `select(...)` at 1 MB) | SIGSEGV while compiling | the answer | the answer — not reproduced, see below |
+  | a chain of more than about 13,000 imported modules | SIGSEGV | qj's own stack runs out at 7,506 | SIGSEGV, but from qj's shallower limit |
   | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
   | `[1,2] \| try delpaths([[{}]]) catch .` | prints the error, then SIGSEGV | prints the error, exit 0 | prints the error, exit 0 |
   | `delpaths([[{"start":1}],[0]])` over two inputs, e.g. `[1] {}` | the first input's error, then `Assertion failed: (JVP_HAS_KIND(a, JV_KIND_STRING))` on the second, exit 134 | both inputs' errors, exit 5 | both inputs' errors, exit 5 |
@@ -156,63 +159,171 @@ The variable is read once at start-up, and counts as set unless it is empty or `
 `tests/jq_compat/corpus/compat_mode.toml` checks every one of these against the jq
 binary, and `tests/compat_mode.rs` checks that the default keeps the extensions.
 
+Compat mode also turns off the three things qj does that jq's own code doesn't: the
+native versions of `builtin.jq` functions, the VM's regions, and evaluation on
+simdjson's tape. All three are proven equivalent to jq's own path, but the value layer
+is where jq's C stack is modelled, so compat mode goes through it.
+
+### jq's recursions, and which ones can overflow
+
+jq walks values, paths and programs by recursing in C. Every recursion in jq 1.8.1's
+`src/*.c` — direct or mutual, found from the call graph of the compiled sources — is
+below, with what drives its depth and whether that depth can outgrow the C stack.
+
+**Over values and paths.** These six are driven by data, so nothing bounds them but the
+stack. qj does all six with a loop, and compat mode reproduces each one's crash:
+
+| jq | driven by | emulated |
+|---|---|---|
+| `jv_free` → `jvp_array_free` / `jvp_object_free` | the nesting of the value | yes |
+| `jv_equal` → `jvp_array_equal` / `jvp_object_equal` | the nesting the comparison reaches | yes |
+| `jv_cmp` (`<`, `sort`, `group_by`, `unique`, `min`, `max`, `bsearch`) | the same, plus a level for an object's sorted key array | yes |
+| `jv_contains` → `jvp_array_contains` / `jvp_object_contains` | the deepest attempt of its search | yes |
+| `jv_object_merge_recursive` (object `*`) | the nesting shared by both operands | yes |
+| `jv_setpath` (`setpath`, `=`, `\|=`, `+=`, …) | the length of the path | yes |
+| `delpaths_sorted` (`delpaths`, `del`) | the length of the paths, a level at a time | yes |
+| `jv_getpath` (`getpath`, `path`) | the length of the path | **not needed**: it is a tail call, and both release compilers turn it into a loop. `[range(1000000)\|0] as $p \| null \| getpath($p)` answers `null` at `ulimit -s 256` on macOS and on Linux |
+| `jv_dump_term` (the printer) | the nesting of the value, **capped at `MAX_PRINT_DEPTH` (256)**, below which it writes `<skipped: too deep>` | **cannot overflow** |
+
+The JSON parser is not in the list: `jv_parse` keeps its own stack on the heap and stops
+at `MAX_PARSING_DEPTH` (10,000), so input alone cannot drive any of these past 10,000
+levels. That is below every threshold at `ulimit -s` 1024 KB or more; at smaller limits
+input *can* reach them, and it does, through the same checks (`qj -c length` on 9,000
+nested arrays dies in both tools at `ulimit -s 256`).
+
+**Over the program.** `compile.c`'s `block_bind_subblock_inner`, `block_free`/`inst_free`,
+`block_get_unbound_vars`, `block_mark_referenced`, `compile`, `count_cfunctions` and
+`expand_call_arglist`; `bytecode.c`'s `bytecode_free` and `dump_disassembly`;
+`execute.c`'s `optimize` and `ret_follows`; and `linker.c`'s `load_library` ↔
+`process_dependencies`. All of them are bounded by how deeply a *program* nests, which
+bison's parser bounds in turn: at `YYMAXDEPTH` (10,000 parser stack entries) jq stops
+with `jq: error: memory exhausted`, which is 4,990 nested `select(...)`, 3,330 nested
+`def`s, 1,995 nested `def f(g):` or 9,990 nested `[`.
+
+The deepest of those costs jq about 226 bytes a level on macOS and 234 on Linux
+(nested `select`, measured at 256, 512 and 1024 KB), so **no program jq will parse can
+overflow a stack of 2 MB or more**: jq survives 4,990 nested `select(...)` at
+`ulimit -s 2048` and dies at 1024. qj does not reproduce that crash, and this is the one
+exemption in compat mode's stack emulation: the bytes a level depend on which kind of
+nesting it is — 226 for `select(...)`, 177 for `def`s, and array and parenthesis nesting
+are cheap enough that jq survives 9,990 of them at 256 KB — so there is no single model,
+and approximating it would invent crashes where jq succeeds. Below 2 MB of stack, and
+only there, a deeply nested program crashes jq and not qj.
+
+The module chain (`load_library` ↔ `process_dependencies`) is the other one qj does not
+reproduce, for the opposite reason: **qj's linker runs out of stack first.** jq costs
+about 400–650 bytes per module imported (it survives 400 modules at 256 KB and dies at
+800), so it needs a chain of some 13,000–20,000 modules to die at 8 MB; qj dies at 7,506.
+A chain that long is not something to model — `import` cycles, which jq loops on
+forever, *are* reproduced (the table above).
+
+`jq_format_error` recurses through an invalid value inside an invalid value, which jq
+never nests more than a few deep.
+
 ### How exact the stack-overflow emulation is
 
-jq's `jv_free` recurses once per level of nesting, so how deep a value it can free is
-set by `ulimit -s`. Bisecting jq 1.8.1 on macOS/arm64 with
-`reduce range($n) as $i (null;[.]) | length`:
+Each site has its own frame, so each has its own threshold, and each is modelled as
+`(stack_bytes - reserved) / frame` levels. `frame` is exact: the deepest value jq
+survives is linear in `ulimit -s` with that slope at every limit measured. `reserved` is
+what is left over at the *worst* of the call sites measured, plus a margin that keeps qj
+from ever surviving where jq dies.
 
-| `ulimit -s` | deepest `n` jq survives | qj, `QJ_JQ_COMPAT=1` |
-|---|--:|--:|
-| 1024 KB | 16,233 | 16,232 |
-| 4096 KB | 65,385 | 65,384 |
-| 8176 KB (macOS default) | **130,664** | **130,664** |
-| 16384 KB | 261,993 | 261,992 |
+On macOS/arm64, bisected against jq's release binary at `ulimit -s` 1024, 2048, 4096,
+8176 and 16384 KB. The last two columns are the default 8176 KB:
 
-That is 64 bytes a frame, and `(stack_bytes - 9664) / 64` frames in total. qj measures
-the nesting depth where its own value layer stops recursing and raises `SIGSEGV` at the
-same depth, discarding its buffered output as jq discards its own. Three reasons the two
-can't agree to the last frame, all of them jq's:
-
-- no single constant fits all four limits: 8176 KB is the one that isn't a whole number
-  of 64 KB blocks, and jq loses one more frame there. qj matches the default limit
-  exactly and is one frame short at the others, so it never survives where jq dies.
-- jq's threshold depends on which operation frees the value: 130,664 through a builtin
-  such as `length`, 130,667 from `main.c`'s output path, 130,661 through `tojson`. qj
-  follows the first.
-- argv and the environment sit on top of jq's stack, so its threshold moves with them,
-  about one frame per 64 bytes: 130,664 in an ordinary shell, 130,762 under `env -i`.
-  qj's threshold doesn't move.
-
-So the two agree exactly at the default stack limit in a normal environment, and to
-within about 0.1% otherwise. `src/compat.rs` has the constants and the unit tests.
-
-On Linux/x86-64, jq's release binary (built by gcc) uses 48 bytes a frame, and the kernel
-starts the main thread's stack up to 8 KB below its top at random, so the deepest value
-jq survives moves from run to run, over about 170 levels. Measured 8 times per depth in
-jq_diff's environment:
-
-| `ulimit -s` | jq survives every run to | and no run from | qj, `QJ_JQ_COMPAT=1` |
+| site | bytes a level | deepest jq survives | qj, `QJ_JQ_COMPAT=1` |
 |---|--:|--:|--:|
-| 1024 KB | 21,650 | 21,810 | 21,631 |
-| 4096 KB | 87,170 | 87,330 | 87,167 |
-| 8192 KB (the usual default) | 174,575 | 174,725 | 174,548 |
-| 16384 KB (GitHub's runners) | 349,300 | 349,500 | 349,311 |
+| `jv_free` | 64 | 130,760 | 130,655 |
+| `jv_equal` / `jv_cmp` | 128 | 65,375 | 65,327 |
+| `jv_contains` | 176 | 47,547 | 47,510 |
+| `jv_object_merge_recursive` | 112 | 74,719 | 74,659 |
+| `jv_setpath` | 144 | 58,114 | 58,067 |
+| `delpaths_sorted` | 240 | 34,868 | 34,839 |
 
-qj's `(stack_bytes - 10240) / 48` counts the whole 8 KB, so it never survives where jq
-dies either; inside the window it dies where jq only sometimes does. `jv_equal` uses 144
-bytes a frame there. Other Linux targets use the macOS model, unmeasured.
+On Linux/x86-64 (jq's release binary, built by gcc), bisected at 1024, 4096, 8192 and
+16384 KB with the kernel's stack randomization off (`setarch -R`), which is what makes
+the numbers repeatable. The last two columns are the 16 MB of GitHub's runners:
 
-Comparison is the other deep recursion that can overflow jq's stack: `jv_equal` uses
-128 bytes a frame, and jq survives 8,115 levels at 1024 KB, 32,691 at 4096 KB and 65,330
-at 8176 KB. qj does **not** emulate that one — its comparison walks iteratively and
-stops at the first difference, so there is no faithful place for the check. A program
-that makes jq overflow while comparing still crashes qj when the values are freed, but
-only past the free threshold, so depths between the two (65,331 to 130,664 at the
-default limit) differ.
+| site | bytes a level | deepest jq survives | qj, `QJ_JQ_COMPAT=1` |
+|---|--:|--:|--:|
+| `jv_free` | 48 | 349,486 | 349,269 |
+| `jv_equal` / `jv_cmp` | 144 | 116,481 | 116,422 |
+| `jv_contains` | 176 | 95,312 | 95,254 |
+| `jv_object_merge_recursive` | 128 | 131,053 | 130,975 |
+| `jv_setpath` | 160 | 104,843 | 104,779 |
+| `delpaths_sorted` | 240 | 69,895 | 69,852 |
 
-Printing is not a third case: jq's printer stops at `MAX_PRINT_DEPTH` (256) and writes
-`<skipped: too deep>`, which qj already does.
+The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
+threshold is 29 to 218 levels below jq's. What it covers is different on each:
+
+- **macOS: the environment.** argv and the environment sit on top of jq's stack, so its
+  threshold drops by about a level per 64 bytes of them — `jv_free` reaches 130,760 in
+  the harness's five variables and 130,664 under an interactive shell's, 6 KB more. The
+  bisections use the harness's environment, so the margin is what a larger one can take.
+- **Linux: the kernel.** `arch_align_stack` starts the main thread's stack up to 8 KB
+  below its top at random, so jq's threshold moves from run to run over about 170 levels
+  for `jv_free` and 57 for `jv_equal`. Sampling 10 runs per depth at 8 MB, jq survived
+  every run up to about 160 levels below the deterministic threshold and no run above it.
+  The model takes the whole 8 KB, so it lands at or below the bottom of that window:
+  inside it, qj dies where jq only sometimes does.
+
+Three smaller reasons the two can't agree to the last frame:
+
+- **One reserve for every site.** jq drives some of these recursions from *inside*
+  another: `delpaths_sorted` compares path elements and frees values a level at a time,
+  and `jv_object_merge_recursive` frees the value it replaces. qj charges the inner
+  recursion the stack the outer one holds, so the same value kills it sooner the deeper
+  the paths go — two paths ending in a value 64,000 levels deep are compared fine at the
+  top and kill jq (and qj) a thousand `delpaths` levels down. For that to work the margin
+  has to be charged once, not once per recursion, so every site reserves what the *worst*
+  site's base cost measured (`jv_cmp` from `sort`) rather than its own. That costs the
+  other sites up to 576 bytes on macOS and 2,000 on Linux — 9 and 42 levels of `jv_free`.
+  A site that drives others also gives up its last level, so that a frame of what it
+  drives still fits where it stops: without that, comparing two *shallow* path elements at
+  the deepest `delpaths` level the model allows would look like an overflow, and qj would
+  die where jq is nowhere near its stack.
+- which call site reaches the recursion shifts it by a frame or two — `jv_free` reaches
+  130,760 through a builtin such as `length`, 130,763 from `main.c`'s output path and
+  130,757 through `tojson`; `jv_cmp` 65,379 through `==` and 65,375 through `sort`. Each
+  model follows the worst.
+- the bytes a level don't always divide the stack evenly, which costs one more level at
+  some limits.
+
+Only the depth jq *reaches* counts, so qj follows jq's traversal rather than the nesting
+of the values:
+
+- `jv_equal` answers from the pointer when both sides are one allocation, so `$v == $v`
+  never recurses however deep `$v` is — while `jv_cmp` has no such shortcut, and
+  `[$v, $v] | sort` on the same value dies.
+- a comparison stops at the first difference: two values that differ in their first
+  element are compared in two frames.
+- `jvp_array_equal` answers "not equal" from the lengths, without looking at an element;
+  `jvp_object_equal` walks the first object's slots in order, so a key the other object
+  hasn't got stops it there — but it compares the *counts* only at the end, so
+  `{a: deep} == {a: deep, b: 1}` still compares the deep values in full before saying
+  false.
+- `jv_cmp` compares two objects' sorted key arrays before their values, which is why an
+  object goes one level deeper than an array; a NaN is compared as `null` one frame down.
+- `jv_contains` is a search: each element of `b` is tried against the elements of `a`
+  until one contains it, and the attempts that fail count as much as the one that works.
+- `jv_object_merge_recursive` descends only where the key holds an object on both sides.
+- `delpaths_sorted` groups the sorted paths and descends only as far as the value goes.
+
+`src/compat.rs` has the models and the unit tests, `src/compat/depth.rs` the traversals,
+`tests/jq_compat/corpus/compat_mode.toml` the differential cases, and
+`tests/compat_mode.rs` tests that size their depths from `ulimit -s`.
+
+The sites are independent, which is observable: at the default limit on macOS a value
+nested between 65,328 and 130,655 levels deep kills jq (and qj) while it is compared and
+not while it is freed, so `$a == $b` dies where `$a | length` answers.
+
+The whole emulation is checked against the jq binary the same way it was measured: for
+every shape that drives one of the six recursions — 23 of them, from `==` to `bsearch` to
+`del` — the deepest value each tool survives is bisected at several stack limits, and
+qj's is never above jq's, and never more than the margin's worth of levels below it (29 to
+98 at 256 KB and 1 MB on macOS, 43 to 218 at 1, 8 and 16 MB on Linux). Below the
+threshold the two answer the same thing, and shapes where jq's traversal stops early agree
+at every depth.
 
 ## Numbers
 
