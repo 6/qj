@@ -318,7 +318,7 @@ interface scaffold before spawning it.
   documented in `docs/COMPATIBILITY.md`: crashes decided by jq's heap layout, jq's
   compiler overflowing on deeply nested programs below a 2 MB stack (the cost per level
   depends on the syntax), and the core dump on Linux.
-- 2026-09-30: **ST merged**. The last gap in compat mode's stack emulation: jq's compiler
+- 2026-09-30: **ST merged** (`4cdbfeb`). The last gap in compat mode's stack emulation: jq's compiler
   recurses over the program, and `QJ_JQ_COMPAT=1` now reproduces its overflow in
   `block_bind_subblock_inner` (binding, two frames a level of nesting),
   `compile`/`expand_call_arglist` (one per nested closure, which is what nested `def`s
