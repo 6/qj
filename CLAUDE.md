@@ -311,13 +311,19 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
 
 Read by everything (`src/compat.rs`):
 - `QJ_JQ_COMPAT=1` — **be exactly jq 1.8.1, bugs included.** Reproduces jq's crashes and
-  hangs (deep values overflow the C stack and SIGSEGV at jq's depth; a module import cycle
-  SIGSEGVs; `delpaths` with a `nan` path element hangs, growing) and turns off qj's own
-  additions (glob expansion, `.gz`/`.zst` decompression, `--threads`/`--jsonl`/
-  `--debug-timing`, which become jq's "Unknown option"). Parallel processing stays on, and
-  qj's help/version text and `qj:` name stay qj's. Read once at start-up; set means
-  anything but empty or `0`. `docs/COMPATIBILITY.md` has the depth model and how exact it
-  is; `tests/jq_compat/corpus/compat_mode.toml` and `tests/compat_mode.rs` are the tests.
+  hangs and turns off qj's own additions (glob expansion, `.gz`/`.zst` decompression,
+  `--threads`/`--jsonl`/`--debug-timing`, which become jq's "Unknown option"). The crashes
+  are a module import cycle (SIGSEGV), `delpaths` with a `nan` path element (hangs,
+  growing), and jq's C stack running out in any of its six recursions over values and
+  paths, each at its own depth: freeing (`jv_free`), comparing (`jv_equal`/`jv_cmp`, so
+  `==`, `<`, `sort`, `group_by`, `unique`, `min`, `max`, `bsearch`, `-`, `index`),
+  `contains`/`inside`, object `*`, `setpath`/`=`/`|=`, and `delpaths`/`del`. Only the
+  depth jq's own traversal reaches counts (`src/compat/depth.rs`). Natives, the VM's
+  regions and tape evaluation are off here, so everything goes through the value layer.
+  Parallel processing stays on, and qj's help/version text and `qj:` name stay qj's. Read
+  once at start-up; set means anything but empty or `0`. `docs/COMPATIBILITY.md` has the
+  models per OS, the recursions that cannot overflow, and the two that aren't reproduced;
+  `tests/jq_compat/corpus/compat_mode.toml` and `tests/compat_mode.rs` are the tests.
   (It used to make the old evaluator imitate jq's number precision, which is simply how qj
   behaves now, in every mode.)
 
