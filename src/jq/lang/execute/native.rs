@@ -262,6 +262,19 @@ impl<'a> Pools<'a> {
         }
     }
 
+    /// The constant pools of the native function's subfunctions: the closures its
+    /// definition passes on (like `error("...")`'s message, a lambda's `LOADK`).
+    pub fn subs(&self) -> impl Iterator<Item = Pool<'a>> + '_ {
+        let prog = self.prog;
+        prog.funcs[self.func as usize]
+            .subfunctions
+            .iter()
+            .map(move |&func| Pool {
+                func,
+                values: prog.constants(func),
+            })
+    }
+
     /// The function of another marked definition, if the program has it.
     pub fn func(&self, id: NativeId) -> Option<ConstRef> {
         Some(ConstRef::Func(self.of_native[id as usize]?))
@@ -344,6 +357,20 @@ impl Raised {
     /// A new error with message `msg` (`jv_invalid_with_msg`).
     pub(crate) fn new(msg: Value) -> Raised {
         Raised { msg, wraps: 0 }
+    }
+}
+
+impl Stop {
+    /// Whether `label $out`'s handler for label `n` catches this and ends the label's
+    /// body quietly: an error (not re-raised through a `try`'s end, so not wrapped)
+    /// whose message equals `{"__jq": n}`, as `break $out` raises (a program can raise
+    /// it too: `error({"__jq": 0})`). Natives whose definitions run closures inside a
+    /// `label` check the closures' errors with it.
+    pub(crate) fn is_break_of(&self, n: u32) -> bool {
+        match self {
+            Stop::Raise(r) => r.wraps == 0 && r.msg.equal(&super::label_object(n)),
+            Stop::Halted => false,
+        }
     }
 }
 
@@ -877,9 +904,11 @@ impl Jq {
     }
 
     /// `GENLABEL`'s counter, advanced by `n` labels (the natives' definitions allocate
-    /// labels, whose numbers `break` values expose).
-    pub(crate) fn gen_labels(&mut self, n: u32) {
+    /// labels, whose numbers `break` values expose). Returns the first label's number.
+    pub(crate) fn gen_labels(&mut self, n: u32) -> u32 {
+        let first = self.next_label;
         self.next_label = self.next_label.wrapping_add(n);
+        first
     }
 
     /// Swaps in the path-expression registers (`jq->path`, `jq->value_at_path`,

@@ -2528,3 +2528,195 @@ group_by(.)? | map(length)
 
 [limit(2; .[]? | select(. != null))]
 100000000000000000001
+
+[first(error({"__jq":0}))]
+{"a":1,"b":2}
+
+[first(error({"__jq":0}))]
+1.000
+
+[first(error({"__jq":0}))]
+null
+
+[first(error({"__jq":0}))]
+"a"
+
+[first(1, error({"__jq":0}))]
+[null,false,0,""]
+
+[first(1, error({"__jq":0}))]
+2.5
+
+[first(1, error({"__jq":0}))]
+[[1],[2]]
+
+[first(1, error({"__jq":0}))]
+[{"a":2},{"a":1}]
+
+[isempty(error({"__jq":0}))]
+[1,2,3]
+
+[isempty(error({"__jq":0}))]
+{"a":{"b":{"c":1}},"c":true}
+
+[isempty(error({"__jq":0}))]
+100000000000000000001
+
+[isempty(error({"__jq":0}))]
+1
+
+[any(.[]?; error({"__jq":0}))]
+1.000
+
+[any(.[]?; error({"__jq":0}))]
+null
+
+[any(.[]?; error({"__jq":0}))]
+"a"
+
+[any(.[]?; error({"__jq":0}))]
+{"a":1,"b":2}
+
+[all(error({"__jq":0}); .)]
+2.5
+
+[all(error({"__jq":0}); .)]
+[[1],[2]]
+
+[all(error({"__jq":0}); .)]
+[{"a":2},{"a":1}]
+
+[all(error({"__jq":0}); .)]
+[null,false,0,""]
+
+[IN(.[]?; error({"__jq":0}))]
+{"a":{"b":{"c":1}},"c":true}
+
+[IN(.[]?; error({"__jq":0}))]
+100000000000000000001
+
+[IN(.[]?; error({"__jq":0}))]
+1
+
+[IN(.[]?; error({"__jq":0}))]
+[1,2,3]
+
+[limit(3; .[]?, error({"__jq":0}))]
+null
+
+[limit(3; .[]?, error({"__jq":0}))]
+"a"
+
+[limit(3; .[]?, error({"__jq":0}))]
+{"a":1,"b":2}
+
+[limit(3; .[]?, error({"__jq":0}))]
+1.000
+
+[limit(3; .[]?, error({"__jq":1}))]
+[[1],[2]]
+
+[limit(3; .[]?, error({"__jq":1}))]
+[{"a":2},{"a":1}]
+
+[limit(3; .[]?, error({"__jq":1}))]
+[null,false,0,""]
+
+[limit(3; .[]?, error({"__jq":1}))]
+2.5
+
+.a |= error({"__jq":0})
+100000000000000000001
+
+.a |= error({"__jq":0})
+1
+
+.a |= error({"__jq":0})
+[1,2,3]
+
+.a |= error({"__jq":0})
+{"a":{"b":{"c":1}},"c":true}
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+"a"
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+{"a":1,"b":2}
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+1.000
+
+(.a, .b) |= (if . == null then error({"__jq":0}) else empty end)
+null
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+[{"a":2},{"a":1}]
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+[null,false,0,""]
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+2.5
+
+.[]? |= (if . == 1 then error({"__jq":1}) else . end)
+[[1],[2]]
+
+(.. | numbers) |= error({"__jq":0})
+1
+
+(.. | numbers) |= error({"__jq":0})
+[1,2,3]
+
+(.. | numbers) |= error({"__jq":0})
+{"a":{"b":{"c":1}},"c":true}
+
+(.. | numbers) |= error({"__jq":0})
+100000000000000000001
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+{"a":1,"b":2}
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+1.000
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+null
+
+walk(if type == "number" then error({"__jq":0}) else . end)
+"a"
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+[null,false,0,""]
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+2.5
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+[[1],[2]]
+
+walk(if type == "number" then error({"__jq":1}) else . end)
+[{"a":2},{"a":1}]
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+[1,2,3]
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+{"a":{"b":{"c":1}},"c":true}
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+100000000000000000001
+
+walk(if . == 1 then error({"__jq":0}) elif . == null then empty else . end)
+1
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+1.000
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+null
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+"a"
+
+walk(if type == "object" then error({"__jq":1}) else . end)
+{"a":1,"b":2}

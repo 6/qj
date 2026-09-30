@@ -59,11 +59,22 @@ impl Resume for Held {
     }
 }
 
+/// An error a closure raised inside the body of `label` number `label`: nothing more
+/// if it is the label's own break (the label's handler ends the body quietly, whoever
+/// raised it: `error({"__jq": 0})` does too), else the error.
+fn raised_in_label(e: Stop, label: u32) -> Outcome {
+    if e.is_break_of(label) {
+        Outcome::Empty
+    } else {
+        e.into()
+    }
+}
+
 /// `first(g)`.
 pub(super) fn first(vm: &mut Jq, input: Value, g: Closure) -> Outcome {
-    vm.gen_labels(1);
+    let label = vm.gen_labels(1);
     match vm.sub_start(g, input.clone()) {
-        Err(e) => e.into(),
+        Err(e) => raised_in_label(e, label),
         Ok(None) => Outcome::Empty,
         Ok(Some((s, v))) => Outcome::Yield(v.clone(), Held::new(vec![s], vec![input, v])),
     }
@@ -71,9 +82,9 @@ pub(super) fn first(vm: &mut Jq, input: Value, g: Closure) -> Outcome {
 
 /// `isempty(g)`: `false` as soon as `g` has an output, `true` if it has none.
 pub(super) fn isempty(vm: &mut Jq, input: Value, g: Closure) -> Outcome {
-    vm.gen_labels(1);
+    let label = vm.gen_labels(1);
     match vm.sub_start(g, input.clone()) {
-        Err(e) => e.into(),
+        Err(e) => raised_in_label(e, label),
         Ok(None) => Outcome::Yield(Value::Bool(true), Held::new(vec![], vec![input])),
         Ok(Some((s, _))) => Outcome::Yield(Value::Bool(false), Held::new(vec![s], vec![input])),
     }
@@ -89,7 +100,7 @@ pub(super) fn any_all(
     cond: Option<Closure>,
     any: bool,
 ) -> Outcome {
-    vm.gen_labels(1);
+    let label = vm.gen_labels(1);
     // The result when some `cond` output decides it, and when none does.
     let (found, none) = (Value::Bool(any), Value::Bool(!any));
     // Does `c` decide the result?
@@ -115,11 +126,11 @@ pub(super) fn any_all(
             let elems: Vec<Value> = match &input {
                 Value::Array(a) => a.iter().cloned().collect(),
                 Value::Object(o) => o.values().cloned().collect(),
-                _ => return cannot_iterate(&input).into(),
+                _ => return raised_in_label(cannot_iterate(&input), label),
             };
             for x in elems {
                 match element(vm, x) {
-                    Err(e) => return e.into(),
+                    Err(e) => return raised_in_label(e, label),
                     Ok(Some(s)) => {
                         return Outcome::Yield(
                             found,
@@ -133,13 +144,13 @@ pub(super) fn any_all(
         Some(generator) => {
             let mut r = match vm.sub_start(generator, input.clone()) {
                 Ok(r) => r,
-                Err(e) => return e.into(),
+                Err(e) => return raised_in_label(e, label),
             };
             while let Some((g, x)) = r {
                 match element(vm, x) {
                     Err(e) => {
                         vm.sub_abandon(g);
-                        return e.into();
+                        return raised_in_label(e, label);
                     }
                     Ok(Some(s)) => {
                         let mut subs = vec![g];
@@ -150,7 +161,7 @@ pub(super) fn any_all(
                 }
                 r = match vm.sub_next(g) {
                     Ok(r) => r,
-                    Err(e) => return e.into(),
+                    Err(e) => return raised_in_label(e, label),
                 };
             }
         }
@@ -161,10 +172,10 @@ pub(super) fn any_all(
 /// `IN(s)` (`src` `None`) or `IN(src; s)`: whether an output of `src` (or the input)
 /// equals an output of `s`. In `src == s`, `s` is evaluated first (the outer loop).
 pub(super) fn is_in(vm: &mut Jq, input: Value, src: Option<Closure>, s: Closure) -> Outcome {
-    vm.gen_labels(1);
+    let label = vm.gen_labels(1);
     let mut rs = match vm.sub_start(s, input.clone()) {
         Ok(r) => r,
-        Err(e) => return e.into(),
+        Err(e) => return raised_in_label(e, label),
     };
     while let Some((ss, b)) = rs {
         match src {
@@ -178,7 +189,7 @@ pub(super) fn is_in(vm: &mut Jq, input: Value, src: Option<Closure>, s: Closure)
                     Ok(r) => r,
                     Err(e) => {
                         vm.sub_abandon(ss);
-                        return e.into();
+                        return raised_in_label(e, label);
                     }
                 };
                 while let Some((sa, a)) = ra {
@@ -192,7 +203,7 @@ pub(super) fn is_in(vm: &mut Jq, input: Value, src: Option<Closure>, s: Closure)
                         Ok(r) => r,
                         Err(e) => {
                             vm.sub_abandon(ss);
-                            return e.into();
+                            return raised_in_label(e, label);
                         }
                     };
                 }
@@ -200,7 +211,7 @@ pub(super) fn is_in(vm: &mut Jq, input: Value, src: Option<Closure>, s: Closure)
         }
         rs = match vm.sub_next(ss) {
             Ok(r) => r,
-            Err(e) => return e.into(),
+            Err(e) => return raised_in_label(e, label),
         };
     }
     Outcome::Yield(Value::Bool(false), Held::new(vec![], vec![input]))
@@ -221,10 +232,10 @@ pub(super) fn limit(
     let (zero, one) = (c.get(0), c.get(1));
     let truthy = |r: Result<Value, crate::jq::value::Error>| r.is_ok_and(|v| v.is_truthy());
     if truthy(binop_greater(n.clone(), zero.clone())) {
-        vm.gen_labels(1);
+        let label = vm.gen_labels(1);
         let first = match vm.sub_start(expr, input.clone()) {
             Ok(r) => r,
-            Err(e) => return e.into(),
+            Err(e) => return raised_in_label(e, label),
         };
         Box::new(Limit {
             _input: input,
@@ -233,6 +244,7 @@ pub(super) fn limit(
             sub: None,
             zero: zero.clone(),
             one: one.clone(),
+            label,
         })
         .next(vm, first)
     } else if truthy(binop_equal(n, zero.clone())) {
@@ -252,6 +264,8 @@ struct Limit {
     sub: Option<Sub>,
     zero: Value,
     one: Value,
+    /// The `label $out` expr runs in.
+    label: u32,
 }
 
 impl Limit {
@@ -269,7 +283,7 @@ impl Limit {
             }
             Err(e) => {
                 vm.sub_abandon(s);
-                Stop::from(e).into()
+                raised_in_label(Stop::from(e), self.label)
             }
         }
     }
@@ -286,7 +300,7 @@ impl Resume for Limit {
         }
         match vm.sub_next(s) {
             Ok(r) => self.next(vm, r),
-            Err(e) => e.into(),
+            Err(e) => raised_in_label(e, self.label),
         }
     }
 
