@@ -45,6 +45,11 @@ pub(super) struct Func {
     pub mark: Option<NativeId>,
     /// `mark`, when its native implementation runs in this program.
     pub native: Option<NativeId>,
+    /// The function this one is a subfunction of (`u32::MAX` for the top level).
+    pub parent: u32,
+    /// The region that runs this function's whole body without a frame, if it is
+    /// one (see `region.rs`): an index into [`Program::regions`].
+    pub direct: Option<u32>,
     /// The original bytecode: its constant pool (`LOADK` copies from it, so constants
     /// have jq's refcounts), and `dump_operation` for `--debug-trace`.
     pub bc: Rc<Bytecode>,
@@ -54,6 +59,13 @@ pub(super) struct Func {
 pub(super) struct Program {
     /// Every function's code, concatenated, then the pseudo-instructions.
     pub code: Vec<u16>,
+    /// `code` with the first opcode of each region replaced by `REGION_BASE` plus
+    /// its index in [`Program::regions`] (see `region.rs`); everything else is
+    /// `code`'s, so jumps into a region and fork points run the original
+    /// instructions. `--debug-trace` and compat mode run `code`.
+    pub fast_code: Vec<u16>,
+    /// The compiled regions.
+    pub regions: Vec<super::region::Region>,
     /// Function 0 is the top level.
     pub funcs: Vec<Func>,
     /// `globals->cfunctions`, indexed by `CALL_BUILTIN`'s second immediate.
@@ -89,6 +101,8 @@ impl Program {
     pub fn new(root: Rc<Bytecode>) -> Program {
         let mut prog = Program {
             code: Vec::new(),
+            fast_code: Vec::new(),
+            regions: Vec::new(),
             funcs: Vec::new(),
             cfunctions: root.globals.cfunctions.clone(),
             subrun_ret_pc: 0,
@@ -115,6 +129,8 @@ impl Program {
                 subfunctions: vec![0; bc.subfunctions.len()],
                 mark: NativeId::from_mark(bc.native),
                 native: None,
+                parent: parent.map_or(u32::MAX, |(p, _)| p),
+                direct: None,
                 bc: bc.clone(),
             });
             prog.code.extend_from_slice(&bc.code);
@@ -130,6 +146,7 @@ impl Program {
         prog.code.push(pseudo::NATIVE_RESUME);
         Consts::resolve(&mut prog);
         prog.flatten_constants();
+        super::region::optimize(&mut prog);
         prog
     }
 

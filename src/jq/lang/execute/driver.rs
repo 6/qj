@@ -43,6 +43,8 @@ pub struct Options {
     pub args: Vec<(String, Value)>,
     /// Whether native builtins may run ([`Jq::set_natives`]).
     pub natives: bool,
+    /// Whether the optimized code runs ([`Jq::set_optimize`]).
+    pub optimize: bool,
 }
 
 impl Default for Options {
@@ -54,6 +56,7 @@ impl Default for Options {
             trace: 0,
             args: Vec::new(),
             natives: true,
+            optimize: true,
         }
     }
 }
@@ -144,6 +147,9 @@ pub fn run(program: &str, input: &[u8], opts: &Options) -> Output {
     jq.set_jq_attrs(&copts.attrs);
     if !opts.natives {
         jq.set_natives(false);
+    }
+    if !opts.optimize {
+        jq.set_optimize(false);
     }
 
     let stdout = Sink::default();
