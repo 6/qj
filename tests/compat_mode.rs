@@ -652,22 +652,19 @@ fn deepest_closures(stack_kb: u64) -> u64 {
     Site::Bind.frame_budget_at(stack_kb * 1024, 0) / 2
 }
 
-/// The deepest chain of definitions compat-mode qj compiles at `stack_kb`.
-///
-/// `compile` recurses once per level (a chain of `n` reaches level `n + 1`,
-/// counting the top-level function), and the first thing it does at each level
-/// is call `expand_call_arglist`, so the level that fails is the one where that
-/// frame no longer does.
+/// The deepest chain of definitions compat-mode qj compiles at `stack_kb`:
+/// `compile` recurses once per level, and a chain of `n` reaches level `n + 1`
+/// (the top-level function is the first).
 fn deepest_defs(stack_kb: u64) -> u64 {
     let stack = stack_kb * 1024;
-    let frame = Site::Compile.frame_bytes();
-    let mut level = 1;
-    while Site::ExpandArgs.frame_budget_at(stack, level * frame) >= 1 {
-        level += 1;
-    }
-    // `level` is the first that doesn't fit, and a chain of `n` reaches
-    // `n + 1`.
-    level - 2
+    let budget = Site::Compile.frame_budget_at(stack, 0);
+    // What `compile` calls at its deepest level still has to fit, which is what
+    // the budget's headroom is for: check that it does.
+    assert!(
+        Site::ExpandArgs.frame_budget_at(stack, budget * Site::Compile.frame_bytes()) >= 1,
+        "no room for expand_call_arglist at compile level {budget}"
+    );
+    budget - 1
 }
 
 /// jq's `block_bind_subblock_inner` recurses over a program's closures, so a

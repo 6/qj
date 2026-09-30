@@ -207,70 +207,96 @@ pub enum Site {
 }
 
 impl Site {
-    /// The bytes of stack a level of this recursion costs, and the bytes
-    /// that are gone before any of them starts.
+    /// The bytes of stack a level of this recursion costs, and the bytes the
+    /// start of the stack takes before any of them starts ([`STACK_MARGIN`]
+    /// not included).
     ///
-    /// The frame bytes are exact: the deepest value jq survives is linear in
-    /// `ulimit -s` with this slope, over every limit measured (1 MB to 16 MB).
-    /// The reserved bytes are [`RESERVED_BYTES`] for the six recursions over
-    /// values, which share one figure; [`Site::Modules`] has its own, because
-    /// what it holds at the level where the stack runs out — bison's parser
-    /// arrays for the module being read — is three times as much, and folding
-    /// that into the shared figure would cost every other site 128 levels.
+    /// The frame bytes are exact: they are what the prologue of jq's own
+    /// function reserves in the release binary's disassembly, and the deepest
+    /// value or program jq survives is linear in `ulimit -s` with that slope at
+    /// every limit measured. The base is [`WORST_BASE_BYTES`] for the six
+    /// recursions over values, which share one figure; the other four have
+    /// their own, because what they hold where the stack runs out is different
+    /// enough that folding it into the shared figure would cost every site
+    /// levels for nothing.
     const fn model(self) -> (u64, u64) {
         // macOS/arm64 (jq's release binary, built by Apple clang), bisected
         // with the programs in `docs/COMPATIBILITY.md` at `ulimit -s` 1024,
         // 2048, 4096, 8176 and 16384 KB.
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let (frame, reserved) = match self {
-            Site::Free => (64, RESERVED_BYTES),
-            Site::Compare => (128, RESERVED_BYTES),
-            Site::Contains => (176, RESERVED_BYTES),
-            Site::Merge => (112, RESERVED_BYTES),
-            Site::Setpath => (144, RESERVED_BYTES),
-            Site::Delpaths => (240, RESERVED_BYTES),
-            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES + STACK_MARGIN),
-            Site::Bind => (112, BIND_BASE_BYTES + STACK_MARGIN),
-            Site::Compile => (176, COMPILE_BASE_BYTES + STACK_MARGIN),
-            Site::ExpandArgs => (192, COMPILE_BASE_BYTES + STACK_MARGIN),
+        let (frame, base) = match self {
+            Site::Free => (64, WORST_BASE_BYTES),
+            Site::Compare => (128, WORST_BASE_BYTES),
+            Site::Contains => (176, WORST_BASE_BYTES),
+            Site::Merge => (112, WORST_BASE_BYTES),
+            Site::Setpath => (144, WORST_BASE_BYTES),
+            Site::Delpaths => (240, WORST_BASE_BYTES),
+            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES),
+            Site::Bind => (112, BIND_BASE_BYTES),
+            Site::Compile => (176, COMPILE_BASE_BYTES),
+            Site::ExpandArgs => (192, COMPILE_BASE_BYTES),
         };
         // Linux/x86-64 (jq's release binary, built by gcc), bisected the same
         // way at 1024, 4096, 8192 and 16384 KB with the stack randomization
         // off, so that the thresholds are deterministic; STACK_MARGIN then
         // covers the randomization.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let (frame, reserved) = match self {
-            Site::Free => (48, RESERVED_BYTES),
-            Site::Compare => (144, RESERVED_BYTES),
-            Site::Contains => (176, RESERVED_BYTES),
-            Site::Merge => (128, RESERVED_BYTES),
-            Site::Setpath => (160, RESERVED_BYTES),
-            Site::Delpaths => (240, RESERVED_BYTES),
-            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES + STACK_MARGIN),
-            Site::Bind => (112, BIND_BASE_BYTES + STACK_MARGIN),
-            Site::Compile => (224, COMPILE_BASE_BYTES + STACK_MARGIN),
-            Site::ExpandArgs => (224, COMPILE_BASE_BYTES + STACK_MARGIN),
+        let (frame, base) = match self {
+            Site::Free => (48, WORST_BASE_BYTES),
+            Site::Compare => (144, WORST_BASE_BYTES),
+            Site::Contains => (176, WORST_BASE_BYTES),
+            Site::Merge => (128, WORST_BASE_BYTES),
+            Site::Setpath => (160, WORST_BASE_BYTES),
+            Site::Delpaths => (240, WORST_BASE_BYTES),
+            Site::Modules => (MODULE_FRAME_BYTES, MODULE_BASE_BYTES),
+            Site::Bind => (112, BIND_BASE_BYTES),
+            Site::Compile => (224, COMPILE_BASE_BYTES),
+            Site::ExpandArgs => (224, COMPILE_BASE_BYTES),
         };
-        (frame, reserved)
+        (frame, base)
     }
 
-    /// Whether jq drives other recursions from inside this one: comparing a
-    /// path element or freeing a value it deleted or replaced, a level at a
-    /// time. Such a site gives up its last level, so that the frame of
-    /// whatever it does at the level it reaches still fits — its own frame is
-    /// at least as big as theirs, so one level is enough.
-    const fn drives_others(self) -> bool {
-        matches!(
-            self,
-            Site::Merge | Site::Setpath | Site::Delpaths | Site::Modules
-        )
+    /// The recursions jq drives from inside this one: comparing a path element
+    /// or freeing a value it deleted or replaced, a level at a time, and —
+    /// inside the module chain — parsing and binding each module.
+    const fn drives(self) -> &'static [Site] {
+        match self {
+            // `delpaths_sorted` compares path elements and frees what it
+            // deletes; `jv_setpath` and `jv_object_merge_recursive` free the
+            // value they replace.
+            Site::Delpaths => &[Site::Compare, Site::Free],
+            Site::Setpath | Site::Merge => &[Site::Free],
+            // `load_library` reads and parses a module at every level, which
+            // binds its definitions and frees its text.
+            Site::Modules => &[Site::Bind, Site::Free],
+            // `compile` calls `expand_call_arglist` at every level, and frees
+            // the block when it is done with it.
+            Site::Compile => &[Site::ExpandArgs, Site::Free],
+            _ => &[],
+        }
+    }
+
+    /// Levels this site gives up so that whatever it drives can still start
+    /// where it stops: enough for one frame of the deepest thing it drives,
+    /// plus however much that thing's base is above this one's.
+    ///
+    /// Without it the inner recursion would look like an overflow at a level jq
+    /// reaches happily, and qj would die where jq answers.
+    fn headroom_levels(self) -> u64 {
+        let (frame, base) = self.model();
+        let mut need = 0;
+        for &inner in self.drives() {
+            let (inner_frame, inner_base) = inner.model();
+            need = need.max(inner_base.saturating_sub(base) + inner_frame);
+        }
+        need.div_ceil(frame)
     }
 
     /// How deep jq's recursion can go here, from the start of the run, in the
     /// levels [`depth`] counts. `None` when the stack is unlimited, where jq
     /// doesn't overflow either.
     pub fn frame_budget(self) -> Option<u64> {
-        self.budget_below(0)
+        self.budget_below(0, 0)
     }
 
     /// The bytes of stack one level of this recursion costs jq, from the
@@ -281,19 +307,31 @@ impl Site {
         self.model().0
     }
 
-    /// [`Site::frame_budget`] with `outer` bytes of the stack already held by
-    /// a recursion this one runs inside.
-    fn budget_below(self, outer: u64) -> Option<u64> {
-        Some(self.frame_budget_at(stack_limit_bytes()?, outer))
+    /// [`Site::frame_budget`] with `outer` bytes of the stack already held by a
+    /// recursion this one runs inside, whose own base was `outer_base`.
+    ///
+    /// The two bases cover the same start of the stack — both begin at `main` —
+    /// so only the larger is charged, and [`STACK_MARGIN`] only once. Charging
+    /// both would take the margin twice, and at the outer site's own threshold
+    /// that leaves the inner one nothing at all.
+    fn budget_below(self, outer: u64, outer_base: u64) -> Option<u64> {
+        Some(self.budget_at(stack_limit_bytes()?, outer, outer_base))
+    }
+
+    /// [`Site::budget_below`] for a stack of `stack_bytes`.
+    fn budget_at(self, stack_bytes: u64, outer: u64, outer_base: u64) -> u64 {
+        let (frame, base) = self.model();
+        let reserved = base.max(outer_base) + STACK_MARGIN;
+        let levels = stack_bytes.saturating_sub(reserved.saturating_add(outer)) / frame;
+        levels.saturating_sub(self.headroom_levels())
     }
 
     /// [`Site::frame_budget`] for a stack of `stack_bytes`, with `outer` bytes
-    /// of it already held. Public so that a test can size a value or a chain
-    /// of modules for a process it starts under a different `RLIMIT_STACK`.
+    /// of it already held. Public so that a test can size a value, a program or
+    /// a chain of modules for a process it starts under a different
+    /// `RLIMIT_STACK`.
     pub fn frame_budget_at(self, stack_bytes: u64, outer: u64) -> u64 {
-        let (frame, reserved) = self.model();
-        let levels = stack_bytes.saturating_sub(reserved.saturating_add(outer)) / frame;
-        levels.saturating_sub(self.drives_others() as u64)
+        self.budget_at(stack_bytes, outer, 0)
     }
 }
 
@@ -316,23 +354,20 @@ const STACK_MARGIN: u64 = 6144;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const STACK_MARGIN: u64 = 8384;
 
-/// Bytes of stack that are gone before any of these recursions starts: what
-/// the start of the stack takes where the bisections measured the most of it
-/// (`jv_cmp` from `sort`, 4,096 bytes on macOS and 3,856 on Linux), plus
-/// [`STACK_MARGIN`].
+/// Bytes of stack that are gone before any of the six recursions over values
+/// starts: what the start of the stack takes where the bisections measured the
+/// most of it (`jv_cmp` from `sort`, 4,096 bytes on macOS and 3,856 on Linux).
 ///
-/// One number for every site, rather than each site's own measurement, so that
-/// a recursion jq drives from inside another ([`Descent`]) is charged the
-/// margin once. Charged twice it would run out where jq still has the margin's
-/// worth of stack, and qj would die where jq answers. The cost is that a site
-/// whose base is smaller than the worst one loses a few more levels: at most
-/// 576 bytes on macOS and 2,000 on Linux, which is 9 and 42 levels of
-/// `jv_free`.
-const RESERVED_BYTES: u64 = WORST_BASE_BYTES + STACK_MARGIN;
-
-/// The most any of the six value recursions' base cost measured (`jv_cmp`
-/// called from `sort_cmp`). [`Site::Modules`] is not one of them: see
-/// [`Site::model`].
+/// One number for the six, rather than each site's own measurement, so that a
+/// recursion jq drives from inside another ([`Descent`]) is charged the same
+/// base — and so [`STACK_MARGIN`] — once. Charged twice it would run out where
+/// jq still has the margin's worth of stack, and qj would die where jq answers.
+/// The cost is that a site whose base is smaller than the worst one loses a few
+/// more levels: at most 576 bytes on macOS and 2,000 on Linux, which is 9 and
+/// 42 levels of `jv_free`.
+///
+/// The four recursions that are not over values keep their own bases, which are
+/// different enough to be worth the arithmetic in [`Site::budget_below`].
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const WORST_BASE_BYTES: u64 = 4096;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -475,8 +510,9 @@ pub fn freeing_iteratively(items: &[Value], native_frames: u64) {
 
 thread_local! {
     /// Bytes of jq's stack an outer recursion is holding while an inner one
-    /// runs — see [`Descent`]. Zero except inside one.
-    static OUTER_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// runs, and the largest base any of those outer recursions reserved — see
+    /// [`Descent`]. `(0, 0)` except inside one.
+    static OUTER: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 /// The budget of `site` here, or `None` when nothing can overflow (compat mode
@@ -495,7 +531,8 @@ fn budget_of(site: Site) -> Option<u64> {
     if !exactly_jq() {
         return None;
     }
-    site.budget_below(OUTER_BYTES.with(std::cell::Cell::get))
+    let (bytes, base) = OUTER.with(std::cell::Cell::get);
+    site.budget_below(bytes, base)
 }
 
 /// How deep `site`'s recursion can go here, as a plain number a walk can
@@ -565,11 +602,11 @@ pub fn merging(a: &Object, b: &Object) {
 ///
 /// Outside compat mode it holds nothing and every call is a branch on `None`.
 pub struct Descent {
-    /// `(bytes a level, levels this recursion has)`, or `None` outside compat
-    /// mode and where jq cannot overflow.
-    model: Option<(u64, u64)>,
+    /// `(bytes a level, levels this recursion has, the base it reserved)`, or
+    /// `None` outside compat mode and where jq cannot overflow.
+    model: Option<(u64, u64, u64)>,
     /// What an outer recursion was holding when this one started.
-    outer: u64,
+    outer: (u64, u64),
 }
 
 impl Descent {
@@ -579,12 +616,13 @@ impl Descent {
         let Some(budget) = budget_of(site) else {
             return Descent {
                 model: None,
-                outer: 0,
+                outer: (0, 0),
             };
         };
+        let (frame, base) = site.model();
         Descent {
-            model: Some((site.model().0, budget)),
-            outer: OUTER_BYTES.with(std::cell::Cell::get),
+            model: Some((frame, budget, base)),
+            outer: OUTER.with(std::cell::Cell::get),
         }
     }
 
@@ -593,11 +631,12 @@ impl Descent {
     /// drives.
     #[inline]
     pub fn at(&self, level: u64) {
-        if let Some((frame, budget)) = self.model {
+        if let Some((frame, budget, base)) = self.model {
             if level > budget {
                 die_of_stack_overflow();
             }
-            OUTER_BYTES.with(|b| b.set(self.outer + level * frame));
+            let (bytes, outer_base) = self.outer;
+            OUTER.with(|b| b.set((bytes + level * frame, outer_base.max(base))));
         }
     }
 }
@@ -605,7 +644,7 @@ impl Descent {
 impl Drop for Descent {
     fn drop(&mut self) {
         if self.model.is_some() {
-            OUTER_BYTES.with(|b| b.set(self.outer));
+            OUTER.with(|b| b.set(self.outer));
         }
     }
 }
@@ -629,8 +668,7 @@ mod tests {
     /// is in frames, and the programs the bisections used need `n + 1` of
     /// them for a value nested `n` deep, so it is `budget - 1`.
     fn deepest(site: Site, kb: u64) -> u64 {
-        let (frame, reserved) = site.model();
-        (kb * 1024 - reserved) / frame - 1 - site.drives_others() as u64
+        site.frame_budget_at(kb * 1024, 0) - 1
     }
 
     /// Every site's model against the depths bisected from the jq 1.8.1
@@ -712,13 +750,13 @@ mod tests {
     fn stack_models_match_the_measurements() {
         for &(site, frame, base, measured) in MEASURED {
             assert_eq!(site.model().0, frame, "{site:?}: bytes a level");
-            let reserved = site.model().1;
+            let reserved = site.model().1 + STACK_MARGIN;
             assert!(base <= reserved, "{site:?}: base above what it reserves");
             // What the model holds back beyond this site's own base cost: the
             // margin, what its base is below the figure it shares (nothing for
-            // `Modules`, which has its own), and the level a driving site
-            // gives up.
-            let allowance = (reserved - base) + site.drives_others() as u64 * frame;
+            // `Modules`, which has its own), and the levels a driving site
+            // gives up for what it drives.
+            let allowance = (reserved - base) + site.headroom_levels() * frame;
             for (kb, jq) in LIMITS.iter().zip(measured) {
                 let model = deepest(site, *kb);
                 assert!(model <= *jq, "{site:?} at {kb} KB: {model} > jq's {jq}");
@@ -733,45 +771,54 @@ mod tests {
         }
     }
 
-    /// What jq drives from inside each recursion: `delpaths_sorted` compares
-    /// path elements and frees the values it deletes, `jv_setpath` and
-    /// `jv_object_merge_recursive` free the value they replace.
+    /// Every site whose recursion jq drives from inside another one, and where
+    /// it does: `delpaths_sorted` compares path elements and frees the values it
+    /// deletes, `jv_setpath` and `jv_object_merge_recursive` free the value they
+    /// replace, `load_library` parses and binds a module at every level, and
+    /// `compile` expands a call list and frees a block at every level.
     const DRIVEN: &[(Site, &[Site])] = &[
         (Site::Delpaths, &[Site::Compare, Site::Free]),
         (Site::Setpath, &[Site::Free]),
         (Site::Merge, &[Site::Free]),
-        // `load_library` reads and parses a module at each level, and frees
-        // its text and the imports it took off it.
-        (Site::Modules, &[Site::Free]),
+        (Site::Modules, &[Site::Bind, Site::Free]),
+        (Site::Compile, &[Site::ExpandArgs, Site::Free]),
     ];
 
-    /// At the deepest level a driving site allows, there has to be room for
-    /// one frame of everything it drives — otherwise the inner recursion would
-    /// look like an overflow at the level jq reaches happily, and qj would die
-    /// where jq answers. Giving up one level is what buys the room, and this
-    /// checks that one level is enough at every stack limit measured.
+    /// At the deepest level a driving site allows, whatever it drives has to be
+    /// able to start — otherwise the inner recursion would look like an overflow
+    /// at a level jq reaches happily, and qj would die where jq answers. This
+    /// checks that the levels the outer site gives up
+    /// ([`Site::headroom_levels`]) buy the room at every stack limit measured,
+    /// for the inner site's *own* base as well as its frame.
     #[test]
-    fn a_driving_site_leaves_room_for_one_frame_of_what_it_drives() {
+    fn a_driving_site_leaves_room_for_what_it_drives() {
         for &(outer, inners) in DRIVEN {
-            assert!(outer.drives_others(), "{outer:?} should give up a level");
-            let (frame, reserved) = outer.model();
+            assert_eq!(
+                outer.drives(),
+                inners,
+                "{outer:?}: drives() disagrees with DRIVEN"
+            );
+            assert!(
+                outer.headroom_levels() > 0,
+                "{outer:?} should give up a level"
+            );
             for kb in LIMITS {
-                let avail = kb * 1024 - reserved;
-                let left = avail - (avail / frame - 1) * frame;
+                let deepest = outer.frame_budget_at(kb * 1024, 0);
+                let held = deepest * outer.model().0;
                 for &inner in inners {
-                    let inner_frame = inner.model().0;
+                    let left = inner.budget_at(kb * 1024, held, outer.model().1);
                     assert!(
-                        left >= inner_frame,
-                        "{outer:?} at {kb} KB leaves {left} B, under {inner:?}'s {inner_frame}"
+                        left >= 1,
+                        "{outer:?} at {kb} KB, {deepest} levels deep: no room for {inner:?}"
                     );
                 }
             }
         }
         for &(site, _, _, _) in MEASURED {
             assert_eq!(
-                site.drives_others(),
+                !site.drives().is_empty(),
                 DRIVEN.iter().any(|(s, _)| *s == site),
-                "{site:?}: drives_others disagrees with DRIVEN"
+                "{site:?}: drives() disagrees with DRIVEN"
             );
         }
     }
