@@ -17,7 +17,7 @@ Median of 3 runs via [hyperfine](https://github.com/sharkdp/hyperfine).
 | `-c '.statuses[]|.user.name'` | large_twitter.json | **28.2ms** | **10.9x** | 28.2ms | 10.9x | 307.6ms | 127.2ms | 265.7ms |
 | `-c '.statuses|map(.user)'` | large_twitter.json | **34.6ms** | **18.1x** | 34.4ms | 18.2x | 625.7ms | 155.4ms | 296.4ms |
 | `-c '.statuses|map({user, text})'` | large_twitter.json | **35.5ms** | **18.2x** | 35.3ms | 18.3x | 645.6ms | 164.3ms | 306.2ms |
-| `-c '.statuses|map(type)'` | large_twitter.json | **54.6ms** | **5.6x** | 54.8ms | 5.6x | 304.6ms | 134.7ms | 247.3ms |
+| `-c '.statuses|map(type)'` | large_twitter.json | **26.0ms** | **11.7x** | 26.3ms | 11.6x | 304.6ms | 134.7ms | 247.3ms |
 | `-c '.statuses|map(length)'` | large_twitter.json | **28.3ms** | **10.7x** | 27.9ms | 10.8x | 302.1ms | 122.4ms | 251.9ms |
 | `'.statuses[]|select(.retweet_count>0)|{user:.user.screen_name,n:.retweet_count}'` | large_twitter.json | **35.2ms** | **9.0x** | 34.4ms | 9.3x | 318.0ms | 134.8ms | 266.4ms |
 | `'[.statuses[]|.retweet_count|floor]'` | large_twitter.json | **56.0ms** | **5.4x** | 56.3ms | 5.4x | 305.2ms | 125.2ms | 254.9ms |
@@ -52,6 +52,6 @@ Peak parse throughput (`-c '.'` on large_twitter.json, 49MB):
 
 | **qj** | qj (1T) | jaq | gojq |
 |------|------|------|------|
-| **8.5x** | 8.5x | 2.6x | 1.4x |
+| **8.7x** | 8.7x | 2.6x | 1.4x |
 
 Geometric mean of per-filter speedups (median time). Higher is better.

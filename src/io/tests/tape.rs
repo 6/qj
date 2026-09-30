@@ -323,6 +323,86 @@ const PROGRAMS: &[&str] = &[
     "select(.a or .a.b)",
     "select(.a | not | not)",
     "select(.b and .c and .a)",
+    "type",
+    ".a | type",
+    ".[] | type",
+    ".[]? | type",
+    "map(type)",
+    "[.[] | type]",
+    "{a: (.a | type), t: type}",
+    "[.[]] | type",
+    "{a} | type",
+    "type | length",
+    "type | type",
+    "length | type",
+    "keys | type",
+    "[.[]? | type] | length",
+    "select(type == \"object\")",
+    "select(type != \"array\")",
+    ".[]? | select(type == \"string\")",
+    "select(.a | type == \"number\")",
+    "select(.a | type == \"string\" and length > 1)",
+    "select(.a | . == 1)",
+    "select(.a | length > 1)",
+    "select(.a | .b)",
+    "select(.a | .b | not)",
+    "def t: type; map(t)",
+    "def type: .a; type",
+    "def is_obj: type == \"object\"; .[]? | select(is_obj)",
+    "has(\"a\")",
+    "has(\"\")",
+    ".a | has(\"b\")",
+    ".[]? | has(\"a\")",
+    "map(has(\"a\"))",
+    "{a} | has(\"a\")",
+    "{a} | has(\"b\")",
+    "has(\"a\") | not",
+    "{h: has(\"b\"), t: type}",
+    "not",
+    ".a | not",
+    "map(not)",
+    "[.[]? | not]",
+    "map(not) | add",
+    ".a == 1",
+    ".a != null",
+    "map(. == 1)",
+    "map(. > 1)",
+    "[.[]? | . < \"x\"]",
+    "{x: (.a > 1), y: (.b == \"x\" and .a)}",
+    ".a and .b",
+    ".a or .b",
+    "(.a == 1) == true",
+    "type == \"object\"",
+    "map(type == \"string\")",
+    "select(.a | has(\"b\"))",
+    "select(has(\"a\"))",
+    "select(has(\"a\") and (.b | type == \"string\"))",
+    "def f: has(\"a\"); {x: f, y: (.b | type)}",
+    "numbers",
+    "strings",
+    ".[] | numbers",
+    ".[]? | strings",
+    ".[]? | values",
+    ".[]? | nulls",
+    ".[]? | booleans",
+    ".[]? | arrays",
+    ".[]? | objects",
+    ".[]? | iterables",
+    ".[]? | scalars",
+    "map(values)",
+    "[.[]? | scalars | type]",
+    ".[]? | normals",
+    ".[]? | finites",
+    ".[]? | isnan",
+    ".[]? | isinfinite",
+    ".[]? | isnormal",
+    ".[]? | isfinite",
+    "map(isnan)",
+    "[.[]? | length | isnormal]",
+    "length | isinfinite",
+    ".[]? | select(isnan | not)",
+    "select(isnormal)",
+    "def numbers: .a; numbers",
 ];
 
 /// Programs the tape evaluates only on some inputs, declining on others
@@ -336,6 +416,10 @@ const PARTIAL_PROGRAMS: &[&str] = &[
     "[.[] | .b] | add | length",
     "{s: add(.[]?)}",
     "def add: .a; add",
+    "map(type) | add",
+    "[.[]? | type] | add",
+    "add | type",
+    "select(add | type == \"number\")",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -447,14 +531,28 @@ fn evaluates_programs_like_the_vm() {
         "{\"k0\":0,\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"a\":9,\"k0\":10}",
         "{\"a\":12345678901234567890,\"b\":-0.0}",
         "[\"a\",\"b\"]",
+        "false",
+        "\"é\\u0000\\\"\"",
+        "[true,false,null,0,-0,1.5,1e308,4.9e-324,2.2250738585072014e-308,\"\",\"s\",[],{}]",
+        "{\"a\":true,\"b\":false,\"c\":null}",
+        "{\"a\":\"xy\",\"b\":\"s\"}",
+        "{\"a\":{\"b\":null},\"b\":[]}",
+        "{\"a\":{\"a\":1,\"b\":2,\"a\":{}},\"b\":{\"b\":1}}",
+        "{\"b\":1,\"b\":\"x\",\"a\":[1,{\"a\":1}]}",
+        "{\"\":1,\"a\\u0000\":2}",
+        "[[],{},[{}],{\"a\":[]}]",
     ];
     let mut counts = std::collections::HashMap::new();
     let mut declined = Vec::new();
-    let mut tally = |o: Outcome, program: &str, text: &[u8]| {
+    let mut evaluated_programs = std::collections::HashSet::new();
+    let mut tally = |o: Outcome, program: &'static str, text: &[u8]| {
         let partial = PARTIAL_PROGRAMS.contains(&program);
         *counts.entry((o, partial)).or_insert(0usize) += 1;
         if o == Outcome::Declined && !partial && declined.len() < 20 {
             declined.push(format!("{program} on {}", String::from_utf8_lossy(text)));
+        }
+        if o == Outcome::Evaluated {
+            evaluated_programs.insert(program);
         }
     };
     let programs = || PROGRAMS.iter().chain(PARTIAL_PROGRAMS);
@@ -494,6 +592,14 @@ fn evaluates_programs_like_the_vm() {
     // rare: only documents with huge containers.
     assert!(declined.is_empty(), "{counts:?}: {declined:#?}");
     assert!(evaluated > rounds(3000) * 13, "{counts:?}");
+    // Every program is evaluated on some input (not only jq's errors), but
+    // for one that checks a shadowing rule on an error (the last `length`
+    // is `.a`, of an array).
+    let always_errors = "def f: length; def length: .a; [f] | length";
+    let never: Vec<_> = programs()
+        .filter(|p| !evaluated_programs.contains(*p) && **p != always_errors)
+        .collect();
+    assert!(never.is_empty(), "never evaluated: {never:?}");
 }
 
 /// Containers of 2^24 - 1 elements or more, whose count simdjson saturates:
@@ -618,6 +724,33 @@ fn only_simple_programs_qualify() {
         "-.a",
         ".a + 1",
         "empty",
+        "type(1)",
+        "select(.[] | type == \"x\")",
+        "select(.a? | type == \"x\")",
+        "select(.a | .[] | . == 1)",
+        "tostring | type",
+        "[.[] | type] | sort",
+        "error | type",
+        "has(.a)",
+        "has(0)",
+        "has(\"a\", \"b\")",
+        "has(\"a\\(.b)\")",
+        "has($x)",
+        "not(.a)",
+        "def has(k): true; has(\"a\")",
+        ".a == .b",
+        "map(. == .)",
+        "1 == 1",
+        ".a + 1 == 2",
+        ".a // .b",
+        "(.a, .b) == 1",
+        ".[] == 1",
+        "isnan(1)",
+        "numbers(1)",
+        "select(numbers)",
+        "select(values)",
+        "infinite | isinfinite",
+        "nan | isnan",
     ] {
         assert!(TapeProgram::new(p.as_bytes()).is_none(), "{p}");
     }

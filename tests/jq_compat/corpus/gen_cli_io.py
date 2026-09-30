@@ -69,7 +69,7 @@ INPUTS = {
 
 # Input modes: name -> (flags, programs).
 MODES = {
-    "c": (["-c"], [".", "[., input_filename, input_line_number]", '[., (try input catch "E")]']),
+    "c": (["-c"], [".", "[., input_filename, input_line_number]", '[., (try input catch "E")]', "type"]),
     "pretty": ([], ["."]),
     "seq": (["-c", "--seq"], [".", "type"]),
     "stream": (["-c", "--stream"], ["."]),

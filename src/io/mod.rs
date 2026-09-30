@@ -136,7 +136,7 @@
 //! ## Programs on the tape: [`tape`], [`tape_eval`]
 //!
 //! [`tape_eval::TapeProgram`] runs a simple program (paths, `.[]`, `length`,
-//! `keys`, `map`, `{...}`, `select(... == c)`) on simdjson's tape, printing
+//! `keys`, `type`, `map`, `{...}`, `select(... == c)`) on simdjson's tape, printing
 //! what jq prints without building values ([`tape::Doc::print`] is a
 //! canonicalizing printer), and declines anything else so the caller runs the
 //! VM. [`InputReader::next_record`] and the engine's
