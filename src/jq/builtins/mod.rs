@@ -14,6 +14,7 @@ pub mod bind;
 pub mod binops;
 pub mod format;
 pub mod general;
+pub mod native;
 pub mod platform;
 pub mod strings;
 pub mod testing;

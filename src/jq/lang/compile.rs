@@ -96,6 +96,10 @@ pub(crate) struct Inst {
     compiled: u32,
     /// Position just after this instruction (`bytecode_pos`).
     bytecode_pos: i32,
+    /// For the `CLOSURE_CREATE` of a builtin.jq definition with a native
+    /// implementation: its [`NativeId`](crate::jq::builtins::native::NativeId) + 1
+    /// (not jq's; it doesn't change the bytecode).
+    native: u16,
 }
 
 /// Owns the instruction arena, the source files instructions point into, and the
@@ -208,8 +212,19 @@ impl Compiler {
             arglist: Block::NOOP,
             compiled: 0,
             bytecode_pos: -1,
+            native: 0,
         });
         id
+    }
+
+    /// Marks the function defined by `def` (a `CLOSURE_CREATE`, as [`Compiler::gen_function`]
+    /// returns it) as having native implementation `native` (a
+    /// [`NativeId`](crate::jq::builtins::native::NativeId) + 1), which its compiled
+    /// [`Bytecode::native`] records.
+    pub(crate) fn set_native(&mut self, def: Block, native: u16) {
+        let i = def.first.expect("a function definition");
+        debug_assert!(def.first == def.last && self.inst(i).op == CLOSURE_CREATE);
+        self.inst_mut(i).native = native;
     }
 
     /// `inst_block`.
@@ -1445,6 +1460,8 @@ struct FnState {
     subfunctions: Vec<usize>,
     /// Enclosing function id (`parent`).
     parent: Option<usize>,
+    /// [`Bytecode::native`].
+    native: u16,
 }
 
 /// A C-builtin call whose arguments are being inlined by `expand_call_arglist`.
@@ -1713,6 +1730,7 @@ impl Compiler {
                     },
                     subfunctions: Vec::new(),
                     parent: Some(fid),
+                    native: self.inst(i).native,
                 });
                 fns[fid].subfunctions.push(sid);
                 children.push((i, sid));
@@ -1812,6 +1830,7 @@ impl Compiler {
             debuginfo: DebugInfo::default(),
             subfunctions: Vec::new(),
             parent: None,
+            native: 0,
         }];
         let mut cfunctions = Vec::new();
         let mut nerrors = 0;
@@ -1846,7 +1865,7 @@ fn build_bytecode(fns: Vec<FnState>, globals: &Rc<SymbolTable>) -> Rc<Bytecode> 
             .iter()
             .map(|&sid| built[sid].take().expect("subfunction built"))
             .collect();
-        built[fid] = Some(Rc::new(Bytecode::new(
+        let mut bc = Bytecode::new(
             f.code,
             f.nlocals,
             f.nclosures,
@@ -1854,7 +1873,9 @@ fn build_bytecode(fns: Vec<FnState>, globals: &Rc<SymbolTable>) -> Rc<Bytecode> 
             globals.clone(),
             subfunctions,
             f.debuginfo,
-        )));
+        );
+        bc.native = f.native;
+        built[fid] = Some(Rc::new(bc));
     }
     let root = built[0].take().expect("top-level function");
     bytecode::link_parents(&root);
