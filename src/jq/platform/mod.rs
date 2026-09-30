@@ -87,6 +87,11 @@ impl Error {
 /// `LC_ALL=de_DE.UTF-8`, jq says `... jv_string_indexes: Zusicherung
 /// »JVP_HAS_KIND(j, JV_KIND_STRING)« nicht erfüllt.`. A message of another
 /// shape, or a format this can't fill in, comes back unchanged.
+///
+/// The name at the start is glibc's `__progname`, the last component of
+/// `argv[0]` — the only place jq's output carries `argv[0]`. By default it is
+/// `jq`, as for jq run by that name; with `QJ_JQ_COMPAT=1` it is this
+/// process's own `argv[0]`, as for jq run by whatever name qj was.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn glibc_assert_text(msg: &str) -> String {
     unsafe extern "C" {
@@ -97,7 +102,8 @@ fn glibc_assert_text(msg: &str) -> String {
         ) -> *mut libc::c_char;
     }
     const MSGID: &std::ffi::CStr = c"%s%s%s:%u: %s%sAssertion `%s' failed.\n%n";
-    let Some(args) = assert_parts(msg) else {
+    let progname = assert_progname();
+    let Some(args) = assert_parts(msg, &progname) else {
         return msg.to_owned();
     };
     // SAFETY: dcgettext returns `msgid` itself or a NUL-terminated translation
@@ -111,9 +117,6 @@ fn glibc_assert_text(msg: &str) -> String {
         .to_bytes()
         .to_vec()
     });
-    if format == MSGID.to_bytes() {
-        return msg.to_owned();
-    }
     match fill_assert_format(&format, &args) {
         Some(mut out) => {
             if out.last() == Some(&b'\n') {
@@ -125,18 +128,42 @@ fn glibc_assert_text(msg: &str) -> String {
     }
 }
 
-/// `__assert_fail`'s arguments for its format, from the C locale's line:
-/// `__progname`, `": "`, the file, the line, the function, `": "`, the
-/// expression.
+/// `__progname` as glibc's `assert()` prints it: `jq`, or in compat mode
+/// glibc's `program_invocation_short_name`, which it set from this process's
+/// `argv[0]` (everything after its last `/`) exactly as it does for jq.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn assert_parts(msg: &str) -> Option<[&str; 7]> {
+fn assert_progname() -> String {
+    if !crate::compat::exactly_jq() {
+        return "jq".to_owned();
+    }
+    unsafe extern "C" {
+        static program_invocation_short_name: *const libc::c_char;
+    }
+    // SAFETY: glibc sets the pointer before `main` to a NUL-terminated string
+    // inside `argv[0]` (or to "" without one), which lives as long as the
+    // process.
+    unsafe {
+        let p = program_invocation_short_name;
+        if p.is_null() {
+            return String::new();
+        }
+        String::from_utf8_lossy(std::ffi::CStr::from_ptr(p).to_bytes()).into_owned()
+    }
+}
+
+/// `__assert_fail`'s arguments for its format, from the C locale's line:
+/// `__progname`, `": "` (nothing when the name is empty), the file, the line,
+/// the function, `": "`, the expression.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn assert_parts<'a>(msg: &'a str, progname: &'a str) -> Option<[&'a str; 7]> {
     let rest = msg.strip_prefix("jq: ")?;
     let (file, rest) = rest.split_once(':')?;
     let (line, rest) = rest.split_once(": ")?;
     let (function, rest) = rest.split_once(": Assertion `")?;
     let expr = rest.strip_suffix("' failed.")?;
     let digits = !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit());
-    digits.then_some(["jq", ": ", file, line, function, ": ", expr])
+    let sep = if progname.is_empty() { "" } else { ": " };
+    digits.then_some([progname, sep, file, line, function, ": ", expr])
 }
 
 /// A (translated) `__assert_fail` format filled in with `args`: `%s` and `%u`
@@ -259,7 +286,7 @@ mod tests {
     #[test]
     fn glibc_assert_lines_fill_translated_formats() {
         let line = "jq: src/jv.c:1312: jv_string_indexes: Assertion `JVP_HAS_KIND(j, JV_KIND_STRING)' failed.";
-        let args = assert_parts(line).expect("an assert line");
+        let args = assert_parts(line, "jq").expect("an assert line");
         assert_eq!(
             args,
             [
@@ -286,11 +313,26 @@ mod tests {
         );
         assert_eq!(fill_assert_format(b"%d", &args), None);
         assert_eq!(
-            assert_parts("Assertion failed: (x), function f, file jv.c, line 1."),
+            assert_parts(
+                "Assertion failed: (x), function f, file jv.c, line 1.",
+                "jq"
+            ),
             None
         );
         // Without translations (the C locale), the line comes back as it is.
         assert_eq!(glibc_assert_text(line), line);
+        // `__progname` is argv[0]'s last component, and an empty one drops
+        // its ": " too, as glibc's format does.
+        let named = assert_parts(line, "myjq").expect("an assert line");
+        assert_eq!(
+            fill_assert_format(b"%s%s%s:%u: %s%sAssertion `%s' failed.\n%n", &named),
+            Some(format!("my{line}\n").into_bytes())
+        );
+        let unnamed = assert_parts(line, "").expect("an assert line");
+        assert_eq!(
+            fill_assert_format(b"%s%s%s:%u: %s%sAssertion `%s' failed.\n%n", &unnamed),
+            Some(format!("{}\n", &line["jq: ".len()..]).into_bytes())
+        );
     }
 
     #[test]

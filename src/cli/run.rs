@@ -23,7 +23,7 @@
 //!    (unreadable inputs, a failed write), 3 for compile errors, 5 for
 //!    uncaught errors and parse errors, or `halt_error`'s code.
 //!
-//! Messages say `qj:` where jq's say `jq:`.
+//! Messages say `qj:` where jq's say `jq:`, except with `QJ_JQ_COMPAT=1`.
 //!
 //! Output goes through one buffer on this thread, which `--debug-trace` also
 //! writes to (jq prints the trace on stdout, interleaved with the results),
@@ -50,8 +50,11 @@ use crate::jq::value::{
     parse_sized, unicode,
 };
 
-/// The program name in messages.
-pub(super) const PROG: &str = "qj";
+/// The program name in messages: `qj`, or `jq` with `QJ_JQ_COMPAT=1`
+/// ([`crate::compat::prog_name`]).
+pub(super) fn prog() -> &'static str {
+    crate::compat::prog_name()
+}
 
 // main.c's return codes.
 const JQ_OK: i32 = 0;
@@ -386,7 +389,7 @@ fn close_stdout(ret: i32) -> i32 {
         None => ret,
         Some(e) => {
             let reason = args::strerror(e.raw_os_error().unwrap_or(0));
-            let mut msg = format!("{PROG}: error: writing output failed: ").into_bytes();
+            let mut msg = format!("{}: error: writing output failed: ", prog()).into_bytes();
             msg.extend_from_slice(&reason);
             msg.push(b'\n');
             let _ = io::stderr().write_all(&msg);
@@ -508,7 +511,7 @@ fn program_arguments(opts: &mut Options<Value>) -> (Object, Value) {
     if !vars.contains_key("JQ_BUILD_CONFIGURATION") {
         vars.insert(
             Str::from("JQ_BUILD_CONFIGURATION"),
-            Value::from(super::usage::BUILD_CONFIGURATION),
+            Value::from(super::usage::build_configuration()),
         );
     }
     (vars, args)
@@ -600,7 +603,7 @@ fn c_double_to_int(d: f64) -> i32 {
 /// Replaces a message's leading `jq:` with qj's name.
 pub(super) fn with_prog_name(message: &str) -> String {
     match message.strip_prefix("jq:") {
-        Some(rest) => format!("{PROG}:{rest}"),
+        Some(rest) => format!("{}:{rest}", prog()),
         None => message.to_owned(),
     }
 }
@@ -917,9 +920,10 @@ const RAW_OUTPUT0_NUL: &str = "Cannot dump a string containing NUL with --raw-ou
 /// main.c's message for an uncaught error, at input position `pos`.
 fn uncaught_error_line(msg: &Value, pos: &str) -> String {
     match msg {
-        Value::String(s) => format!("{PROG}: error (at {pos}): {}\n", c_str(s.as_str())),
+        Value::String(s) => format!("{}: error (at {pos}): {}\n", prog(), c_str(s.as_str())),
         _ => format!(
-            "{PROG}: error (at {pos}) (not a string): {}\n",
+            "{}: error (at {pos}) (not a string): {}\n",
+            prog(),
             dump_plain(msg)
         ),
     }
@@ -1006,7 +1010,7 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
             return close_stdout(JQ_OK);
         }
         Ok(Action::BuildConfiguration) => {
-            let text = format!("{}\n", super::usage::BUILD_CONFIGURATION);
+            let text = format!("{}\n", super::usage::build_configuration());
             with_stdout(|s| s.buf.extend_from_slice(text.as_bytes()));
             return close_stdout(JQ_OK);
         }
@@ -1026,12 +1030,12 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
         }
         Err(e @ (ArgError::BadFile { .. } | ArgError::ProgramFile(_))) => {
             // ret = JQ_ERROR_SYSTEM; goto out;
-            write_stderr(&e.render(PROG));
+            write_stderr(&e.render(prog()));
             return close_stdout(JQ_ERROR_SYSTEM);
         }
         Err(e) => {
             // die() or usage(2, 1): exit(2) right away.
-            write_stderr(&e.render(PROG));
+            write_stderr(&e.render(prog()));
             return e.exit_code();
         }
     };
@@ -1086,14 +1090,14 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
 
     let Some(program) = opts.program_or_default(isatty(0), stdout_is_tty) else {
         // usage(2, 1)
-        write_stderr(&ArgError::NoProgram.render(PROG));
+        write_stderr(&ArgError::NoProgram.render(prog()));
         std::process::exit(2);
     };
     let program = if opts.from_file {
         match load_program_text(program) {
             Ok(text) => text,
             Err(e) => {
-                write_stderr(&e.render(PROG));
+                write_stderr(&e.render(prog()));
                 return (close_stdout(JQ_ERROR_SYSTEM), -1);
             }
         }
@@ -1222,11 +1226,11 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
                     let msg = c_str(&msg);
                     if !opts.seq {
                         ret = JQ_ERROR_UNKNOWN;
-                        write_stderr(format!("{PROG}: parse error: {msg}\n").as_bytes());
+                        write_stderr(format!("{}: parse error: {msg}\n", prog()).as_bytes());
                         break;
                     }
                     // --seq -> errors are not fatal
-                    write_stderr(format!("{PROG}: ignoring parse error: {msg}\n").as_bytes());
+                    write_stderr(format!("{}: ignoring parse error: {msg}\n", prog()).as_bytes());
                 }
             }
         }
@@ -1594,7 +1598,7 @@ impl crate::io::parallel::RecordSink for MainLoop {
         // Parse error (no --seq here: it runs sequentially)
         let msg = e.to_string();
         self.ret = JQ_ERROR_UNKNOWN;
-        write_stderr(format!("{PROG}: parse error: {}\n", c_str(&msg)).as_bytes());
+        write_stderr(format!("{}: parse error: {}\n", prog(), c_str(&msg)).as_bytes());
         std::ops::ControlFlow::Break(())
     }
 }
@@ -1654,7 +1658,8 @@ fn run_parallel(
     if std::env::var_os("QJ_ENGINE_STATS").is_some() {
         write_stderr(
             format!(
-                "{PROG}: {} threads, {stats:?}, {:?}, {} input releases\n",
+                "{}: {} threads, {stats:?}, {:?}, {} input releases\n",
+                prog(),
                 engine.threads,
                 reader.stats(),
                 crate::io::source::releases()

@@ -499,13 +499,13 @@ impl UtilInput {
             open,
             on_message: Box::new(|m| {
                 use std::io::Write;
-                let _ = io::stderr().write_all(&m.render("qj"));
+                let _ = io::stderr().write_all(&m.render(crate::compat::prog_name()));
             }),
         }
     }
 
     /// Where `Could not open file` and read-error messages go (stderr, with
-    /// the `qj` prefix, by default).
+    /// the `qj` prefix — `jq` in compat mode — by default).
     pub fn set_message_sink(&mut self, sink: Box<dyn FnMut(InputMessage)>) {
         self.on_message = sink;
     }

@@ -14,9 +14,10 @@
 //! variable is read once, from the environment, so every thread and every
 //! worker sees the same answer.
 //!
-//! qj's help, version and build-configuration text and the `qj:` name in
-//! messages stay qj's own in both modes; `docs/JQ_PORT_PLAN.md` exempts them
-//! by policy.
+//! Compat mode is jq's identity too: messages start with `jq:` ([`prog_name`]),
+//! and `-h`, the usage after errors, `--version` and `--build-configuration`
+//! print jq 1.8.1's text (`src/cli/usage.rs`). By default they are qj's own,
+//! which `docs/JQ_PORT_PLAN.md` exempts from comparison.
 //!
 //! # Stack overflow
 //!
@@ -57,6 +58,17 @@ pub fn exactly_jq() -> bool {
 /// [`exactly_jq`]'s rule, for one value of the variable.
 fn is_on(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The name at the start of qj's messages (`qj: error: ...`): qj's own, or
+/// with `QJ_JQ_COMPAT=1` jq's.
+///
+/// jq 1.8.1 never prints its `argv[0]`: every message in `main.c`, `util.c`
+/// and the library spells out `jq` (`argv[0]` only gives `$ORIGIN`), so
+/// neither does compat mode. The one line that does carry `argv[0]` comes
+/// from glibc, not jq: `assert()`'s (see `src/jq/platform/mod.rs`).
+pub fn prog_name() -> &'static str {
+    if exactly_jq() { "jq" } else { "qj" }
 }
 
 /// Dies of `sig` exactly as an unhandled fatal signal would, without running
