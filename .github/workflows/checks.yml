@@ -16,6 +16,8 @@ jobs:
     # iai-callgrind) take far longer than the old 15 minutes on hosted runners.
     timeout-minutes: 60
     strategy:
+      # Let each OS finish, so a failure on one still shows the other's results.
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
