@@ -24,34 +24,17 @@
 //! The usual `f`, `if type == "T" then A else . end`, isn't run on nodes of other
 //! types: there its one output is the node, and running it does nothing else.
 
+use super::Update;
 use crate::jq::lang::execute::Jq;
 use crate::jq::lang::execute::native::{Closure, ConstView, Outcome, Stop};
 use crate::jq::value::{Array, Object, Value};
 
 pub(super) fn walk(vm: &mut Jq, input: Value, f: Closure, c: ConstView<'_>) -> Outcome {
-    let f = Update {
-        f,
-        guard: vm.type_guard_closure(f),
-    };
+    let f = Update::new(vm, f);
     match transform(vm, input, &f, c.get(0)) {
         Ok(t) if f.skips(&t) => Outcome::Value(t),
         Ok(t) => Outcome::Call(f.f, t),
         Err(s) => s.into(),
-    }
-}
-
-/// `f`, and the type it tests if it is `if type == "T" then A else . end`.
-struct Update {
-    f: Closure,
-    guard: Option<Value>,
-}
-
-impl Update {
-    /// Whether `f`'s only output on `v` is `v` itself, without running it.
-    fn skips(&self, v: &Value) -> bool {
-        self.guard
-            .as_ref()
-            .is_some_and(|t| t.as_str() != Some(v.kind_name()))
     }
 }
 
@@ -129,11 +112,7 @@ fn transform(vm: &mut Jq, root: Value, f: &Update, map_empty: &Value) -> Result<
                     updates,
                     dels,
                 } => {
-                    let u = if f.skips(&t) {
-                        Some(t)
-                    } else {
-                        vm.sub_first(f.f, t)?
-                    };
+                    let u = f.first(vm, t)?;
                     if u.is_none() {
                         // setpath([1, (.[1] | length)]; $p)
                         let (k, _) = src.get_index(*i).expect("walked key");

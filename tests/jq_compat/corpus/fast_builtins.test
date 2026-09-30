@@ -4273,6 +4273,318 @@ try ((.a | tostring) |= 1) catch .
 try ((.a | tostring) |= 1) catch .
 null
 
+.. |= (if type == "string" then ascii_downcase else . end)
+"AbCéZ"
+
+.. |= (if type == "string" then ascii_downcase else . end)
+{"A":"xY","b":"Q","c":["Mm",{"D":"eF"}]}
+
+.. |= (if type == "string" then ascii_downcase else . end)
+1
+
+.. |= (if type == "string" then ascii_downcase else . end)
+[]
+
+map_values(if type == "number" then . + 1 else . end)
+[1,[2,[3]],{"a":[]}]
+
+map_values(if type == "number" then . + 1 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+map_values(if type == "number" then . + 1 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+map_values(if type == "number" then . + 1 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+map_values(if type == "number" then . + 1 else . end)
+[]
+
+map_values(if type == "number" then . + 1 else . end)
+{}
+
+map_values(if type == "number" then . + 1 else . end)
+1
+
+map_values(if type == "number" then . + 1 else . end)
+null
+
+.[]? |= (if type == "array" then empty else . end)
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= (if type == "array" then empty else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= (if type == "array" then empty else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= (if type == "array" then empty else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= (if type == "array" then empty else . end)
+[]
+
+.[]? |= (if type == "array" then empty else . end)
+{}
+
+.[]? |= (if type == "array" then empty else . end)
+1
+
+.[]? |= (if type == "array" then empty else . end)
+null
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+[1,[2,[3]],{"a":[]}]
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+{"x":{"a":{"b":1},"c":2}}
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+[]
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+{}
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+1
+
+(.. | select(type == "object")) |= (if type == "object" then del(.a) end)
+null
+
+.a? |= (if type == "null" then 0 else . end)
+[1,[2,[3]],{"a":[]}]
+
+.a? |= (if type == "null" then 0 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.a? |= (if type == "null" then 0 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.a? |= (if type == "null" then 0 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+.a? |= (if type == "null" then 0 else . end)
+[]
+
+.a? |= (if type == "null" then 0 else . end)
+{}
+
+.a? |= (if type == "null" then 0 else . end)
+1
+
+.a? |= (if type == "null" then 0 else . end)
+null
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+[1,[2,[3]],{"a":[]}]
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+{"x":{"a":{"b":1},"c":2}}
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+[]
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+{}
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+1
+
+try (.[] |= (if type == "string" then error else . end)) catch .
+null
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+[1,[2,[3]],{"a":[]}]
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+{"x":{"a":{"b":1},"c":2}}
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+[]
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+{}
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+1
+
+(.[]? |= (if "number" == type then . * 2 else . end)) | [label $f | try break $f catch .]
+null
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+[1,[2,[3]],{"a":[]}]
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+[]
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+{}
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+1
+
+def type: 1; .[]? |= (if type == 1 then 2 else . end)
+null
+
+.[]? |= (if type == "number" then (., 1) else . end)
+[1,[2,[3]],{"a":[]}]
+
+.[]? |= (if type == "number" then (., 1) else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+.[]? |= (if type == "number" then (., 1) else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+.[]? |= (if type == "number" then (., 1) else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+.[]? |= (if type == "number" then (., 1) else . end)
+[]
+
+.[]? |= (if type == "number" then (., 1) else . end)
+{}
+
+.[]? |= (if type == "number" then (., 1) else . end)
+1
+
+.[]? |= (if type == "number" then (., 1) else . end)
+null
+
+def m(f): map_values(f); m(if type == "string" then ascii_upcase else . end)?
+"AbCéZ"
+
+def m(f): map_values(f); m(if type == "string" then ascii_upcase else . end)?
+{"A":"xY","b":"Q","c":["Mm",{"D":"eF"}]}
+
+def m(f): map_values(f); m(if type == "string" then ascii_upcase else . end)?
+1
+
+def m(f): map_values(f); m(if type == "string" then ascii_upcase else . end)?
+[]
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+[1,[2,[3]],{"a":[]}]
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+{"x":{"a":{"b":1},"c":2}}
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+[]
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+{}
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+1
+
+def w(f): walk(f); w(if type == "number" then tostring else . end)
+null
+
+def p(f): [paths(f)]; p("array" == type)
+[1,[2,[3]],{"a":[]}]
+
+def p(f): [paths(f)]; p("array" == type)
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+def p(f): [paths(f)]; p("array" == type)
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+def p(f): [paths(f)]; p("array" == type)
+{"x":{"a":{"b":1},"c":2}}
+
+def p(f): [paths(f)]; p("array" == type)
+[]
+
+def p(f): [paths(f)]; p("array" == type)
+{}
+
+def p(f): [paths(f)]; p("array" == type)
+1
+
+def p(f): [paths(f)]; p("array" == type)
+null
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+[1,[2,[3]],{"a":[]}]
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+{"x":{"a":{"b":1},"c":2}}
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+[]
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+{}
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+1
+
+def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]
+null
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+[1,[2,[3]],{"a":[]}]
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+{"a":1,"b":[2,{"c":3}],"d":{},"e":[]}
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+[[[[[]]]],{"a":{"b":{"c":{}}}}]
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+{"x":{"a":{"b":1},"c":2}}
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+[]
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+{}
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+1
+
+(.. |= (if type == "array" then .[0:1] else . end)) | if type == "array" then .[3] = 9 else . end
+null
+
 .[1:]? |= [9]
 [1,[2,[3]],{"a":[]}]
 
@@ -8105,6 +8417,138 @@ null
 ["a",1,["b"]]
 
 {a: [., ., ., .][0:2], b: .} | (.[0] = .[0]) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | (.[] |= (if type == "string" then 1 else . end)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | (.[] |= (if type == "string" then 1 else . end)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | (.[] |= (if type == "string" then 1 else . end)) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | (.[] |= (if type == "string" then 1 else . end)) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [(.[] |= (if type == "string" then 1 else . end))] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [(.[] |= (if type == "string" then 1 else . end))] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last((.[] |= (if type == "string" then 1 else . end))) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last((.[] |= (if type == "string" then 1 else . end))) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first((.[] |= (if type == "string" then 1 else . end))) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first((.[] |= (if type == "string" then 1 else . end))) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | (.[] |= (if type == "string" then 1 else . end)) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | (.[] |= (if type == "string" then 1 else . end)) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce ((.[] |= (if type == "string" then 1 else . end))) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | (.[] |= (if type == "string" then 1 else . end)) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.[] |= (if type == "string" then 1 else . end)) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | (.. |= (if type == "object" then . else . end)) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | (.. |= (if type == "object" then . else . end)) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .[3] = 9)
+["a",1,["b"]]
+
+[., ., ., .][0:2] | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .[3] = 9)
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] | (.. |= (if type == "object" then . else . end)) | if type == "array" then .[3] = 9 else . end
+["a",1,["b"]]
+
+[., ., ., .][0:2] | (.. |= (if type == "object" then . else . end)) | if type == "array" then .[3] = 9 else . end
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | [(.. |= (if type == "object" then . else . end))] | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | [(.. |= (if type == "object" then . else . end))] | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | last((.. |= (if type == "object" then . else . end))) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | last((.. |= (if type == "object" then . else . end))) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[., ., ., .][0:2] as $v | $v | first((.. |= (if type == "object" then . else . end))) | $$$$v | .[3] = 9
+["a",1,["b"]]
+
+[., ., ., .][0:2] as $v | $v | first((.. |= (if type == "object" then . else . end))) | $$$$v | .[3] = 9
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | (.. |= (if type == "object" then . else . end)) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | (.. |= (if type == "object" then . else . end)) | if type == "array" then .[length + 1] = 0 else . end
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2], .] | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2], .] | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+[[., ., ., .][0:2]] | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .[0][3] = 9)
+["a",1,["b"]]
+
+[[., ., ., .][0:2]] | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .[0][3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2]} | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .a[3] = 9)
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2]} | reduce ((.. |= (if type == "object" then . else . end))) as $j (.; .a[3] = 9)
+{"key":"k","value":[2]}
+
+{a: [., ., ., .][0:2], b: .} | (.. |= (if type == "object" then . else . end)) | if type == "array" then .[length + 1] = 0 else . end
+["a",1,["b"]]
+
+{a: [., ., ., .][0:2], b: .} | (.. |= (if type == "object" then . else . end)) | if type == "array" then .[length + 1] = 0 else . end
 {"key":"k","value":[2]}
 
 [., ., ., .][0:2] as $v | $v | ((.[0:1]) | paths) | $$$$v | .[3] = 9

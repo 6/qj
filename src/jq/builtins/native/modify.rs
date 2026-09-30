@@ -32,6 +32,7 @@
 //! are only read, by `getpath`/`setpath`/`delpaths`), so their storage doesn't matter.
 //! Both abandon closures (`break`, and on errors), so they're off with `?//`.
 
+use super::Update;
 use crate::jq::lang::execute::Jq;
 use crate::jq::lang::execute::native::{Closure, Outcome, Resume, Stop, Sub};
 use crate::jq::value::Value;
@@ -44,8 +45,9 @@ pub(super) fn modify(
     update: Closure,
     path_fn: Closure,
 ) -> Result<Value, Stop> {
+    let update = Update::new(vm, update);
     if let Some(opt) = vm.each_closure(paths) {
-        return modify_each(vm, input, opt, update);
+        return modify_each(vm, input, opt, &update);
     }
     if let Some(k) = vm.key_closure(paths) {
         // `path(.[k])` is `[k]`, or INDEX's error; after the INDEX the path expression
@@ -53,7 +55,7 @@ pub(super) fn modify(
         input.get(&k)?;
         let mut root = input;
         let mut dels = Vec::new();
-        modify_one(vm, &mut root, &mut dels, Value::from(vec![k]), update)?;
+        modify_one(vm, &mut root, &mut dels, Value::from(vec![k]), &update)?;
         return finish(root, dels);
     }
     // `[., []]`: the value being updated and the paths to delete.
@@ -61,7 +63,7 @@ pub(super) fn modify(
     let mut dels: Vec<Value> = Vec::new();
     let mut r = vm.sub_start_args(path_fn, &[paths], input)?;
     while let Some((s, p)) = r {
-        if let Err(e) = modify_one(vm, &mut root, &mut dels, p, update) {
+        if let Err(e) = modify_one(vm, &mut root, &mut dels, p, &update) {
             vm.sub_abandon(s);
             return Err(e);
         }
@@ -76,7 +78,7 @@ pub(super) fn modify(
 /// point until it produces the last element of an array (an object's to the end), so
 /// the input is held just as long: the first update then copies it, or updates it in
 /// place, as in jq.
-fn modify_each(vm: &mut Jq, input: Value, opt: bool, update: Closure) -> Result<Value, Stop> {
+fn modify_each(vm: &mut Jq, input: Value, opt: bool, update: &Update) -> Result<Value, Stop> {
     let n = match &input {
         Value::Array(a) => a.len(),
         Value::Object(o) => o.len(),
@@ -123,12 +125,12 @@ fn modify_one(
     root: &mut Value,
     dels: &mut Vec<Value>,
     p: Value,
-    update: Closure,
+    update: &Update,
 ) -> Result<(), Stop> {
     // `label $out`
     vm.gen_labels(1);
     let v = root.getpath(&p)?;
-    match vm.sub_first(update, v)? {
+    match update.first(vm, v)? {
         // setpath([0] + $p; $v)
         Some(u) => *root = std::mem::take(root).setpath(&p, u)?,
         // setpath([1, (.[1] | length)]; $p)

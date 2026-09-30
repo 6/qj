@@ -233,6 +233,21 @@ const PROGRAMS: &[&str] = &[
     "try (.[0] = 1) catch .",
     "try (paths |= 1) catch .",
     "try ((.a | tostring) |= 1) catch .",
+    // updates `if type == "T" then A else . end`: not run on values of other types
+    ".. |= (if type == \"string\" then ascii_downcase else . end)",
+    "map_values(if type == \"number\" then . + 1 else . end)",
+    ".[]? |= (if type == \"array\" then empty else . end)",
+    "(.. | select(type == \"object\")) |= (if type == \"object\" then del(.a) end)",
+    ".a? |= (if type == \"null\" then 0 else . end)",
+    "try (.[] |= (if type == \"string\" then error else . end)) catch .",
+    "(.[]? |= (if \"number\" == type then . * 2 else . end)) | [label $f | try break $f catch .]",
+    "def type: 1; .[]? |= (if type == 1 then 2 else . end)",
+    ".[]? |= (if type == \"number\" then (., 1) else . end)",
+    "def m(f): map_values(f); m(if type == \"string\" then ascii_upcase else . end)?",
+    "def w(f): walk(f); w(if type == \"number\" then tostring else . end)",
+    "def p(f): [paths(f)]; p(\"array\" == type)",
+    "def a: scalars; def b: a; def c: b; def d: c; def e: d; def f: e; def g: f; def h: g; def i: h; [paths(i)]",
+    "(.. |= (if type == \"array\" then .[0:1] else . end)) | if type == \"array\" then .[3] = 9 else . end",
     ".[1:]? |= [9]",
     "[.[]? | tostring] | join(\",\")",
     "[.[]? | tostring] | join(null)",
@@ -405,6 +420,21 @@ fn natives_skip_type_guards() {
         sub_runs("[paths(type == \"number\" or false)]", "[1,[2]]"),
         4
     );
+    // `_modify`'s update: none for `.[]`, one for `..`'s `path(..)` (the paths).
+    let update = "(if type == \"boolean\" then not else . end)";
+    assert_eq!(sub_runs(&format!(".[] |= {update}"), "[1,2,3]"), 0);
+    assert_eq!(sub_runs(&format!(".. |= {update}"), "[1,[2]]"), 1);
+    assert_eq!(sub_runs(&format!(".[] |= {update}"), "[1,true]"), 1);
+    // Passed on as closure parameters (`map_values(f)` is `.[] |= f`).
+    assert_eq!(sub_runs(&format!("map_values({update})"), "[1,2,3]"), 0);
+    assert_eq!(
+        sub_runs(&format!("def w(f): walk(f); w({update})"), "[1,[2]]"),
+        0
+    );
+    assert_eq!(
+        sub_runs("def p(f): [paths(f)]; p(type == \"number\")", "[1,[2]]"),
+        0
+    );
 }
 
 /// Natives whose reference lifetimes the probes of [`lifetimes_match_the_definitions`]
@@ -438,6 +468,8 @@ const LIFETIME_NATIVES: &[&str] = &[
     "(.[0] = tostring)",
     "(.[0] = (1, 2))",
     "(.[0] = .[0])",
+    "(.[] |= (if type == \"string\" then 1 else . end))",
+    "(.. |= (if type == \"object\" then . else . end))",
     "((.[0:1]) | paths)",
     "((.[0:1]) | paths(true))",
     "((.[0:1]) | paths(scalars))",

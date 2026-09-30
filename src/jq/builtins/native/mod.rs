@@ -49,7 +49,9 @@ mod cases;
 mod tests;
 
 use crate::jq::lang::execute::Jq;
-use crate::jq::lang::execute::native::{Call, ConstRef, Outcome, Pool, Pools, Resume, Stop};
+use crate::jq::lang::execute::native::{
+    Call, Closure, ConstRef, Outcome, Pool, Pools, Resume, Stop,
+};
 use crate::jq::value::{Error, Value, dump_string_trunc};
 
 /// The `builtin.jq` definitions with a native implementation, plus helper marks for
@@ -319,6 +321,39 @@ fn child(v: &Value, i: usize) -> (Value, Value) {
             (Value::String(k.clone()), c.clone())
         }
         _ => unreachable!("child of a scalar"),
+    }
+}
+
+/// A closure argument that updates values (`walk`'s `f`, `_modify`'s `update`), and the
+/// type it tests if it is `if type == "T" then A else . end` (see
+/// `Jq::type_guard_closure`): on a value of another type its one output is the value
+/// itself, and running it does nothing else, so it isn't run there.
+struct Update {
+    f: Closure,
+    guard: Option<Value>,
+}
+
+impl Update {
+    fn new(vm: &Jq, f: Closure) -> Update {
+        Update {
+            f,
+            guard: vm.type_guard_closure(f),
+        }
+    }
+
+    /// Whether `f`'s only output on `v` is `v` itself.
+    fn skips(&self, v: &Value) -> bool {
+        self.guard
+            .as_ref()
+            .is_some_and(|t| t.as_str() != Some(v.kind_name()))
+    }
+
+    /// The first output of `f` on `v`.
+    fn first(&self, vm: &mut Jq, v: Value) -> Result<Option<Value>, Stop> {
+        if self.skips(&v) {
+            return Ok(Some(v));
+        }
+        vm.sub_first(self.f, v)
     }
 }
 

@@ -668,37 +668,60 @@ impl Jq {
     /// closure that calls `g`). Each callee is resolved as `make_closure` would in its
     /// caller's frame.
     pub(crate) fn tail_callee_mark(&self, f: Closure) -> Option<NativeId> {
-        let prog = &*self.prog;
         let mut f = f;
         // Bounded: a function can call itself.
         for _ in 0..8 {
-            let func = &prog.funcs[f.func as usize];
-            if func.mark.is_some() {
-                return func.mark;
+            let mark = self.prog.funcs[f.func as usize].mark;
+            if mark.is_some() {
+                return mark;
             }
-            let &[op, 0, level, idx, ret] = func.bc.code.as_slice() else {
-                return None;
-            };
-            // Level 0 is `f`'s own frame, which doesn't exist before the call.
-            if op != Opcode::TAIL_CALL_JQ as u16 || ret != Opcode::RET as u16 || level == 0 {
-                return None;
-            }
-            // `frame_get_level(level)` from `f`'s frame, whose env is `f.env`.
-            let mut env = f.env;
-            for _ in 1..level {
-                env = self.stk.frame(env).env;
-            }
-            let fr = self.stk.frame(env);
-            f = if idx & ARG_NEWCLOSURE != 0 {
-                let sub = prog.funcs[fr.func as usize]
-                    .subfunctions
-                    .get((idx & !ARG_NEWCLOSURE) as usize)?;
-                Closure { func: *sub, env }
-            } else {
-                *self.stk.closures.get(fr.closures as usize + idx as usize)?
-            };
+            f = self.tail_callee(f)?;
         }
         None
+    }
+
+    /// The closure a call of `f` runs: `f`, or, through closures that only call
+    /// another one without arguments (see [`Jq::tail_callee_mark`]), the last callee.
+    /// `None` if there are too many (a function can call itself).
+    fn tail_target(&self, f: Closure) -> Option<Closure> {
+        let mut f = f;
+        for _ in 0..8 {
+            match self.tail_callee(f) {
+                Some(g) => f = g,
+                None => return Some(f),
+            }
+        }
+        None
+    }
+
+    /// The callee if closure `f` is only a call of another closure without arguments
+    /// (`TAIL_CALL_JQ g; RET`), resolved as `make_closure` would in `f`'s frame.
+    fn tail_callee(&self, f: Closure) -> Option<Closure> {
+        let prog = &*self.prog;
+        let &[op, 0, level, idx, ret] = prog.funcs[f.func as usize].bc.code.as_slice() else {
+            return None;
+        };
+        // Level 0 is `f`'s own frame, which doesn't exist before the call.
+        if op != Opcode::TAIL_CALL_JQ as u16 || ret != Opcode::RET as u16 || level == 0 {
+            return None;
+        }
+        // `frame_get_level(level)` from `f`'s frame, whose env is `f.env`.
+        let mut env = f.env;
+        for _ in 1..level {
+            env = self.stk.frame(env).env;
+        }
+        let fr = self.stk.frame(env);
+        if idx & ARG_NEWCLOSURE != 0 {
+            let sub = prog.funcs[fr.func as usize]
+                .subfunctions
+                .get((idx & !ARG_NEWCLOSURE) as usize)?;
+            Some(Closure { func: *sub, env })
+        } else {
+            self.stk
+                .closures
+                .get(fr.closures as usize + idx as usize)
+                .copied()
+        }
     }
 
     /// The string `T` of the condition `type == "T"` (or `"T" == type`) at the start of
@@ -744,9 +767,11 @@ impl Jq {
         k.as_str().is_some().then(|| k.clone())
     }
 
-    /// The string `T` if closure `f` is `type == "T"` (or `"T" == type`): its one
-    /// output is whether its input's type is `T`, and running it does nothing else.
+    /// The string `T` if closure `f` is `type == "T"` (or `"T" == type`; perhaps
+    /// passed on as a closure parameter): its one output is whether its input's type
+    /// is `T`, and running it does nothing else.
     pub(crate) fn type_test_closure(&self, f: Closure) -> Option<Value> {
+        let f = self.tail_target(f)?;
         let code = &self.prog.funcs[f.func as usize].bc.code;
         if code.len() != 11 || code[10] != Opcode::RET as u16 {
             return None;
@@ -755,11 +780,13 @@ impl Jq {
     }
 
     /// The string `T` if closure `f` is `if type == "T" then A else . end` (or
-    /// `if "T" == type`, or without `else . `): on an input of another type its one
-    /// output is the input itself, and running it does nothing else (the condition,
-    /// then `JUMP_F` to `POP; RET`, leaving no fork points).
+    /// `if "T" == type`, or without `else . `; perhaps passed on as a closure
+    /// parameter, as `map_values(f)` passes `f` to `_modify`): on an input of another
+    /// type its one output is the input itself, and running it does nothing else (the
+    /// condition, then `JUMP_F` to `POP; RET`, leaving no fork points).
     pub(crate) fn type_guard_closure(&self, f: Closure) -> Option<Value> {
         use Opcode::*;
+        let f = self.tail_target(f)?;
         let code = &self.prog.funcs[f.func as usize].bc.code;
         let is = |i: usize, op: Opcode| code.get(i) == Some(&(op as u16));
         if !(is(0, DUP) && is(1, SUBEXP_BEGIN)) {
