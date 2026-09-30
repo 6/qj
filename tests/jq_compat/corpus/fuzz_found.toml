@@ -75,9 +75,18 @@ args = ["-c", "--debug-trace", "keys"]
 stdin = '{"a":1,"b":2} {"a":3}'
 note = "qj showed [\"a\" (2),\"b\" (2)] where jq has (1)"
 
+# (Not to_entries with --debug-trace=all: its BACKTRACKs run with an empty
+# data stack, where jq's full trace reads 4 bytes of its stack memory that it
+# never wrote. They are 0 on macOS; with glibc they're leftover heap data and
+# jq 1.8.1 dies of SIGSEGV. See src/jq/lang/execute/trace.rs.)
 [[case]]
 name = "trace-input-keys-file"
-args = ["-c", "--debug-trace=all", "to_entries", "f.json"]
+args = ["-c", "--debug-trace", "to_entries", "f.json"]
+files = { "f.json" = "{\"a\":\"a\"}\n{\"a\":\"b\",\"c\":1}\n" }
+
+[[case]]
+name = "trace-all-input-keys-file"
+args = ["-c", "--debug-trace=all", "keys", "f.json"]
 files = { "f.json" = "{\"a\":\"a\"}\n{\"a\":\"b\",\"c\":1}\n" }
 
 # ---------------------------------------------------------------------------

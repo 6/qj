@@ -314,8 +314,19 @@ programs = ["type", "map(type)", 'select(type == "object") | .a', 'has("a")', "m
 name = "tape-types-trace"
 note = "--debug-trace (which prints every value's refcount) turns the tape off"
 stdin = '{"a":1,"b":[null,"x"]} [true] "s"'
-variants = { trace = ["-c", "--debug-trace", "{program}"], all = ["-c", "--debug-trace=all", "{program}"] }
+variants = { trace = ["-c", "--debug-trace", "{program}"] }
 programs = ["type", "map(type)", 'has("a")', "not", ".a == 1", ".[]? | scalars", ".[]? | isnan"]
+
+# Not map(type) with --debug-trace=all: its BACKTRACKs run with an empty data
+# stack, where jq's full trace reads 4 bytes it never wrote (0 on macOS; with
+# glibc, leftover heap data, and jq 1.8.1 dies of SIGSEGV). See
+# src/jq/lang/execute/trace.rs.
+[[sweep]]
+name = "tape-types-trace-all"
+note = "--debug-trace=all also prints the rest of the stack"
+stdin = '{"a":1,"b":[null,"x"]} [true] "s"'
+variants = { all = ["-c", "--debug-trace=all", "{program}"] }
+programs = ["type", 'has("a")', "not", ".a == 1", ".[]? | scalars", ".[]? | isnan"]
 
 [[case]]
 name = "tape-deep"
