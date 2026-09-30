@@ -315,7 +315,7 @@ in brackets:
 | `jv_dump_term` (at 64 KB) | 304 | 209 | 181 |
 
 The margin is 6 KB of stack on macOS and 8¼ KB on Linux, which is most of why qj's
-threshold is 29 to 218 levels below jq's. What it covers is different on each:
+threshold is 13 to 223 levels below jq's. What it covers is different on each:
 
 - **macOS: the environment.** argv and the environment sit on top of jq's stack, so its
   threshold drops by about a level per 64 bytes of them — `jv_free` reaches 130,760 in
