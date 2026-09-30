@@ -435,7 +435,7 @@ impl Jq {
     pub(super) fn resume_native(&mut self, prog: &Program, raising: bool) -> Applied {
         let (s, top) = self.stk.pop_native(self.stk_top);
         self.stk_top = top;
-        let Suspended { retaddr, generator } = *s;
+        let Suspended { retaddr, generator } = s;
         if raising {
             generator.unwind(self);
             debug_assert!(self.error.is_some());
@@ -466,7 +466,7 @@ impl Jq {
             }
             Outcome::Yield(v, generator) => {
                 let spos = (self.stk_top, self.curr_frame);
-                let s = Box::new(Suspended { retaddr, generator });
+                let s = Suspended { retaddr, generator };
                 self.stk_top = self.stk.push_native(self.stk_top, s);
                 self.stack_save(prog.native_resume_pc as usize, spos);
                 self.push(v);

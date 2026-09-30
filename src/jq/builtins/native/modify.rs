@@ -56,7 +56,12 @@ pub(super) fn modify(
         // holds nothing of the input.
         input.get(&k)?;
         let mut state = State::new(input);
-        state.step(vm, Value::from(vec![k]), &update)?;
+        if matches!(k, Value::Object(_)) {
+            // A slice.
+            state.step(vm, Value::from(vec![k]), &update)?;
+        } else {
+            state.step_key(vm, k, &update)?;
+        }
         return state.finish();
     }
     // `[., []]`: the value being updated and the paths to delete.
@@ -98,7 +103,7 @@ fn modify_each(vm: &mut Jq, input: Value, opt: bool, update: &Update) -> Result<
         if is_array && i + 1 == n {
             held = None;
         }
-        state.step(vm, Value::from(vec![k]), update)?;
+        state.step_key(vm, k, update)?;
     }
     drop(held);
     state.finish()
@@ -147,6 +152,35 @@ impl State {
                 let dot = std::mem::take(dot);
                 *self = State::Other(other_step(vm, dot, p, label, |vm, v| update.first(vm, v))?);
             }
+        }
+        Ok(())
+    }
+
+    /// [`State::step`] for the path `[k]` of a key `k` (a number or a string, not a
+    /// slice), without making the path: `getpath([k])` is `get(k)`, and
+    /// `setpath([k]; u)` is `setpath_rec`'s `get(k)`, `set(k; null)`, a free of what the
+    /// get returned, then `set(k; u)`. The path is only made if it is to be deleted.
+    fn step_key(&mut self, vm: &mut Jq, k: Value, update: &Update) -> Result<(), Stop> {
+        let State::Pair { root, dels } = self else {
+            return self.step(vm, Value::from(vec![k]), update);
+        };
+        // `label $out`
+        let label = vm.gen_labels(1);
+        let v = root.get(&k)?;
+        match update.first(vm, v) {
+            // setpath([0] + $p; $v)
+            Ok(Some(u)) => {
+                let r = std::mem::take(root);
+                let subroot = r.get(&k)?;
+                let parent = r.set(&k, Value::Null)?;
+                drop(subroot);
+                *root = parent.set(&k, u)?;
+            }
+            // setpath([1, (.[1] | length)]; $p)
+            Ok(None) => dels.push(Value::from(vec![k])),
+            // The label swallows its own break: no output, so a `null` state.
+            Err(e) if e.is_break_of(label) => *self = State::Other(Value::Null),
+            Err(e) => return Err(e),
         }
         Ok(())
     }

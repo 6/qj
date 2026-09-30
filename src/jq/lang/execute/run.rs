@@ -263,11 +263,12 @@ impl Jq {
             };
             self.path = Value::Array(a.into_slice(0, fork.path_len as i64));
         }
-        self.value_at_path = if fork.saved_path {
-            self.stk.saved_paths.pop().expect("saved value_at_path")
-        } else {
-            Value::Null
-        };
+        if fork.saved_path {
+            self.value_at_path = self.stk.saved_paths.pop().expect("saved value_at_path");
+        } else if !self.value_at_path.is_null() {
+            // (Outside path expressions it is null already: no free to call.)
+            self.value_at_path = Value::Null;
+        }
         self.subexp_nest = fork.subexp_nest;
         self.fork_top = next;
         Some(fork.return_address as usize)

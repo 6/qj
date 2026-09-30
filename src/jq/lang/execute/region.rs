@@ -67,6 +67,9 @@ pub(super) type Reg = u8;
 /// The most registers a region uses (a power of two: indexes are masked with it).
 pub(super) const MAX_REGS: usize = 16;
 
+/// The register file of regions that use at most this many (a power of two).
+const SMALL_REGS: usize = 4;
+
 /// [`Op::Binop`]'s `input` when the copy of an operand it would free was never made.
 const NO_REG: Reg = u8::MAX;
 
@@ -116,32 +119,85 @@ impl BinKind {
     }
 }
 
+/// builtin.c's `dtoi` (as `binops.rs` has it).
+#[inline]
+fn dtoi(n: f64) -> i64 {
+    if n < i64::MIN as f64 {
+        i64::MIN
+    } else if -n < i64::MIN as f64 {
+        i64::MAX
+    } else {
+        n as i64
+    }
+}
+
+/// `binop_<kind>(a, b)` of two numbers, where it is a number or a boolean: what
+/// `binops.rs` computes, without taking the operands. `None` for the rest (errors, and
+/// orderings with NaN, which `jv_cmp` sorts apart).
+#[inline(always)]
+fn binop_numbers(kind: BinKind, a: &Value, b: &Value) -> Option<Value> {
+    use BinKind::*;
+    use std::cmp::Ordering;
+    let (Value::Number(x), Value::Number(y)) = (a, b) else {
+        return None;
+    };
+    Some(match kind {
+        Plus => Value::number(x.value() + y.value()),
+        Minus => Value::number(x.value() - y.value()),
+        Multiply => Value::number(x.value() * y.value()),
+        Divide if y.value() != 0.0 => Value::number(x.value() / y.value()),
+        Divide => return None,
+        Mod => {
+            let (na, nb) = (x.value(), y.value());
+            if na.is_nan() || nb.is_nan() {
+                Value::number(f64::NAN)
+            } else {
+                let bi = dtoi(nb);
+                if bi == 0 {
+                    return None;
+                }
+                // Check if the divisor is -1 to avoid overflow when the dividend is
+                // INTMAX_MIN.
+                let r = if bi == -1 { 0 } else { dtoi(na) % bi };
+                Value::number(r as f64)
+            }
+        }
+        Equal => Value::Bool(x.equal(y)),
+        NotEqual => Value::Bool(!x.equal(y)),
+        Less | LessEq | Greater | GreaterEq => {
+            if x.is_nan() || y.is_nan() {
+                return None;
+            }
+            let o = x.compare(y);
+            Value::Bool(match kind {
+                Less => o == Ordering::Less,
+                LessEq => o != Ordering::Greater,
+                Greater => o == Ordering::Greater,
+                _ => o != Ordering::Less,
+            })
+        }
+    })
+}
+
+/// Frees `v` (jq's `jv_free`), without calling the drop glue for values that own
+/// nothing (null, booleans, native numbers).
+#[inline(always)]
+fn discard(v: Value) {
+    match &v {
+        Value::Null | Value::Bool(_) => std::mem::forget(v),
+        Value::Number(n) if !n.is_literal() => std::mem::forget(v),
+        _ => drop(v),
+    }
+}
+
 /// `binop_<kind>(a, b)`, with the arithmetic and comparisons of two numbers inline.
 #[inline]
 fn binop(kind: BinKind, a: Value, b: Value) -> CResult {
     use BinKind::*;
-    use std::cmp::Ordering;
-    if let (Value::Number(x), Value::Number(y)) = (&a, &b) {
-        // What binop_* compute for two numbers (see binops.rs).
-        match kind {
-            Plus => return Ok(Value::number(x.value() + y.value())),
-            Minus => return Ok(Value::number(x.value() - y.value())),
-            Multiply => return Ok(Value::number(x.value() * y.value())),
-            Divide if y.value() != 0.0 => return Ok(Value::number(x.value() / y.value())),
-            Equal => return Ok(Value::Bool(x.equal(y))),
-            NotEqual => return Ok(Value::Bool(!x.equal(y))),
-            // jv_cmp orders NaN apart: leave it to the general path.
-            Less | LessEq | Greater | GreaterEq if !x.is_nan() && !y.is_nan() => {
-                let o = x.compare(y);
-                return Ok(Value::Bool(match kind {
-                    Less => o == Ordering::Less,
-                    LessEq => o != Ordering::Greater,
-                    Greater => o == Ordering::Greater,
-                    _ => o != Ordering::Less,
-                }));
-            }
-            _ => {}
-        }
+    if let Some(v) = binop_numbers(kind, &a, &b) {
+        discard(a);
+        discard(b);
+        return Ok(v);
     }
     match kind {
         Plus => binop_plus(a, b),
@@ -208,12 +264,29 @@ pub(super) enum Op {
         a: Reg,
         b: Reg,
     },
+    /// [`Op::Binop`] with a constant operand: `a` is `k` if `kfirst`, else `b` is.
+    BinopK {
+        dst: Reg,
+        kind: BinKind,
+        input: Reg,
+        r: Reg,
+        k: *const Value,
+        kfirst: bool,
+    },
     /// `INDEX`/`INDEX_OPT`: `dst = t[k]`; `level` is the region's `SUBEXP` nesting
     /// there, relative to its start (path tracking applies at nesting 0).
     Index {
         dst: Reg,
         t: Reg,
         k: Reg,
+        opt: bool,
+        level: i32,
+    },
+    /// [`Op::Index`] with a constant key.
+    IndexK {
+        dst: Reg,
+        t: Reg,
+        k: *const Value,
         opt: bool,
         level: i32,
     },
@@ -231,6 +304,190 @@ pub(super) enum Op {
     ErrorK { k: *const Value },
     /// The end: push [`Region::exit`].
     Exit,
+}
+
+/// Whether `op` reads or writes register `r`.
+fn op_uses(op: &Op, r: Reg) -> bool {
+    match *op {
+        Op::Pop { dst }
+        | Op::PopN { dst }
+        | Op::Const { dst, .. }
+        | Op::LoadV { dst, .. }
+        | Op::LoadVN { dst, .. }
+        | Op::GenLabel { dst } => dst == r,
+        Op::Clone { dst, src } | Op::Move { dst, src } => dst == r || src == r,
+        Op::Swap { a, b } => a == r || b == r,
+        Op::Drop { r: x } | Op::JumpF { r: x, .. } => x == r,
+        Op::StoreV { src, .. } | Op::Append { src, .. } => src == r,
+        Op::StoreK { .. } | Op::Jump { .. } | Op::Backtrack | Op::ErrorK { .. } | Op::Exit => false,
+        Op::Call {
+            dst,
+            input,
+            args,
+            nargs,
+            ..
+        } => dst == r || input == r || args[..nargs as usize - 1].contains(&r),
+        Op::Binop {
+            dst, input, a, b, ..
+        } => dst == r || input == r || a == r || b == r,
+        Op::BinopK {
+            dst, input, r: x, ..
+        } => dst == r || input == r || x == r,
+        Op::Index { dst, t, k, .. } => dst == r || t == r || k == r,
+        Op::IndexK { dst, t, .. } => dst == r || t == r,
+        Op::Insert { obj, k, v } => obj == r || k == r || v == r,
+    }
+}
+
+/// An op of an inlined direct region (see `Compiler::inline`), for the region it goes
+/// in: registers through `map`, op indices after `base`, `SUBEXP` levels below
+/// `nest`, and variables: the callee's level `l` (1 is its closure's environment, the
+/// frame `call_level` levels up from the caller's) is the caller's
+/// `call_level + l - 1`, which a direct caller can't have at 0. `vars0` is set for a
+/// variable of the caller's own frame.
+fn remap(
+    op: Op,
+    map: &[Reg; MAX_REGS],
+    base: u32,
+    call_level: u16,
+    nest: i32,
+    mode: Mode,
+    vars0: &mut bool,
+) -> Option<Op> {
+    let m = |r: Reg| if r == NO_REG { NO_REG } else { map[r as usize] };
+    let mut lv = |l: u16| -> Option<u16> {
+        debug_assert!(l >= 1, "a direct region's variable at level 0");
+        let n = call_level.checked_add(l)?.checked_sub(1)?;
+        if n == 0 {
+            if mode == Mode::Direct {
+                return None;
+            }
+            *vars0 = true;
+        }
+        Some(n)
+    };
+    Some(match op {
+        // A direct region has no stack under its input.
+        Op::Pop { .. } | Op::PopN { .. } | Op::Exit => return None,
+        Op::Clone { dst, src } => Op::Clone {
+            dst: m(dst),
+            src: m(src),
+        },
+        Op::Move { dst, src } => Op::Move {
+            dst: m(dst),
+            src: m(src),
+        },
+        Op::Swap { a, b } => Op::Swap { a: m(a), b: m(b) },
+        Op::Drop { r } => Op::Drop { r: m(r) },
+        Op::Const { dst, k } => Op::Const { dst: m(dst), k },
+        Op::LoadV { dst, level, idx } => Op::LoadV {
+            dst: m(dst),
+            level: lv(level)?,
+            idx,
+        },
+        Op::LoadVN { dst, level, idx } => Op::LoadVN {
+            dst: m(dst),
+            level: lv(level)?,
+            idx,
+        },
+        Op::StoreV { src, level, idx } => Op::StoreV {
+            src: m(src),
+            level: lv(level)?,
+            idx,
+        },
+        Op::StoreK { k, level, idx } => Op::StoreK {
+            k,
+            level: lv(level)?,
+            idx,
+        },
+        Op::Append { src, level, idx } => Op::Append {
+            src: m(src),
+            level: lv(level)?,
+            idx,
+        },
+        Op::Call {
+            dst,
+            cf,
+            nargs,
+            input,
+            args,
+        } => Op::Call {
+            dst: m(dst),
+            cf,
+            nargs,
+            input: m(input),
+            args: [m(args[0]), m(args[1]), m(args[2])],
+        },
+        Op::Binop {
+            dst,
+            kind,
+            input,
+            a,
+            b,
+        } => Op::Binop {
+            dst: m(dst),
+            kind,
+            input: m(input),
+            a: m(a),
+            b: m(b),
+        },
+        Op::BinopK {
+            dst,
+            kind,
+            input,
+            r,
+            k,
+            kfirst,
+        } => Op::BinopK {
+            dst: m(dst),
+            kind,
+            input: m(input),
+            r: m(r),
+            k,
+            kfirst,
+        },
+        Op::Index {
+            dst,
+            t,
+            k,
+            opt,
+            level,
+        } => Op::Index {
+            dst: m(dst),
+            t: m(t),
+            k: m(k),
+            opt,
+            level: level + nest,
+        },
+        Op::IndexK {
+            dst,
+            t,
+            k,
+            opt,
+            level,
+        } => Op::IndexK {
+            dst: m(dst),
+            t: m(t),
+            k,
+            opt,
+            level: level + nest,
+        },
+        Op::Insert { obj, k, v } => Op::Insert {
+            obj: m(obj),
+            k: m(k),
+            v: m(v),
+        },
+        Op::GenLabel { dst } => Op::GenLabel { dst: m(dst) },
+        Op::JumpF { r, target } => Op::JumpF {
+            r: m(r),
+            target: target + base,
+        },
+        Op::Jump { target } => Op::Jump {
+            target: target + base,
+        },
+        Op::Backtrack => Op::Backtrack,
+        Op::ErrorK { k } => Op::ErrorK { k },
+    })
 }
 
 /// A compiled region (see the module docs).
@@ -273,22 +530,22 @@ enum Vars {
 /// A region's register file. The compiler only writes a register that is empty (every
 /// value is either on its stack or consumed), so writing needs no free, and after a
 /// region exits every register is empty again: only backtracking frees them.
-struct Regs(ManuallyDrop<[Value; MAX_REGS]>);
+struct Regs<const N: usize>(ManuallyDrop<[Value; N]>);
 
-impl Regs {
+impl<const N: usize> Regs<N> {
     #[inline(always)]
-    fn new() -> Regs {
-        Regs(ManuallyDrop::new([const { Value::Null }; MAX_REGS]))
+    fn new() -> Regs<N> {
+        Regs(ManuallyDrop::new([const { Value::Null }; N]))
     }
 
     #[inline(always)]
     fn get(&self, r: Reg) -> &Value {
-        &self.0[r as usize & (MAX_REGS - 1)]
+        &self.0[r as usize & (N - 1)]
     }
 
     #[inline(always)]
     fn get_mut(&mut self, r: Reg) -> &mut Value {
-        &mut self.0[r as usize & (MAX_REGS - 1)]
+        &mut self.0[r as usize & (N - 1)]
     }
 
     /// Writes an empty register.
@@ -307,8 +564,7 @@ impl Regs {
 
     #[inline(always)]
     fn swap(&mut self, a: Reg, b: Reg) {
-        self.0
-            .swap(a as usize & (MAX_REGS - 1), b as usize & (MAX_REGS - 1));
+        self.0.swap(a as usize & (N - 1), b as usize & (N - 1));
     }
 
     /// After backtracking: frees what the registers hold, as unwinding jq's stack
@@ -349,8 +605,9 @@ struct Clean {
 }
 
 /// Compiles one region (see [`compile`]).
-struct Compiler<'a> {
+struct Compiler<'a, 'c> {
     prog: &'a Program,
+    cache: &'c mut Cache,
     func: u32,
     mode: Mode,
     ops: Vec<Op>,
@@ -373,7 +630,7 @@ struct Compiler<'a> {
     block_start: usize,
 }
 
-impl<'a> Compiler<'a> {
+impl<'a, 'c> Compiler<'a, 'c> {
     fn alloc(&mut self) -> Option<Reg> {
         // Prefer the register of the new stack slot, so fewer moves canonicalize.
         let want = self.stack.len();
@@ -393,6 +650,29 @@ impl<'a> Compiler<'a> {
     fn release(&mut self, r: Reg) {
         debug_assert!(self.free & (1 << r) == 0);
         self.free |= 1 << r;
+    }
+
+    /// The index of the op that put a constant in `r`, if it is in the current
+    /// straight-line run of ops and no op since has read or written `r`: its only
+    /// reader is then the op about to consume it, which can read the constant itself
+    /// (constants are immutable, so when the copy is made doesn't matter).
+    fn const_def(&self, r: Reg) -> Option<usize> {
+        for i in (self.block_start..self.ops.len()).rev() {
+            match self.ops[i] {
+                Op::Const { dst, .. } if dst == r => return Some(i),
+                ref op if op_uses(op, r) => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Takes the constant op at `i` (see [`Compiler::const_def`]) out of the ops.
+    fn take_const(&mut self, i: usize) -> *const Value {
+        match self.ops.remove(i) {
+            Op::Const { k, .. } => k,
+            _ => unreachable!("a constant op"),
+        }
     }
 
     /// Frees the value in `r` (which stays allocated, now empty). A copy made just
@@ -540,6 +820,52 @@ impl<'a> Compiler<'a> {
             .copied()
     }
 
+    /// Inlines direct region `d`, the body of a function without parameters that the
+    /// call at hand names statically (its frame is `level` levels up): the call pops its
+    /// input, then the body's ops run on the registers they are given, without a frame
+    /// (a region body's frame is freed by its RET before anything else runs), and its
+    /// output is pushed. `None` if the registers, the size, or a variable's level don't
+    /// fit.
+    fn inline(&mut self, d: u32, level: u16) -> Option<()> {
+        let callee = &self.cache.regions[d as usize];
+        let (ops, exit, nregs) = (callee.ops.clone(), callee.exit.clone(), callee.nregs);
+        if self.ops.len() + ops.len() > MAX_OPS {
+            return None;
+        }
+        let x = self.pop(false)?;
+        // The callee's registers: its input (0) is `x`, the others new.
+        let mut map = [NO_REG; MAX_REGS];
+        map[0] = x;
+        for m in map.iter_mut().take(nregs as usize).skip(1) {
+            *m = self.alloc()?;
+        }
+        let base = self.ops.len() as u32;
+        let (mode, nest) = (self.mode, self.level);
+        let mut vars0 = false;
+        for op in ops {
+            if let Op::Exit = op {
+                // (The last op: what follows the call comes next.)
+                continue;
+            }
+            let op = remap(op, &map, base, level, nest, mode, &mut vars0)?;
+            self.ops.push(op);
+        }
+        self.vars0 |= vars0;
+        let res = exit.first().map(|&r| map[r as usize]);
+        for &m in &map[..nregs as usize] {
+            if Some(m) != res {
+                self.release(m);
+            }
+        }
+        match res {
+            Some(r) => self.push(r),
+            // The callee always backtracks or raises.
+            None => self.live = false,
+        }
+        self.block_start = self.ops.len();
+        Some(())
+    }
+
     /// Translates the instruction at `pc`. `None` if it can't be in a region.
     fn instr(&mut self, pc: usize) -> Option<()> {
         use Opcode::*;
@@ -635,13 +961,25 @@ impl<'a> Compiler<'a> {
             INDEX | INDEX_OPT => {
                 let t = self.pop(false)?;
                 let k = self.pop(false)?;
-                self.ops.push(Op::Index {
-                    dst: t,
-                    t,
-                    k,
-                    opt: op == INDEX_OPT,
-                    level: self.level,
-                });
+                let (opt, level) = (op == INDEX_OPT, self.level);
+                let op = match self.const_def(k) {
+                    // `.a`, `.[0]`: `PUSHK_UNDER k; INDEX`.
+                    Some(i) => Op::IndexK {
+                        dst: t,
+                        t,
+                        k: self.take_const(i),
+                        opt,
+                        level,
+                    },
+                    None => Op::Index {
+                        dst: t,
+                        t,
+                        k,
+                        opt,
+                        level,
+                    },
+                };
+                self.ops.push(op);
                 self.release(k);
                 self.push(t);
             }
@@ -690,18 +1028,46 @@ impl<'a> Compiler<'a> {
                             self.release(input);
                             input = NO_REG;
                         }
-                        self.ops.push(Op::Binop {
-                            dst: a,
-                            kind,
-                            input,
-                            a,
-                            b,
-                        });
+                        // A constant operand is read in place (`. + 1`: `PUSHK_UNDER 1;
+                        // DUP; CALL_BUILTIN _plus`).
+                        let (op, dst, other) = if let Some(i) = self.const_def(b) {
+                            let k = self.take_const(i);
+                            let op = Op::BinopK {
+                                dst: a,
+                                kind,
+                                input,
+                                r: a,
+                                k,
+                                kfirst: false,
+                            };
+                            (op, a, b)
+                        } else if let Some(i) = self.const_def(a) {
+                            let k = self.take_const(i);
+                            let op = Op::BinopK {
+                                dst: b,
+                                kind,
+                                input,
+                                r: b,
+                                k,
+                                kfirst: true,
+                            };
+                            (op, b, a)
+                        } else {
+                            let op = Op::Binop {
+                                dst: a,
+                                kind,
+                                input,
+                                a,
+                                b,
+                            };
+                            (op, a, b)
+                        };
+                        self.ops.push(op);
                         if input != NO_REG {
                             self.release(input);
                         }
-                        self.release(b);
-                        self.push(a);
+                        self.release(other);
+                        self.push(dst);
                     }
                     None => {
                         self.ops.push(Op::Call {
@@ -747,20 +1113,32 @@ impl<'a> Compiler<'a> {
                 self.live = false;
             }
             CALL_JQ | TAIL_CALL_JQ => {
-                // Only calls of a function that just backtracks (`empty`): the call
-                // pops its input, then the callee's BACKTRACK unwinds everything
-                // (a tail call's frame included) as this one does.
-                let nclosures = imm(1);
-                let callee = self.static_callee(imm(2), imm(3))?;
-                let f = &self.prog.funcs[callee as usize];
-                if nclosures != 0 || self.prog.code[f.base as usize] != BACKTRACK as u16 {
+                // Calls without arguments of a function named statically.
+                let (nclosures, level) = (imm(1), imm(2));
+                let callee = self.static_callee(level, imm(3))?;
+                if nclosures != 0 {
                     return None;
                 }
-                let r = self.pop(false)?;
-                self.ops.push(Op::Drop { r });
-                self.release(r);
-                self.ops.push(Op::Backtrack);
-                self.live = false;
+                if self.prog.code[self.prog.funcs[callee as usize].base as usize]
+                    == BACKTRACK as u16
+                {
+                    // A function that just backtracks (`empty`): the call pops its
+                    // input, then the callee's BACKTRACK unwinds everything (a tail
+                    // call's frame included) as this one does.
+                    let r = self.pop(false)?;
+                    self.ops.push(Op::Drop { r });
+                    self.release(r);
+                    self.ops.push(Op::Backtrack);
+                    self.live = false;
+                    return Some(());
+                }
+                // A tail call pops the caller's frame first, which frees its locals:
+                // only in a direct region, whose frame has none.
+                if op == TAIL_CALL_JQ && self.mode == Mode::Loop {
+                    return None;
+                }
+                let d = self.cache.direct_of(self.prog, callee)?;
+                self.inline(d, level)?;
             }
             _ => return None,
         }
@@ -782,8 +1160,9 @@ impl<'a> Compiler<'a> {
 
 /// Compiles the longest region of function `func` starting at global pc `start`.
 /// Returns it and the number of instructions it covers.
-pub(super) fn compile(
+fn compile(
     prog: &Program,
+    cache: &mut Cache,
     func: u32,
     start: usize,
     mode: Mode,
@@ -792,6 +1171,7 @@ pub(super) fn compile(
     let end = f.base as usize + f.bc.code.len();
     let mut c = Compiler {
         prog,
+        cache,
         func,
         mode,
         ops: Vec::new(),
@@ -851,9 +1231,12 @@ pub(super) fn compile(
             return None;
         }
     }
-    let may_backtrack = ops
-        .iter()
-        .any(|op| matches!(op, Op::Backtrack | Op::Index { opt: true, .. }));
+    let may_backtrack = ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::Backtrack | Op::Index { opt: true, .. } | Op::IndexK { opt: true, .. }
+        )
+    });
     Some((
         Region {
             ops,
@@ -868,49 +1251,140 @@ pub(super) fn compile(
     ))
 }
 
+/// The positions of `code[start..end]` (one function) that the interpreter can reach
+/// other than by falling through: branch targets (`JUMP`, `JUMP_F`, and the second
+/// branch of `FORK`, `TRY_BEGIN` and `DESTRUCTURE_ALT`) and return addresses (after
+/// `CALL_JQ`).
+fn entry_points(code: &[u16], start: usize, end: usize) -> std::collections::HashSet<usize> {
+    use Opcode::*;
+    let mut out = std::collections::HashSet::new();
+    let mut pc = start;
+    while pc < end {
+        let len = bytecode_operation_length(&code[pc..end]).max(1);
+        match Opcode::from_u16(code[pc]) {
+            Some(JUMP | JUMP_F | FORK | TRY_BEGIN | DESTRUCTURE_ALT) => {
+                out.insert(pc + 2 + code[pc + 1] as usize);
+            }
+            Some(CALL_JQ) => {
+                out.insert(pc + len);
+            }
+            _ => {}
+        }
+        pc += len;
+    }
+    out
+}
+
+/// The regions compiled so far, and each function's direct region, computed on
+/// demand: a region inlines the direct regions of the functions it calls.
+pub(super) struct Cache {
+    regions: Vec<Region>,
+    direct: Vec<Direct>,
+    /// How many direct regions are being compiled (inlining nests them).
+    depth: u32,
+}
+
+/// Whether a function's body is a direct region.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direct {
+    Unknown,
+    /// Being compiled (a function that calls itself isn't inlined into itself).
+    Busy,
+    No,
+    Yes(u32),
+}
+
+/// How deeply direct regions inline each other.
+const MAX_INLINE_DEPTH: u32 = 8;
+
+/// The most ops a region gets by inlining.
+const MAX_OPS: usize = 256;
+
+impl Cache {
+    fn full(&self) -> bool {
+        self.regions.len() >= (u16::MAX - REGION_BASE) as usize
+    }
+
+    /// The direct region of function `func`, compiling it if needed.
+    fn direct_of(&mut self, prog: &Program, func: u32) -> Option<u32> {
+        match self.direct[func as usize] {
+            Direct::Yes(d) => return Some(d),
+            Direct::No | Direct::Busy => return None,
+            Direct::Unknown => {}
+        }
+        let f = &prog.funcs[func as usize];
+        if f.native.is_some() || f.nclosures != 0 {
+            self.direct[func as usize] = Direct::No;
+            return None;
+        }
+        // (Too deep, or no room: maybe from somewhere else.)
+        if self.depth >= MAX_INLINE_DEPTH || self.full() {
+            return None;
+        }
+        self.direct[func as usize] = Direct::Busy;
+        self.depth += 1;
+        let r = compile(prog, self, func, f.base as usize, Mode::Direct);
+        self.depth -= 1;
+        match r {
+            Some((r, _)) if !self.full() => {
+                let d = self.regions.len() as u32;
+                self.regions.push(r);
+                self.direct[func as usize] = Direct::Yes(d);
+                Some(d)
+            }
+            _ => {
+                self.direct[func as usize] = Direct::No;
+                None
+            }
+        }
+    }
+}
+
 /// Builds `prog.regions`, `prog.fast_code` and each function's direct region.
 pub(super) fn optimize(prog: &mut Program) {
-    let mut regions = Vec::new();
-    let mut direct = vec![None; prog.funcs.len()];
+    let mut cache = Cache {
+        regions: Vec::new(),
+        direct: vec![Direct::Unknown; prog.funcs.len()],
+        depth: 0,
+    };
     for func in 0..prog.funcs.len() as u32 {
-        let f = &prog.funcs[func as usize];
-        if f.native.is_none()
-            && f.nclosures == 0
-            && regions.len() < (u16::MAX - REGION_BASE) as usize
-            && let Some((r, _)) = compile(prog, func, f.base as usize, Mode::Direct)
-        {
-            direct[func as usize] = Some(regions.len() as u32);
-            regions.push(r);
-        }
+        cache.direct_of(prog, func);
     }
     let mut fast = prog.code.clone();
     for func in 0..prog.funcs.len() {
         let f = &prog.funcs[func];
         let (start, end) = (f.base as usize, f.base as usize + f.bc.code.len());
+        let entries = entry_points(&prog.code, start, end);
+        // Positions inside a region run only when something jumps or returns there
+        // (the region runs its own copy of them otherwise).
+        let mut covered = start;
         let mut pc = start;
         while pc < end {
             let len = bytecode_operation_length(&prog.code[pc..end]).max(1);
-            if regions.len() >= (u16::MAX - REGION_BASE) as usize {
+            if cache.full() {
                 break;
             }
-            match compile(prog, func as u32, pc, Mode::Loop) {
-                Some((r, n)) if n >= MIN_LOOP_INSTRS => {
-                    let next = r.end as usize;
-                    fast[pc] = REGION_BASE + regions.len() as u16;
-                    regions.push(r);
-                    pc = next;
-                }
-                _ => pc += len,
+            if (pc >= covered || entries.contains(&pc))
+                && let Some((r, n)) = compile(prog, &mut cache, func as u32, pc, Mode::Loop)
+                && n >= MIN_LOOP_INSTRS
+                && !cache.full()
+            {
+                covered = covered.max(r.end as usize);
+                fast[pc] = REGION_BASE + cache.regions.len() as u16;
+                cache.regions.push(r);
             }
+            pc += len;
         }
     }
-    for (f, d) in prog.funcs.iter_mut().zip(direct) {
-        f.direct = d;
+    for (f, d) in prog.funcs.iter_mut().zip(&cache.direct) {
+        f.direct = match *d {
+            Direct::Yes(d) => Some(d),
+            _ => None,
+        };
     }
     prog.fast_code = fast;
-    prog.regions = regions;
+    prog.regions = cache.regions;
 }
-
 /// The regions of `prog`, as text (for looking at what the compiler made).
 #[cfg(test)]
 pub(super) fn dump(prog: &Program) -> String {
@@ -972,9 +1446,23 @@ impl Jq {
     pub(super) fn run_region(&mut self, prog: &Program, r: &Region) -> bool {
         #[cfg(test)]
         REGION_RUNS.with(|c| c.set(c.get() + 1));
-        let mut regs = Regs::new();
+        // (Most regions need few registers: a small file is quicker to set up.)
+        if r.nregs as usize <= SMALL_REGS {
+            self.run_region_with(prog, r, &mut Regs::<SMALL_REGS>::new())
+        } else {
+            self.run_region_with(prog, r, &mut Regs::<MAX_REGS>::new())
+        }
+    }
+
+    #[inline(always)]
+    fn run_region_with<const N: usize>(
+        &mut self,
+        prog: &Program,
+        r: &Region,
+        regs: &mut Regs<N>,
+    ) -> bool {
         let vars = Vars::Frame(self.curr_frame);
-        if !self.exec_ops(prog, r, &mut regs, vars) {
+        if !self.exec_ops(prog, r, regs, vars) {
             regs.clear(r);
             return false;
         }
@@ -999,9 +1487,24 @@ impl Jq {
     ) -> Option<Value> {
         #[cfg(test)]
         DIRECT_RUNS.with(|c| c.set(c.get() + 1));
-        let mut regs = Regs::new();
+        if r.nregs as usize <= SMALL_REGS {
+            self.run_direct_with(prog, r, env, input, &mut Regs::<SMALL_REGS>::new())
+        } else {
+            self.run_direct_with(prog, r, env, input, &mut Regs::<MAX_REGS>::new())
+        }
+    }
+
+    #[inline(always)]
+    fn run_direct_with<const N: usize>(
+        &mut self,
+        prog: &Program,
+        r: &Region,
+        env: StackPtr,
+        input: Value,
+        regs: &mut Regs<N>,
+    ) -> Option<Value> {
         regs.put(0, input);
-        if !self.exec_ops(prog, r, &mut regs, Vars::Env(env)) {
+        if !self.exec_ops(prog, r, regs, Vars::Env(env)) {
             regs.clear(r);
             return None;
         }
@@ -1009,7 +1512,6 @@ impl Jq {
         regs.done(r);
         Some(v)
     }
-
     /// The local slot of variable `idx` at `level`; `base0` is the current frame's
     /// first local (when `vars` is a frame).
     #[inline(always)]
@@ -1027,7 +1529,13 @@ impl Jq {
 
     /// The ops of a region. `false`: backtrack.
     #[inline(always)]
-    fn exec_ops(&mut self, prog: &Program, r: &Region, regs: &mut Regs, vars: Vars) -> bool {
+    fn exec_ops<const N: usize>(
+        &mut self,
+        prog: &Program,
+        r: &Region,
+        regs: &mut Regs<N>,
+        vars: Vars,
+    ) -> bool {
         let base0 = match vars {
             Vars::Frame(f) if r.vars0 => self.stk.frame(f).locals as usize,
             _ => 0,
@@ -1053,7 +1561,7 @@ impl Jq {
                     regs.put(dst, v);
                 }
                 Op::Swap { a, b } => regs.swap(a, b),
-                Op::Drop { r } => drop(regs.take(r)),
+                Op::Drop { r } => discard(regs.take(r)),
                 Op::Const { dst, k } => {
                     // SAFETY: `k` points into a constant pool of `prog` (see
                     // `Compiler::constant`), which lives unchanged as long as `prog`.
@@ -1130,11 +1638,46 @@ impl Jq {
                     b,
                 } => {
                     if input != NO_REG {
-                        drop(regs.take(input));
+                        discard(regs.take(input));
                     }
                     let av = regs.take(a);
                     let bv = regs.take(b);
                     match binop(kind, av, bv) {
+                        Ok(v) => regs.put(dst, v),
+                        Err(e) => {
+                            self.set_error(e.into_value());
+                            return false;
+                        }
+                    }
+                }
+                Op::BinopK {
+                    dst,
+                    kind,
+                    input,
+                    r,
+                    k,
+                    kfirst,
+                } => {
+                    if input != NO_REG {
+                        discard(regs.take(input));
+                    }
+                    // SAFETY: as for `Op::Const`.
+                    let k = unsafe { &*k };
+                    let rv = regs.take(r);
+                    let fast = if kfirst {
+                        binop_numbers(kind, k, &rv)
+                    } else {
+                        binop_numbers(kind, &rv, k)
+                    };
+                    let res = match fast {
+                        Some(v) => {
+                            discard(rv);
+                            Ok(v)
+                        }
+                        None if kfirst => binop(kind, k.clone(), rv),
+                        None => binop(kind, rv, k.clone()),
+                    };
+                    match res {
                         Ok(v) => regs.put(dst, v),
                         Err(e) => {
                             self.set_error(e.into_value());
@@ -1152,6 +1695,21 @@ impl Jq {
                     let tv = regs.take(t);
                     let kv = regs.take(k);
                     match self.region_index(tv, kv, opt, self.subexp_nest + level) {
+                        Some(v) => regs.put(dst, v),
+                        None => return false,
+                    }
+                }
+                Op::IndexK {
+                    dst,
+                    t,
+                    k,
+                    opt,
+                    level,
+                } => {
+                    let tv = regs.take(t);
+                    // SAFETY: as for `Op::Const`.
+                    let k = unsafe { &*k };
+                    match self.region_index_k(tv, k, opt, self.subexp_nest + level) {
                         Some(v) => regs.put(dst, v),
                         None => return false,
                     }
@@ -1200,6 +1758,41 @@ impl Jq {
             i += 1;
         }
     }
+    /// [`Jq::region_index`] with a constant key: the copy that goes in the tracked path
+    /// is made there (jq's copy was made by `PUSHK_UNDER`).
+    fn region_index_k(&mut self, t: Value, k: &Value, opt: bool, nest: i32) -> Option<Value> {
+        let tracking = nest == 0 && matches!(self.path, Value::Array(_));
+        // path_intact: detect invalid path expression like path(reverse | .a)
+        if tracking && !t.identical(&self.value_at_path) {
+            let msg = format!(
+                "Invalid path expression near attempt to access element {} of {}",
+                dump_string_trunc(k, 15),
+                dump_string_trunc(&t, 30)
+            );
+            self.set_error(Value::from(msg));
+            return None;
+        }
+        // jv_get(t, jv_copy(k)): t is consumed.
+        let r = t.get(k);
+        drop(t);
+        match r {
+            Ok(v) => {
+                // path_append
+                if tracking && let Value::Array(p) = &mut self.path {
+                    p.push(k.clone());
+                    self.value_at_path = v.clone();
+                }
+                Some(v)
+            }
+            Err(e) => {
+                if !opt {
+                    self.set_error(e.into_value());
+                }
+                None
+            }
+        }
+    }
+
     /// `INDEX`/`INDEX_OPT` with `subexp_nest` equal to `nest`: `t[k]`, or `None` to
     /// backtrack (with the error set, except for `INDEX_OPT`'s own errors).
     fn region_index(&mut self, t: Value, k: Value, opt: bool, nest: i32) -> Option<Value> {
