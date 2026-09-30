@@ -204,6 +204,15 @@ pub enum Site {
     /// `expand_call_arglist` (`compile.c`): one frame per nested argument of a
     /// C function, inside [`Site::Compile`].
     ExpandArgs,
+    /// `jv_dump_term` (`jv_print.c`): one frame per level of the value being
+    /// printed, at most `MAX_PRINT_DEPTH + 1` (257) of them — below that depth
+    /// jq writes `<skipped: too deep>` instead of descending.
+    ///
+    /// The cap means this can only overflow on a stack of about 80 KB or less,
+    /// which is why `docs/COMPATIBILITY.md` used to call it safe; it is the one
+    /// recursion here whose depth is bounded by jq's own code rather than by
+    /// the value.
+    Print,
 }
 
 impl Site {
@@ -235,6 +244,7 @@ impl Site {
             Site::Bind => (112, BIND_BASE_BYTES),
             Site::Compile => (176, COMPILE_BASE_BYTES),
             Site::ExpandArgs => (192, COMPILE_BASE_BYTES),
+            Site::Print => (256, PRINT_BASE_BYTES),
         };
         // Linux/x86-64 (jq's release binary, built by gcc), bisected the same
         // way at 1024, 4096, 8192 and 16384 KB with the stack randomization
@@ -252,6 +262,7 @@ impl Site {
             Site::Bind => (112, BIND_BASE_BYTES),
             Site::Compile => (224, COMPILE_BASE_BYTES),
             Site::ExpandArgs => (224, COMPILE_BASE_BYTES),
+            Site::Print => (304, PRINT_BASE_BYTES),
         };
         (frame, base)
     }
@@ -395,7 +406,7 @@ const MODULE_BASE_BYTES: u64 = 8304;
 /// `YYINITDEPTH` (200) arrays for the states, values and locations. Bisected
 /// against jq's binaries (see `docs/COMPATIBILITY.md`): the deepest binding
 /// walk jq survives is `(stack - this) / 112` frames at every stack limit
-/// measured, which pins it to 8,976 bytes on macOS.
+/// measured, which pins it to 8,976 bytes on macOS and 7,536 on Linux.
 ///
 /// A program whose deepest binding walk is `builtins_bind`'s rather than a
 /// parser action's has about 8 KB more stack than this (no `yyparse` frame),
@@ -403,7 +414,7 @@ const MODULE_BASE_BYTES: u64 = 8304;
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const BIND_BASE_BYTES: u64 = 8976;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const BIND_BASE_BYTES: u64 = 9280;
+const BIND_BASE_BYTES: u64 = 7536;
 
 /// [`Site::Compile`] and [`Site::ExpandArgs`]: what the stack holds when
 /// `block_compile` calls `compile` for the top-level function — `main` →
@@ -419,7 +430,19 @@ const BIND_BASE_BYTES: u64 = 9280;
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const COMPILE_BASE_BYTES: u64 = 3552;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const COMPILE_BASE_BYTES: u64 = 4096;
+const COMPILE_BASE_BYTES: u64 = 1856;
+
+/// [`Site::Print`]: what the stack holds when `jv_dump_term` starts, from
+/// `main` through the output path. Bisected with `reduce range(n) as $i
+/// (0;[.])`, whose value takes `n + 1` frames to print: on macOS the deepest
+/// jq survives is 113 at 32 KB of stack, 177 at 48 KB and 241 at 64 KB, which
+/// is 256 bytes a level over a base of 3,584. (The steps are 16 KB because
+/// that is the page size on arm64 macOS, which `RLIMIT_STACK` is rounded up
+/// to.)
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const PRINT_BASE_BYTES: u64 = 3584;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PRINT_BASE_BYTES: u64 = 4432;
 
 /// How many nested `jv_free` calls jq 1.8.1 can make before its stack
 /// overflows: one per level of nesting of the value being freed, so this is

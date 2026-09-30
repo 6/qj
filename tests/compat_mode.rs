@@ -41,6 +41,11 @@ fn run(compat: bool, args: &[&str]) -> Output {
 /// Darwin refuses `setrlimit(RLIMIT_STACK)` in a process forked from a
 /// multi-threaded one (`EINVAL`), which every test harness is. `exec` keeps
 /// argv, so qj sees exactly the arguments below.
+///
+/// The environment is cleared down to two variables: argv and the environment
+/// sit on top of the stack, so a few KB of the harness's own would move where
+/// qj's *native* recursion (the printer's, say) overflows a stack this small,
+/// which is not what any of these tests is about.
 fn run_stack(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Output {
     let script = format!("ulimit -s {stack_kb}; ulimit -c 0; exec \"$0\" \"$@\"");
     let mut cmd = Command::new("/bin/sh");
@@ -51,11 +56,12 @@ fn run_stack(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Output {
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", dir);
     if compat {
         cmd.env(qj::compat::ENV_VAR, "1");
-    } else {
-        cmd.env_remove(qj::compat::ENV_VAR);
     }
     cmd.output().expect("failed to run qj")
 }
@@ -389,6 +395,10 @@ fn program(site: Site, n: u64) -> String {
         Site::Bind | Site::Compile | Site::ExpandArgs => {
             unreachable!("{site:?} is driven by the program, not by a value")
         }
+        // The printer's depth is capped at `MAX_PRINT_DEPTH`, so it has a
+        // threshold only on a tiny stack: see
+        // `printing_a_deep_value_crashes_where_jqs_printer_does`.
+        Site::Print => unreachable!("Site::Print needs a small stack"),
     }
 }
 
@@ -797,6 +807,50 @@ fn a_syntax_error_after_deep_nesting_crashes_where_jqs_actions_do() {
             stderr(&plain)
         );
     }
+}
+
+/// `jv_dump_term` recurses once per level of the value it prints, and stops at
+/// `MAX_PRINT_DEPTH` (256) — so it can only overflow on a stack of about 80 KB
+/// or less, and there it does. qj's own printer recurses too, with a frame of
+/// its own; in compat mode it dies at jq's depth instead.
+#[test]
+fn printing_a_deep_value_crashes_where_jqs_printer_does() {
+    for stack_kb in [48, 64] {
+        // `reduce range(n) as $i (0;[.])` nests n arrays around a 0, which
+        // takes n + 1 frames to print.
+        let deepest = Site::Print.frame_budget_at(stack_kb * 1024, 0) - 1;
+        assert!(
+            (20..257).contains(&deepest),
+            "implausible print depth {deepest} at {stack_kb} KB"
+        );
+        for (n, dies) in [(deepest, false), (deepest + 1, true)] {
+            let prog = format!("reduce range({n}) as $i (0;[.])");
+            let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+            if dies {
+                assert_eq!(
+                    signal(&o),
+                    Some(libc::SIGSEGV),
+                    "printing {n} deep at {stack_kb} KB should crash ({:?})",
+                    o.status
+                );
+                assert_eq!(stdout(&o), "", "printing {n} deep at {stack_kb} KB");
+            } else {
+                assert_eq!(
+                    code(&o),
+                    Some(0),
+                    "printing {n} deep at {stack_kb} KB: {}",
+                    stderr(&o)
+                );
+            }
+        }
+    }
+    // Past the cap jq stops descending, so a value of any depth prints on a
+    // stack that can hold the cap.
+    let o = run(
+        true,
+        &["-nc", "reduce range(2000) as $i (0;[.]) | tojson | length"],
+    );
+    assert_eq!(code(&o), Some(0), "{}", stderr(&o));
 }
 
 /// Nothing about the compiler's thresholds fires at a normal stack limit: the

@@ -583,6 +583,9 @@ struct Printer<'o> {
     tab: bool,
     /// `JV_PRINT_REFCOUNT`
     refcounts: bool,
+    /// `QJ_JQ_COMPAT=1`: how many `jv_dump_term` frames jq's stack has room
+    /// for here; [`u64::MAX`] otherwise, so the test costs one comparison.
+    frames: u64,
 }
 
 impl Printer<'_> {
@@ -608,6 +611,11 @@ impl Printer<'_> {
 
     /// Port of `jv_dump_term`.
     fn term<S: Sink>(&self, x: &Value, indent: usize, sink: &mut S) -> io::Result<()> {
+        // QJ_JQ_COMPAT=1: jq recurses here once a level, and on a small stack
+        // it runs out before `MAX_PRINT_DEPTH` can stop it.
+        if indent as u64 >= self.frames {
+            crate::compat::die_of_stack_overflow();
+        }
         let color = self.opts.colors.as_ref().map(|c| c.for_value(x));
         if let Some(c) = color {
             sink.buf().extend_from_slice(c);
@@ -771,6 +779,7 @@ fn printer(opts: &DumpOptions) -> Printer<'_> {
         pretty,
         tab,
         refcounts: false,
+        frames: crate::compat::frames_available(crate::compat::Site::Print),
     }
 }
 
