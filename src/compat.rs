@@ -51,6 +51,7 @@ fn is_on(value: Option<&std::ffi::OsStr>) -> bool {
 /// any cleanup: no destructors, no `atexit` handlers, and in particular no
 /// flush of the buffered stdout, which is what jq loses when it crashes.
 pub fn die_by_signal(sig: c_int) -> ! {
+    no_core_dump();
     // SAFETY: restoring the default disposition of a signal and raising it.
     // The default action for SIGSEGV and SIGABRT terminates the process, so
     // `raise` does not return; `_exit` is there for the impossible case of a
@@ -59,6 +60,24 @@ pub fn die_by_signal(sig: c_int) -> ! {
         libc::signal(sig, libc::SIG_DFL);
         libc::raise(sig);
         libc::_exit(128 + sig)
+    }
+}
+
+/// Before qj dies on purpose, of the signal jq dies of: tells a Linux kernel
+/// not to dump its core.
+///
+/// The crash reproduces jq's, which is the signal and the lost output; a core
+/// would be of qj doing that, not of anything wrong, and a big one. mimalloc
+/// reserves about 1 GB of address space up front, and a core dump handler
+/// such as systemd-coredump or apport reads all of it through a pipe, which
+/// took about 1.5 s a crash on GitHub's runners (jq's cores take 50 ms), and
+/// is where a pipe handler ignores `ulimit -c`. Elsewhere core dumps are off
+/// unless `ulimit -c` asks for them, and nothing changes.
+pub fn no_core_dump() {
+    // SAFETY: prctl with PR_SET_DUMPABLE only changes this process's flag.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
 }
 

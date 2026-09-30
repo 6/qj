@@ -72,6 +72,7 @@ impl Error {
             }
             let _ = std::io::stdout().flush();
         }
+        crate::compat::no_core_dump();
         std::process::abort()
     }
 }
