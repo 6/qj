@@ -9,7 +9,7 @@
 //!   key's position, which keeps the first key string): an object whose keys
 //!   are distinct is built from its entries in order, and one that may have
 //!   duplicates is built with [`Object::insert`] like jq's `jv_object_set`;
-//! * arrays are built from their elements with [`Array::from_vec`], which
+//! * arrays are built from their elements with [`Array::from_exact`], which
 //!   gives them the allocation jq's parser gives them by appending to
 //!   `jv_array()` (observable through slices: `[1,2,3,4,5] | .[0:2] | .[5] =
 //!   9` is `[1,2,3,4,5,9]`);
@@ -395,7 +395,7 @@ fn build(tape: &Tape<'_>, src: &[u8], b: &mut Builder) -> Result<Value, Rejected
                 if f.object {
                     return Err(Rejected::UNSUPPORTED);
                 }
-                Value::Array(Array::from_vec(b.values.drain(f.start..).collect()))
+                Value::Array(Array::from_exact(b.values.drain(f.start..)))
             }
             b'"' => {
                 // SAFETY: the payload of a string word is its offset in the
