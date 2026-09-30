@@ -45,6 +45,10 @@ pub const ENV_VAR: &str = "QJ_JQ_COMPAT";
 /// Set to anything but the empty string or `0`. Read once: the answer is a
 /// property of the process, and has to be the same on every thread and in
 /// every worker.
+///
+/// Inlined, because the hooks below call it on every comparison of two values
+/// and it is all a run that isn't compat mode does for them.
+#[inline]
 pub fn exactly_jq() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| is_on(std::env::var_os(ENV_VAR).as_deref()))
