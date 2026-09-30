@@ -11,12 +11,16 @@
 //!
 //! # Process-wide state
 //!
-//! - **Locale.** jq's `main()` calls `setlocale(LC_ALL, "")`, so `strftime` and
-//!   `strptime` use the locale from `LC_ALL`/`LC_TIME`/`LANG` (`%A` is "Donnerstag"
+//! - **Locale.** jq's `main()` calls `setlocale(LC_ALL, "")`, so on macOS `strftime`
+//!   and `strptime` use the locale from `LC_ALL`/`LC_TIME`/`LANG` (`%A` is "Donnerstag"
 //!   under `de_DE.UTF-8`; `%x` is `01/01/1970` under `en_US.UTF-8` but `01/01/70` in the
 //!   C locale). This module gets the same effect without touching the global locale: it
 //!   creates that locale once with `newlocale(LC_ALL_MASK, "", 0)` and installs it on
-//!   the calling thread with `uselocale` around each libc call.
+//!   the calling thread with `uselocale` around each libc call. jq's Linux release
+//!   binary links glibc statically, and there `setlocale` changes every category but
+//!   `LC_TIME`: its messages are translated and its bytes classified as the
+//!   environment says, but its dates are always the C locale's, so on Linux the locale
+//!   here is the environment's with `LC_TIME` from C ([`date_locale`]).
 //! - **TZ.** On macOS `f_strftime` sets `TZ=UTC` around its `strftime` call (Apple's
 //!   `%z` ignores `tm_gmtoff`), so `%Z %z %s` print `UTC +0000 <epoch>` for UTC times.
 //!   This is reproduced by setting the environment variable; every function here holds
@@ -119,6 +123,49 @@ fn env_locale() -> libc::locale_t {
             }
         })
         .0
+}
+
+/// Run `f` with the calling thread's locale as jq's after its
+/// `setlocale(LC_ALL, "")` (see [`env_locale`]).
+pub(super) fn with_env_locale<R>(f: impl FnOnce() -> R) -> R {
+    with_locale(env_locale(), f)
+}
+
+/// The locale jq's date builtins run in: the environment's ([`env_locale`]),
+/// except on Linux, where jq's release binary (glibc linked statically) keeps
+/// `LC_TIME` in the C locale after `setlocale(LC_ALL, "")`, whatever the
+/// environment says: `LC_ALL=de_DE.UTF-8 jq -n '0 | strftime("%A")'` is
+/// "Thursday" there, and `strptime("%A")` doesn't read "Donnerstag". Its
+/// `LC_CTYPE` does follow the environment, which `strptime` uses to skip
+/// spaces and jq to check what follows the date.
+fn date_locale() -> libc::locale_t {
+    #[cfg(target_os = "linux")]
+    {
+        static DATE_LOCALE: OnceLock<Locale> = OnceLock::new();
+        DATE_LOCALE
+            .get_or_init(|| {
+                // SAFETY: duplocale copies the environment's locale object, and
+                // newlocale takes the copy over (returning it modified, or NULL
+                // with the copy still ours to free).
+                unsafe {
+                    let base = libc::duplocale(env_locale());
+                    if base.is_null() {
+                        return Locale(env_locale());
+                    }
+                    let loc = libc::newlocale(libc::LC_TIME_MASK, c"C".as_ptr(), base);
+                    if loc.is_null() {
+                        libc::freelocale(base);
+                        return Locale(env_locale());
+                    }
+                    Locale(loc)
+                }
+            })
+            .0
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        env_locale()
+    }
 }
 
 /// Run `f` with `loc` as the calling thread's locale.
@@ -420,7 +467,7 @@ fn strftime_in(
 /// The format is cut at its first NUL, and non-UTF-8 output (from a non-UTF-8 locale)
 /// gets U+FFFD replacements, as in jq.
 pub fn strftime(input: TimeInput, format: Option<&str>) -> Result<String, Error> {
-    strftime_in(input, format, env_locale())
+    strftime_in(input, format, date_locale())
 }
 
 fn strflocaltime_in(
@@ -473,7 +520,7 @@ fn strflocaltime_in(
 /// if the format isn't a string and otherwise an [`Error::Abort`]: jq 1.8.1 crashes on
 /// `1e30 | strflocaltime("%c")`.
 pub fn strflocaltime(input: TimeInput, format: Option<&str>) -> Result<String, Error> {
-    strflocaltime_in(input, format, env_locale())
+    strflocaltime_in(input, format, date_locale())
 }
 
 fn strptime_in(
@@ -544,7 +591,7 @@ fn strptime_in(
 /// [`Error::Abort`] on macOS when `strptime` set a day of year that disagrees with
 /// jq's computation (`"100" | strptime("%j")`): jq 1.8.1 fails an assertion there.
 pub fn strptime(input: Option<&str>, format: Option<&str>) -> Result<Parsed, Error> {
-    strptime_in(input, format, env_locale())
+    strptime_in(input, format, date_locale())
 }
 
 /// Port of `f_now`: `gettimeofday` as seconds with microsecond resolution.

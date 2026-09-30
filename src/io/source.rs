@@ -477,17 +477,13 @@ impl Drop for Mmap {
     }
 }
 
-/// C's `strerror(errno)` text for an I/O error (jq prints it verbatim),
-/// falling back to the error's own description when it has no errno.
-pub fn strerror(e: &io::Error) -> String {
+/// C's `strerror(errno)` text for an I/O error, as jq prints it (in the
+/// environment's locale: [`crate::jq::platform::strerror`]), falling back to
+/// the error's own description when it has no errno.
+pub fn strerror(e: &io::Error) -> Vec<u8> {
     match e.raw_os_error() {
-        Some(code) => {
-            // SAFETY: strerror returns a pointer to a NUL-terminated static
-            // (or thread-local) string.
-            let s = unsafe { std::ffi::CStr::from_ptr(libc::strerror(code)) };
-            s.to_string_lossy().into_owned()
-        }
-        None => e.to_string(),
+        Some(code) => crate::jq::platform::strerror(code),
+        None => e.to_string().into_bytes(),
     }
 }
 
@@ -509,10 +505,14 @@ impl InputMessage {
             InputMessage::OpenFailed { name, error } => {
                 out.extend_from_slice(format!("{prog}: error: Could not open file ").as_bytes());
                 out.extend_from_slice(os_bytes(name));
-                out.extend_from_slice(format!(": {}\n", strerror(error)).as_bytes());
+                out.extend_from_slice(b": ");
+                out.extend_from_slice(&strerror(error));
+                out.push(b'\n');
             }
             InputMessage::ReadFailed { error } => {
-                out.extend_from_slice(format!("{prog}: error: {}\n", strerror(error)).as_bytes());
+                out.extend_from_slice(format!("{prog}: error: ").as_bytes());
+                out.extend_from_slice(&strerror(error));
+                out.push(b'\n');
             }
         }
         out

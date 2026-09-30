@@ -889,8 +889,9 @@ fn upstream_date_cases() {
 }
 
 /// `strftime`/`strptime` use the locale from the environment, as jq's
-/// `setlocale(LC_ALL, "")` does. The locale is read once per process, so this re-runs
-/// the test binary with `LC_ALL` set and checks the result in the child.
+/// `setlocale(LC_ALL, "")` does on macOS; jq's Linux release binary keeps its dates
+/// in the C locale (see `date_locale`). The locale is read once per process, so this
+/// re-runs the test binary with `LC_ALL` set and checks the result in the child.
 #[test]
 fn locale_comes_from_the_environment() {
     if locale("de_DE.UTF-8").is_none() {
@@ -922,14 +923,22 @@ fn env_locale_child() {
     if std::env::var_os("QJ_TEST_ENV_LOCALE_CHILD").is_none() {
         return;
     }
+    let (thursday, january) = if cfg!(target_os = "linux") {
+        ("Thursday", "January")
+    } else {
+        ("Donnerstag", "Januar")
+    };
     assert_eq!(
-        strftime(TimeInput::Number(0.0), Some("%A %B")).as_deref(),
-        Ok("Donnerstag Januar")
+        strftime(TimeInput::Number(0.0), Some("%A %B")),
+        Ok(format!("{thursday} {january}"))
     );
     assert_eq!(
-        strptime(Some("Donnerstag 1970"), Some("%A %Y")).map(|p| p.tm[0]),
+        strptime(Some(&format!("{thursday} 1970")), Some("%A %Y")).map(|p| p.tm[0]),
         Ok(1970.0)
     );
+    if cfg!(target_os = "linux") {
+        assert!(strptime(Some("Donnerstag 1970"), Some("%A %Y")).is_err());
+    }
 }
 
 #[test]
