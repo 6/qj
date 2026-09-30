@@ -36,6 +36,7 @@
 //! the differential fuzzer.
 
 mod control;
+mod direct;
 mod entries;
 mod modify;
 mod paths;
@@ -59,7 +60,7 @@ use crate::jq::value::{Error, Value, dump_string_trunc};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum NativeId {
-    /// `map/1` (not native; walk and with_entries return its `[]`).
+    /// `map/1` (native for a direct closure; walk and with_entries return its `[]`).
     Map,
     /// The bytecoded `path/1` (not native; natives call it).
     Path,
@@ -99,6 +100,8 @@ pub enum NativeId {
     All0,
     In1,
     In2,
+    Select,
+    Repeat,
 }
 
 /// Every id, by `NativeId as usize`.
@@ -141,10 +144,12 @@ const ALL: [NativeId; NativeId::COUNT] = [
     NativeId::All0,
     NativeId::In1,
     NativeId::In2,
+    NativeId::Select,
+    NativeId::Repeat,
 ];
 
 impl NativeId {
-    pub const COUNT: usize = 38;
+    pub const COUNT: usize = 40;
 
     /// The native for `builtin.jq`'s definition `name/arity`, if any.
     pub fn lookup(name: &str, arity: i32) -> Option<NativeId> {
@@ -187,6 +192,8 @@ impl NativeId {
             ("all", 0) => All0,
             ("IN", 1) => In1,
             ("IN", 2) => In2,
+            ("select", 1) => Select,
+            ("repeat", 1) => Repeat,
             _ => return None,
         })
     }
@@ -204,7 +211,7 @@ impl NativeId {
     /// Whether calls run a native implementation (else the mark only locates
     /// constants).
     pub fn dispatches(self) -> bool {
-        !matches!(self, NativeId::Map | NativeId::Path)
+        !matches!(self, NativeId::Path)
     }
 
     /// Whether the native abandons a closure argument before it is exhausted, or keeps
@@ -217,9 +224,8 @@ impl NativeId {
             | Any1 | All1 | In1 | In2 => true,
             Map | Path | Join | ToEntries | FromEntries | WithEntries | Paths0 | Tostream
             | AsciiDowncase | AsciiUpcase | Recurse0 | Values | Nulls | Booleans | Numbers
-            | Strings | Arrays | Objects | Iterables | Scalars | Add0 | Flatten | Any0 | All0 => {
-                false
-            }
+            | Strings | Arrays | Objects | Iterables | Scalars | Add0 | Flatten | Any0 | All0
+            | Select | Repeat => false,
         }
     }
 }
@@ -262,7 +268,9 @@ pub(crate) fn consts(id: NativeId, pools: &Pools<'_>) -> Option<Vec<ConstRef>> {
         ]),
         Paths0 | Paths1 | AsciiDowncase | AsciiUpcase | Recurse0 | Values | Nulls | Booleans
         | Numbers | Strings | Arrays | Objects | Iterables | Scalars | Add0 | Add1 | First1
-        | IsEmpty | Any2 | All2 | Any1 | All1 | Any0 | All0 | In1 | In2 => Some(Vec::new()),
+        | IsEmpty | Any2 | All2 | Any1 | All1 | Any0 | All0 | In1 | In2 | Select | Repeat => {
+            Some(Vec::new())
+        }
     }
 }
 
@@ -373,7 +381,10 @@ impl Resume for Hold {
 pub(crate) fn call(id: NativeId, vm: &mut Jq, c: Call<'_>) -> Outcome {
     use NativeId::*;
     match id {
-        Map | Path => Outcome::Fallback(c.input),
+        Path => Outcome::Fallback(c.input),
+        Map => direct::map(vm, c.input, c.args[0], c.consts),
+        Select => direct::select(vm, c.input, c.args[0]),
+        Repeat => direct::repeat(vm, c.input, c.args[0]),
         Modify => {
             let path_fn = c.consts.func(0, &c.callee);
             modify::modify(vm, c.input, c.args[0], c.args[1], path_fn).into()
