@@ -318,6 +318,18 @@ interface scaffold before spawning it.
   documented in `docs/COMPATIBILITY.md`: crashes decided by jq's heap layout, jq's
   compiler overflowing on deeply nested programs below a 2 MB stack (the cost per level
   depends on the syntax), and the core dump on Linux.
+- 2026-09-30: **ST merged**. The last gap in compat mode's stack emulation: jq's compiler
+  recurses over the program, and `QJ_JQ_COMPAT=1` now reproduces its overflow in
+  `block_bind_subblock_inner` (binding, two frames a level of nesting),
+  `compile`/`expand_call_arglist` (one per nested closure, which is what nested `def`s
+  reach) and `jv_dump_term` (the printer, below about 80 KB of stack). The frames come from
+  the release binaries' own prologues, the bases from bisection per OS; the other nine
+  compile-time recursions are dominated by those and documented in `docs/COMPATIBILITY.md`.
+  Two things fell out of it: a left-associative chain (`. + . + …`) isn't bounded by
+  `YYMAXDEPTH`, so it overflows jq at **any** stack limit (37,335 terms at 8 MB), and jq
+  crashes *instead of* reporting a syntax error when the program before it nests deeply,
+  because parser.y's actions bind as bison reduces. jq_diff: **39,204/39,215 strict on both
+  macOS and Linux**.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
