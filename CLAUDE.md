@@ -277,6 +277,9 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
   programs (paths, `.[]`, `length`, `keys`, `map`, `{...}`, `select(... == c)`) on simdjson's
   tape (`src/io/tape_eval.rs`; A/B checks).
 - `QJ_ENGINE_STATS=1` — after a parallel run, print the engine's counters to stderr.
+- `QJ_NO_NATIVE=1` — run jq's bytecode definitions of builtin.jq functions instead of the exact
+  native fast paths in `src/jq/builtins/native/` (A/B checks). Natives are also off under
+  `--debug-trace`, while tracking paths, and with `QJ_JQ_COMPAT=1`.
 - `--threads N` — worker threads for the engine (default: all non-efficiency cores); 0 or 1
   runs sequentially. Records always run sequentially for -n, -s, -R, --seq, --stream,
   --debug-trace, and programs using input/inputs, now, halt/halt_error, debug/stderr,

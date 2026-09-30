@@ -96,10 +96,12 @@ CI runs jq_diff on Linux too, but only reports there until a Linux baseline is c
   | a module that imports itself, directly or through others | SIGSEGV | `qj: error: ... imports itself (import cycle)`, exit 3 | SIGSEGV |
   | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
   | `[1,2] \| try delpaths([[{}]]) catch .` | prints the error, then SIGSEGV | prints the error, exit 0 | prints the error, exit 0 |
+  | `delpaths([[{"start":1}],[0]])` over two inputs, e.g. `[1] {}` | the first input's error, then `Assertion failed: (JVP_HAS_KIND(a, JV_KIND_STRING))` on the second, exit 134 | both inputs' errors, exit 5 | both inputs' errors, exit 5 |
 
-  The last one is not reproduced in either mode, because there is nothing to reproduce.
-  jq frees the key twice in `jv_dels`' slice-delete error path, and whether that kills it
-  is decided by the heap, not by the program: `[1,2]` with an empty `{}` dies, while
+  The last two are not reproduced in either mode, because there is nothing to reproduce.
+  Both are the same bug: jq frees the key twice in `jv_dels`' slice-delete error path.
+  In the second, the key is a program constant, so later inputs run on freed memory.
+  Whether that kills jq, and how, is decided by the heap, not by the program: `[1,2]` with an empty `{}` dies, while
   `[1]`, `[1,2,3]`, `[1,2,3,4]`, `[range(2)]`, `{"start":"x"}` as the key, and even
   wrapping the same expression in an array (`[[1,2] | try delpaths([[{}]]) catch .]`) all
   exit 0 — 20 runs each, no variation. Crashing at the site would invent failures where
