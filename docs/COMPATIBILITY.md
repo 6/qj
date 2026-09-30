@@ -46,14 +46,14 @@ statically):
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 36,188 | 36,177 |
-| **Total** | **39,091** | **39,080** |
+| qj's corpus | 36,222 | 36,211 |
+| **Total** | **39,125** | **39,114** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
 them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
 required is that qj not finish either. Across modes, the counts are 15,483 compact, 6,529
-pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 5,989 command-line cases. The
+pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,023 command-line cases. The
 command-line cases include some that merge stdout and stderr into one file or pipe,
 checking that output and error messages interleave exactly as jq's stdio buffering
 interleaves them, and some that start the tool with standard descriptors closed
@@ -77,6 +77,15 @@ What jq does there that it doesn't on macOS, qj does too: glibc's libm (for exam
 bit of `cbrt`), glibc's stdio buffering (the order of output and errors in one file or
 pipe), glibc's `assert()` text, and the x86-64 conversions of out-of-range doubles to
 integers (`halt_error(1e10)`).
+
+The reference on Linux is jq's official 1.8.1 release binary (`jq-linux-amd64`, which
+mise installs). It links glibc statically, and after its `setlocale(LC_ALL, "")` it
+translates glibc's messages for `LC_MESSAGES` (errno texts, such as "Datei oder Verzeichnis
+nicht gefunden", and `assert()` lines) and classifies bytes for `LC_CTYPE`, but formats and
+parses dates in the C locale whatever the environment says. qj does the same on Linux. A
+jq built by a distribution, linked dynamically, can differ: its dates follow the locale,
+as they do on macOS. `corpus/locale.toml` checks this, and CI installs German and
+French messages and a Latin-1 locale for it.
 
 ## Exemptions
 
@@ -119,6 +128,14 @@ integers (`halt_error(1e10)`).
   jq's deliberate aborts, which come from `assert()` and are deterministic, are
   reproduced in **both** modes, including macOS stdio flushing the output produced before
   the abort.
+
+  A reproduced crash is jq's in everything jq_diff compares: the signal, the exit status
+  a shell reports (139 for SIGSEGV, 134 for SIGABRT) and the output lost with it. One thing
+  differs, on Linux systems that collect core dumps: qj tells the kernel not to dump its
+  core first, so a shell reports jq's crash as `Segmentation fault (core dumped)` and qj's
+  as `Segmentation fault`. A core of a deliberate crash shows nothing wrong, and qj's is
+  big: its allocator reserves about 1 GB of address space, which a core handler such as
+  systemd-coredump reads in full (1.5 s a crash on GitHub's runners, 50 ms for jq's).
 
 ## Being exactly jq
 
