@@ -75,7 +75,7 @@ pub fn prog_name() -> &'static str {
 /// any cleanup: no destructors, no `atexit` handlers, and in particular no
 /// flush of the buffered stdout, which is what jq loses when it crashes.
 pub fn die_by_signal(sig: c_int) -> ! {
-    no_core_dump();
+    small_core_dump();
     // SAFETY: restoring the default disposition of a signal and raising it.
     // The default action for SIGSEGV and SIGABRT terminates the process, so
     // `raise` does not return; `_exit` is there for the impossible case of a
@@ -87,21 +87,45 @@ pub fn die_by_signal(sig: c_int) -> ! {
     }
 }
 
-/// Before qj dies on purpose, of the signal jq dies of: tells a Linux kernel
-/// not to dump its core.
+/// Before qj dies on purpose, of the signal jq dies of: keeps the kernel's
+/// core dump, but makes it tiny (Linux).
 ///
-/// The crash reproduces jq's, which is the signal and the lost output; a core
-/// would be of qj doing that, not of anything wrong, and a big one. mimalloc
-/// reserves about 1 GB of address space up front, and a core dump handler
-/// such as systemd-coredump or apport reads all of it through a pipe, which
-/// took about 1.5 s a crash on GitHub's runners (jq's cores take 50 ms), and
-/// is where a pipe handler ignores `ulimit -c`. Elsewhere core dumps are off
-/// unless `ulimit -c` asks for them, and nothing changes.
-pub fn no_core_dump() {
-    // SAFETY: prctl with PR_SET_DUMPABLE only changes this process's flag.
+/// The kernel decides whether to dump a core as it does for jq — the same
+/// signal, `ulimit -c`, `core_pattern` — so the wait status carries jq's
+/// core-dump flag and a shell reports `Segmentation fault (core dumped)` where
+/// it does for jq. What goes in the core is qj's own business: a core of qj
+/// reproducing jq's crash shows nothing wrong, and a full one is big. mimalloc
+/// reserves about 1 GB of address space up front, and once any of a mapping is
+/// touched the kernel dumps all of it, writing the untouched pages as zeros
+/// through a pipe handler such as systemd-coredump or apport, which ignore
+/// `ulimit -c`: 1.5 s a crash on GitHub's runners, where jq's take 50 ms.
+///
+/// So this writes `0` to `/proc/self/coredump_filter`: no anonymous or
+/// file-backed memory at all, which leaves the ELF header, the notes (each
+/// thread's registers, the signal, the auxiliary vector, the mapped files)
+/// and the vDSO — a few KB, however much memory qj has. If the filter can't
+/// be written (no `/proc`), it falls back to no core at all, which is at
+/// least as quick. Elsewhere nothing changes: macOS dumps a core only when
+/// `ulimit -c` asks for one, with no pipe handler to ignore it.
+pub fn small_core_dump() {
     #[cfg(target_os = "linux")]
-    unsafe {
-        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    {
+        // Only system calls, no allocation: this runs at an arbitrary point
+        // of the program, maybe with other threads holding the allocator's
+        // locks.
+        const PATH: &std::ffi::CStr = c"/proc/self/coredump_filter";
+        // SAFETY: open/write/close on a NUL-terminated path and a static
+        // buffer; prctl with PR_SET_DUMPABLE only changes this process's flag.
+        unsafe {
+            let fd = libc::open(PATH.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+            let written = fd >= 0 && libc::write(fd, b"0\n".as_ptr().cast(), 2) == 2;
+            if fd >= 0 {
+                libc::close(fd);
+            }
+            if !written {
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+            }
+        }
     }
 }
 
