@@ -13,21 +13,23 @@
 //!
 //! # Why a region is exact
 //!
-//! A region contains no instruction that creates a fork point, calls a jq function,
-//! or depends on anything but its operands and the frames' variables: see
-//! [`Compiler::instr`] for the list. Between its first and last instruction the stack
-//! then behaves as a plain LIFO stack, so the blocks jq allocates for intermediate
-//! values are freed in the order they were allocated and nothing but those
-//! instructions sees them. What remains observable is kept exactly:
+//! A region contains no instruction that creates a fork point, calls a jq function
+//! (other than one inlined, below), or depends on anything but its operands and the
+//! frames' variables: see [`Compiler::instr`] for the list. Between its first and last
+//! instruction the stack then behaves as a plain LIFO stack, so the blocks jq allocates
+//! for intermediate values are freed in the order they were allocated and nothing but
+//! those instructions sees them. What remains observable is kept exactly:
 //!
 //! * **Value operations in the same order, on the same operands, with the same
 //!   ownership.** Each instruction is translated into its own sequence of copies
 //!   (`jv_copy`), moves and frees on registers, so every builtin call, index and
 //!   insert sees its operands with the same reference counts as in jq: whether an
 //!   array is written in place (and so its storage, which jq exposes) is decided
-//!   identically. Only two things are left out, both invisible: pure renaming (the
-//!   stack order), and a copy made by `DUP` right before a binop that frees it
-//!   unused (`f_plus` frees its input before `binop_plus`).
+//!   identically. Only invisible things are left out: pure renaming (the stack
+//!   order), a copy made just to be freed with nothing in between (`DUP; POP`, and a
+//!   `DUP` right before a binop that frees it unused: `f_plus` frees its input before
+//!   `binop_plus`), and copies of constants that an op reads in place instead
+//!   (constants are immutable; [`Op::BinopK`], [`Op::IndexK`]).
 //! * **The blocks of values that were on the stack before the region.** They are
 //!   popped ([`Op::Pop`], [`Op::PopN`] for `stack_popn`) exactly where the
 //!   instruction popping them runs, so a block a fork point keeps is copied (or, for
@@ -43,6 +45,10 @@
 //! Frames are not observable except through `--debug-trace` (which runs the original
 //! code), so a direct call's missing frame is invisible: a region body has no fork
 //! point, so jq's frame would be freed by the body's `RET`, before anything else runs.
+//! For the same reason a call without arguments of a function named statically whose
+//! body is a region is *inlined* ([`Compiler::inline`]): its ops run in the caller's
+//! region on registers of their own. (A tail call is inlined only into a frameless
+//! body: in the interpreter loop it frees the caller's frame first, and so its locals.)
 //!
 //! Control flow inside a region is forward jumps only (jq's are), for `if`, `and`,
 //! `or` and `//=`-free alternatives: at every jump and join the registers are put in a

@@ -28,6 +28,8 @@ cargo test --release jq_diff -- --ignored                               # THE GA
 JQ_DIFF_FILTER=onig.test JQ_DIFF_VERBOSE=1 cargo test --release jq_diff -- --ignored  # one suite, with details
 cargo test --release -- --ignored --nocapture                           # everything, older runners included
 cargo test --release --lib io:: -- --ignored                            # src/io's long differential tests (util.c port, jq binary, engine)
+cargo test --release --test native_diff -- --ignored --nocapture        # natives vs their builtin.jq definitions, out of process, capped
+cargo test --release --test vm_opt_diff -- --ignored --nocapture        # the VM's regions vs jq's instructions as compiled, out of process, capped
 # Older runners:
 cargo test --release jq_compat -- --ignored --nocapture                 # cross-tool comparison
 cargo test --release feature_compat -- --ignored --nocapture            # feature matrix
@@ -295,6 +297,10 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
 - `QJ_NO_NATIVE=1` — run jq's bytecode definitions of builtin.jq functions instead of the exact
   native fast paths in `src/jq/builtins/native/` (A/B checks). Natives are also off under
   `--debug-trace`, while tracking paths, and with `QJ_JQ_COMPAT=1`.
+- `QJ_NO_VM_OPT=1` — run jq's instructions as compiled, without the VM's regions (straight-line
+  runs compiled to register code) and frameless calls of region bodies
+  (`src/jq/lang/execute/region.rs`; A/B checks). Also off under `--debug-trace` and with
+  `QJ_JQ_COMPAT=1`.
 - `--threads N` — worker threads for the engine (default: all non-efficiency cores); 0 or 1
   runs sequentially. Records always run sequentially for -n, -s, -R, --seq, --stream,
   --debug-trace, and programs using input/inputs, now, halt/halt_error, debug/stderr,
