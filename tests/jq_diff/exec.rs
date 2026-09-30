@@ -520,8 +520,25 @@ mod tests {
         assert_eq!(o.status, Status::MemoryLimit);
     }
 
+    /// Whether the kernel dumps the shell's core is up to its settings (on
+    /// GitHub's Linux runners systemd-coredump takes every one, whatever
+    /// `ulimit -c` says), so either status is right; the signal is 11.
     #[test]
     fn signal_is_reported() {
+        let o = sh("kill -SEGV $$", None, 5000, 1 << 16);
+        assert!(
+            matches!(o.status, Status::Signal(11) | Status::CoreDumped(11)),
+            "{:?}",
+            o.status
+        );
+    }
+
+    /// With a core-size limit of 0 and a file `core_pattern`, a kernel dumps
+    /// nothing; macOS always has a file pattern (and the harness sets the
+    /// limit to 0 there anyway), so its status must say so.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_core_is_dumped_on_macos() {
         let o = sh("kill -SEGV $$", None, 5000, 1 << 16);
         assert_eq!(o.status, Status::Signal(11));
     }
