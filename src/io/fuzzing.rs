@@ -375,6 +375,15 @@ pub const TAPE_PROGRAMS: &[&str] = &[
     "select(type == \"object\")",
     "select(.a | type == \"string\")",
     "select(.a | length > 1)",
+    "has(\"a\")",
+    ".[]? | has(\"b\")",
+    "map(has(\"a\"))",
+    "not",
+    "map(not)",
+    ".a == 1",
+    "map(. > 1)",
+    "{x: (.a and .b), y: (.a or .b)}",
+    "select(has(\"a\") and (.b | not))",
 ];
 
 /// The tape evaluator (`super::tape_eval`) against the VM: `data[0]` picks

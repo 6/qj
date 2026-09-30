@@ -102,6 +102,11 @@ const PROGRAMS: &[&str] = &[
     "map(type)",
     "{t: (.a | type), s: (.s | type)}",
     ".arr[] | select(.b | type != \"array\")",
+    ".arr | map(has(\"a\"))",
+    "has(\"k1\")",
+    ".arr[] | .a | not",
+    ".arr[] | .a == 1",
+    ".arr[] | select(has(\"b\") and (.b | type != \"array\"))",
 ];
 
 const OPTIONS: &[&[&str]] = &[

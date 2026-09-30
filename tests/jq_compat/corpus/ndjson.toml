@@ -126,6 +126,10 @@ programs = [
   "map(type)",
   ".[] | type",
   'select(.type | type == "string")',
+  'select(has("n"))',
+  '{t: (.type | type), h: has("a")}',
+  '.type == "PushEvent"',
+  ".type | not",
 ]
 
 [[sweep]]
