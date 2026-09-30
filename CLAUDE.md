@@ -90,8 +90,8 @@ answers where jq hangs is a `fail`. The scoreboard shows both per suite and mode
   moving a case within its file is fine (but changing a case's files, argv or stdin makes it a
   new case). To score a variant without the ratchet, point `JQ_DIFF_BASELINE` at a file that
   doesn't exist: `JQ_DIFF_QJ_ENV=QJ_NO_SIMD_INPUT=1 JQ_DIFF_BASELINE=target/tmp/no_baseline.txt`.
-- CI runs it on Linux. Until `diff_baseline_linux.txt` exists it only reports; the
-  `jq-diff-linux` artifact has a `baseline_candidate.txt` to commit.
+- CI runs it on Linux, ratcheting against `diff_baseline_linux.txt`. To record gains made on
+  Linux, commit the `baseline_candidate.txt` from the run's `jq-diff-linux` artifact.
 - jq results are cached in `tests/jq_compat/.cache/jq_diff.json` (invalidated automatically).
   A full run takes ~10s cold and ~7s cached on 18 cores.
 

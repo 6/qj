@@ -290,6 +290,22 @@ interface scaffold before spawning it.
   program (see `docs/COMPATIBILITY.md`). jq_diff: 19,944/19,955 strict, plus 4 cases where
   neither tool finishes; the harness now runs qj even when jq hangs and requires that qj hang
   too.
+- 2026-09-30: **Performance and Linux tracks merged.** PF (`17636c2`), PF-B (`8563801`) and
+  PF-C (`7efc4ff`) made the port fast without giving up exactness. They added tape evaluation
+  of simple programs, native versions of jq-defined builtins checked against their
+  `builtin.jq` definitions (`native_diff`), and VM regions checked against jq's instructions
+  as compiled (`vm_opt_diff`). MW (`2dd5923`) bounds how much of a memory-mapped input stays
+  resident. FB (`2562e72`) re-measured the README's numbers on the M5 Max. TT (`c54b4e4`)
+  moved `type`, `has`, `not` and the type filters onto the tape. LX (`851e73a`) verified
+  Linux on GitHub's Ubuntu runner, fixing the Linux-only differences: glibc's libm and stdio,
+  jq's Linux stack depth, and its locale handling. LX also made the Linux jq_diff step a
+  ratchet (`diff_baseline_linux.txt`). jq_diff: **39,114/39,125 strict on both macOS and
+  Linux**. The rest are the 7 exempt help/version cases and 4 where jq and qj both hang
+  (`delpaths` with `nan` under `QJ_JQ_COMPAT=1`). The known deviations are all in
+  `docs/COMPATIBILITY.md`. Crashes decided by jq's heap layout aren't reproduced
+  (`jv_dels`' double free, `--debug-trace=all` of an empty stack on glibc). Nor is
+  `jv_equal`'s stack overflow in compat mode. qj's deliberate crashes don't dump core on
+  Linux.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
