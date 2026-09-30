@@ -72,7 +72,7 @@ enum Block {
     Fork(ForkPoint),
     /// A suspended native generator, on the data stack below its resume fork point
     /// (like `RANGE`'s upper bound): see `native.rs`.
-    Native(Box<Suspended>),
+    Native(Suspended),
 }
 
 struct Slot {
@@ -281,14 +281,14 @@ impl Stack {
 
     /// Pushes a suspended native generator on the data stack headed by `top`.
     #[inline(always)]
-    pub fn push_native(&mut self, top: StackPtr, s: Box<Suspended>) -> StackPtr {
+    pub fn push_native(&mut self, top: StackPtr, s: Suspended) -> StackPtr {
         self.push_block(top, Block::Native(s))
     }
 
     /// Pops the suspended native generator at `top`, which must be the last allocated
     /// block (its resume fork point was just restored). Returns it and the new head.
     #[inline(always)]
-    pub fn pop_native(&mut self, top: StackPtr) -> (Box<Suspended>, StackPtr) {
+    pub fn pop_native(&mut self, top: StackPtr) -> (Suspended, StackPtr) {
         debug_assert!(self.pop_will_free(top));
         let slot = self.slots.pop().expect("non-empty stack");
         match slot.block {

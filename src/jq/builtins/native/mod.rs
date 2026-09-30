@@ -342,6 +342,8 @@ fn child(v: &Value, i: usize) -> (Value, Value) {
 struct Update {
     f: Closure,
     guard: Option<Value>,
+    /// `f`'s direct region, if its body is one (`Jq::direct`).
+    direct: Option<u32>,
 }
 
 impl Update {
@@ -349,6 +351,7 @@ impl Update {
         Update {
             f,
             guard: vm.type_guard_closure(f),
+            direct: vm.direct(f),
         }
     }
 
@@ -363,6 +366,10 @@ impl Update {
     fn first(&self, vm: &mut Jq, v: Value) -> Result<Option<Value>, Stop> {
         if self.skips(&v) {
             return Ok(Some(v));
+        }
+        if let Some(d) = self.direct {
+            // Its one output (the break after it abandons nothing).
+            return vm.eval_direct(d, self.f, v);
         }
         vm.sub_first(self.f, v)
     }

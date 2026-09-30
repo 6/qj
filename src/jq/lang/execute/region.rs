@@ -116,32 +116,85 @@ impl BinKind {
     }
 }
 
+/// builtin.c's `dtoi` (as `binops.rs` has it).
+#[inline]
+fn dtoi(n: f64) -> i64 {
+    if n < i64::MIN as f64 {
+        i64::MIN
+    } else if -n < i64::MIN as f64 {
+        i64::MAX
+    } else {
+        n as i64
+    }
+}
+
+/// `binop_<kind>(a, b)` of two numbers, where it is a number or a boolean: what
+/// `binops.rs` computes, without taking the operands. `None` for the rest (errors, and
+/// orderings with NaN, which `jv_cmp` sorts apart).
+#[inline(always)]
+fn binop_numbers(kind: BinKind, a: &Value, b: &Value) -> Option<Value> {
+    use BinKind::*;
+    use std::cmp::Ordering;
+    let (Value::Number(x), Value::Number(y)) = (a, b) else {
+        return None;
+    };
+    Some(match kind {
+        Plus => Value::number(x.value() + y.value()),
+        Minus => Value::number(x.value() - y.value()),
+        Multiply => Value::number(x.value() * y.value()),
+        Divide if y.value() != 0.0 => Value::number(x.value() / y.value()),
+        Divide => return None,
+        Mod => {
+            let (na, nb) = (x.value(), y.value());
+            if na.is_nan() || nb.is_nan() {
+                Value::number(f64::NAN)
+            } else {
+                let bi = dtoi(nb);
+                if bi == 0 {
+                    return None;
+                }
+                // Check if the divisor is -1 to avoid overflow when the dividend is
+                // INTMAX_MIN.
+                let r = if bi == -1 { 0 } else { dtoi(na) % bi };
+                Value::number(r as f64)
+            }
+        }
+        Equal => Value::Bool(x.equal(y)),
+        NotEqual => Value::Bool(!x.equal(y)),
+        Less | LessEq | Greater | GreaterEq => {
+            if x.is_nan() || y.is_nan() {
+                return None;
+            }
+            let o = x.compare(y);
+            Value::Bool(match kind {
+                Less => o == Ordering::Less,
+                LessEq => o != Ordering::Greater,
+                Greater => o == Ordering::Greater,
+                _ => o != Ordering::Less,
+            })
+        }
+    })
+}
+
+/// Frees `v` (jq's `jv_free`), without calling the drop glue for values that own
+/// nothing (null, booleans, native numbers).
+#[inline(always)]
+fn discard(v: Value) {
+    match &v {
+        Value::Null | Value::Bool(_) => std::mem::forget(v),
+        Value::Number(n) if !n.is_literal() => std::mem::forget(v),
+        _ => drop(v),
+    }
+}
+
 /// `binop_<kind>(a, b)`, with the arithmetic and comparisons of two numbers inline.
 #[inline]
 fn binop(kind: BinKind, a: Value, b: Value) -> CResult {
     use BinKind::*;
-    use std::cmp::Ordering;
-    if let (Value::Number(x), Value::Number(y)) = (&a, &b) {
-        // What binop_* compute for two numbers (see binops.rs).
-        match kind {
-            Plus => return Ok(Value::number(x.value() + y.value())),
-            Minus => return Ok(Value::number(x.value() - y.value())),
-            Multiply => return Ok(Value::number(x.value() * y.value())),
-            Divide if y.value() != 0.0 => return Ok(Value::number(x.value() / y.value())),
-            Equal => return Ok(Value::Bool(x.equal(y))),
-            NotEqual => return Ok(Value::Bool(!x.equal(y))),
-            // jv_cmp orders NaN apart: leave it to the general path.
-            Less | LessEq | Greater | GreaterEq if !x.is_nan() && !y.is_nan() => {
-                let o = x.compare(y);
-                return Ok(Value::Bool(match kind {
-                    Less => o == Ordering::Less,
-                    LessEq => o != Ordering::Greater,
-                    Greater => o == Ordering::Greater,
-                    _ => o != Ordering::Less,
-                }));
-            }
-            _ => {}
-        }
+    if let Some(v) = binop_numbers(kind, &a, &b) {
+        discard(a);
+        discard(b);
+        return Ok(v);
     }
     match kind {
         Plus => binop_plus(a, b),
@@ -208,12 +261,29 @@ pub(super) enum Op {
         a: Reg,
         b: Reg,
     },
+    /// [`Op::Binop`] with a constant operand: `a` is `k` if `kfirst`, else `b` is.
+    BinopK {
+        dst: Reg,
+        kind: BinKind,
+        input: Reg,
+        r: Reg,
+        k: *const Value,
+        kfirst: bool,
+    },
     /// `INDEX`/`INDEX_OPT`: `dst = t[k]`; `level` is the region's `SUBEXP` nesting
     /// there, relative to its start (path tracking applies at nesting 0).
     Index {
         dst: Reg,
         t: Reg,
         k: Reg,
+        opt: bool,
+        level: i32,
+    },
+    /// [`Op::Index`] with a constant key.
+    IndexK {
+        dst: Reg,
+        t: Reg,
+        k: *const Value,
         opt: bool,
         level: i32,
     },
@@ -231,6 +301,39 @@ pub(super) enum Op {
     ErrorK { k: *const Value },
     /// The end: push [`Region::exit`].
     Exit,
+}
+
+/// Whether `op` reads or writes register `r`.
+fn op_uses(op: &Op, r: Reg) -> bool {
+    match *op {
+        Op::Pop { dst }
+        | Op::PopN { dst }
+        | Op::Const { dst, .. }
+        | Op::LoadV { dst, .. }
+        | Op::LoadVN { dst, .. }
+        | Op::GenLabel { dst } => dst == r,
+        Op::Clone { dst, src } | Op::Move { dst, src } => dst == r || src == r,
+        Op::Swap { a, b } => a == r || b == r,
+        Op::Drop { r: x } | Op::JumpF { r: x, .. } => x == r,
+        Op::StoreV { src, .. } | Op::Append { src, .. } => src == r,
+        Op::StoreK { .. } | Op::Jump { .. } | Op::Backtrack | Op::ErrorK { .. } | Op::Exit => false,
+        Op::Call {
+            dst,
+            input,
+            args,
+            nargs,
+            ..
+        } => dst == r || input == r || args[..nargs as usize - 1].contains(&r),
+        Op::Binop {
+            dst, input, a, b, ..
+        } => dst == r || input == r || a == r || b == r,
+        Op::BinopK {
+            dst, input, r: x, ..
+        } => dst == r || input == r || x == r,
+        Op::Index { dst, t, k, .. } => dst == r || t == r || k == r,
+        Op::IndexK { dst, t, .. } => dst == r || t == r,
+        Op::Insert { obj, k, v } => obj == r || k == r || v == r,
+    }
 }
 
 /// A compiled region (see the module docs).
@@ -393,6 +496,29 @@ impl<'a> Compiler<'a> {
     fn release(&mut self, r: Reg) {
         debug_assert!(self.free & (1 << r) == 0);
         self.free |= 1 << r;
+    }
+
+    /// The index of the op that put a constant in `r`, if it is in the current
+    /// straight-line run of ops and no op since has read or written `r`: its only
+    /// reader is then the op about to consume it, which can read the constant itself
+    /// (constants are immutable, so when the copy is made doesn't matter).
+    fn const_def(&self, r: Reg) -> Option<usize> {
+        for i in (self.block_start..self.ops.len()).rev() {
+            match self.ops[i] {
+                Op::Const { dst, .. } if dst == r => return Some(i),
+                ref op if op_uses(op, r) => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Takes the constant op at `i` (see [`Compiler::const_def`]) out of the ops.
+    fn take_const(&mut self, i: usize) -> *const Value {
+        match self.ops.remove(i) {
+            Op::Const { k, .. } => k,
+            _ => unreachable!("a constant op"),
+        }
     }
 
     /// Frees the value in `r` (which stays allocated, now empty). A copy made just
@@ -635,13 +761,25 @@ impl<'a> Compiler<'a> {
             INDEX | INDEX_OPT => {
                 let t = self.pop(false)?;
                 let k = self.pop(false)?;
-                self.ops.push(Op::Index {
-                    dst: t,
-                    t,
-                    k,
-                    opt: op == INDEX_OPT,
-                    level: self.level,
-                });
+                let (opt, level) = (op == INDEX_OPT, self.level);
+                let op = match self.const_def(k) {
+                    // `.a`, `.[0]`: `PUSHK_UNDER k; INDEX`.
+                    Some(i) => Op::IndexK {
+                        dst: t,
+                        t,
+                        k: self.take_const(i),
+                        opt,
+                        level,
+                    },
+                    None => Op::Index {
+                        dst: t,
+                        t,
+                        k,
+                        opt,
+                        level,
+                    },
+                };
+                self.ops.push(op);
                 self.release(k);
                 self.push(t);
             }
@@ -690,18 +828,46 @@ impl<'a> Compiler<'a> {
                             self.release(input);
                             input = NO_REG;
                         }
-                        self.ops.push(Op::Binop {
-                            dst: a,
-                            kind,
-                            input,
-                            a,
-                            b,
-                        });
+                        // A constant operand is read in place (`. + 1`: `PUSHK_UNDER 1;
+                        // DUP; CALL_BUILTIN _plus`).
+                        let (op, dst, other) = if let Some(i) = self.const_def(b) {
+                            let k = self.take_const(i);
+                            let op = Op::BinopK {
+                                dst: a,
+                                kind,
+                                input,
+                                r: a,
+                                k,
+                                kfirst: false,
+                            };
+                            (op, a, b)
+                        } else if let Some(i) = self.const_def(a) {
+                            let k = self.take_const(i);
+                            let op = Op::BinopK {
+                                dst: b,
+                                kind,
+                                input,
+                                r: b,
+                                k,
+                                kfirst: true,
+                            };
+                            (op, b, a)
+                        } else {
+                            let op = Op::Binop {
+                                dst: a,
+                                kind,
+                                input,
+                                a,
+                                b,
+                            };
+                            (op, a, b)
+                        };
+                        self.ops.push(op);
                         if input != NO_REG {
                             self.release(input);
                         }
-                        self.release(b);
-                        self.push(a);
+                        self.release(other);
+                        self.push(dst);
                     }
                     None => {
                         self.ops.push(Op::Call {
@@ -851,9 +1017,12 @@ pub(super) fn compile(
             return None;
         }
     }
-    let may_backtrack = ops
-        .iter()
-        .any(|op| matches!(op, Op::Backtrack | Op::Index { opt: true, .. }));
+    let may_backtrack = ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::Backtrack | Op::Index { opt: true, .. } | Op::IndexK { opt: true, .. }
+        )
+    });
     Some((
         Region {
             ops,
@@ -1053,7 +1222,7 @@ impl Jq {
                     regs.put(dst, v);
                 }
                 Op::Swap { a, b } => regs.swap(a, b),
-                Op::Drop { r } => drop(regs.take(r)),
+                Op::Drop { r } => discard(regs.take(r)),
                 Op::Const { dst, k } => {
                     // SAFETY: `k` points into a constant pool of `prog` (see
                     // `Compiler::constant`), which lives unchanged as long as `prog`.
@@ -1130,11 +1299,46 @@ impl Jq {
                     b,
                 } => {
                     if input != NO_REG {
-                        drop(regs.take(input));
+                        discard(regs.take(input));
                     }
                     let av = regs.take(a);
                     let bv = regs.take(b);
                     match binop(kind, av, bv) {
+                        Ok(v) => regs.put(dst, v),
+                        Err(e) => {
+                            self.set_error(e.into_value());
+                            return false;
+                        }
+                    }
+                }
+                Op::BinopK {
+                    dst,
+                    kind,
+                    input,
+                    r,
+                    k,
+                    kfirst,
+                } => {
+                    if input != NO_REG {
+                        discard(regs.take(input));
+                    }
+                    // SAFETY: as for `Op::Const`.
+                    let k = unsafe { &*k };
+                    let rv = regs.take(r);
+                    let fast = if kfirst {
+                        binop_numbers(kind, k, &rv)
+                    } else {
+                        binop_numbers(kind, &rv, k)
+                    };
+                    let res = match fast {
+                        Some(v) => {
+                            discard(rv);
+                            Ok(v)
+                        }
+                        None if kfirst => binop(kind, k.clone(), rv),
+                        None => binop(kind, rv, k.clone()),
+                    };
+                    match res {
                         Ok(v) => regs.put(dst, v),
                         Err(e) => {
                             self.set_error(e.into_value());
@@ -1152,6 +1356,21 @@ impl Jq {
                     let tv = regs.take(t);
                     let kv = regs.take(k);
                     match self.region_index(tv, kv, opt, self.subexp_nest + level) {
+                        Some(v) => regs.put(dst, v),
+                        None => return false,
+                    }
+                }
+                Op::IndexK {
+                    dst,
+                    t,
+                    k,
+                    opt,
+                    level,
+                } => {
+                    let tv = regs.take(t);
+                    // SAFETY: as for `Op::Const`.
+                    let k = unsafe { &*k };
+                    match self.region_index_k(tv, k, opt, self.subexp_nest + level) {
                         Some(v) => regs.put(dst, v),
                         None => return false,
                     }
@@ -1200,6 +1419,41 @@ impl Jq {
             i += 1;
         }
     }
+    /// [`Jq::region_index`] with a constant key: the copy that goes in the tracked path
+    /// is made there (jq's copy was made by `PUSHK_UNDER`).
+    fn region_index_k(&mut self, t: Value, k: &Value, opt: bool, nest: i32) -> Option<Value> {
+        let tracking = nest == 0 && matches!(self.path, Value::Array(_));
+        // path_intact: detect invalid path expression like path(reverse | .a)
+        if tracking && !t.identical(&self.value_at_path) {
+            let msg = format!(
+                "Invalid path expression near attempt to access element {} of {}",
+                dump_string_trunc(k, 15),
+                dump_string_trunc(&t, 30)
+            );
+            self.set_error(Value::from(msg));
+            return None;
+        }
+        // jv_get(t, jv_copy(k)): t is consumed.
+        let r = t.get(k);
+        drop(t);
+        match r {
+            Ok(v) => {
+                // path_append
+                if tracking && let Value::Array(p) = &mut self.path {
+                    p.push(k.clone());
+                    self.value_at_path = v.clone();
+                }
+                Some(v)
+            }
+            Err(e) => {
+                if !opt {
+                    self.set_error(e.into_value());
+                }
+                None
+            }
+        }
+    }
+
     /// `INDEX`/`INDEX_OPT` with `subexp_nest` equal to `nest`: `t[k]`, or `None` to
     /// backtrack (with the error set, except for `INDEX_OPT`'s own errors).
     fn region_index(&mut self, t: Value, k: Value, opt: bool, nest: i32) -> Option<Value> {
