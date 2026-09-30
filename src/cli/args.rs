@@ -34,7 +34,7 @@
 //! exist, contains a glob metacharacter and matches at least one path;
 //! otherwise the argument is kept, and it fails to open exactly as in jq.
 
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CString, OsStr};
 use std::io::Read;
 use std::os::raw::{c_char, c_int};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -614,22 +614,9 @@ pub fn dirname(path: &[u8]) -> Vec<u8> {
     }
 }
 
-/// `strerror(errnum)`: the C library's text, which jq prints (Rust's
-/// `io::Error` adds " (os error N)"), in the environment's locale as after
-/// jq's `setlocale(LC_ALL, "")`: glibc translates it for `LC_MESSAGES`
-/// (Apple's libc doesn't translate these).
+/// `strerror(errnum)` as jq prints it: [`crate::jq::platform::strerror`].
 pub fn strerror(errnum: i32) -> Vec<u8> {
-    in_environment_locale(libc::LC_ALL_MASK, || {
-        let mut buf = [0 as c_char; 512];
-        // SAFETY: `buf` is writable for its length; strerror_r (the XSI
-        // version, which the libc crate binds on glibc too) NUL-terminates it.
-        let rc = unsafe { libc::strerror_r(errnum, buf.as_mut_ptr(), buf.len()) };
-        if rc != 0 {
-            return format!("Unknown error: {errnum}").into_bytes();
-        }
-        // SAFETY: NUL-terminated by strerror_r.
-        unsafe { CStr::from_ptr(buf.as_ptr()) }.to_bytes().to_vec()
-    })
+    crate::jq::platform::strerror(errnum)
 }
 
 /// The I/O half of jv_file.c `jv_load_file`: the file's bytes, or jq's

@@ -1,23 +1,18 @@
 //! Port of jq's `jv_file.c`: `jv_load_file`, used by `--slurpfile`,
 //! `--rawfile` and module data imports.
 
-use std::ffi::CStr;
 use std::io::Read;
 use std::path::Path;
 
 use super::unicode::utf8_backtrack;
 use super::{Array, Error, ParseFlags, Parser, Str, Value};
 
-/// `strerror(errno)` text, as jq prints it (not Rust's `io::Error` format).
+/// `strerror(errno)` text, as jq prints it (not Rust's `io::Error` format;
+/// see [`crate::jq::platform::strerror`]). `jv_string_fmt` repairs invalid
+/// UTF-8, as the lossy conversion does.
 fn strerror(e: &std::io::Error) -> String {
     match e.raw_os_error() {
-        Some(code) => {
-            // SAFETY: strerror returns a valid NUL-terminated string that
-            // stays valid until the next strerror call on this thread; we
-            // copy it immediately.
-            let s = unsafe { CStr::from_ptr(libc::strerror(code)) };
-            s.to_string_lossy().into_owned()
-        }
+        Some(code) => String::from_utf8_lossy(&crate::jq::platform::strerror(code)).into_owned(),
         None => e.to_string(),
     }
 }

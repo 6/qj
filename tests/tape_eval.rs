@@ -8,12 +8,39 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// jq on PATH, as an absolute path to the real binary. These tests run it in
+/// temporary directories, where a version manager's shim (mise's `jq` is the
+/// `mise` binary) may pick another jq than this project's, so a shim is
+/// resolved from the checkout first.
+fn jq() -> Option<&'static str> {
+    static JQ: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    JQ.get_or_init(|| {
+        let path = std::env::var_os("PATH")?;
+        let jq = std::env::split_paths(&path)
+            .map(|dir| dir.join("jq"))
+            .find(|p| p.is_file())?;
+        let real = std::fs::canonicalize(&jq).unwrap_or_else(|_| jq.clone());
+        let jq = if real.file_name().is_some_and(|n| n == "mise") {
+            let out = Command::new(&real)
+                .args(["which", "jq"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        } else {
+            jq.to_string_lossy().into_owned()
+        };
+        let ok = Command::new(&jq)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        ok.then_some(jq)
+    })
+    .as_deref()
+}
+
 fn jq_available() -> bool {
-    Command::new("jq")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    jq().is_some()
 }
 
 /// Exit code, stdout, stderr.
@@ -142,7 +169,7 @@ fn check_input(file: Option<(&str, &str)>, stdin: &str) {
             if let Some((name, _)) = file {
                 args.push(name);
             }
-            let want = run("jq", &args, stdin.as_bytes(), dir.path());
+            let want = run(jq().expect("jq"), &args, stdin.as_bytes(), dir.path());
             for threads in [None, Some("1")] {
                 let mut qargs: Vec<&str> = Vec::new();
                 if let Some(t) = threads {
@@ -252,7 +279,7 @@ fn big_outputs_go_out_like_jq() {
                     quoted.join(" ")
                 )
             };
-            let want = String::from_utf8_lossy(&merged(script("jq", ""))).into_owned();
+            let want = String::from_utf8_lossy(&merged(script(jq().expect("jq"), ""))).into_owned();
             for threads in ["", "--threads 1"] {
                 let got = merged(script(qj, threads));
                 let got = String::from_utf8_lossy(&got).replace("qj: ", "jq: ");

@@ -166,7 +166,7 @@ fn run_ours(program: &str, paths: &[OsString], threads: usize) -> (Vec<u8>, Vec<
 }
 
 fn run_jq(program: &str, dir: &std::path::Path, names: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
-    let out = Command::new("jq")
+    let out = jq()
         .current_dir(dir)
         .arg("-c")
         .arg(program)
@@ -253,10 +253,12 @@ fn check(seed: u64, records: usize, weird: usize, threads: usize) -> Result<(), 
 }
 
 fn jq_available() -> bool {
-    Command::new("jq")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "jq-1.8.1")
+    super::jq_binary().is_some()
+}
+
+/// jq 1.8.1 (see [`super::jq_binary`]; only called when it's available).
+fn jq() -> Command {
+    Command::new(super::jq_binary().expect("jq 1.8.1"))
 }
 
 /// Runs `f` on a thread with a jq-sized stack (the VM runs sequential
@@ -432,7 +434,7 @@ fn shared_reader_with_input_builtins_matches_jq() {
             for (n, c) in names.iter().zip(contents.iter()) {
                 std::fs::write(dir.path().join(n), c).unwrap();
             }
-            let mut cmd = Command::new("jq");
+            let mut cmd = jq();
             cmd.current_dir(dir.path()).arg("-c");
             if *null_input {
                 cmd.arg("-n");

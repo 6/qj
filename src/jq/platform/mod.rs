@@ -63,6 +63,9 @@ impl Error {
     /// anything, so a caller that buffers output itself (a `BufWriter`) must flush it
     /// before calling this to match jq on macOS, and must not to match jq on glibc.
     pub fn abort_process(&self) -> ! {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        eprintln!("{}", glibc_assert_text(self.message()));
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
         eprintln!("{}", self.message());
         #[cfg(target_vendor = "apple")]
         {
@@ -72,8 +75,111 @@ impl Error {
             }
             let _ = std::io::stdout().flush();
         }
+        crate::compat::no_core_dump();
         std::process::abort()
     }
+}
+
+/// glibc's `__assert_fail` line for one of jq's `assert()`s: `msg` is the C
+/// locale's (`jq: <file>:<line>: <function>: Assertion `<expr>' failed.`),
+/// and glibc translates that format for `LC_MESSAGES`, in the locale jq's
+/// `setlocale(LC_ALL, "")` chose. So with German messages installed and
+/// `LC_ALL=de_DE.UTF-8`, jq says `... jv_string_indexes: Zusicherung
+/// »JVP_HAS_KIND(j, JV_KIND_STRING)« nicht erfüllt.`. A message of another
+/// shape, or a format this can't fill in, comes back unchanged.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn glibc_assert_text(msg: &str) -> String {
+    unsafe extern "C" {
+        fn dcgettext(
+            domain: *const libc::c_char,
+            msgid: *const libc::c_char,
+            category: libc::c_int,
+        ) -> *mut libc::c_char;
+    }
+    const MSGID: &std::ffi::CStr = c"%s%s%s:%u: %s%sAssertion `%s' failed.\n%n";
+    let Some(args) = assert_parts(msg) else {
+        return msg.to_owned();
+    };
+    // SAFETY: dcgettext returns `msgid` itself or a NUL-terminated translation
+    // that stays valid (the catalog stays loaded); both are copied at once.
+    let format = time::with_env_locale(|| unsafe {
+        std::ffi::CStr::from_ptr(dcgettext(
+            c"libc".as_ptr(),
+            MSGID.as_ptr(),
+            libc::LC_MESSAGES,
+        ))
+        .to_bytes()
+        .to_vec()
+    });
+    if format == MSGID.to_bytes() {
+        return msg.to_owned();
+    }
+    match fill_assert_format(&format, &args) {
+        Some(mut out) => {
+            if out.last() == Some(&b'\n') {
+                out.pop();
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+        None => msg.to_owned(),
+    }
+}
+
+/// `__assert_fail`'s arguments for its format, from the C locale's line:
+/// `__progname`, `": "`, the file, the line, the function, `": "`, the
+/// expression.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn assert_parts(msg: &str) -> Option<[&str; 7]> {
+    let rest = msg.strip_prefix("jq: ")?;
+    let (file, rest) = rest.split_once(':')?;
+    let (line, rest) = rest.split_once(": ")?;
+    let (function, rest) = rest.split_once(": Assertion `")?;
+    let expr = rest.strip_suffix("' failed.")?;
+    let digits = !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit());
+    digits.then_some(["jq", ": ", file, line, function, ": ", expr])
+}
+
+/// A (translated) `__assert_fail` format filled in with `args`: `%s` and `%u`
+/// take the arguments in order (`%N$s` the Nth), `%n` prints nothing and `%%`
+/// is a percent sign. `None` for anything else.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn fill_assert_format(format: &[u8], args: &[&str]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut next = 0;
+    let mut i = 0;
+    while i < format.len() {
+        if format[i] != b'%' {
+            out.push(format[i]);
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let digits = format[j..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let mut arg = None;
+        if digits > 0 && format.get(j + digits) == Some(&b'$') {
+            let n: usize = std::str::from_utf8(&format[j..j + digits])
+                .ok()?
+                .parse()
+                .ok()?;
+            arg = Some(n.checked_sub(1)?);
+            j += digits + 1;
+        }
+        match format.get(j)? {
+            b's' | b'u' => {
+                let k = arg.unwrap_or(next);
+                out.extend_from_slice(args.get(k)?.as_bytes());
+                next = k + 1;
+            }
+            b'n' => {}
+            b'%' => out.push(b'%'),
+            _ => return None,
+        }
+        i = j + 1;
+    }
+    Some(out)
 }
 
 /// What [`Error::abort_process`] calls on Apple targets before aborting, where
@@ -96,6 +202,29 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// `strerror(errnum)`: the C library's message for an `errno`, which jq prints
+/// verbatim (Rust's `io::Error` adds " (os error N)"), in the environment's
+/// locale as after jq's `setlocale(LC_ALL, "")`: glibc translates it for
+/// `LC_MESSAGES` when the language's messages are installed (`jq . missing`
+/// under `LC_ALL=de_DE.UTF-8` says "Datei oder Verzeichnis nicht gefunden");
+/// Apple's libc doesn't translate these.
+pub fn strerror(errnum: i32) -> Vec<u8> {
+    time::with_env_locale(|| {
+        let mut buf = [0 as libc::c_char; 512];
+        // SAFETY: `buf` is writable for its length; strerror_r (the XSI
+        // version, which the libc crate binds on glibc too) NUL-terminates it,
+        // with the C library's own text for an unknown number too.
+        let rc = unsafe { libc::strerror_r(errnum, buf.as_mut_ptr(), buf.len()) };
+        if rc != 0 && buf[0] == 0 {
+            return format!("Unknown error: {errnum}").into_bytes();
+        }
+        // SAFETY: NUL-terminated by strerror_r.
+        unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+            .to_bytes()
+            .to_vec()
+    })
+}
 
 /// C's implicit `double` to `long`/`time_t` conversion, as compilers emit it. It's
 /// undefined behavior in C for NaN and out-of-range values; what the hardware
@@ -123,6 +252,46 @@ pub(crate) fn c_double_to_i32(d: f64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// jq's assert lines on glibc, and the format as glibc's German messages
+    /// translate it (`__assert_fail`, `LC_ALL=de_DE.UTF-8`).
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn glibc_assert_lines_fill_translated_formats() {
+        let line = "jq: src/jv.c:1312: jv_string_indexes: Assertion `JVP_HAS_KIND(j, JV_KIND_STRING)' failed.";
+        let args = assert_parts(line).expect("an assert line");
+        assert_eq!(
+            args,
+            [
+                "jq",
+                ": ",
+                "src/jv.c",
+                "1312",
+                "jv_string_indexes",
+                ": ",
+                "JVP_HAS_KIND(j, JV_KIND_STRING)"
+            ]
+        );
+        let english = fill_assert_format(b"%s%s%s:%u: %s%sAssertion `%s' failed.\n%n", &args);
+        assert_eq!(english, Some(format!("{line}\n").into_bytes()));
+        let german = "%s%s%s:%u: %s%sZusicherung \u{bb}%s\u{ab} nicht erf\u{fc}llt.\n%n";
+        assert_eq!(
+            fill_assert_format(german.as_bytes(), &args).map(String::from_utf8),
+            Some(Ok("jq: src/jv.c:1312: jv_string_indexes: Zusicherung \u{bb}JVP_HAS_KIND(j, JV_KIND_STRING)\u{ab} nicht erf\u{fc}llt.\n".to_owned()))
+        );
+        let positional = fill_assert_format(b"%7$s (%3$s:%4$u)%%", &args);
+        assert_eq!(
+            positional,
+            Some(b"JVP_HAS_KIND(j, JV_KIND_STRING) (src/jv.c:1312)%".to_vec())
+        );
+        assert_eq!(fill_assert_format(b"%d", &args), None);
+        assert_eq!(
+            assert_parts("Assertion failed: (x), function f, file jv.c, line 1."),
+            None
+        );
+        // Without translations (the C locale), the line comes back as it is.
+        assert_eq!(glibc_assert_text(line), line);
+    }
 
     #[test]
     fn c_conversions_truncate_in_range() {

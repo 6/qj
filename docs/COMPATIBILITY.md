@@ -36,22 +36,24 @@ The cases come from three places:
   - command-line cases: options and their errors, exit codes, input and output modes,
     adversarial NDJSON, and the programs qj evaluates on simdjson's tape without building
     values (`corpus/tape.toml`, under every output option)
-- **A ratchet**, `tests/jq_compat/diff_baseline.txt`, which fails the run when any case
-  gets worse.
+- **A ratchet**, `tests/jq_compat/diff_baseline.txt` (`diff_baseline_linux.txt` on
+  Linux), which fails the run when any case gets worse.
 
-Results on macOS (arm64) against jq 1.8.1:
+Results against jq 1.8.1, the same on macOS (arm64, against jq's macOS release binary)
+and on Linux (x86-64 with glibc 2.39, against its Linux release binary, which links glibc
+statically):
 
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 36,186 | 36,175 |
-| **Total** | **39,089** | **39,078** |
+| qj's corpus | 36,222 | 36,211 |
+| **Total** | **39,125** | **39,114** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
 them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
 required is that qj not finish either. Across modes, the counts are 15,483 compact, 6,529
-pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 5,987 command-line cases. The
+pretty, 6,529 file, 4,542 NDJSON, 19 `%%FAIL`, and 6,023 command-line cases. The
 command-line cases include some that merge stdout and stderr into one file or pipe,
 checking that output and error messages interleave exactly as jq's stdio buffering
 interleaves them, and some that start the tool with standard descriptors closed
@@ -70,7 +72,20 @@ Three more runners were removed with the old evaluator: `jq_conformance` (jq.tes
 jq_diff runs in every mode), `conformance_gaps` (jq.test's number-model cases) and
 `cli_conformance` (its command lines are now jq_diff cases, `corpus/cli_basics.toml`).
 
-CI runs jq_diff on Linux too, but only reports there until a Linux baseline is committed.
+CI runs jq_diff on Linux, where it ratchets against `tests/jq_compat/diff_baseline_linux.txt`.
+What jq does there that it doesn't on macOS, qj does too: glibc's libm (for example the last
+bit of `cbrt`), glibc's stdio buffering (the order of output and errors in one file or
+pipe), glibc's `assert()` text, and the x86-64 conversions of out-of-range doubles to
+integers (`halt_error(1e10)`).
+
+The reference on Linux is jq's official 1.8.1 release binary (`jq-linux-amd64`, which
+mise installs). It links glibc statically, and after its `setlocale(LC_ALL, "")` it
+translates glibc's messages for `LC_MESSAGES` (errno texts, such as "Datei oder Verzeichnis
+nicht gefunden", and `assert()` lines) and classifies bytes for `LC_CTYPE`, but formats and
+parses dates in the C locale whatever the environment says. qj does the same on Linux. A
+jq built by a distribution, linked dynamically, can differ: its dates follow the locale,
+as they do on macOS. `corpus/locale.toml` checks this, and CI installs German and
+French messages and a Latin-1 locale for it.
 
 ## Exemptions
 
@@ -97,10 +112,13 @@ CI runs jq_diff on Linux too, but only reports there until a Linux baseline is c
   | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
   | `[1,2] \| try delpaths([[{}]]) catch .` | prints the error, then SIGSEGV | prints the error, exit 0 | prints the error, exit 0 |
   | `delpaths([[{"start":1}],[0]])` over two inputs, e.g. `[1] {}` | the first input's error, then `Assertion failed: (JVP_HAS_KIND(a, JV_KIND_STRING))` on the second, exit 134 | both inputs' errors, exit 5 | both inputs' errors, exit 5 |
+  | `--debug-trace=all` of an instruction that runs with an empty data stack, e.g. the BACKTRACK after `[.[] \| . * 2]`'s APPEND | reads 4 bytes of its stack memory it never wrote as the next stack entry: on macOS they are 0, and nothing more is printed; with glibc they are leftover heap data, and jq prints garbage or dies of SIGSEGV | the trace jq prints on macOS | the same |
 
-  The last two are not reproduced in either mode, because there is nothing to reproduce.
-  Both are the same bug: jq frees the key twice in `jv_dels`' slice-delete error path.
-  In the second, the key is a program constant, so later inputs run on freed memory.
+  The last three are not reproduced in either mode, because there is nothing to reproduce.
+  In the trace, what jq reads is whatever its allocator left in that memory, so jq_diff's
+  `--debug-trace=all` cases stay off it. The two `delpaths` rows are the same bug: jq frees
+  the key twice in `jv_dels`' slice-delete error path. In the second of them, the key is a
+  program constant, so later inputs run on freed memory.
   Whether that kills jq, and how, is decided by the heap, not by the program: `[1,2]` with an empty `{}` dies, while
   `[1]`, `[1,2,3]`, `[1,2,3,4]`, `[range(2)]`, `{"start":"x"}` as the key, and even
   wrapping the same expression in an array (`[[1,2] | try delpaths([[{}]]) catch .]`) all
@@ -110,6 +128,14 @@ CI runs jq_diff on Linux too, but only reports there until a Linux baseline is c
   jq's deliberate aborts, which come from `assert()` and are deterministic, are
   reproduced in **both** modes, including macOS stdio flushing the output produced before
   the abort.
+
+  A reproduced crash is jq's in everything jq_diff compares: the signal, the exit status
+  a shell reports (139 for SIGSEGV, 134 for SIGABRT) and the output lost with it. One thing
+  differs, on Linux systems that collect core dumps: qj tells the kernel not to dump its
+  core first, so a shell reports jq's crash as `Segmentation fault (core dumped)` and qj's
+  as `Segmentation fault`. A core of a deliberate crash shows nothing wrong, and qj's is
+  big: its allocator reserves about 1 GB of address space, which a core handler such as
+  systemd-coredump reads in full (1.5 s a crash on GitHub's runners, 50 ms for jq's).
 
 ## Being exactly jq
 
@@ -160,6 +186,22 @@ can't agree to the last frame, all of them jq's:
 
 So the two agree exactly at the default stack limit in a normal environment, and to
 within about 0.1% otherwise. `src/compat.rs` has the constants and the unit tests.
+
+On Linux/x86-64, jq's release binary (built by gcc) uses 48 bytes a frame, and the kernel
+starts the main thread's stack up to 8 KB below its top at random, so the deepest value
+jq survives moves from run to run, over about 170 levels. Measured 8 times per depth in
+jq_diff's environment:
+
+| `ulimit -s` | jq survives every run to | and no run from | qj, `QJ_JQ_COMPAT=1` |
+|---|--:|--:|--:|
+| 1024 KB | 21,650 | 21,810 | 21,631 |
+| 4096 KB | 87,170 | 87,330 | 87,167 |
+| 8192 KB (the usual default) | 174,575 | 174,725 | 174,548 |
+| 16384 KB (GitHub's runners) | 349,300 | 349,500 | 349,311 |
+
+qj's `(stack_bytes - 10240) / 48` counts the whole 8 KB, so it never survives where jq
+dies either; inside the window it dies where jq only sometimes does. `jv_equal` uses 144
+bytes a frame there. Other Linux targets use the macOS model, unmeasured.
 
 Comparison is the other deep recursion that can overflow jq's stack: `jv_equal` uses
 128 bytes a frame, and jq survives 8,115 levels at 1024 KB, 32,691 at 4096 KB and 65,330

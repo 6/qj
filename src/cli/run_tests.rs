@@ -79,12 +79,7 @@ pub fn jq_testsuite(lib_dirs: Option<&[Vec<u8>]>, verbose: bool, args: &[Vec<u8>
         if args[i] == b"--skip" || args[i] == b"--take" {
             let Some(n) = args.get(i + 1) else {
                 // atoi(argv[argc]) is atoi(NULL): jq dies of a segfault.
-                // SAFETY: restoring the default action and raising the signal.
-                unsafe {
-                    libc::signal(libc::SIGSEGV, libc::SIG_DFL);
-                    libc::raise(libc::SIGSEGV);
-                }
-                return Outcome::Exit(139);
+                crate::compat::die_by_signal(libc::SIGSEGV);
             };
             if args[i] == b"--skip" {
                 skip = atoi(n);

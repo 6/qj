@@ -16,6 +16,8 @@ jobs:
     # iai-callgrind) take far longer than the old 15 minutes on hosted runners.
     timeout-minutes: 60
     strategy:
+      # Let each OS finish, so a failure on one still shows the other's results.
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.os }}
@@ -41,15 +43,24 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      - name: Install locales
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          # German (with glibc's German messages) and Latin-1 French, for the
+          # locale tests and jq_diff's corpus/locale.toml.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq language-pack-de-base language-pack-fr-base
+          sudo localedef -i fr_FR -f ISO-8859-1 fr_FR.ISO-8859-1
+
       - name: Test
         run: cargo test --release
 
       - name: Compat suites
         if: matrix.os == 'ubuntu-24.04'
         run: |
-          # Strict differential run against jq 1.8.1. It ratchets against
-          # tests/jq_compat/diff_baseline_linux.txt; until that file exists it
-          # only reports (commit baseline_candidate.txt from the artifact).
+          # Strict differential run against jq 1.8.1, ratcheting against
+          # tests/jq_compat/diff_baseline_linux.txt. After a fix, record the
+          # gains from the jq-diff-linux artifact's baseline_candidate.txt.
           JQ_DIFF_JQ="$(mise which jq)" cargo test --release jq_diff -- --ignored
 
       - name: Upload jq_diff results

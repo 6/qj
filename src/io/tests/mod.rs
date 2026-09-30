@@ -18,12 +18,46 @@ mod vm;
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::io::reader::{InputReader, ReaderOptions};
 use crate::io::source::{InputMessage, Opened, Opener};
 use crate::jq::value::{DumpOptions, Value, dump_string};
+
+/// The jq 1.8.1 binary on PATH, as an absolute path (`None` if `jq` on PATH
+/// isn't 1.8.1).
+///
+/// The live tests run jq in temporary directories, where a version manager's
+/// shim may not run this project's jq: mise's `jq` is the `mise` binary, which
+/// picks the version from the directory it runs in, and outside the checkout
+/// it falls back to whatever else is on PATH (the system's jq 1.7.1 on CI). So
+/// a shim is resolved to the real binary here, from the checkout.
+pub(crate) fn jq_binary() -> Option<&'static Path> {
+    static JQ: OnceLock<Option<PathBuf>> = OnceLock::new();
+    JQ.get_or_init(|| {
+        let path = std::env::var_os("PATH")?;
+        let mut jq = std::env::split_paths(&path)
+            .map(|dir| dir.join("jq"))
+            .find(|p| p.is_file())?;
+        let real = std::fs::canonicalize(&jq).unwrap_or_else(|_| jq.clone());
+        if real.file_name().is_some_and(|n| n == "mise") {
+            let out = std::process::Command::new(&real)
+                .args(["which", "jq"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .ok()?;
+            jq = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        }
+        let out = std::process::Command::new(&jq)
+            .arg("--version")
+            .output()
+            .ok()?;
+        (String::from_utf8_lossy(&out.stdout).trim() == "jq-1.8.1").then_some(jq)
+    })
+    .as_deref()
+}
 
 /// Strict structural identity: same kinds, same number literal text and
 /// double bits, same string bytes, same key order.

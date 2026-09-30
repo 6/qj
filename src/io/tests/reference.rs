@@ -139,8 +139,9 @@ impl RefInput {
             .extend_from_slice(b"jq: error: Could not open file ");
         self.messages
             .extend_from_slice(crate::io::source::os_bytes(name));
-        self.messages
-            .extend_from_slice(format!(": {}\n", strerror(&e)).as_bytes());
+        self.messages.extend_from_slice(b": ");
+        self.messages.extend_from_slice(&strerror(&e));
+        self.messages.push(b'\n');
         self.failures += 1;
     }
 
@@ -155,8 +156,9 @@ impl RefInput {
                 && f.error
             {
                 let e = std::io::Error::from_raw_os_error(f.errno);
-                self.messages
-                    .extend_from_slice(format!("jq: error: {}\n", strerror(&e)).as_bytes());
+                self.messages.extend_from_slice(b"jq: error: ");
+                self.messages.extend_from_slice(&strerror(&e));
+                self.messages.push(b'\n');
             }
             if let Some(mut f) = self.current.take()
                 && f.is_stdin

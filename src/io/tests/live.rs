@@ -27,12 +27,8 @@ const LOOP: &str = r#"def loop($n):
   end;
 loop(0)"#;
 
-fn jq() -> Option<&'static str> {
-    static JQ: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
-    *JQ.get_or_init(|| {
-        let out = Command::new("jq").arg("--version").output().ok()?;
-        (String::from_utf8_lossy(&out.stdout).trim() == "jq-1.8.1").then_some("jq")
-    })
+fn jq() -> Option<&'static Path> {
+    super::jq_binary()
 }
 
 /// An input for a scenario.

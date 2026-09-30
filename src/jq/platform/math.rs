@@ -120,12 +120,10 @@ mod c {
         pub fn atan(x: f64) -> f64;
         pub fn atan2(y: f64, x: f64) -> f64;
         pub fn atanh(x: f64) -> f64;
-        pub fn cbrt(x: f64) -> f64;
         pub fn cos(x: f64) -> f64;
         pub fn cosh(x: f64) -> f64;
         pub fn exp(x: f64) -> f64;
         pub fn exp2(x: f64) -> f64;
-        pub fn floor(x: f64) -> f64;
         pub fn hypot(x: f64, y: f64) -> f64;
         pub fn log(x: f64) -> f64;
         pub fn log10(x: f64) -> f64;
@@ -134,33 +132,77 @@ mod c {
         pub fn remainder(x: f64, y: f64) -> f64;
         pub fn sin(x: f64) -> f64;
         pub fn sinh(x: f64) -> f64;
-        pub fn sqrt(x: f64) -> f64;
         pub fn tan(x: f64) -> f64;
         pub fn tanh(x: f64) -> f64;
         pub fn tgamma(x: f64) -> f64;
-        pub fn ceil(x: f64) -> f64;
-        pub fn copysign(x: f64, y: f64) -> f64;
         pub fn erf(x: f64) -> f64;
         pub fn erfc(x: f64) -> f64;
         pub fn expm1(x: f64) -> f64;
-        pub fn fabs(x: f64) -> f64;
-        pub fn fdim(x: f64, y: f64) -> f64;
-        pub fn fma(x: f64, y: f64, z: f64) -> f64;
-        pub fn fmax(x: f64, y: f64) -> f64;
-        pub fn fmin(x: f64, y: f64) -> f64;
-        pub fn fmod(x: f64, y: f64) -> f64;
         pub fn lgamma(x: f64) -> f64;
         pub fn log1p(x: f64) -> f64;
         pub fn logb(x: f64) -> f64;
         pub fn nearbyint(x: f64) -> f64;
         pub fn nextafter(x: f64, y: f64) -> f64;
-        pub fn rint(x: f64) -> f64;
-        pub fn round(x: f64) -> f64;
         pub fn scalbln(x: f64, n: c_long) -> f64;
-        pub fn trunc(x: f64) -> f64;
         pub fn ldexp(x: f64, n: c_int) -> f64;
         pub fn modf(x: f64, iptr: *mut f64) -> f64;
         pub fn frexp(x: f64, exp: *mut c_int) -> f64;
+    }
+
+    // The C99 functions Rust's `compiler_builtins` also defines. It does
+    // so weakly, but on Linux the linker meets `compiler_builtins` before
+    // libm, so a plain `cbrt` would bind to Rust's port of musl/CORE-MATH
+    // instead of glibc's, and those differ from glibc (and so from jq) in
+    // `cbrt`'s last bit and in which zero `fmax`/`fmin` return for `0` and
+    // `-0`. glibc exports each of them a second time under its `_Float64`
+    // name (glibc 2.27 and later), which nothing else defines.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe extern "C" {
+        #[link_name = "cbrtf64"]
+        pub fn cbrt(x: f64) -> f64;
+        #[link_name = "ceilf64"]
+        pub fn ceil(x: f64) -> f64;
+        #[link_name = "copysignf64"]
+        pub fn copysign(x: f64, y: f64) -> f64;
+        #[link_name = "fabsf64"]
+        pub fn fabs(x: f64) -> f64;
+        #[link_name = "fdimf64"]
+        pub fn fdim(x: f64, y: f64) -> f64;
+        #[link_name = "floorf64"]
+        pub fn floor(x: f64) -> f64;
+        #[link_name = "fmaf64"]
+        pub fn fma(x: f64, y: f64, z: f64) -> f64;
+        #[link_name = "fmaxf64"]
+        pub fn fmax(x: f64, y: f64) -> f64;
+        #[link_name = "fminf64"]
+        pub fn fmin(x: f64, y: f64) -> f64;
+        #[link_name = "fmodf64"]
+        pub fn fmod(x: f64, y: f64) -> f64;
+        #[link_name = "rintf64"]
+        pub fn rint(x: f64) -> f64;
+        #[link_name = "roundf64"]
+        pub fn round(x: f64) -> f64;
+        #[link_name = "sqrtf64"]
+        pub fn sqrt(x: f64) -> f64;
+        #[link_name = "truncf64"]
+        pub fn trunc(x: f64) -> f64;
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    unsafe extern "C" {
+        pub fn cbrt(x: f64) -> f64;
+        pub fn ceil(x: f64) -> f64;
+        pub fn copysign(x: f64, y: f64) -> f64;
+        pub fn fabs(x: f64) -> f64;
+        pub fn fdim(x: f64, y: f64) -> f64;
+        pub fn floor(x: f64) -> f64;
+        pub fn fma(x: f64, y: f64, z: f64) -> f64;
+        pub fn fmax(x: f64, y: f64) -> f64;
+        pub fn fmin(x: f64, y: f64) -> f64;
+        pub fn fmod(x: f64, y: f64) -> f64;
+        pub fn rint(x: f64) -> f64;
+        pub fn round(x: f64) -> f64;
+        pub fn sqrt(x: f64) -> f64;
+        pub fn trunc(x: f64) -> f64;
     }
 
     // XSI and BSD extras.

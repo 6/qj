@@ -173,25 +173,36 @@ fn a_module_imported_twice_is_not_a_cycle() {
 }
 
 /// jq's `jv_free` recurses once per level of nesting. The depths here are far
-/// from the threshold the default 8 MB stack gives (about 130,000; see
-/// `qj::compat::free_depth_limit`), so the test doesn't depend on the exact
-/// model.
+/// from the threshold the stack limit gives (`qj::compat::free_frame_budget`:
+/// about 130,000 levels at macOS's default 8 MB, twice that at the 16 MB of
+/// GitHub's Linux runners), so the test doesn't depend on the exact model or
+/// on `ulimit -s`.
 #[test]
 fn deeply_nested_values_segfault_only_in_compat_mode() {
-    let deep = "reduce range(200000) as $i (null;[.]) | length";
-    let shallow = "reduce range(20000) as $i (null;[.]) | length";
+    let Some(budget) = qj::compat::free_frame_budget() else {
+        // An unlimited stack: jq doesn't overflow either.
+        return;
+    };
+    let deep = format!(
+        "reduce range({}) as $i (null;[.]) | length",
+        budget + budget / 2
+    );
+    let shallow = format!(
+        "reduce range({}) as $i (null;[.]) | length",
+        (budget / 4).min(20_000)
+    );
 
-    let plain = run(false, &["-nc", deep]);
+    let plain = run(false, &["-nc", &deep]);
     assert_eq!(code(&plain), Some(0), "{}", stderr(&plain));
     assert_eq!(stdout(&plain), "1\n");
 
-    let compat = run(true, &["-nc", deep]);
+    let compat = run(true, &["-nc", &deep]);
     assert_eq!(signal(&compat), Some(libc::SIGSEGV));
     // jq's stdout buffer is lost when it crashes, so nothing is printed.
     assert_eq!(stdout(&compat), "");
 
     // Not deep enough: compat mode changes nothing.
-    let ok = run(true, &["-nc", shallow]);
+    let ok = run(true, &["-nc", &shallow]);
     assert_eq!(code(&ok), Some(0), "{}", stderr(&ok));
     assert_eq!(stdout(&ok), "1\n");
 }

@@ -64,6 +64,19 @@ name = "deep-value-discarded"
 args = ["-nc", "reduce range(200000) as $i (null;[.]) | empty"]
 env = { QJ_JQ_COMPAT = "1" }
 
+# Past a 16 MB stack too (GitHub's Linux runners have `ulimit -s 16384`, where
+# jq's Linux/x86-64 binary survives about 349,000 levels, and macOS's about
+# 262,000).
+[[case]]
+name = "deep-value-freed-by-a-builtin-past-16mb"
+args = ["-nc", "reduce range(600000) as $i (null;[.]) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "deep-value-printed-past-16mb"
+args = ["-nc", "reduce range(600000) as $i (null;[.])"]
+env = { QJ_JQ_COMPAT = "1" }
+
 # Input can't get there: jq's parser stops at MAX_PARSING_DEPTH (10,000).
 [[case]]
 name = "deep-input-hits-the-parser-limit"
