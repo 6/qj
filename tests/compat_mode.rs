@@ -11,6 +11,8 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use qj::compat::Site;
+
 /// Runs qj with `args` in `dir`, optionally in compat mode.
 fn run_in(dir: &Path, compat: bool, args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
@@ -228,6 +230,189 @@ fn the_crash_depth_follows_the_stack_limit() {
         } else {
             assert_eq!(code(&o), Some(0), "depth {n} should not crash");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// jq's other recursions over values and paths
+// ---------------------------------------------------------------------------
+
+/// A program nesting `n` arrays (or objects) around a `null` in `$v`, or
+/// building a path of `n` elements in `$p`.
+fn deep(n: u64, obj: bool) -> String {
+    if obj {
+        format!("reduce range({n}) as $i (null;{{a:.}})")
+    } else {
+        format!("reduce range({n}) as $i (null;[.])")
+    }
+}
+
+/// Programs that drive one of jq's recursions `n` levels deep, one per
+/// [`Site`], each answering `true`, a number, or nothing when it fits.
+fn program(site: Site, n: u64) -> String {
+    let v = deep(n, matches!(site, Site::Merge));
+    match site {
+        // `n + 1` frees: one per array, one for the null.
+        Site::Free => format!("{v} | length"),
+        Site::Compare => format!("({v}) as $a | ({v}) as $b | $a == $b"),
+        Site::Contains => format!("({v}) as $x | $x | contains($x)"),
+        Site::Merge => format!("({v}) as $x | ($x * $x) | length"),
+        Site::Setpath => format!("[range({n})|0] as $p | null | setpath($p; 1) | length"),
+        // The value has to be as deep as the path for jq to descend it.
+        Site::Delpaths => format!(
+            "({}) as $x | [$x] | delpaths([[0] + [range({n})|0]]) | length",
+            deep(n + 2, false)
+        ),
+    }
+}
+
+/// Every site, with a name for the failure messages and how many frames
+/// [`program`] costs jq for `n` levels: `n + 1` everywhere but the merge,
+/// which stops at the innermost object rather than descending into the
+/// `null` below it.
+const SITES: &[(Site, &str, u64)] = &[
+    (Site::Free, "free", 1),
+    (Site::Compare, "compare", 1),
+    (Site::Contains, "contains", 1),
+    (Site::Merge, "merge", 0),
+    (Site::Setpath, "setpath", 1),
+    (Site::Delpaths, "delpaths", 1),
+];
+
+/// Each of jq's recursions has a threshold of its own, which compat mode
+/// reproduces and the default has no reason to: the deepest value the site's
+/// budget allows answers, and one level more dies.
+///
+/// The depths come from the model rather than from a constant, so the test
+/// follows `ulimit -s` (`qj::compat::Site::frame_budget`).
+#[test]
+fn every_recursion_has_its_own_crash_depth_in_compat_mode() {
+    for &(site, name, extra) in SITES {
+        let Some(budget) = site.frame_budget() else {
+            continue; // an unlimited stack: jq doesn't overflow either
+        };
+        assert!(budget > 1000, "{name}: implausible budget {budget}");
+        let deepest = budget - extra;
+        for (n, dies) in [(deepest, false), (deepest + 1, true)] {
+            let prog = program(site, n);
+            let o = run(true, &["-nc", &prog]);
+            if dies {
+                assert_eq!(
+                    signal(&o),
+                    Some(libc::SIGSEGV),
+                    "{name} at {n}: should crash ({:?}, {})",
+                    o.status,
+                    stderr(&o)
+                );
+                // jq's buffered stdout goes with it.
+                assert_eq!(stdout(&o), "", "{name} at {n}");
+            } else {
+                assert_eq!(code(&o), Some(0), "{name} at {n}: {}", stderr(&o));
+            }
+            // Without the variable qj answers at either depth.
+            let plain = run(false, &["-nc", &prog]);
+            assert_eq!(code(&plain), Some(0), "{name} at {n}: {}", stderr(&plain));
+        }
+    }
+}
+
+/// The sites are independent: a value deep enough to kill jq comparing it
+/// still dies comparing it even though freeing it would have been fine, and
+/// one that survives every site's threshold survives the whole program.
+#[test]
+fn a_value_between_two_thresholds_dies_at_the_lower_one() {
+    let (Some(compare), Some(free)) = (Site::Compare.frame_budget(), Site::Free.frame_budget())
+    else {
+        return;
+    };
+    // jv_equal's frame is twice jv_free's, so there is always a range of
+    // depths that only the comparison cannot survive.
+    assert!(compare < free, "{compare} should be below {free}");
+    let between = (compare + free) / 2;
+    let compared = run(true, &["-nc", &program(Site::Compare, between)]);
+    assert_eq!(
+        signal(&compared),
+        Some(libc::SIGSEGV),
+        "comparing {between}"
+    );
+    // The same value, only freed: no crash.
+    let freed = run(true, &["-nc", &program(Site::Free, between)]);
+    assert_eq!(
+        code(&freed),
+        Some(0),
+        "freeing {between}: {}",
+        stderr(&freed)
+    );
+    assert_eq!(stdout(&freed), "1\n");
+}
+
+/// Only the depth jq's traversal reaches counts. `jv_equal` answers from the
+/// pointer when both sides are the same allocation, and stops at the first
+/// difference, so these never recurse however deep the value is.
+#[test]
+fn comparisons_that_jq_answers_without_recursing_do_not_crash() {
+    let (Some(compare), Some(free)) = (Site::Compare.frame_budget(), Site::Free.frame_budget())
+    else {
+        return;
+    };
+    // Well past the comparison's threshold, and short of the one for freeing
+    // the value at the end of the program (which is not what is being tested
+    // here).
+    let v = deep((compare + free) / 2, false);
+    for (prog, want) in [
+        // jv_equal's shortcut for one allocation. (jv_cmp has no such
+        // shortcut, so `[$x, $x] | sort` does recurse, and crashes.)
+        (format!("({v}) as $x | $x == $x"), "true\n"),
+        (format!("({v}) as $x | [$x, $x] | .[0] == .[1]"), "true\n"),
+        (format!("({v}) as $x | [$x] | index([$x])"), "0\n"),
+        // Lengths that differ: unequal before an element is looked at.
+        (
+            format!("({v}) as $x | [[$x], [$x, 1]] | .[0] == .[1]"),
+            "false\n",
+        ),
+        // jv_cmp stops at the first element that differs.
+        (
+            format!("({v}) as $x | [[1, $x], [2, $x]] | .[0] < .[1]"),
+            "true\n",
+        ),
+        // jv_object_merge_recursive descends only where both sides are
+        // objects.
+        (
+            format!("({v}) as $x | ({{a:1}} * {{a:$x}}) | length"),
+            "1\n",
+        ),
+    ] {
+        let o = run(true, &["-nc", &prog]);
+        assert_eq!(code(&o), Some(0), "{prog}: {}", stderr(&o));
+        assert_eq!(stdout(&o), want, "{prog}");
+    }
+}
+
+/// `jv_getpath` is jq's one path recursion that is a tail call, which both
+/// release compilers turn into a loop: no path is long enough to overflow it,
+/// however small the stack.
+#[test]
+fn getpath_does_not_crash_however_long_the_path_is() {
+    let Some(budget) = Site::Setpath.frame_budget() else {
+        return;
+    };
+    let n = budget * 4;
+    for (prog, want) in [
+        (
+            format!("[range({n})|0] as $p | null | getpath($p)"),
+            "null\n",
+        ),
+        (
+            format!(
+                "({}) as $x | [range({n})|0] as $p | $x | getpath($p)",
+                deep(20, false)
+            ),
+            "null\n",
+        ),
+    ] {
+        let o = run(true, &["-nc", &prog]);
+        assert_eq!(code(&o), Some(0), "{prog}: {}", stderr(&o));
+        assert_eq!(stdout(&o), want, "{prog}");
     }
 }
 

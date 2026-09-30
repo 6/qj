@@ -94,6 +94,253 @@ name = "not-deep-enough-to-crash-printed"
 args = ["-nc", "reduce range(100000) as $i (null;[.]) | tostring | length"]
 env = { QJ_JQ_COMPAT = "1" }
 
+# ---------------------------------------------------------------------------
+# jq's other recursions over values and paths (`Site` in src/compat.rs). Each
+# has its own frame size, so each has its own threshold; the depths here are
+# far from every one of them on both platforms, so what jq does is the same on
+# every run:
+#
+#  * 600,000 is past every model at every stack limit, on macOS and on the
+#    16 MB stacks of GitHub's Linux runners: both tools die.
+#  * 20,000 is short of every model at 8 MB or more: both tools answer.
+#  * the depths in between are past some models and short of others, which is
+#    what shows that each site has a threshold of its own. They are chosen
+#    with thousands of levels of room on both platforms, so the answer never
+#    depends on which one is running (jq's Linux binary starts its stack up to
+#    8 KB below the top at random, which moves its thresholds by about 50
+#    levels).
+# ---------------------------------------------------------------------------
+
+# jv_setpath recurses once per path element, whatever the value looks like.
+[[case]]
+name = "setpath-with-a-path-past-every-model"
+args = ["-nc", "[range(600000)|0] as $p | null | setpath($p; 1) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "setpath-with-a-short-path"
+args = ["-nc", "[range(20000)|0] as $p | null | setpath($p; 1) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# Assignment is setpath too, with the same threshold.
+[[case]]
+name = "assignment-through-a-path-past-every-model"
+args = ["-nc", "[range(600000)|0] as $p | null | (getpath($p) = 1) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# Past the 8 MB threshold, short of the 16 MB one: jq dies on macOS and
+# answers on GitHub's Linux runners, and so does qj.
+[[case]]
+name = "setpath-with-a-path-past-the-8mb-model"
+args = ["-nc", "[range(80000)|\"a\"] as $p | null | setpath($p; 1) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# getpath is jq's one *tail* call through a path: both compilers turn it into
+# a loop, so no path is long enough to overflow it.
+[[case]]
+name = "getpath-through-a-very-long-path"
+args = ["-nc", "[range(600000)|0] as $p | null | getpath($p)"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "getpath-through-a-long-path-into-a-value"
+args = [
+    "-nc",
+    "(reduce range(20000) as $i (null;[.])) as $v | [range(19990)|0] as $p | $v | getpath($p) | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+# delpaths_sorted recurses once per level of the paths it groups, and only as
+# far as the value has children.
+[[case]]
+name = "delpaths-with-a-path-past-every-model"
+args = [
+    "-nc",
+    "(reduce range(600000) as $i (null;[.])) as $v | [$v] | delpaths([[0] + [range(600000)|0]]) | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "delpaths-with-a-short-path"
+args = [
+    "-nc",
+    "(reduce range(20000) as $i (null;[.])) as $v | [$v] | delpaths([[0] + [range(19000)|0]]) | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "delpaths-with-a-path-past-the-8mb-model"
+args = [
+    "-nc",
+    "(reduce range(60000) as $i (null;[.])) as $v | [$v] | delpaths([[0] + [range(50000)|0]]) | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+# jv_object_merge_recursive (object `*`) descends where both sides are
+# objects.
+[[case]]
+name = "merge-past-every-model"
+args = ["-nc", "(reduce range(600000) as $i (null;{a:.})) as $v | ($v * $v) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "merge-of-shallow-objects"
+args = ["-nc", "(reduce range(20000) as $i (null;{a:.})) as $v | ($v * $v) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "merge-past-the-8mb-model"
+args = ["-nc", "(reduce range(100000) as $i (null;{a:.})) as $v | ($v * $v) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# Only where both sides are objects: an array on one side stops the descent,
+# so this one is nowhere near the threshold.
+[[case]]
+name = "merge-stops-where-a-side-is-not-an-object"
+args = ["-nc", "(reduce range(600000) as $i (null;{a:.})) as $v | ({a:1} * {a:$v}) | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# jv_contains searches the elements of an array, so it reaches the depth of
+# the attempts it makes.
+[[case]]
+name = "contains-past-every-model"
+args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | $v | contains($v)"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "contains-shallow"
+args = ["-nc", "(reduce range(20000) as $i (null;[.])) as $v | $v | contains($v)"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "inside-past-the-8mb-model"
+args = ["-nc", "(reduce range(100000) as $i (null;{a:.})) as $v | $v | inside($v)"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# jv_equal and jv_cmp: two values built separately, so nothing is shared and
+# the comparison goes all the way down.
+[[case]]
+name = "equal-past-every-model"
+args = [
+    "-nc",
+    "(reduce range(600000) as $i (null;[.])) as $a | (reduce range(600000) as $i (null;[.])) as $b | $a == $b",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "equal-shallow"
+args = [
+    "-nc",
+    "(reduce range(20000) as $i (null;[.])) as $a | (reduce range(20000) as $i (null;[.])) as $b | $a == $b",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+# Past the comparison model but short of jv_free's: the comparison is what
+# kills jq, and qj dies there too rather than later.
+[[case]]
+name = "equal-past-the-8mb-comparison-model"
+args = [
+    "-nc",
+    "(reduce range(100000) as $i (null;[.])) as $a | (reduce range(100000) as $i (null;[.])) as $b | $a == $b",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "less-than-past-the-8mb-comparison-model"
+args = [
+    "-nc",
+    "(reduce range(100000) as $i (null;{a:.})) as $a | (reduce range(100000) as $i (null;{a:.})) as $b | $a < $b",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "sort-past-every-model"
+args = [
+    "-nc",
+    "[(reduce range(600000) as $i (null;[.])), (reduce range(600000) as $i (null;[.]))] | sort | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "sort-shallow"
+args = [
+    "-nc",
+    "[(reduce range(20000) as $i (null;[.])), (reduce range(20000) as $i (null;[.]))] | sort | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "group-by-past-the-8mb-comparison-model"
+args = [
+    "-nc",
+    "[(reduce range(100000) as $i (null;[.])), (reduce range(100000) as $i (null;[.]))] | group_by(.) | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "unique-past-the-8mb-comparison-model"
+args = [
+    "-nc",
+    "[(reduce range(100000) as $i (null;[.])), (reduce range(100000) as $i (null;[.]))] | unique | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+# Array subtraction and `indices` compare element by element with jv_equal.
+[[case]]
+name = "array-subtraction-past-the-8mb-comparison-model"
+args = [
+    "-nc",
+    "[(reduce range(100000) as $i (null;[.]))] - [(reduce range(100000) as $i (null;[.]))] | length",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+# jv_equal answers from the pointer when both sides are the same allocation,
+# so comparing a value with itself never recurses however deep it is.
+[[case]]
+name = "equal-to-itself-takes-jqs-shortcut"
+args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | $v == $v"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "equal-to-a-copy-of-itself-takes-jqs-shortcut"
+args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | [$v, $v] | .[0] == .[1]"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "index-of-itself-takes-jqs-shortcut"
+args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | [$v] | index([$v])"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# jv_cmp has no such shortcut, so sorting a value against itself does recurse:
+# jq dies where `==` on the same two values answers immediately.
+[[case]]
+name = "sorting-one-value-with-itself-has-no-shortcut"
+args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | [$v, $v] | sort | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "unique-of-one-value-with-itself-has-no-shortcut"
+args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | [$v, $v] | unique | length"]
+env = { QJ_JQ_COMPAT = "1" }
+
+# Values of different lengths are unequal before anything is looked at, and
+# arrays compare lexically, so the first element decides here.
+[[case]]
+name = "equal-stops-at-a-length-that-differs"
+args = [
+    "-nc",
+    "(reduce range(600000) as $i (null;[.])) as $v | [[$v], [$v, 1]] | .[0] == .[1]",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "compare-stops-at-the-first-difference"
+args = [
+    "-nc",
+    "(reduce range(600000) as $i (null;[.])) as $v | [[1, $v], [2, $v]] | .[0] < .[1]",
+]
+env = { QJ_JQ_COMPAT = "1" }
+
 # jq_test.c reads the argument after --skip with atoi(argv[i+1]), which is
 # atoi(NULL) at the end of argv. (qj does this in every mode.)
 [[case]]
