@@ -44,14 +44,14 @@ Results on macOS (arm64) against jq 1.8.1:
 | Cases | Count | Byte-exact (stdout, exit code, stderr) |
 |---|--:|--:|
 | jq's own suites | 2,903 | **2,903 (100%)** |
-| qj's corpus | 18,602 | 18,591 |
-| **Total** | **21,505** | **21,494** |
+| qj's corpus | 30,706 | 30,695 |
+| **Total** | **33,609** | **33,598** |
 
 The 7 cases that differ are all qj's own help, version and usage text; see
 [Exemptions](#exemptions). Four more are neither matched nor missed: jq never finishes
 them (`QJ_JQ_COMPAT=1` with a `nan` path element in `delpaths`), and all that can be
-required is that qj not finish either. Across modes, the counts are 11,244 compact, 2,290
-pretty, 2,290 file, 1,455 NDJSON, 19 `%%FAIL`, and 4,207 command-line cases. The
+required is that qj not finish either. Across modes, the counts are 14,419 compact, 5,465
+pretty, 5,465 file, 4,034 NDJSON, 19 `%%FAIL`, and 4,207 command-line cases. The
 command-line cases include some that merge stdout and stderr into one file or pipe,
 checking that output and error messages interleave exactly as jq's stdio buffering
 interleaves them, and some that start the tool with standard descriptors closed
