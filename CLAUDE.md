@@ -274,9 +274,9 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
 - `QJ_INPUT=util` — read input with the CLI's plain `util.c` port instead of `src/io`'s reader
   (A/B checks).
 - `QJ_NO_TAPE=1` — run every program on built values: turns off the evaluation of simple
-  programs (paths, `.[]`, `.a?`, `.[]?`, `length`, `keys`, `map`, `{...}`, `def f: ...;`,
-  `select(... == c and ...)`, `select(... > c)`) on simdjson's tape (`src/io/tape_eval.rs`;
-  A/B checks).
+  programs (paths, `.[]`, `.a?`, `.[]?`, `length`, `keys`, `map`, `add` of numbers, `{...}`,
+  `def f: ...;`, `select(... == c and ...)`, `select(... > c)`) on simdjson's tape
+  (`src/io/tape_eval.rs`; A/B checks).
 - `QJ_ENGINE_STATS=1` — after a parallel run, print the engine's counters to stderr.
 - `--threads N` — worker threads for the engine (default: all non-efficiency cores); 0 or 1
   runs sequentially. Records always run sequentially for -n, -s, -R, --seq, --stream,

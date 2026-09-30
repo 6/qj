@@ -94,6 +94,10 @@ const PROGRAMS: &[&str] = &[
     ".a.b[] | select(. >= 1.5)",
     ".arr[] | select(.a == 1 and .b != null)",
     ".arr[] | select(.a == \"x\" or (.b | not))",
+    ".a.b | add",
+    "[.arr[] | .a] | add",
+    "add(.k1, .k2)",
+    "[.[] | length] | add",
 ];
 
 const OPTIONS: &[&[&str]] = &[

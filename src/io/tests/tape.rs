@@ -325,6 +325,19 @@ const PROGRAMS: &[&str] = &[
     "select(.b and .c and .a)",
 ];
 
+/// Programs the tape evaluates only on some inputs, declining on others
+/// where jq succeeds (`add` of strings, arrays or objects): whenever they
+/// don't decline, their outputs must be the VM's.
+const PARTIAL_PROGRAMS: &[&str] = &[
+    "add",
+    "map(.a) | add",
+    "[.[] | length] | add",
+    "add(.[] | .a?)",
+    "[.[] | .b] | add | length",
+    "{s: add(.[]?)}",
+    "def add: .a; add",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Outcome {
     /// simdjson rejected the text.
@@ -438,12 +451,14 @@ fn evaluates_programs_like_the_vm() {
     let mut counts = std::collections::HashMap::new();
     let mut declined = Vec::new();
     let mut tally = |o: Outcome, program: &str, text: &[u8]| {
-        *counts.entry(o).or_insert(0usize) += 1;
-        if o == Outcome::Declined && declined.len() < 20 {
+        let partial = PARTIAL_PROGRAMS.contains(&program);
+        *counts.entry((o, partial)).or_insert(0usize) += 1;
+        if o == Outcome::Declined && !partial && declined.len() < 20 {
             declined.push(format!("{program} on {}", String::from_utf8_lossy(text)));
         }
     };
-    for program in PROGRAMS {
+    let programs = || PROGRAMS.iter().chain(PARTIAL_PROGRAMS);
+    for program in programs() {
         for input in inputs {
             let o = check_eval(&mut simd, program, input.as_bytes(), &layouts);
             tally(o, program, input.as_bytes());
@@ -457,12 +472,24 @@ fn evaluates_programs_like_the_vm() {
             weird: 0,
         };
         g.value(&mut text, 0, case % 2 == 0);
-        for program in PROGRAMS {
+        for program in programs() {
             let o = check_eval(&mut simd, program, &text, &layouts);
             tally(o, program, &text);
         }
     }
-    let evaluated = counts.get(&Outcome::Evaluated).copied().unwrap_or(0);
+    let evaluated = counts
+        .get(&(Outcome::Evaluated, false))
+        .copied()
+        .unwrap_or(0);
+    // The partial programs are evaluated sometimes.
+    assert!(
+        counts
+            .get(&(Outcome::Evaluated, true))
+            .copied()
+            .unwrap_or(0)
+            > rounds(3000),
+        "{counts:?}"
+    );
     // Declining where jq succeeds is only a missed shortcut, but it should be
     // rare: only documents with huge containers.
     assert!(declined.is_empty(), "{counts:?}: {declined:#?}");
@@ -544,7 +571,7 @@ fn fuzz_check_on_generated_inputs() {
 
 #[test]
 fn only_simple_programs_qualify() {
-    for p in PROGRAMS {
+    for p in PROGRAMS.iter().chain(PARTIAL_PROGRAMS) {
         assert!(TapeProgram::new(p.as_bytes()).is_some(), "{p}");
     }
     for p in [

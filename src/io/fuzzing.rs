@@ -341,6 +341,8 @@ pub const TAPE_PROGRAMS: &[&str] = &[
     "select(0 < .a)",
     "select(.a and .b)",
     "map(select(. == 1 or (. | not)))",
+    "add",
+    "map(.a) | add",
 ];
 
 /// The tape evaluator (`super::tape_eval`) against the VM: `data[0]` picks

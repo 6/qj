@@ -1,6 +1,6 @@
 # Programs qj evaluates on simdjson's tape, without building values
 # (src/io/tape_eval.rs): paths, `.[]`, pipes, `length`, `keys`,
-# `keys_unsorted`, `[...]`, `map`, `{...}` with constant keys, `select`
+# `keys_unsorted`, `add`, `[...]`, `map`, `{...}` with constant keys, `select`
 # on truthiness or comparison with a constant (with and, or, not), `.a?`,
 # `.[]?`, and definitions without parameters (inlined, shadowing builtins as
 # in jq). Their output
@@ -97,6 +97,13 @@ programs = [
   ".arr[] | select(.a or .a.x)",
   ".arr[] | select(.a | not | not)",
   "def not: .b; .arr[] | select(not)",
+  ".a.b | add",
+  "[.arr[] | .a] | add",
+  "[.arr[] | .b] | add",
+  "add(.arr[] | .a?)",
+  "[.[] | length] | add",
+  "{n: add(.arr[]? | .a)}",
+  "def add: .k1; add",
   "def f: .; def g: f | f; def h: g | g; def i: h | h; def j: i | i; def k: j | j; def l: k | k; def m: l | l; m | .s",
 ]
 
@@ -141,6 +148,9 @@ programs = [
   "select(.a or .b)",
   "select(.a | not)",
   "select(.a and .a.b)",
+  "add",
+  "map(.a) | add",
+  "[.[] | length] | add",
 ]
 
 [[sweep]]

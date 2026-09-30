@@ -2,7 +2,8 @@
 //!
 //! A program made only of paths (`.a.b`, `."a"`, `.["a"]`, and `.a?`),
 //! iteration (`.[]`, `.[]?`), pipes, `length`, `keys`, `keys_unsorted`,
-//! array collection (`[...]`, `map(...)`), object construction with constant
+//! `add` (of numbers and nulls: other sums decline), array collection
+//! (`[...]`, `map(...)`), object construction with constant
 //! keys (`{a, b: .c.d}`) and `select` on a path's truthiness or its
 //! comparison with a constant (`select(.type == "PushEvent")`,
 //! `select(.n > 0)`), combined with `and`, `or` and `not`, and of
@@ -73,6 +74,9 @@ enum Expr {
     Object(Vec<(String, Expr)>),
     /// `select(C)`.
     Select(Cond),
+    /// builtin.jq's `def add(f): reduce f as $x (null; . + $x);` (and
+    /// `add` for `add(.[])`), for sums of numbers (and nulls).
+    Add(Box<Expr>),
 }
 
 /// A condition of `select`.
@@ -260,6 +264,9 @@ fn convert<'a>(n: &'a ast::Node, scope: &Scope<'a, '_>, budget: &mut usize) -> O
             ))),
             // builtin.jq: `def select(f): if f then . else empty end;`
             ("select", [f]) => select(f, scope, budget)?,
+            // builtin.jq: `def add: add(.[]);`
+            ("add", []) => Expr::Add(Box::new(Expr::Each(Box::new(Expr::Identity)))),
+            ("add", [f]) => Expr::Add(Box::new(convert(f, scope, budget)?)),
             _ => return None,
         },
         NodeKind::Array(Some(e)) => Expr::Collect(Box::new(convert(e, scope, budget)?)),
@@ -417,7 +424,7 @@ fn order_op(op: BinOp) -> Option<fn(Ordering) -> bool> {
 /// Whether `e` always has exactly one output (unless it's an error).
 fn single(e: &Expr) -> bool {
     match e {
-        Expr::Identity | Expr::Length | Expr::Keys { .. } | Expr::Collect(_) => true,
+        Expr::Identity | Expr::Length | Expr::Keys { .. } | Expr::Collect(_) | Expr::Add(_) => true,
         Expr::Index(t, _) => single(t),
         Expr::Pipe(a, b) => single(a) && single(b),
         Expr::Object(entries) => entries.iter().all(|(_, e)| single(e)),
@@ -601,6 +608,43 @@ impl Eval<'_, '_> {
                     Ok(())
                 }
             }
+            Expr::Add(f) => {
+                let mut acc = TVal::Null;
+                self.run(f, input, &mut |v| {
+                    let a = std::mem::replace(&mut acc, TVal::Null);
+                    acc = self.plus(a, v)?;
+                    Ok(())
+                })?;
+                emit(acc)
+            }
+        }
+    }
+
+    /// builtin.c's `binop_plus` for nulls and numbers (`null` is the other
+    /// side; numbers add as doubles). Anything else declines: strings,
+    /// arrays and objects concatenate, which isn't done here, and other
+    /// kinds are jq's error.
+    fn plus<'p>(&self, a: TVal<'p>, b: TVal<'p>) -> Result<TVal<'p>, Decline> {
+        let doc = self.doc;
+        let is_null = |v: &TVal<'_>| match v {
+            TVal::Null => true,
+            TVal::Node(n) => doc.kind(*n) == Kind::Null,
+            _ => false,
+        };
+        if is_null(&a) {
+            return Ok(b);
+        }
+        if is_null(&b) {
+            return Ok(a);
+        }
+        let number = |v: &TVal<'_>| match v {
+            TVal::Node(n) if doc.kind(*n) == Kind::Number => Some(doc.number(*n)),
+            TVal::Number(x) => Some(x.clone()),
+            _ => None,
+        };
+        match (number(&a), number(&b)) {
+            (Some(x), Some(y)) => Ok(TVal::Number(Number::from_f64(x.value() + y.value()))),
+            _ => Err(Decline),
         }
     }
 
