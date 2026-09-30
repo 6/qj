@@ -11222,7 +11222,9 @@ pass corpus/compat_mode.toml:a-file-really-called-star-json:cli 06921205b523
 pass corpus/compat_mode.toml:debug-timing-is-unknown:cli 1e9f2d59d52a
 pass corpus/compat_mode.toml:deep-input-hits-the-parser-limit:cli ca83b699c07f
 pass corpus/compat_mode.toml:deep-value-discarded:cli 426d24bd3cfc
+pass corpus/compat_mode.toml:deep-value-freed-by-a-builtin-past-16mb:cli 9e20405992ef
 pass corpus/compat_mode.toml:deep-value-freed-by-a-builtin:cli 187e7092a3ca
+pass corpus/compat_mode.toml:deep-value-printed-past-16mb:cli 378a0cf611e1
 pass corpus/compat_mode.toml:deep-value-printed:cli 570d68c19572
 pass corpus/compat_mode.toml:delpaths-slice-error-still-errors:cli 76e30d5295f4
 pass corpus/compat_mode.toml:delpaths-still-works:cli 3ea739640717
