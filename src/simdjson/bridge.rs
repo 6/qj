@@ -22,6 +22,107 @@ pub fn padding() -> usize {
     unsafe { jx_simdjson_padding() }
 }
 
+/// One of simdjson's kernels ("implementations"), compiled in for this
+/// target: `icelake`, `haswell`, `westmere` and `fallback` on x86-64,
+/// `arm64` on ARM (plus `fallback` with the `simdjson-fallback` feature),
+/// others elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Implementation {
+    /// simdjson's name for it, as `SIMDJSON_FORCE_IMPLEMENTATION` takes it.
+    pub name: String,
+    /// Whether this CPU can run it.
+    pub supported: bool,
+}
+
+/// Room for a kernel's name (simdjson's are under 16 bytes).
+const NAME_CAP: usize = 64;
+
+fn name_from(buf: &[u8; NAME_CAP]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(NAME_CAP);
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+/// simdjson's kernels compiled in, in its order of preference: by default
+/// parsers use the first one this CPU supports.
+pub fn implementations() -> Vec<Implementation> {
+    // SAFETY: plain query.
+    let n = unsafe { jx_simdjson_implementation_count() };
+    (0..n)
+        .filter_map(|i| {
+            let mut buf = [0u8; NAME_CAP];
+            // SAFETY: buf holds NAME_CAP writable bytes.
+            let supported =
+                unsafe { jx_simdjson_implementation(i, buf.as_mut_ptr().cast(), NAME_CAP) };
+            (supported >= 0).then(|| Implementation {
+                name: name_from(&buf),
+                supported: supported == 1,
+            })
+        })
+        .collect()
+}
+
+/// The names of the kernels this CPU can run, in simdjson's order of
+/// preference.
+pub fn supported_implementations() -> Vec<String> {
+    implementations()
+        .into_iter()
+        .filter(|i| i.supported)
+        .map(|i| i.name)
+        .collect()
+}
+
+/// The kernel [`TapeParser::new`] parses with (and with it all of qj): the
+/// best this CPU supports, or the one `SIMDJSON_FORCE_IMPLEMENTATION`
+/// names. simdjson takes a forced kernel unchecked: it is `unsupported`
+/// (every parse fails) if no kernel of that name is compiled in, and runs
+/// one this CPU can't. Where only one kernel is compiled in (arm64 without
+/// the `simdjson-fallback` feature) it ignores the variable. See
+/// [`checked_active_implementation`].
+pub fn active_implementation() -> String {
+    let mut buf = [0u8; NAME_CAP];
+    // SAFETY: buf holds NAME_CAP writable bytes.
+    unsafe { jx_simdjson_active_implementation(buf.as_mut_ptr().cast(), NAME_CAP) };
+    name_from(&buf)
+}
+
+/// [`active_implementation`], or why it isn't the kernel
+/// `SIMDJSON_FORCE_IMPLEMENTATION` asks for: when the variable names a
+/// kernel that isn't compiled in (every parse fails, so a fuzzer or test
+/// that falls back on errors would pass without testing anything), one that
+/// this CPU can't run (it would die of an illegal instruction), or when
+/// simdjson ignores it (only one kernel compiled in).
+pub fn checked_active_implementation() -> Result<String, String> {
+    let active = active_implementation();
+    let all = implementations();
+    let runs = |name: &str| all.iter().any(|i| i.name == name && i.supported);
+    let Some(forced) = std::env::var_os("SIMDJSON_FORCE_IMPLEMENTATION") else {
+        return if runs(&active) {
+            Ok(active)
+        } else {
+            Err(format!(
+                "simdjson's kernel is {active:?}: this CPU can't run it"
+            ))
+        };
+    };
+    let forced = forced.to_string_lossy();
+    if forced == active && runs(&active) {
+        return Ok(active);
+    }
+    let compiled: Vec<&str> = all.iter().map(|i| i.name.as_str()).collect();
+    let compiled = compiled.join(", ");
+    let supported = supported_implementations().join(", ");
+    let why = if !all.iter().any(|i| i.name == forced) {
+        "no such kernel is compiled in"
+    } else if !runs(&forced) {
+        "this CPU can't run it"
+    } else {
+        "simdjson didn't select it"
+    };
+    Err(format!(
+        "SIMDJSON_FORCE_IMPLEMENTATION={forced:?}: {why} (compiled in: {compiled}; this CPU runs: {supported}; active: {active})"
+    ))
+}
+
 /// A copy of `data` followed by [`padding()`] zero bytes.
 pub fn pad_buffer(data: &[u8]) -> Vec<u8> {
     let pad = padding();
@@ -95,6 +196,16 @@ impl TapeParser {
             return Err(AllocError);
         }
         Ok(Self { ptr })
+    }
+
+    /// A parser on the named kernel (see [`implementations`]), whatever the
+    /// active one is. `None` if no kernel of that name is compiled in, if
+    /// this CPU can't run it, or if allocation fails.
+    pub fn with_implementation(name: &str) -> Option<Self> {
+        let name = std::ffi::CString::new(name).ok()?;
+        // SAFETY: name is NUL-terminated; null means no such parser.
+        let ptr = unsafe { jx_tape_parser_new_implementation(name.as_ptr()) };
+        (!ptr.is_null()).then_some(Self { ptr })
     }
 
     /// Parses `padded[..len]` as exactly one JSON document.

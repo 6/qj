@@ -11,6 +11,14 @@ fn main() {
         .file("src/simdjson/bridge.cpp")
         .include("simdjson");
 
+    // simdjson leaves its portable fallback kernel out where a SIMD kernel
+    // always runs (arm64), so qj never runs it there. This feature compiles
+    // it in anyway (the arm64 kernel stays the default), for the tests and
+    // fuzzers that compare every kernel (tests/simdjson_kernels.rs, fuzz/).
+    if std::env::var_os("CARGO_FEATURE_SIMDJSON_FALLBACK").is_some() {
+        build.define("SIMDJSON_IMPLEMENTATION_FALLBACK", "1");
+    }
+
     // Enable sanitizers for C++ when Rust is also compiled with them.
     // Usage: RUSTFLAGS="-Zsanitizer=address" cargo +nightly test
     //   or:  JX_SANITIZE=address cargo +nightly test
