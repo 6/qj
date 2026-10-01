@@ -80,6 +80,16 @@ struct Case {
 impl Case {
     /// Whether the expectation holds on this platform (`only` in gen_cases.py).
     fn applies(&self) -> bool {
+        // musl's strftime has no %k or %l, so jq built on it fails these.
+        if cfg!(target_env = "musl")
+            && self.f.starts_with("strf")
+            && self.args.iter().any(|a| {
+                a.as_str()
+                    .is_some_and(|s| s.contains("%k") || s.contains("%l"))
+            })
+        {
+            return false;
+        }
         match self.only.as_deref() {
             None => true,
             Some("macos") => cfg!(target_os = "macos"),
@@ -543,6 +553,12 @@ fn every_libm_builtin_calls_its_own_function() {
     for (c, entry) in list.iter().zip(math::table()) {
         assert_eq!(c.name, entry.name);
         assert_eq!(c.nargs, entry.arity + 1, "{}", entry.name);
+        // Missing from this C library (see `math::table`'s tests): jq's `_NO`
+        // stub, which `missing_libm_function_is_reported_before_type_checks`
+        // covers.
+        if entry.func.is_none() {
+            continue;
+        }
         for (i, &x) in xs.iter().enumerate() {
             let args: Vec<f64> =
                 [x, xs[(i + 1) % xs.len()], xs[(i + 2) % xs.len()]][..entry.arity].to_vec();

@@ -504,6 +504,16 @@ fn ops_fixture() {
             .iter()
             .map(|a| jv(a.as_str().unwrap()))
             .collect();
+        // Sorting NaNs is up to the C library's qsort, as in jq (see
+        // `jv_aux`), and these were recorded where it's glibc's or macOS's;
+        // musl's orders them differently, as it does for jq built on it.
+        let sorts = matches!(
+            op,
+            "sort" | "unique" | "sort_by_impl" | "group_by_impl" | "unique_by_impl"
+        );
+        if cfg!(target_env = "musl") && sorts && c["args"].to_string().contains("nan") {
+            continue;
+        }
         let get = |i: usize| args.get(i).cloned().unwrap_or(Value::Null);
         let got = tagged(run_op(op, get(0), get(1), get(2)));
         if got != s(&c, "out") {

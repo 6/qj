@@ -106,6 +106,8 @@ check unicode-arg empty -n --arg x 'héllo ✓' '$x'
 check regex empty -nc '"foo bar" | [match("o+"; "g").string]'
 check numbers empty -nc '[1e1000, 0.1 + 0.2, 3.0, -0, 100000000000000000000]'
 check math empty -nc '[(1 | exp), (2 | sqrt), (10 | log), (0.5 | sin), pow(2; 0.5)]'
+check bessel empty -nc '[(1 | j0), (1 | j1), (2 | y0), (2 | y1), jn(2; 1.5), yn(2; 1.5)]'
+check libm-missing empty -n '4 | significand'
 check formats empty -nr '[1, "a b"] | @sh, @csv, @base64'
 
 printf '%.0s[' $(seq 3000) > deep.json

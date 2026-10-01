@@ -83,6 +83,29 @@ fn main() {
         }
     }
 
+    // Which of jq's optional libm functions the C library has, which jq's
+    // configure finds by linking each (`AC_CHECK_LIB(m, f)`), for
+    // src/jq/platform/math.rs: the Bessel functions (j0, j1, y0, y1, jn, yn)
+    // on glibc, musl, FreeBSD, NetBSD and Windows (UCRT's _j0...); the other
+    // XSI and BSD ones (scalb, lgamma_r, drem, significand) on all of those
+    // but Windows; exp10 on glibc and musl; gamma on glibc and the BSDs.
+    // (macOS has them all, some under other names, which math.rs knows.)
+    println!("cargo::rustc-check-cfg=cfg(libm_bessel, libm_xsi, libm_exp10, libm_gamma)");
+    let os = target("CARGO_CFG_TARGET_OS");
+    let gnu = target("CARGO_CFG_TARGET_ENV") == "gnu";
+    if matches!(os.as_str(), "linux" | "freebsd" | "netbsd" | "windows") {
+        println!("cargo:rustc-cfg=libm_bessel");
+    }
+    if matches!(os.as_str(), "linux" | "freebsd" | "netbsd") {
+        println!("cargo:rustc-cfg=libm_xsi");
+    }
+    if os == "linux" {
+        println!("cargo:rustc-cfg=libm_exp10");
+    }
+    if (os == "linux" && gnu) || os == "freebsd" || os == "netbsd" {
+        println!("cargo:rustc-cfg=libm_gamma");
+    }
+
     println!("cargo:rerun-if-changed=src/jq/platform/strptime.c");
     println!("cargo:rerun-if-changed=src/simdjson/bridge.cpp");
     println!("cargo:rerun-if-changed=simdjson/simdjson.cpp");

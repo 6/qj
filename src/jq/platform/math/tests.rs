@@ -68,7 +68,7 @@ const JQ_LIBM_BUILTINS: [&str; 61] = [
     "lgamma_r/0",
 ];
 
-#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(target_vendor = "apple", libm_bessel))]
 #[test]
 fn table_is_jqs_builtin_set_in_libm_h_order() {
     let names: Vec<String> = table()
@@ -76,7 +76,23 @@ fn table_is_jqs_builtin_set_in_libm_h_order() {
         .map(|e| format!("{}/{}", e.name, e.arity))
         .collect();
     assert_eq!(names, JQ_LIBM_BUILTINS);
-    assert!(table().iter().all(|e| e.func.is_some()), "all exist here");
+    // What the C library lacks, so jq's configure leaves out (its `_NO` stubs):
+    // nothing on macOS and glibc.
+    let lacking: &[&str] = if cfg!(any(target_os = "freebsd", target_os = "netbsd")) {
+        &["exp10"]
+    } else if cfg!(target_env = "musl") {
+        &["gamma"]
+    } else if cfg!(windows) {
+        &["drem", "exp10", "gamma", "scalb", "significand", "lgamma_r"]
+    } else {
+        &[]
+    };
+    let missing: Vec<&str> = table()
+        .iter()
+        .filter(|e| e.func.is_none())
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(missing, lacking);
 }
 
 #[test]

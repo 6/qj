@@ -400,6 +400,10 @@ fn a_long_module_chain_works_by_default() {
 /// short of the budget answers, one past it is a `SIGSEGV`. Checked on the
 /// small stack, and at the stack the test process has.
 #[test]
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    ignore = "compat mode's stack models were measured on macOS and glibc Linux only"
+)]
 fn a_long_module_chain_segfaults_in_compat_mode() {
     // Two small limits: enough to show the threshold follows `ulimit -s`, and
     // short enough that the chains are hundreds of modules, not thousands.
@@ -498,6 +502,10 @@ fn deeply_nested_values_segfault_only_in_compat_mode() {
 /// The threshold moves with `ulimit -s`, which the model tracks; a value
 /// deeper than the limit crashes, one shallower doesn't.
 #[test]
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    ignore = "compat mode's stack models were measured on macOS and glibc Linux only"
+)]
 fn the_crash_depth_follows_the_stack_limit() {
     // An unlimited stack: jq doesn't overflow either.
     let Some(rlimit) = own_rlimit() else {
@@ -588,6 +596,10 @@ const SITES: &[(Site, &str, u64)] = &[
 /// The depths come from the model rather than from a constant, so the test
 /// follows `ulimit -s` (`qj::compat::Site::frame_budget`).
 #[test]
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    ignore = "compat mode's stack models were measured on macOS and glibc Linux only"
+)]
 fn every_recursion_has_its_own_crash_depth_in_compat_mode() {
     // An unlimited stack: jq doesn't overflow either.
     let Some(rlimit) = own_rlimit() else {
@@ -866,6 +878,10 @@ fn deepest_defs(stack_kb: u64) -> u64 {
 /// dies at the same nesting, one level short answers, and by default neither
 /// depth is a problem.
 #[test]
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    ignore = "compat mode's stack models were measured on macOS and glibc Linux only"
+)]
 fn nested_closures_crash_where_jqs_binding_does() {
     for stack_kb in [SMALL_STACK_KB, 512] {
         let deepest = deepest_closures(stack_kb);
@@ -913,6 +929,10 @@ fn nested_closures_crash_where_jqs_binding_does() {
 /// top of it — the one recursion nested `def`s drive, and the only one whose
 /// threshold they reach.
 #[test]
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    ignore = "compat mode's stack models were measured on macOS and glibc Linux only"
+)]
 fn nested_defs_crash_where_jqs_compile_does() {
     // Bison stops at `YYMAXDEPTH` (10,000 states) after about 3,330 nested
     // definitions, which is why this needs a small stack.
@@ -993,6 +1013,10 @@ fn a_syntax_error_after_deep_nesting_crashes_where_jqs_actions_do() {
 /// or less, and there it does. qj's own printer recurses too, with a frame of
 /// its own; in compat mode it dies at jq's depth instead.
 #[test]
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    ignore = "compat mode's stack models were measured on macOS and glibc Linux only"
+)]
 fn printing_a_deep_value_crashes_where_jqs_printer_does() {
     // qj's own frames are on its own thread's stack, so an unoptimized build,
     // whose frames are several times an optimized one's, dies where the model
@@ -1265,6 +1289,10 @@ fn a_dump_inside_the_program_has_less_stack_than_the_output() {
 /// fewer frames than that, compat mode stops short of them, so that a value
 /// too deep for jq is checked however shallow it is.
 #[test]
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    ignore = "compat mode's stack models were measured on macOS and glibc Linux only"
+)]
 fn a_shallow_value_on_a_small_stack_is_checked_as_it_is_freed() {
     // The first limit with room to start and compile, with the environment
     // taking what jq's stack would have beyond 255 frames for `jv_free` (on
