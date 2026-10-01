@@ -108,7 +108,10 @@ jobs:
         run: |
           # Both scoreboards against jq 1.8.1's release binary for this
           # platform, without a ratchet: the totals go to the job summary, and
-          # every non-passing case to the artifact's report.txt files.
+          # every non-passing case to the artifact's report.txt files. The
+          # Intel runners are slow enough that jq itself needs more than the
+          # default 10 s for the deepest programs.
+          JQ_DIFF_TIMEOUT=60 \
           JQ_DIFF_JQ="$(mise which jq)" \
           JQ_DIFF_BASELINE=target/tmp/no_baseline.txt \
           JQ_DIFF_COMPAT_BASELINE=target/tmp/no_baseline_compat.txt \
