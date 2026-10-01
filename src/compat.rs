@@ -181,9 +181,11 @@ fn rlimit_stack() -> Option<u64> {
     if unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } != 0 {
         return None;
     }
-    // `rlim_t` is `u64` on macOS and Linux.
-    let cur: u64 = lim.rlim_cur;
-    (cur != libc::RLIM_INFINITY && cur != 0).then_some(cur)
+    // `rlim_t` is `u64` on macOS and Linux, and `i64` on FreeBSD, where a
+    // limit is never negative.
+    #[allow(clippy::unnecessary_cast)]
+    let cur = lim.rlim_cur as u64;
+    (lim.rlim_cur != libc::RLIM_INFINITY && cur != 0).then_some(cur)
 }
 
 /// `RLIMIT_STACK` as the kernel applies it to a main thread's stack.

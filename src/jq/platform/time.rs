@@ -42,6 +42,13 @@ use std::ffi::{CStr, CString};
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+// POSIX's `strptime`, which the libc crate binds on Linux and macOS but not on
+// FreeBSD.
+unsafe extern "C" {
+    #[link_name = "strptime"]
+    fn strptime_c(s: *const c_char, format: *const c_char, tm: *mut libc::tm) -> *mut c_char;
+}
+
 /// jq's broken-down time (`tm2jv`): `[year, month (0-11), day of month, hours, minutes,
 /// seconds, day of week (0 = Sunday), day of year (0-365)]`. Every element is an
 /// integer except the seconds that `gmtime`/`localtime` return, which keep the input's
@@ -543,7 +550,7 @@ fn strptime_in(
         // SAFETY: NUL-terminated strings and a valid struct tm. `end` points into
         // `cinput` (or is NULL).
         unsafe {
-            let end = libc::strptime(cinput.as_ptr(), cfmt.as_ptr(), &mut tm);
+            let end = strptime_c(cinput.as_ptr(), cfmt.as_ptr(), &mut tm);
             let bad_end = end.is_null() || (*end != 0 && libc::isspace(*end as u8 as c_int) == 0);
             (end, bad_end)
         }

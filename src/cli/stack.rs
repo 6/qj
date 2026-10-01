@@ -97,7 +97,8 @@ pub fn run<F: FnOnce() -> R, R>(size: usize, f: F) -> std::thread::Result<R> {
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
     let roomy = unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } != 0
         || lim.rlim_cur == libc::RLIM_INFINITY
-        || lim.rlim_cur >= MAIN_STACK_FLOOR;
+        // `rlim_t` is `u64` on macOS and Linux, and `i64` on FreeBSD.
+        || lim.rlim_cur >= MAIN_STACK_FLOOR as libc::rlim_t;
     if !roomy && let Ok(stack) = Stack::new(size) {
         return run_on(&stack, f);
     }

@@ -627,9 +627,12 @@ fn jq_version(jq: &Path) -> Option<String> {
 fn stack_limit() -> Option<u64> {
     // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
-    (unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } == 0
-        && lim.rlim_cur != libc::RLIM_INFINITY)
-        .then_some(lim.rlim_cur)
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } == 0;
+    // `rlim_t` is `u64` on macOS and Linux, and `i64` on FreeBSD, where a
+    // limit is never negative.
+    #[allow(clippy::unnecessary_cast)]
+    let cur = lim.rlim_cur as u64;
+    (read && lim.rlim_cur != libc::RLIM_INFINITY).then_some(cur)
 }
 
 fn binary_identity(path: &Path) -> String {
