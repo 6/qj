@@ -30,6 +30,14 @@ fn main() {
 
     build.compile("simdjson");
 
+    // Rust's standard library links libiconv on Apple platforms, and qj uses
+    // nothing of it: left in, dyld loads it before qj's main, on a stack whose
+    // size is the user's `RLIMIT_STACK`, and needs more of it than jq's start
+    // does (144 bytes on macOS 27; see "Small stacks" in docs/COMPATIBILITY.md).
+    if std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-dead_strip_dylibs");
+    }
+
     println!("cargo:rerun-if-changed=src/simdjson/bridge.cpp");
     println!("cargo:rerun-if-changed=simdjson/simdjson.cpp");
     println!("cargo:rerun-if-changed=simdjson/simdjson.h");
