@@ -80,6 +80,16 @@ struct Case {
 impl Case {
     /// Whether the expectation holds on this platform (`only` in gen_cases.py).
     fn applies(&self) -> bool {
+        // musl's strftime has no %k or %l, so jq built on it fails these.
+        if cfg!(target_env = "musl")
+            && self.f.starts_with("strf")
+            && self.args.iter().any(|a| {
+                a.as_str()
+                    .is_some_and(|s| s.contains("%k") || s.contains("%l"))
+            })
+        {
+            return false;
+        }
         match self.only.as_deref() {
             None => true,
             Some("macos") => cfg!(target_os = "macos"),
