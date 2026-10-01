@@ -15,7 +15,7 @@ shellcheck <file>.sh
 ```
 
 ## Testing
-`cargo test` runs the fast suite: unit tests, e2e, ndjson, the simdjson FFI tests, and the
+`cargo test` runs the fast suite: unit tests, e2e, ndjson, the simdjson FFI and kernel tests, and the
 port's compiler and parser suites (~20s).
 Compat suites are `#[ignore]` — run them with `--release`. **jq_diff is the gate**: every
 change to behavior must keep it free of regressions against its baseline. The other compat
@@ -154,7 +154,10 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
   malformed lines). Most compare with jq, on stdin and as a file, including every shape the old
   core had an NDJSON fast path for.
 - **FFI tests:** `tests/simdjson_ffi.rs` — the simdjson bridge's boundary: `TapeParser`'s tape
-  layout, strings, structural indexes, error codes, buffer reuse and padding.
+  layout, strings, structural indexes, error codes, buffer reuse and padding, and the kernel
+  API (`implementations`, `TapeParser::with_implementation`, `SIMDJSON_FORCE_IMPLEMENTATION`).
+  `tests/simdjson_kernels.rs` checks that every kernel the CPU runs parses alike and that the
+  reader gives jq's results on each (see "simdjson's kernels" under Fuzzing).
 - **Input layer tests:** `src/io/tests/` — the reader against a line-by-line port of `util.c`
   (with its 4096-byte `fgets` chunks) on generated adversarial inputs, against the jq binary,
   streamed vs whole, and the parallel engine against the sequential reader. Whole inputs there
@@ -206,13 +209,14 @@ diff <(./target/release/qj '.field' test.json) <(jq '.field' test.json)
 
 ## Fuzzing
 
-Three fuzz targets in `fuzz/`, for the simdjson FFI boundary and the input layer. Requires
-nightly and `cargo-fuzz`. The port's own differential coverage is jq_diff and
-`jq_differential`.
+Five fuzz targets in `fuzz/`: four for the simdjson FFI boundary and the input layer, one for
+jq's front end. Requires nightly and `cargo-fuzz`. The port's own differential coverage is
+jq_diff and `jq_differential`.
 
 Fuzz binaries use libfuzzer which runs indefinitely without `-max_total_time`.
 All `[[bin]]` entries have `test = false` to prevent `cargo test` from picking them up.
-Always run fuzz targets individually via `cargo +nightly fuzz run <target> -- -max_total_time=N`.
+Always run fuzz targets individually via `cargo +nightly fuzz run <target> -- -max_total_time=N`,
+with a memory cap too (`-rss_limit_mb=2048`).
 Without cargo-fuzz, `cargo +nightly build --manifest-path fuzz/Cargo.toml` at least checks
 that they build.
 
@@ -220,16 +224,51 @@ that they build.
 Clang, whose ASan runtime is incompatible with rustc nightly's. Use `-s none` to disable
 sanitizers: `cargo +nightly fuzz run <target> -s none -- -max_total_time=N`.
 
+**Seeds and dictionaries:** `bash fuzz/seed_corpus.sh` fills `fuzz/corpus/` (not committed)
+from jq's test suites and the jq_diff corpus: their programs for `fuzz_compile`, their inputs
+and data files for the JSON targets. Give the JSON targets `-dict=fuzz/dict/json.dict
+-max_len=8192` (texts across many of simdjson's 64-byte blocks, and up to its 1024 levels of
+nesting), and `fuzz_compile` `-dict=fuzz/dict/jq.dict` (keywords, operators, builtins).
+
 **FFI boundary** (run after changing `src/simdjson/` or updating simdjson):
 ```
-cargo +nightly fuzz run fuzz_parse     -s none -- -max_total_time=120   # TapeParser on arbitrary bytes, every tape word walked
-cargo +nightly fuzz run fuzz_dom       -s none -- -max_total_time=120   # simdjson -> jq values vs jq's parser port
+cargo +nightly fuzz run fuzz_parse     -s none -- -dict=fuzz/dict/json.dict -max_len=8192 -max_total_time=120 -rss_limit_mb=2048   # TapeParser on arbitrary bytes, every tape word walked; every kernel the CPU runs must agree
+cargo +nightly fuzz run fuzz_dom       -s none -- -dict=fuzz/dict/json.dict -max_len=8192 -max_total_time=120 -rss_limit_mb=2048   # simdjson -> jq values vs jq's parser port
 ```
 
 **Input layer** (run after changing `src/io/`):
 ```
-cargo +nightly fuzz run fuzz_io_reader -s none -- -max_total_time=120   # fast path, streaming, engine vs jq's input loop
+cargo +nightly fuzz run fuzz_io_reader -s none -- -dict=fuzz/dict/json.dict -max_len=8192 -max_total_time=120 -rss_limit_mb=2048   # fast path, streaming, engine vs jq's input loop
+cargo +nightly fuzz run fuzz_tape      -s none -- -dict=fuzz/dict/json.dict -max_len=8192 -max_total_time=120 -rss_limit_mb=2048   # programs evaluated on the tape (tape_eval.rs) vs the VM
 ```
+
+**Front end** (run after changing `src/jq/lang/` or the tape evaluator's parser):
+```
+cargo +nightly fuzz run fuzz_compile   -s none -- -dict=fuzz/dict/jq.dict -max_total_time=120 -rss_limit_mb=2048   # lexer, parser, linker, compiler, VM loading, disassembly, TapeProgram::new: no panics
+```
+It only compiles (a program can loop forever), and imports find nothing (no library path, no
+`$HOME`; programs that could name a search path are skipped). Programs whose constant folding
+could build a huge string (`"ab" * 1e9` is 2 GB as it compiles, in jq too) are skipped.
+
+**simdjson's kernels:** simdjson picks a kernel at run time: `icelake`, `haswell`, `westmere`
+or `fallback` on x86-64, `arm64` on ARM. `SIMDJSON_FORCE_IMPLEMENTATION=<kernel>` makes every
+parser use that one, so the four JSON targets fuzz the kernel it names; they refuse to start
+(a panic naming the kernels there are) if it isn't compiled in or the CPU can't run it, since
+every parse would fail and they'd fall back on jq's parser without testing anything. simdjson
+leaves `fallback` out on arm64, where `arm64` always runs; the fuzz crate turns on qj's
+`simdjson-fallback` feature, which compiles it in, so a Mac can fuzz `arm64` and `fallback`,
+and an x86-64 machine every kernel its CPU has (`icelake` needs AVX-512):
+```
+SIMDJSON_FORCE_IMPLEMENTATION=fallback cargo +nightly fuzz run fuzz_dom -s none -- -dict=fuzz/dict/json.dict -max_len=8192 -max_total_time=120 -rss_limit_mb=2048
+```
+Under cargo-fuzz (`--cfg fuzzing`) `build.rs` compiles simdjson with clang's
+`-fsanitize-coverage`, so libFuzzer sees the paths inputs take through the kernels too.
+`fuzz_parse` compares every kernel the CPU runs with the active one on each input, and
+`cargo test` does that deterministically: `tests/simdjson_kernels.rs` parses a corpus with
+each kernel (tapes must be identical; errors may differ, as each kernel reports the first it
+finds) and runs the reader's differential check (`check_reader_equivalence`) once per kernel
+in a child process. CI's x86-64 runners check their kernels there on every change; on a Mac,
+`cargo test --features simdjson-fallback --test simdjson_kernels` adds `fallback`.
 
 ## Benchmarking
 
@@ -425,7 +464,7 @@ jq's don't.
   evaluated on the tape (`tape_eval.rs`; the CLI's `tape_program` decides when), the ordered
   parallel record engine (`parallel.rs`), and the checks the fuzzer runs (`fuzzing.rs`)
 - `src/simdjson/` — the C-linkage bridge to the vendored simdjson (`simdjson/`): its DOM
-  parser (`TapeParser`), whose tape `src/io` reads
+  parser (`TapeParser`), whose tape `src/io` reads, and its kernels
 - `src/compat.rs` — `QJ_JQ_COMPAT=1`, "be exactly jq": reproducing jq's crashes and hangs
   (including the model of jq's C stack) and switching qj's own additions off
 - `src/decompress.rs` — which inputs are compressed (`.gz`/`.gzip`, `.zst`/`.zstd`); the readers
