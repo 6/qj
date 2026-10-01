@@ -215,7 +215,7 @@ impl Jq {
             debug_cb: None,
             stderr_cb: None,
             err_cb: None,
-            home: std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()),
+            home: crate::os::home_dir().map(|h| h.to_string_lossy().into_owned()),
             trace_out: None,
             natives: !native::disabled_by_env(),
             opt: !region::disabled_by_env(),

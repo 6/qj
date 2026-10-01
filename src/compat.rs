@@ -174,7 +174,15 @@ pub fn spin_forever<T: Clone>(keep: &T) -> ! {
 // ---------------------------------------------------------------------------
 
 /// `getrlimit(RLIMIT_STACK)`: what `ulimit -s` sets, which is the size of a
-/// process's main thread's stack. `None` when it is unlimited or unreadable.
+/// process's main thread's stack. `None` when it is unlimited or unreadable,
+/// and on Windows, which has none (and where compat mode doesn't run).
+#[cfg(windows)]
+fn rlimit_stack() -> Option<u64> {
+    None
+}
+
+/// `getrlimit(RLIMIT_STACK)`, as above.
+#[cfg(unix)]
 fn rlimit_stack() -> Option<u64> {
     // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
@@ -196,11 +204,7 @@ fn rlimit_stack() -> Option<u64> {
 /// page, inaccessible, so the limit rounds *up* to a page: on arm64, with
 /// 16 KB pages, `ulimit -s 17` gives a 32 KB stack.
 pub fn effective_limit(rlimit: u64) -> u64 {
-    // SAFETY: sysconf has no preconditions.
-    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
-        .ok()
-        .filter(|&p| p > 0)
-        .unwrap_or(4096);
+    let page = crate::io::source::page_size() as u64;
     if cfg!(target_os = "linux") {
         rlimit / page * page
     } else {
@@ -232,7 +236,23 @@ pub fn area_of<'a>(
     bytes
 }
 
+/// The environment as `NAME=value` strings (on Windows, whose C runtime
+/// exports no `environ` to link to, from std; compat mode doesn't run there).
+#[cfg(windows)]
+fn environ_strings() -> Vec<Vec<u8>> {
+    use crate::os::OsStringExt;
+    std::env::vars_os()
+        .map(|(k, v)| {
+            let mut s = k;
+            s.push("=");
+            s.push(v);
+            s.into_vec()
+        })
+        .collect()
+}
+
 /// The C environment, as `environ` holds it: `NAME=value` strings.
+#[cfg(unix)]
 fn environ_strings() -> Vec<Vec<u8>> {
     #[cfg(target_vendor = "apple")]
     // SAFETY: _NSGetEnviron returns the address of the process's `environ`.
@@ -265,7 +285,7 @@ fn environ_strings() -> Vec<Vec<u8>> {
 fn own_area() -> u64 {
     static AREA: OnceLock<u64> = OnceLock::new();
     *AREA.get_or_init(|| {
-        use std::os::unix::ffi::OsStringExt;
+        use crate::os::OsStringExt;
         let argv: Vec<Vec<u8>> = std::env::args_os().map(OsStringExt::into_vec).collect();
         let env = environ_strings();
         area_of(

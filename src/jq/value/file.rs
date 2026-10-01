@@ -27,9 +27,16 @@ fn strerror(e: &std::io::Error) -> String {
 /// file; so a file whose size is a multiple of 4096 never gets a final
 /// non-partial chunk, and a trailing top-level scalar without whitespace
 /// after it is dropped, exactly as jq does.
+///
+/// On Windows the file is read in text mode, as jq's `fdopen(fd, "r")` reads
+/// it, and a directory doesn't open at all ("Permission denied").
 pub fn load_file(filename: &str, raw: bool) -> Result<Value, Error> {
     let path = Path::new(filename);
-    let mut file = match std::fs::File::open(path) {
+    #[cfg(unix)]
+    let opened = std::fs::File::open(path);
+    #[cfg(windows)]
+    let opened = crate::os::CrtFile::open(path.as_os_str());
+    let mut file = match opened {
         Ok(f) => f,
         Err(e) => {
             return Err(Error::msg(format!(
@@ -38,6 +45,7 @@ pub fn load_file(filename: &str, raw: bool) -> Result<Value, Error> {
             )));
         }
     };
+    #[cfg(unix)]
     match file.metadata() {
         Ok(m) if !m.is_dir() => {}
         _ => {
@@ -94,7 +102,7 @@ pub fn load_file(filename: &str, raw: bool) -> Result<Value, Error> {
 
 /// `fread`: reads until `buf` is full or end of file. Returns the byte count
 /// and whether end of file was hit (a short read).
-fn read_full(file: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<(usize, bool)> {
+fn read_full(file: &mut impl Read, buf: &mut [u8]) -> std::io::Result<(usize, bool)> {
     let mut n = 0;
     while n < buf.len() {
         match file.read(&mut buf[n..]) {

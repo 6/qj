@@ -23,8 +23,12 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+use std::sync::{Mutex, atomic::AtomicUsize};
+
+use crate::os::FdReader;
 
 /// An input's bytes, possibly followed by readable padding (which lets
 /// simdjson parse texts that end at the end of the input without a copy).
@@ -146,12 +150,11 @@ impl Opener for FsOpener {
         if name == "-" {
             return open_stdin();
         }
-        let file = File::open(name)?;
         let lossy = name.to_string_lossy();
         if crate::decompress::is_compressed(&lossy) {
-            return open_compressed(file, &lossy);
+            return open_compressed(File::open(name)?, &lossy);
         }
-        open_file(file)
+        open_file(name)
     }
 }
 
@@ -167,9 +170,10 @@ fn open_compressed(file: File, name: &str) -> io::Result<Opened> {
 }
 
 #[cfg(unix)]
-fn open_file(file: File) -> io::Result<Opened> {
+fn open_file(name: &OsStr) -> io::Result<Opened> {
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::io::AsRawFd;
+    let file = File::open(name)?;
     let meta = file.metadata()?;
     let ft = meta.file_type();
     if ft.is_file() && std::env::var_os("QJ_NO_MMAP").is_none() {
@@ -192,37 +196,14 @@ fn open_file(file: File) -> io::Result<Opened> {
     })
 }
 
-#[cfg(not(unix))]
-fn open_file(file: File) -> io::Result<Opened> {
+/// On Windows, a file is read as jq's `fopen(name, "r")` reads it: through
+/// the C runtime, in text mode (see `crate::os`), so never memory-mapped.
+#[cfg(windows)]
+fn open_file(name: &OsStr) -> io::Result<Opened> {
     Ok(Opened::Stream {
-        reader: Box::new(file),
+        reader: Box::new(crate::os::CrtFile::open(name)?),
         fd: None,
     })
-}
-
-/// A borrowed file descriptor read without Rust's `Stdin` buffering (the
-/// reader does its own), and never closed: standard input.
-struct FdReader(i32);
-
-impl Read for FdReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        #[cfg(unix)]
-        {
-            // SAFETY: the descriptor stays open for the reader's lifetime (fd
-            // 0 for the process's); buf is writable for buf.len() bytes.
-            let n = unsafe { libc::read(self.0, buf.as_mut_ptr().cast(), buf.len()) };
-            if n < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(n as usize)
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self.0;
-            io::stdin().read(buf)
-        }
-    }
 }
 
 fn open_stdin() -> io::Result<Opened> {
@@ -274,6 +255,7 @@ pub(crate) fn open_borrowed_fd(fd: i32) -> io::Result<Opened> {
 /// least one page of readable zeros: simdjson's padding, so that a text
 /// ending at the end of the file is parsed in place. Its data can be
 /// released from the start (see the module docs).
+#[cfg(unix)]
 pub struct Mmap {
     map: *mut libc::c_void,
     /// The whole reservation, padding included.
@@ -290,7 +272,9 @@ pub struct Mmap {
 
 // SAFETY: the mapping is read-only; it is only ever made inaccessible, in
 // ranges that nothing reads anymore (see `release`).
+#[cfg(unix)]
 unsafe impl Send for Mmap {}
+#[cfg(unix)]
 unsafe impl Sync for Mmap {}
 
 /// Ranges of mappings made inaccessible so far, in the whole process (for
@@ -304,10 +288,15 @@ pub fn releases() -> u64 {
 
 /// The system's page size.
 pub(crate) fn page_size() -> usize {
+    #[cfg(unix)]
     // SAFETY: sysconf is always safe to call.
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+    return unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+    // Windows' on x86-64 and arm64 (where nothing is mapped: see `open_file`).
+    #[cfg(windows)]
+    4096
 }
 
+#[cfg(unix)]
 impl Mmap {
     fn new(map: *mut libc::c_void, map_len: usize, skip: usize, len: usize) -> Mmap {
         Mmap {
@@ -406,6 +395,7 @@ impl Mmap {
     }
 }
 
+#[cfg(unix)]
 impl InputBytes for Mmap {
     fn data(&self) -> &[u8] {
         &self.padded()[..self.len]
@@ -470,6 +460,7 @@ impl InputBytes for Mmap {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Mmap {
     fn drop(&mut self) {
         // SAFETY: unmapping our own mapping once.
@@ -519,17 +510,10 @@ impl InputMessage {
     }
 }
 
-/// The raw bytes of an OS string (argv bytes on Unix).
+/// The raw bytes of an OS string (argv bytes on Unix; see `crate::os`).
 pub fn os_bytes(s: &OsStr) -> &[u8] {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        s.as_bytes()
-    }
-    #[cfg(not(unix))]
-    {
-        s.to_str().map(str::as_bytes).unwrap_or(b"?")
-    }
+    use crate::os::OsStrExt;
+    s.as_bytes()
 }
 
 /// Whether more bytes can be read from `fd` right now without blocking.
