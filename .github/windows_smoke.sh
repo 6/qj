@@ -26,6 +26,13 @@ printf '{"a":' > truncated.json
 mkdir dir
 "$qj" -nc -b 'range(20000) | {n: ., s: "x\(.)"}' > records.ndjson
 
+# GNU sed on Windows reads files in text mode, dropping the \r of \r\n,
+# unless it's given -b; other seds (macOS's) have no -b.
+sed=(sed)
+if sed -b '' < /dev/null > /dev/null 2>&1; then
+    sed=(sed -b)
+fi
+
 fails=0
 show() {
     echo "    $1:"
@@ -40,7 +47,7 @@ check() {
     local qs=$?
     "$jq" "$@" < "$stdin" > j.out 2> j.err
     local js=$?
-    sed 's/^qj:/jq:/' q.err > q.err.jq
+    "${sed[@]}" 's/^qj:/jq:/' q.err > q.err.jq
     if cmp -s q.out j.out && cmp -s q.err.jq j.err && [ "$qs" = "$js" ]; then
         echo "ok   $name"
     else
