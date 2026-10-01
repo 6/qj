@@ -23,15 +23,19 @@ ends the input), `-b` puts the standard streams in binary mode, output to a cons
 out as UTF-16 with colors only where the console takes them, the time builtins are the C
 runtime's (with jq's own `strptime`), messages carry the C runtime's `errno` text, and
 `~` is `%USERPROFILE%` when `HOME` isn't set (`src/os.rs`). CI compares qj with
-`jq-windows-amd64.exe` byte for byte on cases that lean on those
-(`.github/windows_smoke.sh`), but the conformance suites don't run there, so other
-differences can exist. Known ones:
+`jq-windows-amd64.exe` byte for byte on jq_diff's 33,102 `.test` cases in every mode
+(`.github/jq_diff_windows.py`; the accepted mismatches are in
+`.github/jq_diff_windows_known.txt`) and on cases that lean on the above
+(`.github/windows_smoke.sh`). jq_diff's command-line cases and compat scoreboard don't run
+there, so other differences can exist. Known ones:
 
 - `QJ_JQ_COMPAT=1` isn't supported: its models are of jq's Unix builds, so qj refuses
   to run.
 - jq.exe reads `$ENV`, `env` and the variables it uses (`HOME`, `TZ`) in the ANSI code
   page, which mangles non-ASCII values; qj reads them as Unicode.
 - jq.exe dies on recursion deep enough to exhaust its 2 MB stack; qj reserves 256 MB.
+- `lgamma` can differ in the last digit: jq.exe, built with MinGW, has MinGW's own; qj
+  calls the C runtime's.
 - Input files aren't memory-mapped (they are read in text mode), so large files are read
   as streams.
 
