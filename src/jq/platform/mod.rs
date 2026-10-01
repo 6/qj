@@ -25,8 +25,16 @@ use std::fmt;
 /// (musl's `<locale.h>` has `0x7fffffff`).
 #[cfg(target_env = "musl")]
 pub const LC_ALL_MASK: libc::c_int = 0x7fff_ffff;
-#[cfg(not(target_env = "musl"))]
+#[cfg(all(unix, not(target_env = "musl")))]
 pub const LC_ALL_MASK: libc::c_int = libc::LC_ALL_MASK;
+
+/// A POSIX locale object. Windows has none: there the process's locale is the
+/// environment's from the start, as jq's is (`crate::os::init`), and this is
+/// always null.
+#[cfg(unix)]
+pub type LocaleT = libc::locale_t;
+#[cfg(windows)]
+pub type LocaleT = *mut libc::c_void;
 
 /// Why a platform primitive failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,8 +80,10 @@ impl Error {
     pub fn abort_process(&self) -> ! {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         eprintln!("{}", glibc_assert_text(self.message()));
-        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(all(unix, not(all(target_os = "linux", target_env = "gnu"))))]
         eprintln!("{}", self.message());
+        #[cfg(windows)]
+        crate::os::write_stderr(format!("{}\n", self.message()).as_bytes());
         #[cfg(target_vendor = "apple")]
         {
             use std::io::Write;
@@ -243,6 +253,17 @@ impl std::error::Error for Error {}
 /// `LC_MESSAGES` when the language's messages are installed (`jq . missing`
 /// under `LC_ALL=de_DE.UTF-8` says "Datei oder Verzeichnis nicht gefunden");
 /// Apple's libc doesn't translate these.
+#[cfg(windows)]
+pub fn strerror(errnum: i32) -> Vec<u8> {
+    // SAFETY: UCRT's `strerror` returns this thread's NUL-terminated buffer,
+    // copied at once (its text for an unknown number is "Unknown error").
+    unsafe { std::ffi::CStr::from_ptr(libc::strerror(errnum)) }
+        .to_bytes()
+        .to_vec()
+}
+
+/// `strerror(errnum)`, as above.
+#[cfg(unix)]
 pub fn strerror(errnum: i32) -> Vec<u8> {
     time::with_env_locale(|| {
         let mut buf = [0 as libc::c_char; 512];

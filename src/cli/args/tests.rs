@@ -692,9 +692,9 @@ fn indentation_options_apply_in_order() {
 #[test]
 fn color_defaults_and_flags() {
     let tty = |args: &[&str], no_color: Option<&str>| {
-        run(args).dumpopts(true, no_color.map(str::as_bytes)) & (COLOR | ISATTY)
+        run(args).dumpopts(Some(true), no_color.map(str::as_bytes)) & (COLOR | ISATTY)
     };
-    let pipe = |args: &[&str]| run(args).dumpopts(false, None) & (COLOR | ISATTY);
+    let pipe = |args: &[&str]| run(args).dumpopts(None, None) & (COLOR | ISATTY);
     assert_eq!(tty(&["."], None), COLOR | ISATTY);
     assert_eq!(tty(&["."], Some("")), COLOR | ISATTY);
     assert_eq!(tty(&["."], Some("1")), ISATTY);
@@ -710,7 +710,7 @@ fn color_defaults_and_flags() {
 
 #[test]
 fn sort_and_ascii_flags() {
-    let d = run(&["-S", "-a", "."]).dumpopts(false, None);
+    let d = run(&["-S", "-a", "."]).dumpopts(None, None);
     assert_eq!(d & (SORTED | ASCII), SORTED | ASCII);
     assert_eq!(d & PRETTY, PRETTY);
 }

@@ -7,14 +7,33 @@ lists the rest.
 
 ## Platforms
 
-qj builds for Unix: macOS and Linux (glibc), where every check runs, and Linux with musl
-(as on Alpine), FreeBSD and NetBSD, which CI builds and smoke-tests. The CLI, the input layer
-and the port's platform layer use Unix APIs (file descriptors, `mmap`, libc's time
-functions), and Windows isn't supported.
+qj builds for macOS and Linux (glibc), where every check runs, and for Linux with musl (as
+on Alpine), FreeBSD, NetBSD and Windows, which CI builds and smoke-tests.
 
 NetBSD's C library has no `uselocale`, so there qj stays in the C locale for what jq takes
 from the environment's (`LANG`, `LC_ALL`): the names `strftime` prints and `strptime`
 reads, and the C library's error messages.
+
+### Windows
+
+On Windows, qj is built for MSVC, whose C runtime (UCRT) is the one jq's Windows release
+binary uses, and does what that binary does where it is cheap to: standard input, output
+and error and the files jq reads are in text mode (`\r\n` out; `\r\n` in, and Ctrl-Z
+ends the input), `-b` puts the standard streams in binary mode, output to a console goes
+out as UTF-16 with colors only where the console takes them, the time builtins are the C
+runtime's (with jq's own `strptime`), messages carry the C runtime's `errno` text, and
+`~` is `%USERPROFILE%` when `HOME` isn't set (`src/os.rs`). CI compares qj with
+`jq-windows-amd64.exe` byte for byte on cases that lean on those
+(`.github/windows_smoke.sh`), but the conformance suites don't run there, so other
+differences can exist. Known ones:
+
+- `QJ_JQ_COMPAT=1` isn't supported: its models are of jq's Unix builds, so qj refuses
+  to run.
+- jq.exe reads `$ENV`, `env` and the variables it uses (`HOME`, `TZ`) in the ANSI code
+  page, which mangles non-ASCII values; qj reads them as Unicode.
+- jq.exe dies on recursion deep enough to exhaust its 2 MB stack; qj reserves 256 MB.
+- Input files aren't memory-mapped (they are read in text mode), so large files are read
+  as streams.
 
 ## Where the fast paths don't apply
 

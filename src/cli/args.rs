@@ -34,10 +34,10 @@
 //! exist, contains a glob metacharacter and matches at least one path;
 //! otherwise the argument is kept, and it fails to open exactly as in jq.
 
+use crate::os::{OsStrExt, OsStringExt};
 use std::ffi::{CString, OsStr};
 use std::io::Read;
 use std::os::raw::{c_char, c_int};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 /// jv.h `enum jv_print_flags`: the printer flags main.c collects in
 /// `dumpopts`.
@@ -400,14 +400,17 @@ impl<V> Options<V> {
 
     /// main.c after the loop: `dumpopts` with color on for a terminal unless
     /// `NO_COLOR` is set and non-empty, then `-S`, `-a`, `-C`, and `-M` (so
-    /// `-M` beats `-C`, and `-C` beats `NO_COLOR`).
-    pub fn dumpopts(&self, stdout_is_tty: bool, no_color_env: Option<&[u8]>) -> u32 {
+    /// `-M` beats `-C`, and `-C` beats `NO_COLOR`). `terminal` is `None` when
+    /// standard output isn't one, and otherwise whether it takes color: on
+    /// Windows, a console only does with `ANSICON` set or virtual-terminal
+    /// sequences enabled (`crate::os::Console`).
+    pub fn dumpopts(&self, terminal: Option<bool>, no_color_env: Option<&[u8]>) -> u32 {
         use print_flags::{ASCII, COLOR, ISATTY, SORTED};
         let mut d = self.dumpopts;
-        if stdout_is_tty {
-            d |= ISATTY | COLOR;
-            if no_color_env.is_some_and(|v| !v.is_empty()) {
-                d &= !COLOR;
+        if let Some(color) = terminal {
+            d |= ISATTY;
+            if color && no_color_env.is_none_or(|v| v.is_empty()) {
+                d |= COLOR;
             }
         }
         if self.sorted_output {
@@ -590,24 +593,25 @@ fn parse_threads(arg: &[u8]) -> Result<usize, ArgError> {
 /// Port of util.c `jq_realpath`: the canonical absolute path, or the path
 /// unchanged when `realpath` fails (e.g. it doesn't exist).
 pub fn jq_realpath(path: &[u8]) -> Vec<u8> {
-    match std::fs::canonicalize(OsStr::from_bytes(path)) {
-        Ok(p) => p.into_os_string().into_vec(),
-        Err(_) => path.to_vec(),
+    match crate::os::realpath(OsStr::from_bytes(path)) {
+        Some(p) => p.into_vec(),
+        None => path.to_vec(),
     }
 }
 
 /// POSIX `dirname(3)`, as main.c uses it for `JQ_ORIGIN` and
 /// `PROGRAM_ORIGIN`.
 pub fn dirname(path: &[u8]) -> Vec<u8> {
-    let trimmed = match path.iter().rposition(|&b| b != b'/') {
+    use crate::os::is_separator;
+    let trimmed = match path.iter().rposition(|&b| !is_separator(b)) {
         Some(end) => &path[..=end],
         // Empty, or only slashes.
         None if path.is_empty() => return b".".to_vec(),
         None => return b"/".to_vec(),
     };
-    match trimmed.iter().rposition(|&b| b == b'/') {
+    match trimmed.iter().rposition(|&b| is_separator(b)) {
         None => b".".to_vec(),
-        Some(slash) => match trimmed[..slash].iter().rposition(|&b| b != b'/') {
+        Some(slash) => match trimmed[..slash].iter().rposition(|&b| !is_separator(b)) {
             Some(end) => trimmed[..=end].to_vec(),
             None => b"/".to_vec(),
         },
@@ -622,15 +626,23 @@ pub fn strerror(errnum: i32) -> Vec<u8> {
 /// The I/O half of jv_file.c `jv_load_file`: the file's bytes, or jq's
 /// message ("Could not open FILE: REASON", "Could not open FILE: It's a
 /// directory", "Error reading from FILE").
+///
+/// On Windows the file is read in text mode, as jq's `fdopen(fd, "r")` reads
+/// it, and a directory doesn't open at all ("Permission denied").
 pub fn load_file(path: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
     let msg = |parts: &[&[u8]]| parts.concat();
-    let mut file = match std::fs::File::open(OsStr::from_bytes(path)) {
+    #[cfg(unix)]
+    let opened = std::fs::File::open(OsStr::from_bytes(path));
+    #[cfg(windows)]
+    let opened = crate::os::CrtFile::open(OsStr::from_bytes(path));
+    let mut file = match opened {
         Ok(f) => f,
         Err(e) => {
             let reason = strerror(e.raw_os_error().unwrap_or(0));
             return Err(msg(&[b"Could not open ", path, b": ", &reason]));
         }
     };
+    #[cfg(unix)]
     match file.metadata() {
         Ok(m) if !m.is_dir() => {}
         _ => return Err(msg(&[b"Could not open ", path, b": It's a directory"])),
@@ -715,8 +727,16 @@ pub fn jq_colors(spec: &[u8]) -> Option<[Vec<u8>; 8]> {
 /// Only this thread and only `LC_CTYPE` are affected, and only for the
 /// duration of `f`; like `setlocale`, an environment locale that can't be
 /// loaded leaves the C locale in place.
+#[cfg(unix)]
 pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
     in_environment_locale(libc::LC_CTYPE_MASK, f)
+}
+
+/// On Windows, the process is in the environment's locale already, as jq's
+/// is (`crate::os::init`).
+#[cfg(windows)]
+pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
+    f()
 }
 
 /// NetBSD's C library has no `uselocale`, so there `f` runs in the process's
@@ -728,7 +748,7 @@ fn in_environment_locale<R>(_mask: c_int, f: impl FnOnce() -> R) -> R {
 
 /// Run `f` with the categories in `mask` of the calling thread's locale set
 /// from the environment, as `setlocale(LC_ALL, "")` would set them.
-#[cfg(not(target_os = "netbsd"))]
+#[cfg(all(unix, not(target_os = "netbsd")))]
 fn in_environment_locale<R>(mask: c_int, f: impl FnOnce() -> R) -> R {
     struct Restore {
         previous: libc::locale_t,
@@ -866,8 +886,10 @@ pub fn parse<H: ArgHost>(argv: &[Vec<u8>], host: &mut H) -> Result<Action<H::Val
                     i += 1;
                 }
             } else if isoption(t, b'b', "binary", is_short) {
-                // Windows only (binary-mode stdio); accepted and ignored
-                // elsewhere.
+                // Windows only (binary-mode stdio, as soon as it's read);
+                // accepted and ignored elsewhere.
+                #[cfg(windows)]
+                crate::os::binary_stdio();
             } else if isoption(t, 0, "tab", is_short) {
                 o.dumpopts &= !indent_flags(7);
                 o.dumpopts |= TAB | PRETTY;

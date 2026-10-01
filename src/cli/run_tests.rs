@@ -13,9 +13,9 @@
 //! Exit status: 1 when a test failed, 2 when `--skip` went past the end of
 //! the file, else 0 (then main.c closes stdout as usual).
 
+use crate::os::OsStrExt;
 use std::ffi::CString;
 use std::io::Read;
-use std::os::unix::ffi::OsStrExt;
 
 use super::input::{StdinReader, Stream};
 use super::run::{TraceOut, default_err_cb, with_prog_name, with_stdout, write_stderr};
