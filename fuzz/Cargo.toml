@@ -49,3 +49,11 @@ name = "fuzz_tape"
 path = "fuzz_targets/fuzz_tape.rs"
 doc = false
 test = false
+
+# jq's front end (lexer, parser, linker, compiler, the VM's loading and the
+# tape evaluator's parser) on arbitrary programs: no panics.
+[[bin]]
+name = "fuzz_compile"
+path = "fuzz_targets/fuzz_compile.rs"
+doc = false
+test = false
