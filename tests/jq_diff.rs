@@ -622,6 +622,16 @@ fn jq_version(jq: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// This process's soft `RLIMIT_STACK`, which every case inherits; `None` when
+/// it is unlimited.
+fn stack_limit() -> Option<u64> {
+    // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } == 0
+        && lim.rlim_cur != libc::RLIM_INFINITY)
+        .then_some(lim.rlim_cur)
+}
+
 fn binary_identity(path: &Path) -> String {
     let meta = std::fs::metadata(path).ok();
     let mtime = meta
@@ -717,6 +727,7 @@ fn run_board(board: Board) {
         timeout_ms: cfg.timeout.as_millis() as u64,
         max_output: MAX_OUTPUT,
         max_rss: cfg.max_rss,
+        stack_limit: stack_limit(),
     };
     let cache_path = root().join(board.cache_file());
     let cache = cache::Cache::load(&cache_path, header);

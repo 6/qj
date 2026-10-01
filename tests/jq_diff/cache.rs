@@ -22,9 +22,12 @@ pub struct Header {
     pub timeout_ms: u64,
     pub max_output: usize,
     pub max_rss: u64,
+    /// The soft `RLIMIT_STACK` every case inherits (`None` when unlimited):
+    /// where jq's stack overflows is a function of it.
+    pub stack_limit: Option<u64>,
 }
 
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheFile {
@@ -117,6 +120,7 @@ mod tests {
             timeout_ms: 10,
             max_output: 1,
             max_rss: 1,
+            stack_limit: Some(8 << 20),
         }
     }
 

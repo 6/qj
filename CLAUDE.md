@@ -120,8 +120,14 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
   scoreboard on macOS. To record gains made on Linux, commit the `baseline_candidate.txt` files
   from the run's `jq-diff-linux` artifact (the compat one is under `compat/`).
 - jq results are cached in `tests/jq_compat/.cache/jq_diff.json` and `jq_diff_compat.json`
-  (invalidated automatically). The two scoreboards take ~45s cold and ~18s cached on 18
-  cores, and about 5 minutes on GitHub's 4-core Linux runner.
+  (invalidated automatically, a different `ulimit -s` included). The two scoreboards take
+  ~45s cold and ~18s cached on 18 cores, and about 5 minutes on GitHub's 4-core Linux runner.
+- **Stack limits:** every case inherits the harness's `RLIMIT_STACK`, so `ulimit -s 1024;
+  cargo test --release jq_diff -- --ignored` scores both boards at 1 MB, where qj runs on its
+  own mapped stack (`src/cli/stack.rs`): compat mode stays strict on every case there, and
+  default mode differs only where jq's compiler runs out (3 `deep-*` cases in
+  `corpus/cli_basics.toml`). Run it with `JQ_DIFF_BASELINE` and `JQ_DIFF_COMPAT_BASELINE`
+  pointing at files that don't exist.
 - **Core dumps:** the core-dump flag is compared, so a crash matches only if the kernel dumps
   a core for both or for neither. On macOS the harness sets `ulimit -c 0` for everything it
   starts (a macOS core is the whole address space); on Linux it leaves the limit alone, and a
