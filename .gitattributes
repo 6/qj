@@ -1,1 +1,8 @@
 simdjson/** linguist-vendored
+
+# LF in the working tree on every platform, whatever core.autocrlf says: the
+# build embeds files whose bytes matter (src/jq/builtins/builtin.jq, which
+# jq's lexer, which qj's follows, doesn't read with \r as whitespace), and the
+# scripts CI runs on Windows are bash. Fixtures that must keep their bytes say
+# -text (tests/jq_compat/.gitattributes).
+* text=auto eol=lf
