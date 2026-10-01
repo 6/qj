@@ -77,9 +77,12 @@ fn jq_stack(dir: &Path, compat: bool, rlimit: u64, args: &[&str]) -> u64 {
 fn own_rlimit() -> Option<u64> {
     // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
-    (unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } == 0
-        && lim.rlim_cur != libc::RLIM_INFINITY)
-        .then_some(lim.rlim_cur)
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } == 0;
+    // `rlim_t` is `u64` on macOS and Linux, and `i64` on FreeBSD, where a
+    // limit is never negative.
+    #[allow(clippy::unnecessary_cast)]
+    let cur = lim.rlim_cur as u64;
+    (read && lim.rlim_cur != libc::RLIM_INFINITY).then_some(cur)
 }
 
 /// [`run_in`] with exactly [`exact_env`] for an environment, so that
