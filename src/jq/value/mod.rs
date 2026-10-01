@@ -87,11 +87,11 @@
 //! * No `Object too big` error (jq's limit is 2^29 slots).
 
 pub mod array;
-mod aux;
 mod deep;
 pub mod dtoa;
 mod error;
 pub mod file;
+mod jv_aux;
 pub mod number;
 pub mod object;
 pub mod parse;
@@ -109,9 +109,9 @@ use std::cmp::Ordering;
 use std::fmt;
 
 pub use array::Array;
-pub use aux::{group, sort, unique};
 pub use error::Error;
 pub use file::load_file;
+pub use jv_aux::{group, sort, unique};
 pub use number::Number;
 pub use object::Object;
 pub use parse::{ParseFlags, Parser, parse_sized};
