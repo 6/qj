@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+noaslr
+corpus.json
+results*.json

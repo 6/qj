@@ -661,8 +661,8 @@ or off; with `tcache_count=0` it prints the trace and exits 0, while
 `[.[] | select(. > 1)]` does the opposite. With `MALLOC_PERTURB_=85`,
 `jq -nc --debug-trace=all '[range(10)] | [.[]]'` goes from exit 0 to SIGSEGV.
 
-`ub_corpus.py`, `ub_run.py` and `ub_analyze.py` on the `ci/ex-identity-debug` branch
-(`.github/ci-debug/ex/`) generate the corpus, run it under every setting and summarize it.
+`ub_corpus.py`, `ub_run.py` and `ub_analyze.py` in `tests/jq_compat/ub/` generate the
+corpus, run it under every setting and summarize it (see the README there).
 
 ## Numbers
 
