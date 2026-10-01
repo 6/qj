@@ -5,6 +5,8 @@
 # jq only, on GH Archive-like records generated with qj, and writes
 # results_json_ci.md and results_ndjson_ci.md into OUT_DIR, where the
 # workflow's commit-results job picks them up like the other platforms'.
+# jq.exe is slow (about 2 s per MB pretty-printed on a hosted runner), so the
+# default data is ~30 MB, which keeps the job well inside its 30 minutes.
 #
 #   bash benches/windows_bench.sh path\to\qj.exe path\to\jq.exe OUT_DIR [records]
 #
@@ -15,7 +17,7 @@ set -eu
 qj=$1
 jq=$2
 out=$3
-records=${4:-300000}
+records=${4:-100000}
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
