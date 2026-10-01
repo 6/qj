@@ -19,12 +19,14 @@ reads as `jq:`, as does qj's usage hint). jq is the only expectation.
   TZ=America/New_York, PAGER=less), plus what Windows needs to start a process.
 - A case both tools time out on matches; there is no memory cap.
 
-Report-only: prints a scoreboard per suite and mode, writes every mismatch to
-OUT/report.txt and one line per case to OUT/results.tsv, and exits 0 unless
---fail-on-mismatch is given.
+It prints a scoreboard per suite and mode, writes every mismatch to
+OUT/report.txt and one line per case to OUT/results.tsv, and with --known FILE
+fails on any mismatch that FILE doesn't list (one case id per line, `#`
+comments; the differences Windows support accepts), and names listed cases that
+now match, so the list can shrink.
 
     python3 .github/jq_diff_windows.py --qj path/to/qj --jq path/to/jq [--out DIR]
-        [--modes compact,pretty,file,ndjson,fail] [--filter SUBSTR] [--jobs N]
+        [--modes compact,pretty,file,ndjson,fail] [--filter SUBSTR] [--jobs N] [--known FILE]
 """
 
 import argparse
@@ -231,7 +233,7 @@ def main():
     ap.add_argument("--filter", default="")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--timeout", type=float, default=10.0)
-    ap.add_argument("--fail-on-mismatch", action="store_true")
+    ap.add_argument("--known", help="file of case ids allowed to mismatch")
     a = ap.parse_args()
 
     qj, jq = os.path.abspath(a.qj), os.path.abspath(a.jq)
@@ -297,8 +299,21 @@ def main():
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(f"### jq_diff's .test cases on {OS_NAME} ({version})\n```\n" + "\n".join(rows) + "\n```\n")
-    if a.fail_on_mismatch and tot["pass"] != n:
-        sys.exit(1)
+    if a.known:
+        known = set()
+        for line in Path(a.known).read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                known.add(line)
+        levels = dict(r.rstrip("\n").split("\t") for r in results)
+        new = sorted(i for i, lv in levels.items() if lv != "pass" and i not in known)
+        fixed = sorted(i for i in known if levels.get(i) == "pass")
+        for i in fixed:
+            print(f"now matches (remove from {a.known}): {i}")
+        for i in new:
+            print(f"MISMATCH not in {a.known}: {i} [{levels[i]}]")
+        if new:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

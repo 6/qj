@@ -219,15 +219,17 @@ jobs:
       - name: Compare with jq
         run: bash .github/windows_smoke.sh "$PWD/target/release/qj.exe" "$(command -v jq.exe)"
 
-      - name: jq_diff's .test cases (report only)
+      - name: jq_diff's .test cases
         # jq_diff's runner is Unix-only; this runs its .test cases (jq's
         # suites and the corpus, every mode) under qj and jq.exe and compares
-        # them the same way. The scoreboard goes to the job summary, every
-        # mismatch to the artifact's report.txt.
+        # them the same way. Any mismatch .github/jq_diff_windows_known.txt
+        # doesn't list fails the job. The scoreboard goes to the job summary,
+        # every mismatch to the artifact's report.txt.
         if: always()
         run: |
           python .github/jq_diff_windows.py --qj target/release/qj.exe \
-            --jq "$(cygpath -w "$(command -v jq.exe)")" --out target/tmp/jq_diff_windows
+            --jq "$(cygpath -w "$(command -v jq.exe)")" --out target/tmp/jq_diff_windows \
+            --known .github/jq_diff_windows_known.txt
 
       - name: Upload jq_diff results (Windows)
         if: always()
