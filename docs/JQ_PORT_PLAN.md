@@ -332,8 +332,8 @@ interface scaffold before spawning it.
   crashes *instead of* reporting a syntax error when the program before it nests deeply,
   because parser.y's actions bind as bison reduces. jq_diff: **39,204/39,215 strict on both
   macOS and Linux**.
-- 2026-09-30: **EX** (compat mode's identity, jq_diff's compat scoreboard, core dumps, jq's
-  undefined behaviour). With `QJ_JQ_COMPAT=1`, qj is jq by name and text: `jq:` in every
+- 2026-09-30: **EX merged** (`0a299ec`): compat mode's identity, jq_diff's compat scoreboard,
+  core dumps, jq's undefined behaviour. With `QJ_JQ_COMPAT=1`, qj is jq by name and text: `jq:` in every
   message, jq's `usage()`, `jq-1.8.1`, the release binary's `--build-configuration` for the
   platform, and glibc's `assert()` line with `argv[0]`. jq_diff has a second scoreboard,
   `jq_diff_compat`: compat mode for both tools, both started as `jq`, nothing normalized,
@@ -349,6 +349,17 @@ interface scaffold before spawning it.
   and 39,258/39,258 compat on macOS, 39,275/39,282 and 39,282/39,282 on Linux** (the 7
   defaults are the exempt help/version text, each total includes the 4 delpaths-nan hangs
   and the OS-specific cases).
+- 2026-09-30: **TS merged** (`43f71c6`). qj's own stack never runs out where jq's doesn't.
+  Below an 8 MB `RLIMIT_STACK`, qj runs on a 256 MB stack mapped for it, still on the main
+  thread (`src/cli/stack.rs`); at the default limit nothing changes. Compat mode counts argv and
+  the environment, and models jq's start-up, the compiler's floor, the test loop, dumps and
+  regexes. It dies where jq does over 121 programs at 8 KB–256 KB on macOS 26/27 and Linux:
+  never later than jq, and earlier only within the documented margins. The margins cover
+  jq's run-to-run variation, which on Linux comes from the randomized stack.
+  On macOS, the binary no longer links libiconv and uses chained fixups on arm64, so it
+  starts on the same stack as jq. The earlier CI flake was a full disk, caused by an orphan
+  left over from before EX's process groups; jq_diff now fails loudly on a full disk. Both
+  scoreboards unchanged.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
