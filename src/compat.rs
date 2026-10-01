@@ -236,7 +236,23 @@ pub fn area_of<'a>(
     bytes
 }
 
+/// The environment as `NAME=value` strings (on Windows, whose C runtime
+/// exports no `environ` to link to, from std; compat mode doesn't run there).
+#[cfg(windows)]
+fn environ_strings() -> Vec<Vec<u8>> {
+    use crate::os::OsStringExt;
+    std::env::vars_os()
+        .map(|(k, v)| {
+            let mut s = k;
+            s.push("=");
+            s.push(v);
+            s.into_vec()
+        })
+        .collect()
+}
+
 /// The C environment, as `environ` holds it: `NAME=value` strings.
+#[cfg(unix)]
 fn environ_strings() -> Vec<Vec<u8>> {
     #[cfg(target_vendor = "apple")]
     // SAFETY: _NSGetEnviron returns the address of the process's `environ`.
