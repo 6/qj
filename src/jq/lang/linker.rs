@@ -159,7 +159,7 @@ fn build_lib_search_chain(
         } else if let Some(rest) = p.strip_prefix("$ORIGIN/") {
             format!("{}/{}", cstr(jq_origin.as_str().unwrap_or("")), rest)
         } else if let Some(origin) = lib_origin.as_str()
-            && !p.starts_with('/')
+            && crate::os::path_is_relative(p)
         {
             format!("{}/{}", cstr(origin), p)
         } else {
