@@ -160,3 +160,9 @@ jobs:
             target/tmp/jq_diff/compat/report.txt
             target/tmp/jq_diff/compat/results.tsv
           if-no-files-found: ignore
+
+  platforms:
+    # jq_diff on musl, FreeBSD and NetBSD against jq built there.
+    uses: ./.github/workflows/platform_conformance.yml
+    with:
+      ref: ${{ inputs.ref || github.ref }}
