@@ -477,7 +477,9 @@ macOS arm64's. The Release check workflow runs jq_diff natively on both:
   answers `null`.
 
 Near the thresholds on those two platforms, how deep jq gets is the borrowed model's
-guess, not a measurement.
+guess, not a measurement. The same goes, with no jq_diff run to check it, for the other
+platforms qj builds for: FreeBSD and NetBSD use macOS's model, and Linux with musl uses
+glibc's, so `tests/compat_mode.rs` skips its crash-depth tests there.
 
 ### Small stacks
 

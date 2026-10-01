@@ -606,15 +606,16 @@ mod tests {
         assert_eq!(o.status, Status::OutputLimit);
     }
 
+    /// Only where [`rss_bytes`] can measure a process (elsewhere there is no
+    /// memory cap).
     #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn memory_limit_kills() {
-        // perl is on every macOS and Linux CI image; grow to ~400 MB.
-        let args = vec![
-            "-e".to_string(),
-            "$x = 'a' x 400_000_000; sleep 5".to_string(),
-        ];
+        // qj itself, which is wherever the tests are; an array of 10^8 numbers
+        // is gigabytes.
+        let args = vec!["-n".to_string(), "[range(100000000)] | length".to_string()];
         let o = run(&Spec {
-            bin: Path::new("/usr/bin/perl"),
+            bin: Path::new(env!("CARGO_BIN_EXE_qj")),
             arg0: None,
             args: &args,
             cwd: Path::new("/"),
