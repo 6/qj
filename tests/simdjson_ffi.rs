@@ -2,7 +2,10 @@
 //! `TapeParser` (simdjson's DOM parser, whose tape src/io turns into jq
 //! values; `src/io/tests/simd.rs` checks those values against jq's parser).
 
-use qj::simdjson::{Tape, TapeParser, pad_buffer, padding, tape_error};
+use qj::simdjson::{
+    Implementation, Tape, TapeParser, active_implementation, checked_active_implementation,
+    implementations, pad_buffer, padding, supported_implementations, tape_error,
+};
 
 const PAYLOAD: u64 = 0x00FF_FFFF_FFFF_FFFF;
 
@@ -173,4 +176,97 @@ fn padding_contents_do_not_matter() {
 #[should_panic(expected = "SIMDJSON_PADDING")]
 fn parse_requires_padding() {
     let _ = TapeParser::new().unwrap().parse(b"[1]", 3);
+}
+
+/// simdjson's kernels: the default is the best this CPU supports (unless
+/// `SIMDJSON_FORCE_IMPLEMENTATION` says otherwise; see below).
+/// `tests/simdjson_kernels.rs` compares the kernels.
+#[test]
+fn the_default_kernel_is_the_best_supported() {
+    let all = implementations();
+    let supported = supported_implementations();
+    assert!(!supported.is_empty(), "{all:?}");
+    assert!(supported.iter().all(|n| all.iter().any(|i| &i.name == n)));
+    if std::env::var_os("SIMDJSON_FORCE_IMPLEMENTATION").is_none() {
+        assert_eq!(active_implementation(), supported[0]);
+        assert_eq!(checked_active_implementation(), Ok(supported[0].clone()));
+    }
+    let names: Vec<&str> = all.iter().map(|i| i.name.as_str()).collect();
+    if cfg!(target_arch = "aarch64") {
+        assert_eq!(supported[0], "arm64", "{names:?}");
+        // simdjson leaves fallback out where arm64 always runs.
+        assert_eq!(
+            names.contains(&"fallback"),
+            cfg!(feature = "simdjson-fallback"),
+            "{names:?}"
+        );
+    }
+    if cfg!(feature = "simdjson-fallback") {
+        assert!(supported.iter().any(|n| n == "fallback"), "{all:?}");
+    }
+}
+
+#[test]
+fn a_parser_on_a_named_kernel() {
+    for name in ["no-such-kernel", "", "unsupported", "arm64\0"] {
+        assert!(TapeParser::with_implementation(name).is_none(), "{name:?}");
+    }
+    for Implementation { name, supported } in implementations() {
+        let parser = TapeParser::with_implementation(&name);
+        assert_eq!(parser.is_some(), supported, "{name}");
+        let Some(mut parser) = parser else { continue };
+        let json = br#"{"a":[1,2.5,"x"],"b":null}"#;
+        let buf = pad_buffer(json);
+        let tape = parser.parse(&buf, json.len()).unwrap();
+        assert_eq!(tags(&tape).len(), 14, "{name}");
+        assert_eq!(tape.structurals.len(), 15, "{name}");
+        let buf = pad_buffer(b"[1,");
+        assert!(parser.parse(&buf, 3).is_err(), "{name}");
+        // It grows like any parser.
+        let big = format!("[{}0]", "1,".repeat(100_000)).into_bytes();
+        let buf = pad_buffer(&big);
+        assert!(parser.parse(&buf, big.len()).is_ok(), "{name}");
+        assert!(parser.capacity() >= big.len(), "{name}");
+    }
+}
+
+/// `SIMDJSON_FORCE_IMPLEMENTATION` naming no kernel makes simdjson's
+/// active kernel `unsupported`, so every default parser fails; and where
+/// only one kernel is compiled in (arm64), simdjson ignores the variable.
+/// Either way a fuzzer forced onto a kernel wouldn't test it (one that falls
+/// back on errors would even pass), so the fuzzers check
+/// (`checked_active_implementation`). The active kernel is chosen once per
+/// process, so this runs in a child.
+#[test]
+fn forcing_a_kernel_that_isnt_there() {
+    const CHILD: &str = "QJ_FFI_TEST_FORCED_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let err = checked_active_implementation().unwrap_err();
+        assert!(err.contains("no such kernel is compiled in"), "{err}");
+        let buf = pad_buffer(b"[1]");
+        let best = &supported_implementations()[0];
+        if implementations().len() == 1 {
+            assert_eq!(&active_implementation(), best);
+        } else {
+            assert_eq!(active_implementation(), "unsupported");
+            // simdjson's UNSUPPORTED_ARCHITECTURE.
+            assert_eq!(TapeParser::new().unwrap().parse(&buf, 3).err(), Some(16));
+        }
+        // A parser on a named kernel doesn't care.
+        let mut parser = TapeParser::with_implementation(best).unwrap();
+        assert!(parser.parse(&buf, 3).is_ok());
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["forcing_a_kernel_that_isnt_there", "--exact"])
+        .env(CHILD, "1")
+        .env("SIMDJSON_FORCE_IMPLEMENTATION", "no-such-kernel")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

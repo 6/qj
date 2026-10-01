@@ -24,6 +24,11 @@ exclude = [
 # arguments with clap (qj itself parses jq's command line, src/cli/args.rs)
 # and read hyperfine's JSON with serde_json.
 bench = ["dep:clap", "dep:serde_json"]
+# Compile simdjson's portable fallback kernel in on targets where simdjson
+# leaves it out (arm64, where its NEON kernel always runs), so tests and
+# fuzzers can compare it with the SIMD kernel there (build.rs). Not for
+# release builds: qj never selects it on those targets.
+simdjson-fallback = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"], optional = true }

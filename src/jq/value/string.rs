@@ -488,7 +488,22 @@ impl Str {
         if res_len == 0 {
             return Ok(Value::String(Str::new()));
         }
-        Ok(Value::String(Str::from(self.as_str().repeat(n as usize))))
+        // Built in place, as jq does, in copies of up to 64 KB: building a
+        // `String` and copying it in would take twice the result's size at
+        // its peak (a program's constants are folded as it compiles, so
+        // `"abc" * 333333333` took 2 GB where jq takes 1).
+        let unit = self.as_str();
+        let n = n as usize;
+        let per_chunk = (65536 / unit.len()).clamp(1, n);
+        let chunk = unit.repeat(per_chunk);
+        let mut out = Str::with_capacity(res_len as usize);
+        let mut left = n;
+        while left >= per_chunk {
+            out.push_str(&chunk);
+            left -= per_chunk;
+        }
+        out.push_str(&chunk[..left * unit.len()]);
+        Ok(Value::String(out))
     }
 }
 
@@ -687,6 +702,31 @@ mod tests {
             s("ab").repeat(i32::MAX / 2 + 1).unwrap_err().to_string(),
             "Repeat string result too long"
         );
+    }
+
+    /// A repeat is built in place, in chunks of up to 64 KB (so that at its
+    /// peak it takes what jq takes: fuzz_compile found `"abc" * 333333333`,
+    /// folded as the program compiled, taking 2 GB to jq's 1): results that
+    /// end on a chunk boundary or not, and units larger than a chunk.
+    #[test]
+    fn repeat_in_chunks() {
+        for (unit, n) in [
+            ("ab", 100_000),
+            ("abc", 21_845),
+            ("abc", 21_846),
+            ("abc", 50_000),
+            ("\u{20ac}x", 33_333),
+            ("x", 1),
+            ("x", 65_537),
+            (&"y".repeat(70_000), 3),
+        ] {
+            let Value::String(r) = s(unit).repeat(n).unwrap() else {
+                panic!("{unit:?} * {n}")
+            };
+            assert_eq!(r.len(), unit.len() * n as usize, "{n}");
+            assert_eq!(r.header().cap, r.len(), "{n}");
+            assert_eq!(r.as_str(), unit.repeat(n as usize), "{n}");
+        }
     }
 
     #[test]

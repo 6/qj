@@ -5,7 +5,9 @@
 //! without padding after them (the parser copies in the second case), and
 //! one parser handles every text, so its buffers are reused.
 //!
-//! `cargo +nightly fuzz run fuzz_dom -s none -- -max_total_time=120`
+//! `cargo +nightly fuzz run fuzz_dom -s none -- -max_total_time=120`, on the
+//! kernel `SIMDJSON_FORCE_IMPLEMENTATION` names (default: the best this CPU
+//! runs; the target refuses to start on one it can't).
 
 #![no_main]
 
@@ -14,7 +16,7 @@ use qj::io::fuzzing::same;
 use qj::io::simd::SimdParser;
 use qj::jq::value::parse_sized;
 
-fuzz_target!(|data: &[u8]| {
+fuzz_target!(init: qj::io::fuzzing::init_simdjson_kernel(), |data: &[u8]| {
     let mut simd = SimdParser::new();
     // The whole input, then the pieces between 0xFF bytes (never valid in
     // JSON text), so one input can hold several documents.
