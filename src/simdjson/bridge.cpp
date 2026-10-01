@@ -15,7 +15,17 @@
 
 #include "simdjson.h"
 
+#include <cstring>
+
 using namespace simdjson;
+
+// Copies a NUL-terminated name into buf (truncated to cap bytes).
+static void jx_copy_name(const std::string& name, char* buf, size_t cap) {
+    if (cap == 0) return;
+    size_t n = name.size() < cap - 1 ? name.size() : cap - 1;
+    std::memcpy(buf, name.data(), n);
+    buf[n] = '\0';
+}
 
 extern "C" {
 
@@ -37,6 +47,53 @@ JxTapeParser* jx_tape_parser_new() {
 
 void jx_tape_parser_free(JxTapeParser* p) {
     delete p;
+}
+
+// simdjson's kernels ("implementations": icelake, haswell, westmere and
+// fallback on x86-64, arm64 on ARM, and so on), in its order of preference.
+// jx_tape_parser_new's parsers use the active one: the first this CPU
+// supports, or the one SIMDJSON_FORCE_IMPLEMENTATION names.
+
+size_t jx_simdjson_implementation_count() {
+    return get_available_implementations().size();
+}
+
+// Copies the name of kernel i into buf and returns 1 if this CPU can run
+// it, 0 if it can't, -1 if there is no kernel i.
+int jx_simdjson_implementation(size_t i, char* buf, size_t cap) {
+    const auto& list = get_available_implementations();
+    if (i >= list.size()) return -1;
+    const implementation* impl = list.begin()[i];
+    jx_copy_name(impl->name(), buf, cap);
+    return impl->supported_by_runtime_system() ? 1 : 0;
+}
+
+// Copies the active kernel's name into buf. It is "unsupported" when
+// SIMDJSON_FORCE_IMPLEMENTATION names no kernel compiled in (every parse
+// then fails); simdjson doesn't check that the CPU can run a forced one.
+void jx_simdjson_active_implementation(char* buf, size_t cap) {
+    jx_copy_name(get_active_implementation()->name(), buf, cap);
+}
+
+// A parser on the named kernel, whatever the active one is. Null if no
+// kernel of that name is compiled in, if this CPU can't run it, or if
+// allocation fails.
+JxTapeParser* jx_tape_parser_new_implementation(const char* name) {
+    const implementation* impl = get_available_implementations()[name];
+    if (!impl || !impl->supported_by_runtime_system()) return nullptr;
+    try {
+        auto* p = new JxTapeParser();
+        // dom::parser::allocate keeps the implementation it has, growing it
+        // to each document's size.
+        if (impl->create_dom_parser_implementation(0, DEFAULT_MAX_DEPTH,
+                                                   p->parser.implementation)) {
+            delete p;
+            return nullptr;
+        }
+        return p;
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 // Parse exactly one JSON document in buf[0..len). The caller guarantees
