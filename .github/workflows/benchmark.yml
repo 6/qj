@@ -11,6 +11,7 @@ on:
           - all
           - linux
           - macos
+          - windows
 
 permissions:
   contents: write
@@ -104,8 +105,57 @@ jobs:
             benches/results_mem_json_ci.md
             benches/results_mem_ndjson_ci.md
 
+  benchmark-windows:
+    # bench_tools builds its hyperfine commands for a POSIX shell, so this
+    # times qj against jq's Windows release binary only, with
+    # benches/windows_bench.sh, on generated data.
+    if: inputs.platform == 'all' || inputs.platform == 'windows'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust, jq and hyperfine
+        run: |
+          # The versions mise.toml pins.
+          version() { sed -n "s/^$1 = \"\(.*\)\"/\1/p" mise.toml; }
+          rustup toolchain install "$(version rust)" --profile minimal
+          rustup default "$(version rust)"
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          jq_url="https://github.com/jqlang/jq/releases/download/jq-$(version jq)"
+          curl -fsSL -o "$bin/jq-windows-amd64.exe" "$jq_url/jq-windows-amd64.exe"
+          curl -fsSL "$jq_url/sha256sum.txt" | grep ' jq-windows-amd64.exe$' > "$bin/jq.sha256"
+          (cd "$bin" && sha256sum -c jq.sha256 && mv jq-windows-amd64.exe jq.exe)
+          hf="hyperfine-v$(version hyperfine)-x86_64-pc-windows-msvc"
+          curl -fsSL -o "$RUNNER_TEMP/$hf.zip" \
+            "https://github.com/sharkdp/hyperfine/releases/download/v$(version hyperfine)/$hf.zip"
+          7z e -y -o"$bin" "$RUNNER_TEMP/$hf.zip" "$hf/hyperfine.exe"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Run benchmarks
+        run: |
+          bash benches/windows_bench.sh "$(cygpath -w "$PWD/target/release/qj.exe")" \
+            "$(cygpath -w "$(command -v jq.exe)")" benches
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-windows-x86_64
+          path: |
+            benches/results_json_ci.md
+            benches/results_ndjson_ci.md
+
   commit-results:
-    needs: [benchmark-linux, benchmark-macos]
+    needs: [benchmark-linux, benchmark-macos, benchmark-windows]
     if: always() && !cancelled()
     runs-on: ubuntu-24.04
     steps:
