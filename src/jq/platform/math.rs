@@ -205,8 +205,8 @@ mod c {
         pub fn trunc(x: f64) -> f64;
     }
 
-    // XSI and BSD extras.
-    #[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+    // XSI and BSD extras: Bessel functions.
+    #[cfg(all(any(target_vendor = "apple", libm_bessel), not(windows)))]
     unsafe extern "C" {
         pub fn j0(x: f64) -> f64;
         pub fn j1(x: f64) -> f64;
@@ -214,6 +214,27 @@ mod c {
         pub fn y1(x: f64) -> f64;
         pub fn jn(n: c_int, x: f64) -> f64;
         pub fn yn(n: c_int, x: f64) -> f64;
+    }
+    // Windows' C runtime has them with a leading underscore.
+    #[cfg(windows)]
+    unsafe extern "C" {
+        #[link_name = "_j0"]
+        pub fn j0(x: f64) -> f64;
+        #[link_name = "_j1"]
+        pub fn j1(x: f64) -> f64;
+        #[link_name = "_y0"]
+        pub fn y0(x: f64) -> f64;
+        #[link_name = "_y1"]
+        pub fn y1(x: f64) -> f64;
+        #[link_name = "_jn"]
+        pub fn jn(n: c_int, x: f64) -> f64;
+        #[link_name = "_yn"]
+        pub fn yn(n: c_int, x: f64) -> f64;
+    }
+
+    // XSI and BSD extras: the rest.
+    #[cfg(any(target_vendor = "apple", libm_xsi))]
+    unsafe extern "C" {
         pub fn scalb(x: f64, n: f64) -> f64;
         pub fn lgamma_r(x: f64, sign: *mut c_int) -> f64;
     }
@@ -225,10 +246,18 @@ mod c {
         pub fn exp10(x: f64) -> f64;
     }
 
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[cfg(libm_exp10)]
     unsafe extern "C" {
         pub fn exp10(x: f64) -> f64;
+    }
+
+    #[cfg(libm_gamma)]
+    unsafe extern "C" {
         pub fn gamma(x: f64) -> f64;
+    }
+
+    #[cfg(libm_xsi)]
+    unsafe extern "C" {
         pub fn drem(x: f64, y: f64) -> f64;
         pub fn significand(x: f64) -> f64;
     }
@@ -257,7 +286,7 @@ fn modf_da(x: f64) -> [f64; 2] {
     [d, i]
 }
 
-#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(target_vendor = "apple", libm_xsi))]
 fn lgamma_r_da(x: f64) -> [f64; 2] {
     let mut sign: c_int = 0;
     // SAFETY: valid out-pointer.
@@ -266,12 +295,12 @@ fn lgamma_r_da(x: f64) -> [f64; 2] {
 }
 
 /// `LIBM_DDD(jn)` passes the double `$a` to `jn`'s `int` parameter.
-#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(target_vendor = "apple", libm_bessel))]
 fn jn_ddd(a: f64, b: f64) -> f64 {
     unsafe { c::jn(c_double_to_i32(a), b) }
 }
 
-#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(target_vendor = "apple", libm_bessel))]
 fn yn_ddd(a: f64, b: f64) -> f64 {
     unsafe { c::yn(c_double_to_i32(a), b) }
 }
@@ -300,19 +329,19 @@ fn nexttoward_ddd(a: f64, b: f64) -> f64 {
     }
 }
 
-/// `gamma`: `tgamma` on Apple (builtin.c's `#define gamma tgamma`), glibc's `gamma`
-/// (the log of the gamma function) on Linux.
+/// `gamma`: `tgamma` on Apple (builtin.c's `#define gamma tgamma`), and the C
+/// library's `gamma` (the log of the gamma function) elsewhere.
 #[cfg(target_vendor = "apple")]
 fn gamma_dd(x: f64) -> f64 {
     unsafe { c::tgamma(x) }
 }
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(libm_gamma)]
 fn gamma_dd(x: f64) -> f64 {
     unsafe { c::gamma(x) }
 }
 
 /// `exp10`.
-#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(target_vendor = "apple", libm_exp10))]
 fn exp10_dd(x: f64) -> f64 {
     unsafe { c::exp10(x) }
 }
@@ -322,7 +351,7 @@ fn exp10_dd(x: f64) -> f64 {
 fn drem_ddd(a: f64, b: f64) -> f64 {
     unsafe { c::remainder(a, b) }
 }
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(libm_xsi)]
 fn drem_ddd(a: f64, b: f64) -> f64 {
     unsafe { c::drem(a, b) }
 }
@@ -332,24 +361,22 @@ fn drem_ddd(a: f64, b: f64) -> f64 {
 fn significand_dd(x: f64) -> f64 {
     2.0 * frexp_da(x)[0]
 }
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(libm_xsi)]
 fn significand_dd(x: f64) -> f64 {
     unsafe { c::significand(x) }
 }
 
-/// `Some(f)` where the platform has the XSI/BSD/GNU extras (macOS and glibc), `None`
-/// (jq's `_NO` stub) elsewhere; the expression is only compiled where it exists.
-#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
-macro_rules! full {
-    ($e:expr) => {
-        Some($e)
-    };
-}
-#[cfg(not(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu"))))]
-macro_rules! full {
-    ($e:expr) => {
-        None
-    };
+/// `Some(f)` where the C library has the function (`$pred`), and otherwise `None`
+/// (jq's `_NO` stub, which says "not found at build time"); `f` is only compiled
+/// where the function exists.
+macro_rules! when {
+    ($pred:meta, $e:expr) => {{
+        #[cfg($pred)]
+        let f = Some($e);
+        #[cfg(not($pred))]
+        let f = None;
+        f
+    }};
 }
 
 fn entry(name: &'static str, arity: usize, func: Option<LibmFn>) -> LibmEntry {
@@ -394,8 +421,22 @@ fn build_table() -> Vec<LibmEntry> {
         dd!(exp2),
         dd!(floor),
         ddd!(hypot),
-        entry("j0", 0, full!(LibmFn::DD(|x| unsafe { c::j0(x) }))),
-        entry("j1", 0, full!(LibmFn::DD(|x| unsafe { c::j1(x) }))),
+        entry(
+            "j0",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_bessel),
+                LibmFn::DD(|x| unsafe { c::j0(x) })
+            ),
+        ),
+        entry(
+            "j1",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_bessel),
+                LibmFn::DD(|x| unsafe { c::j1(x) })
+            ),
+        ),
         dd!(log),
         dd!(log10),
         dd!(log2),
@@ -407,11 +448,25 @@ fn build_table() -> Vec<LibmEntry> {
         dd!(tan),
         dd!(tanh),
         dd!(tgamma),
-        entry("y0", 0, full!(LibmFn::DD(|x| unsafe { c::y0(x) }))),
-        entry("y1", 0, full!(LibmFn::DD(|x| unsafe { c::y1(x) }))),
+        entry(
+            "y0",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_bessel),
+                LibmFn::DD(|x| unsafe { c::y0(x) })
+            ),
+        ),
+        entry(
+            "y1",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_bessel),
+                LibmFn::DD(|x| unsafe { c::y1(x) })
+            ),
+        ),
     ];
     // jn and yn have no `_NO` stub: without them the builtins don't exist.
-    #[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+    #[cfg(any(target_vendor = "apple", libm_bessel))]
     t.extend([
         entry("jn", 2, Some(LibmFn::DDD(jn_ddd))),
         entry("yn", 2, Some(LibmFn::DDD(yn_ddd))),
@@ -419,10 +474,24 @@ fn build_table() -> Vec<LibmEntry> {
     t.extend([
         dd!(ceil),
         ddd!(copysign),
-        entry("drem", 2, full!(LibmFn::DDD(drem_ddd))),
+        entry(
+            "drem",
+            2,
+            when!(
+                any(target_vendor = "apple", libm_xsi),
+                LibmFn::DDD(drem_ddd)
+            ),
+        ),
         dd!(erf),
         dd!(erfc),
-        entry("exp10", 0, full!(LibmFn::DD(exp10_dd))),
+        entry(
+            "exp10",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_exp10),
+                LibmFn::DD(exp10_dd)
+            ),
+        ),
         dd!(expm1),
         dd!(fabs),
         ddd!(fdim),
@@ -434,7 +503,14 @@ fn build_table() -> Vec<LibmEntry> {
         ddd!(fmax),
         ddd!(fmin),
         ddd!(fmod),
-        entry("gamma", 0, full!(LibmFn::DD(gamma_dd))),
+        entry(
+            "gamma",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_gamma),
+                LibmFn::DD(gamma_dd)
+            ),
+        ),
         dd!(lgamma),
         dd!(log1p),
         dd!(logb),
@@ -446,15 +522,32 @@ fn build_table() -> Vec<LibmEntry> {
         entry(
             "scalb",
             2,
-            full!(LibmFn::DDD(|a, b| unsafe { c::scalb(a, b) })),
+            when!(
+                any(target_vendor = "apple", libm_xsi),
+                LibmFn::DDD(|a, b| unsafe { c::scalb(a, b) })
+            ),
         ),
         entry("scalbln", 2, Some(LibmFn::DDD(scalbln_ddd))),
-        entry("significand", 0, full!(LibmFn::DD(significand_dd))),
+        entry(
+            "significand",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_xsi),
+                LibmFn::DD(significand_dd)
+            ),
+        ),
         dd!(trunc),
         entry("ldexp", 2, Some(LibmFn::DDD(ldexp_ddd))),
         entry("modf", 0, Some(LibmFn::DA(modf_da))),
         entry("frexp", 0, Some(LibmFn::DA(frexp_da))),
-        entry("lgamma_r", 0, full!(LibmFn::DA(lgamma_r_da))),
+        entry(
+            "lgamma_r",
+            0,
+            when!(
+                any(target_vendor = "apple", libm_xsi),
+                LibmFn::DA(lgamma_r_da)
+            ),
+        ),
     ]);
     t
 }

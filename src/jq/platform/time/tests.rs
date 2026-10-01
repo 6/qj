@@ -269,14 +269,19 @@ fn strftime_formats_c_locale() {
         strftime_c(t, "%Y-%m-%dT%H:%M:%SZ").unwrap(),
         "2015-03-05T23:51:47Z"
     );
-    assert_eq!(
-        strftime_c(
-            TimeInput::Number(1425599507.9),
-            "%A, %B %d, %Y %j %U %W %u %w %e %C %y %G %g %V %k %l %I %p %M %S"
-        )
-        .unwrap(),
-        "Thursday, March 05, 2015 064 09 09 4 4  5 20 15 2015 15 10 23 11 11 PM 51 47"
+    let extended = strftime_c(
+        TimeInput::Number(1425599507.9),
+        "%A, %B %d, %Y %j %U %W %u %w %e %C %y %G %g %V %k %l %I %p %M %S",
     );
+    if cfg!(target_env = "musl") {
+        // musl has no %k or %l, so its strftime fails, for jq built on it too.
+        assert_eq!(extended, Err(msg("strftime/1: unknown system failure")));
+    } else {
+        assert_eq!(
+            extended.unwrap(),
+            "Thursday, March 05, 2015 064 09 09 4 4  5 20 15 2015 15 10 23 11 11 PM 51 47"
+        );
+    }
     assert_eq!(
         strftime_c(
             t,
@@ -945,6 +950,10 @@ fn upstream_date_cases() {
 /// in the C locale (see `date_locale`). The locale is read once per process, so this
 /// re-runs the test binary with `LC_ALL` set and checks the result in the child.
 #[test]
+#[cfg_attr(
+    target_os = "netbsd",
+    ignore = "NetBSD has no uselocale: qj stays in the C locale there"
+)]
 fn locale_comes_from_the_environment() {
     if locale("de_DE.UTF-8").is_none() {
         eprintln!("skipping: de_DE.UTF-8 not installed");
