@@ -378,30 +378,48 @@ fn strftime_macos_specifics() {
     );
 }
 
+/// libc's own `strftime_l` of the epoch (UTC) in `loc`: what jq's `strftime`
+/// prints, since jq calls libc's `strftime` in the locale `setlocale` chose.
+#[cfg(target_os = "macos")]
+fn libc_strftime_epoch(fmt: &str, loc: libc::locale_t) -> String {
+    let t: libc::time_t = 0;
+    // SAFETY: gmtime_r and strftime_l write only into the buffers given, and
+    // `loc` is a valid locale object.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::gmtime_r(&t, &mut tm);
+        let fmt = CString::new(fmt).unwrap();
+        let mut buf = [0u8; 512];
+        let n = libc::strftime_l(buf.as_mut_ptr().cast(), buf.len(), fmt.as_ptr(), &tm, loc);
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    }
+}
+
+/// `strftime` formats in the locale it's given. The exact text is the
+/// locale's, which changes between macOS releases (macOS 15's German `%c` is
+/// "Do  1 Jan", macOS 26's "Do.  1 Jan."), so it's checked against libc's own
+/// `strftime_l`, plus the parts every release agrees on.
 #[cfg(target_os = "macos")]
 #[test]
 fn strftime_uses_the_locale() {
     let _s = serial();
     let zero = TimeInput::Number(0.0);
     let fmt = "%A %B %c %x %X %p %r";
-    if let Some(de) = locale("de_DE.UTF-8") {
-        assert_eq!(
-            strftime_in(zero, Some(fmt), de.0).unwrap(),
-            "Donnerstag Januar Do.  1 Jan. 00:00:00 1970 01.01.1970 00:00:00  "
-        );
-    }
-    if let Some(ja) = locale("ja_JP.UTF-8") {
-        assert_eq!(
-            strftime_in(zero, Some(fmt), ja.0).unwrap(),
-            "木曜日 1月 木  1/ 1 00:00:00 1970 1970/01/01 00時00分00秒 午前 12:00:00 午前"
-        );
-    }
-    if let Some(us) = locale("en_US.UTF-8") {
+    for (name, fmt, start) in [
+        ("de_DE.UTF-8", fmt, "Donnerstag Januar "),
+        ("ja_JP.UTF-8", fmt, "木曜日 1月 "),
         // en_US has a 4-digit %x year; the C locale doesn't.
-        assert_eq!(
-            strftime_in(zero, Some("%c | %x | %X | %r | %p"), us.0).unwrap(),
-            "Thu Jan  1 00:00:00 1970 | 01/01/1970 | 00:00:00 | 12:00:00 AM | AM"
-        );
+        (
+            "en_US.UTF-8",
+            "%c | %x | %X | %r | %p",
+            "Thu Jan  1 00:00:00 1970 | 01/01/1970 | ",
+        ),
+    ] {
+        if let Some(loc) = locale(name) {
+            let got = strftime_in(zero, Some(fmt), loc.0).unwrap();
+            assert_eq!(got, libc_strftime_epoch(fmt, loc.0), "{name}");
+            assert!(got.starts_with(start), "{name}: {got}");
+        }
     }
     assert_eq!(
         strftime_c(zero, "%c | %x | %X | %r | %p").unwrap(),
