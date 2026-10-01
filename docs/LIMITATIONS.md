@@ -7,9 +7,14 @@ lists the rest.
 
 ## Platforms
 
-qj builds for Unix (macOS and Linux). The CLI, the input layer and the port's platform
-layer use Unix APIs (file descriptors, `mmap`, libc's time functions), and Windows isn't
-supported.
+qj builds for Unix: macOS and Linux (glibc), where every check runs, and Linux with musl
+(as on Alpine), FreeBSD and NetBSD, which CI builds and smoke-tests. The CLI, the input layer
+and the port's platform layer use Unix APIs (file descriptors, `mmap`, libc's time
+functions), and Windows isn't supported.
+
+NetBSD's C library has no `uselocale`, so there qj stays in the C locale for what jq takes
+from the environment's (`LANG`, `LC_ALL`): the names `strftime` prints and `strptime`
+reads, and the C library's error messages.
 
 ## Where the fast paths don't apply
 

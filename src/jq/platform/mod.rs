@@ -21,6 +21,13 @@ mod utf8;
 
 use std::fmt;
 
+/// `LC_ALL_MASK` for `newlocale`, which the libc crate doesn't define for musl
+/// (musl's `<locale.h>` has `0x7fffffff`).
+#[cfg(target_env = "musl")]
+pub const LC_ALL_MASK: libc::c_int = 0x7fff_ffff;
+#[cfg(not(target_env = "musl"))]
+pub const LC_ALL_MASK: libc::c_int = libc::LC_ALL_MASK;
+
 /// Why a platform primitive failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {

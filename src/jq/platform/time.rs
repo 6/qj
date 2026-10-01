@@ -37,7 +37,7 @@
 //! [`Parsed`]).
 
 use super::{Error, utf8};
-use libc::{c_char, c_int, time_t};
+use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -118,12 +118,12 @@ fn env_locale() -> libc::locale_t {
         .get_or_init(|| {
             // SAFETY: newlocale with a NULL base allocates a new locale object.
             unsafe {
-                let loc = libc::newlocale(libc::LC_ALL_MASK, c"".as_ptr(), ptr::null_mut());
+                let loc = libc::newlocale(super::LC_ALL_MASK, c"".as_ptr(), ptr::null_mut());
                 if !loc.is_null() {
                     return Locale(loc);
                 }
                 Locale(libc::newlocale(
-                    libc::LC_ALL_MASK,
+                    super::LC_ALL_MASK,
                     c"C".as_ptr(),
                     ptr::null_mut(),
                 ))
@@ -176,6 +176,16 @@ fn date_locale() -> libc::locale_t {
 }
 
 /// Run `f` with `loc` as the calling thread's locale.
+///
+/// NetBSD's C library has no `uselocale`, so there `f` runs in the process's
+/// locale, which qj leaves as C.
+#[cfg(target_os = "netbsd")]
+fn with_locale<R>(_loc: libc::locale_t, f: impl FnOnce() -> R) -> R {
+    f()
+}
+
+/// Run `f` with `loc` as the calling thread's locale.
+#[cfg(not(target_os = "netbsd"))]
 fn with_locale<R>(loc: libc::locale_t, f: impl FnOnce() -> R) -> R {
     if loc.is_null() {
         return f();
@@ -209,8 +219,12 @@ fn with_tz_utc<R>(f: impl FnOnce() -> R) -> R {
 // ---------------------------------------------------------------------------------
 
 /// `time_t secs = fsecs;` in `f_gmtime`/`f_localtime` (see [`super::c_double_to_i64`]).
-fn double_to_time_t(d: f64) -> time_t {
-    super::c_double_to_i64(d) as time_t
+///
+/// The libc crate marks `time_t` deprecated on musl, where it plans to make it
+/// 64-bit on 32-bit targets too, as musl 1.2 did.
+#[allow(deprecated)]
+fn double_to_time_t(d: f64) -> libc::time_t {
+    super::c_double_to_i64(d) as libc::time_t
 }
 
 /// Port of `tm2jv`.

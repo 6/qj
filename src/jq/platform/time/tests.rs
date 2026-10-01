@@ -67,7 +67,13 @@ impl Drop for TestLocale {
 fn locale(name: &str) -> Option<TestLocale> {
     let name = CString::new(name).unwrap();
     // SAFETY: plain allocation.
-    let loc = unsafe { libc::newlocale(libc::LC_ALL_MASK, name.as_ptr(), ptr::null_mut()) };
+    let loc = unsafe {
+        libc::newlocale(
+            crate::jq::platform::LC_ALL_MASK,
+            name.as_ptr(),
+            ptr::null_mut(),
+        )
+    };
     // Lazily: a `TestLocale(null)` built and dropped here would call
     // `freelocale(NULL)`, which glibc doesn't allow (it segfaults), and most
     // Linux systems lack the locales these tests ask for.

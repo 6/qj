@@ -719,8 +719,16 @@ pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
     in_environment_locale(libc::LC_CTYPE_MASK, f)
 }
 
+/// NetBSD's C library has no `uselocale`, so there `f` runs in the process's
+/// locale, which qj leaves as C.
+#[cfg(target_os = "netbsd")]
+fn in_environment_locale<R>(_mask: c_int, f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// Run `f` with the categories in `mask` of the calling thread's locale set
 /// from the environment, as `setlocale(LC_ALL, "")` would set them.
+#[cfg(not(target_os = "netbsd"))]
 fn in_environment_locale<R>(mask: c_int, f: impl FnOnce() -> R) -> R {
     struct Restore {
         previous: libc::locale_t,
@@ -739,7 +747,13 @@ fn in_environment_locale<R>(mask: c_int, f: impl FnOnce() -> R) -> R {
     // setlocale(LC_ALL, "") fails, changing nothing, when any category of the
     // environment's locale is unavailable; check the same way.
     // SAFETY: newlocale with a NUL-terminated name and a null base.
-    let all = unsafe { libc::newlocale(libc::LC_ALL_MASK, c"".as_ptr(), std::ptr::null_mut()) };
+    let all = unsafe {
+        libc::newlocale(
+            crate::jq::platform::LC_ALL_MASK,
+            c"".as_ptr(),
+            std::ptr::null_mut(),
+        )
+    };
     if all.is_null() {
         return f();
     }
