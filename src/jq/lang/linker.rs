@@ -203,11 +203,14 @@ fn jv_basename(name: &str) -> &str {
     }
 }
 
-/// `stat(path)`: `Ok` if it exists, else whether the error was `ENOENT`.
+/// `stat(path)`: `Ok` if it exists, else whether the error was `ENOENT`
+/// (`NotFound`: on Windows, whose C runtime gives `ENOENT` for a missing
+/// directory in the path too, `ERROR_PATH_NOT_FOUND` as well as
+/// `ERROR_FILE_NOT_FOUND`).
 fn stat(path: &str) -> Result<(), bool> {
     match std::fs::metadata(std::ffi::OsStr::from_bytes(cstr(path).as_bytes())) {
         Ok(_) => Ok(()),
-        Err(e) => Err(e.raw_os_error() == Some(libc::ENOENT)),
+        Err(e) => Err(e.kind() == std::io::ErrorKind::NotFound),
     }
 }
 
