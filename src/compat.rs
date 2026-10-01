@@ -559,15 +559,71 @@ pub fn free_frame_budget() -> Option<u64> {
 // jq's start
 // ---------------------------------------------------------------------------
 
-/// What jq needs before it does anything at all: on macOS, dyld's start-up
-/// (19,272 bytes beyond argv and the environment for jq's release binary,
-/// every program alike — jq's own start needs less); on Linux, where jq is
-/// linked statically, glibc's start-up and `main.c`'s option handling up to
-/// the help text, the version or a usage error (5,172).
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const START_BYTES: u64 = 19_280;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const START_BYTES: u64 = 5_184;
+/// What jq needs before it does anything at all, beyond argv and the
+/// environment. On Linux, where jq is linked statically, glibc's start-up and
+/// `main.c`'s option handling up to the help text, the version or a usage
+/// error (5,172 bytes). On macOS, the platform's start-up for jq's release
+/// binary, which depends on the release ([`MACOS_START_BYTES`]).
+fn start_bytes() -> u64 {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        5_184
+    } else {
+        static START: OnceLock<u64> = OnceLock::new();
+        *START.get_or_init(|| macos_start_bytes(macos_release()))
+    }
+}
+
+/// jq's start-up on each macOS release measured, newest first: 19,272 bytes on
+/// macOS 27, dyld's, which every program needs alike (jq's own start needs
+/// less); 28,704 to 28,712 on macOS 26, where a program that does nothing needs
+/// 21,400, and qj, linked as `build.rs` says, what jq does. Both at the same
+/// executable path's length; the margin covers a longer one for jq.
+const MACOS_START_BYTES: [(u32, u64); 2] = [(27, 19_280), (26, 28_720)];
+
+/// [`MACOS_START_BYTES`] for a release: the most of them for one that wasn't
+/// measured.
+fn macos_start_bytes(release: Option<u32>) -> u64 {
+    MACOS_START_BYTES
+        .iter()
+        .find(|&&(r, _)| Some(r) == release)
+        .or_else(|| MACOS_START_BYTES.iter().max_by_key(|&&(_, b)| b))
+        .map_or(0, |&(_, b)| b)
+}
+
+/// Targets other than macOS and Linux/x86-64 take the newest macOS's model,
+/// unmeasured.
+#[cfg(not(target_os = "macos"))]
+fn macos_release() -> Option<u32> {
+    Some(MACOS_START_BYTES[0].0)
+}
+
+/// macOS's major version (`kern.osproductversion`, "26.6.2" for 26).
+#[cfg(target_os = "macos")]
+fn macos_release() -> Option<u32> {
+    let mut buf = [0u8; 32];
+    let mut len = buf.len();
+    // SAFETY: sysctlbyname writes at most `len` bytes into `buf` and sets
+    // `len` to how many it wrote.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let version = std::str::from_utf8(&buf[..len.min(buf.len())]).ok()?;
+    version
+        .trim_end_matches('\0')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
 
 /// What jq needs to compile a program that doesn't nest, and to run one
 /// that doesn't recurse: the deepest point of `jq_compile_args` for the
@@ -619,7 +675,7 @@ pub fn starting() {
         return;
     }
     own_area();
-    if !fits(START_BYTES) {
+    if !fits(start_bytes()) {
         die_of_stack_overflow();
     }
     // jq frees values natively below this depth; see `native_drop_limit`.
@@ -691,7 +747,7 @@ pub fn native_drop_limit() -> u32 {
 /// pick a limit between two of them.
 pub fn fixed_needs() -> FixedNeeds {
     FixedNeeds {
-        start: START_BYTES + STACK_MARGIN,
+        start: start_bytes() + STACK_MARGIN,
         compile: COMPILE_BYTES + STACK_MARGIN,
         run_tests: RUN_TESTS_FLOOR_BYTES + STACK_MARGIN,
     }
@@ -1013,16 +1069,39 @@ mod tests {
     #[test]
     fn start_compile_and_run_tests_cover_jq() {
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let (start, compile, run_tests_trivial, run_tests_offset) =
-            (19_272, 11_896, 40_392, 28_496);
+        let (compile, run_tests_trivial, run_tests_offset) = (11_896, 40_392, 28_496);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let (start, compile, run_tests_trivial, run_tests_offset) = (5_172, 9_460, 23_796, 12_648);
-        assert!(START_BYTES >= start && START_BYTES - start <= 16);
+        let (compile, run_tests_trivial, run_tests_offset) = (9_460, 23_796, 12_648);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let starts = [(None, 5_172)];
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        let starts = [
+            (Some(27), 19_272),
+            (Some(26), 28_712),
+            (None, 28_712),
+            (Some(15), 28_712),
+        ];
+        for (release, start) in starts {
+            let bytes = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                start_bytes()
+            } else {
+                macos_start_bytes(release)
+            };
+            assert!(
+                bytes >= start && bytes - start <= 16,
+                "{release:?}: {bytes}"
+            );
+        }
+        // Each macOS release's start-up is less than its test loop's.
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        for (_, start) in MACOS_START_BYTES {
+            assert!(start < RUN_TESTS_FLOOR_BYTES);
+        }
         assert!(COMPILE_BYTES >= compile && COMPILE_BYTES - compile <= 16);
         assert!(RUN_TESTS_BYTES >= run_tests_offset && RUN_TESTS_BYTES - run_tests_offset <= 16);
         assert!(RUN_TESTS_FLOOR_BYTES >= run_tests_trivial);
         assert!(RUN_TESTS_FLOOR_BYTES - run_tests_trivial <= 16);
-        assert!(COMPILE_BYTES + RUN_TESTS_BYTES <= RUN_TESTS_FLOOR_BYTES + 16);
+        const { assert!(COMPILE_BYTES + RUN_TESTS_BYTES <= RUN_TESTS_FLOOR_BYTES + 16) };
     }
 
     /// Every site whose recursion jq drives from inside another one, and where

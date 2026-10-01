@@ -1275,10 +1275,15 @@ fn a_shallow_value_on_a_small_stack_is_checked_as_it_is_freed() {
         // A byte of padding makes the variable; each byte more takes one.
         PAD.with(|p| p.set(1));
         let padded = file_stack(kb);
-        let stack = (need..=padded)
+        let Some(stack) = (need..=padded)
             .rev()
             .find(|&s| Site::Free.frame_budget_at(s, 0) < 256)
-            .expect("a stack that starts and has fewer than 256 frames for jv_free");
+        else {
+            // jq's start-up needs more than that (macOS 26's does).
+            PAD.with(|p| p.set(0));
+            eprintln!("skipped: jq starts on no stack with under 256 frames for jv_free");
+            return;
+        };
         (1 + padded - stack) as usize
     };
     PAD.with(|p| p.set(pad));
@@ -1288,13 +1293,12 @@ fn a_shallow_value_on_a_small_stack_is_checked_as_it_is_freed() {
         "{pad} bytes of padding at {kb} KB leave {} bytes, {budget} frames",
         file_stack(kb)
     );
-    // What runs before qj's main is the platform's, and needs what it needs:
-    // dyld's need changes from one macOS release to the next, and where it is
-    // more than this, jq starts at no limit that leaves `jv_free` fewer than
-    // 256 frames, and neither does qj. A trivial program tells: with the same
-    // argv and environment, nothing of qj's can die of the limit, and qj as
-    // it is, given the stack compat mode would have, answers if the loader
-    // does.
+    // What runs before qj's main is the platform's, and needs what it needs,
+    // from one macOS release to the next: on one whose start-up the model
+    // doesn't know, it may need more than this, and then neither jq nor qj
+    // starts here. A trivial program tells: with the same argv and
+    // environment, nothing of qj's can die of the limit, and qj as it is,
+    // given the stack compat mode would have, answers if the loader does.
     let trivial = program_file("1");
     let Some(started) = run_stack_norandom(trivial.path(), true, kb, PROGRAM_ARGS) else {
         return; // no setarch

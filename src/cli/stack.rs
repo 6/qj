@@ -214,7 +214,9 @@ mod tests {
         if n == 0 {
             u32::from(buf[0])
         } else {
-            deep(n - 1) + u32::from(buf[1] & 0)
+            // Read after the call, so the buffer is in every frame (a byte
+            // shifted out is 0).
+            deep(n - 1) + (u32::from(buf[1]) >> 8)
         }
     }
 
