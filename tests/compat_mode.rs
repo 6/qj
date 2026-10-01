@@ -1261,26 +1261,74 @@ fn a_dump_inside_the_program_has_less_stack_than_the_output() {
 /// too deep for jq is checked however shallow it is.
 #[test]
 fn a_shallow_value_on_a_small_stack_is_checked_as_it_is_freed() {
-    // The first limit with room to start and compile, and so few frames for
-    // `jv_free`: on macOS, whose pages are 16 KB, with the environment taking
-    // what jq would have in excess of that.
+    // The first limit with room to start and compile, with the environment
+    // taking what jq's stack would have beyond 255 frames for `jv_free` (on
+    // macOS, whose pages are 16 KB, that is most of a page): the most frames
+    // short of qj's 256 leave the platform's loader the most room.
     let needs = qj::compat::fixed_needs();
     let need = needs.start.max(needs.compile);
-    let args = ["-nc", "-f", "p.jq"];
-    let kb = limit_for(need, &args);
-    let spare = file_stack(kb) - need;
-    let frame = Site::Free.frame_bytes();
-    let pad = spare.saturating_sub(8 * frame) as usize;
+    let kb = limit_for(need, PROGRAM_ARGS);
+    let unpadded = file_stack(kb);
+    let pad = if Site::Free.frame_budget_at(unpadded, 0) < 256 {
+        0
+    } else {
+        // A byte of padding makes the variable; each byte more takes one.
+        PAD.with(|p| p.set(1));
+        let padded = file_stack(kb);
+        let stack = (need..=padded)
+            .rev()
+            .find(|&s| Site::Free.frame_budget_at(s, 0) < 256)
+            .expect("a stack that starts and has fewer than 256 frames for jv_free");
+        (1 + padded - stack) as usize
+    };
     PAD.with(|p| p.set(pad));
     let budget = Site::Free.frame_budget_at(file_stack(kb), 0);
-    assert!(budget < 256, "{budget} frames for jv_free at {kb} KB");
+    assert!(
+        file_stack(kb) >= need && budget < 256,
+        "{pad} bytes of padding at {kb} KB leave {} bytes, {budget} frames",
+        file_stack(kb)
+    );
+    // What runs before qj's main is the platform's, and needs what it needs:
+    // dyld's need changes from one macOS release to the next, and where it is
+    // more than this, jq starts at no limit that leaves `jv_free` fewer than
+    // 256 frames, and neither does qj. A trivial program tells: with the same
+    // argv and environment, nothing of qj's can die of the limit, and qj as
+    // it is, given the stack compat mode would have, answers if the loader
+    // does.
+    let trivial = program_file("1");
+    let Some(started) = run_stack_norandom(trivial.path(), true, kb, PROGRAM_ARGS) else {
+        return; // no setarch
+    };
+    if code(&started) != Some(0) {
+        let stack = file_stack(kb);
+        // qj as it is has no QJ_JQ_COMPAT: pad its environment by as much.
+        let mut plain_pad = pad;
+        while jq_stack(trivial.path(), false, kb * 1024, PROGRAM_ARGS) > stack {
+            plain_pad += 1;
+            PAD.with(|p| p.set(plain_pad));
+        }
+        let plain = run_stack_norandom(trivial.path(), false, kb, PROGRAM_ARGS);
+        PAD.with(|p| p.set(0));
+        let plain = plain.expect("setarch");
+        assert_ne!(
+            code(&plain),
+            Some(0),
+            "compat mode dies of a trivial program at {kb} KB with {stack} bytes of stack, \
+             where qj as it is answers: {:?}",
+            started.status
+        );
+        eprintln!(
+            "skipped: the platform's loader needs more than {stack} bytes beyond argv and the \
+             environment ({:?})",
+            plain.status
+        );
+        return;
+    }
     // `n` arrays around a null take `n + 1` frames to free.
     for (n, dies) in [(budget - 1, false), (budget, true)] {
         let prog = format!("reduce range({n}) as $i (null;[.]) | length");
         let dir = program_file(&prog);
-        let Some(o) = run_stack_norandom(dir.path(), true, kb, &args) else {
-            return; // no setarch
-        };
+        let o = run_stack_norandom(dir.path(), true, kb, PROGRAM_ARGS).expect("setarch");
         if dies {
             assert_dies(&o, &format!("freeing {n} levels at {kb} KB"));
         } else {

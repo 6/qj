@@ -434,8 +434,11 @@ fn free_bytes(dir: &Path) -> Option<u64> {
     let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
     // SAFETY: statvfs writes a statvfs into a valid out-pointer.
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    (unsafe { libc::statvfs(path.as_ptr(), &mut st) } == 0)
-        .then(|| u64::from(st.f_bavail) * u64::from(st.f_frsize))
+    let ok = unsafe { libc::statvfs(path.as_ptr(), &mut st) } == 0;
+    // The fields' types differ from one platform to the next.
+    #[allow(clippy::useless_conversion)]
+    let free = u64::from(st.f_bavail) * u64::from(st.f_frsize);
+    ok.then_some(free)
 }
 
 /// Below this, a run's output may have been cut short by a full disk.
