@@ -111,3 +111,31 @@ jobs:
       - name: Shellcheck
         if: matrix.os == 'ubuntu-24.04'
         run: git ls-files '*.sh' | xargs shellcheck
+
+  freebsd:
+    # qj builds from source with `cargo install` wherever Rust does, and
+    # libc's bindings differ by platform (FreeBSD's rlim_t is signed, and
+    # libc has no strptime there), so build it on a FreeBSD VM and run what
+    # touches them: strptime, RLIMIT_STACK below 8 MB (src/cli/stack.rs),
+    # and compat mode's reading of it (src/compat.rs).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and smoke test on FreeBSD
+        uses: vmactions/freebsd-vm@v1.5.8
+        with:
+          release: '15.1'
+          usesh: true
+          prepare: pkg install -y rust
+          run: |
+            set -eux
+            freebsd-version
+            rustc --version
+            cargo build --release
+            qj=./target/release/qj
+            test "$(echo '{"a":1}' | $qj .a)" = 1
+            test "$($qj -n '"2015-03-05T23:51:47Z" | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime')" = 1425599507
+            test "$(ulimit -s 1024; $qj -n '1 + 1')" = 2
+            test "$(QJ_JQ_COMPAT=1 $qj -n '1 + 2')" = 3
