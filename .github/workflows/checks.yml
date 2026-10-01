@@ -115,14 +115,15 @@ jobs:
   freebsd:
     # qj builds from source with `cargo install` wherever Rust does, and the
     # libc crate's bindings differ by platform (FreeBSD's rlim_t is signed,
-    # and it has no strptime there), so build qj on FreeBSD and run the smoke
-    # checks.
+    # and it has no strptime there), so build qj on FreeBSD, run the smoke
+    # checks, and run the fast suite (as on NetBSD and musl: the platform
+    # layer's own tests, and e2e's).
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and smoke test on FreeBSD
+      - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@v1.5.8
         with:
           release: '15.1'
@@ -134,6 +135,7 @@ jobs:
             rustc --version
             cargo build --release
             sh .github/smoke.sh ./target/release/qj
+            cargo test --release --no-fail-fast
 
   netbsd:
     # NetBSD's C library has no uselocale, and the libc crate no binding for it.
@@ -142,7 +144,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and smoke test on NetBSD
+      - name: Build and test on NetBSD
         uses: vmactions/netbsd-vm@v1.5.2
         with:
           release: '11.0'
@@ -154,13 +156,14 @@ jobs:
             rustc --version
             cargo build --release
             sh .github/smoke.sh ./target/release/qj
+            cargo test --release --no-fail-fast
 
   musl:
     # musl, the C library of Alpine and of static Linux builds, where the libc
     # crate doesn't define LC_ALL_MASK. Alpine's own Rust targets it.
     runs-on: ubuntu-24.04
     container: alpine:3.24
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Install Rust and a C++ compiler
         run: apk add --no-cache build-base rust cargo
@@ -174,6 +177,9 @@ jobs:
 
       - name: Smoke test
         run: sh .github/smoke.sh ./target/release/qj
+
+      - name: Test
+        run: cargo test --release --no-fail-fast
 
   windows:
     # Windows, built for MSVC, whose C runtime (UCRT) is the one jq's Windows
