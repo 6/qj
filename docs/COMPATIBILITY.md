@@ -218,7 +218,7 @@ stack. qj does all six with a loop, and compat mode reproduces each one's crash:
 | `jv_object_merge_recursive` (object `*`) | the nesting shared by both operands | yes |
 | `jv_setpath` (`setpath`, `=`, `\|=`, `+=`, …) | the length of the path | yes |
 | `delpaths_sorted` (`delpaths`, `del`) | the length of the paths, a level at a time | yes |
-| `jv_getpath` (`getpath`, `path`) | the length of the path | **not needed**: it is a tail call, and both release compilers turn it into a loop. `[range(1000000)\|0] as $p \| null \| getpath($p)` answers `null` at `ulimit -s 256` on macOS and on Linux |
+| `jv_getpath` (`getpath`, `path`) | the length of the path | **not needed** on macOS arm64 and Linux: it is a tail call, and those release builds turn it into a loop. `[range(1000000)\|0] as $p \| null \| getpath($p)` answers `null` at `ulimit -s 256` there. jq's macOS x86-64 build doesn't, and isn't modelled (see [which platforms the models cover](#how-exact-the-stack-overflow-emulation-is)) |
 | `jv_dump_term` (the printer) | the nesting of the value, **capped at `MAX_PRINT_DEPTH` (256)**, below which it writes `<skipped: too deep>` | yes — the cap keeps it inside any ordinary stack, but 258 frames of 256 bytes (304 on Linux) still need about 68 KB, and below that jq dies. Twice: from `main.c`'s output, and, from deeper in the stack, while the program runs (`tojson`, `tostring`, `@json`, `@text`, string interpolation, `debug`, `stderr`, error messages) |
 | `load_library` ↔ `process_dependencies` (`linker.c`) | the length of a chain of `import`s or `include`s, one module a level | yes |
 
@@ -465,6 +465,19 @@ stops early agree at every depth. Over 53 program shapes at nine depths each, at
 -s` 256 KB, 1 MB and 8 MB, there is no shape where the two disagree about whether the
 program compiles. [Small stacks](#small-stacks) has the check of everything else, down to
 8 KB.
+
+**Which platforms the models cover.** The models were measured on macOS arm64 and Linux
+x86-64, the two platforms the Checks workflow tests on every push. The other two release
+targets use them unmeasured: Linux aarch64 uses macOS arm64's, and macOS x86-64 uses
+macOS arm64's. The Release check workflow runs jq_diff natively on both:
+- **Linux aarch64:** the compat scoreboard is 39,282/39,282.
+- **macOS x86-64:** it is 39,257/39,258. The one miss is a recursion the other builds
+  don't have. jq's x86-64 macOS build doesn't turn `jv_getpath` into a loop, so
+  `[range(600000)|0] as $p | null | getpath($p)` dies of SIGSEGV there, where compat mode
+  answers `null`.
+
+Near the thresholds on those two platforms, how deep jq gets is the borrowed model's
+guess, not a measurement.
 
 ### Small stacks
 
