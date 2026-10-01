@@ -14,6 +14,18 @@ use super::reader::{InputReader, ReaderOptions};
 use super::source::{Mmap, Opened, Opener};
 use crate::jq::value::{DumpOptions, Error, Value};
 
+/// For the fuzz targets that parse with simdjson, at start-up: names the
+/// kernel they fuzz, and panics unless it is the one
+/// `SIMDJSON_FORCE_IMPLEMENTATION` asks for (a kernel that isn't compiled
+/// in fails every parse, and the targets fall back on errors, so they
+/// would pass without testing anything).
+pub fn init_simdjson_kernel() {
+    match crate::simdjson::checked_active_implementation() {
+        Ok(kernel) => eprintln!("simdjson kernel: {kernel}"),
+        Err(why) => panic!("{why}"),
+    }
+}
+
 /// Strict structural identity: same kinds, same number literal text and
 /// double bits, same string bytes, same key order (iterative: inputs nest
 /// up to jq's 10000 levels).
@@ -416,6 +428,11 @@ pub fn check_tape_equivalence(data: &[u8]) {
     let [p, opts, text @ ..] = data else {
         return;
     };
+    // SimdParser's contract: no UTF-8 BOM at the start (the reader strips
+    // one at the start of an input).
+    if text.starts_with(b"\xEF\xBB\xBF") {
+        return;
+    }
     let program = TAPE_PROGRAMS[*p as usize % TAPE_PROGRAMS.len()];
     let dump = DumpOptions {
         indent: match opts % 4 {

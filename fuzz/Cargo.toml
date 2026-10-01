@@ -12,11 +12,16 @@ libfuzzer-sys = "0.4"
 
 [dependencies.qj]
 path = ".."
+# simdjson's fallback kernel, also on arm64, so the targets can fuzz it
+# there (SIMDJSON_FORCE_IMPLEMENTATION=fallback) and fuzz_parse compares it
+# with arm64.
+features = ["simdjson-fallback"]
 
 [workspace]
 members = ["."]
 
-# The FFI boundary: simdjson's DOM parser (TapeParser) on arbitrary bytes.
+# The FFI boundary: simdjson's DOM parser (TapeParser) on arbitrary bytes,
+# every kernel the CPU runs against the others.
 [[bin]]
 name = "fuzz_parse"
 path = "fuzz_targets/fuzz_parse.rs"

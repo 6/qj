@@ -19,6 +19,13 @@ fn main() {
         build.define("SIMDJSON_IMPLEMENTATION_FALLBACK", "1");
     }
 
+    // Under cargo-fuzz (`--cfg fuzzing`), instrument simdjson as rustc
+    // instruments the Rust code, so that libFuzzer sees which paths through
+    // simdjson's kernels an input takes, not only qj's.
+    if std::env::var_os("CARGO_CFG_FUZZING").is_some() {
+        build.flag_if_supported("-fsanitize-coverage=inline-8bit-counters,pc-table,trace-cmp");
+    }
+
     // Enable sanitizers for C++ when Rust is also compiled with them.
     // Usage: RUSTFLAGS="-Zsanitizer=address" cargo +nightly test
     //   or:  JX_SANITIZE=address cargo +nightly test
