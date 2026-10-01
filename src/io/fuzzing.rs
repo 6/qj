@@ -11,7 +11,9 @@ use super::parallel::{
     self, DumpFactory, EngineOptions, RecordMeta, RecordSink, RecordWorker, WorkerFactory,
 };
 use super::reader::{InputReader, ReaderOptions};
-use super::source::{Mmap, Opened, Opener};
+#[cfg(unix)]
+use super::source::Mmap;
+use super::source::{Opened, Opener};
 use crate::jq::value::{DumpOptions, Error, Value};
 
 /// For the fuzz targets that parse with simdjson, at start-up: names the
@@ -69,7 +71,8 @@ struct Split {
     /// `None`: whole; `Some(n)`: streamed in reads of 1..=n bytes.
     stream: Option<usize>,
     /// Whole inputs come in releasable mappings (see [`Mmap::copy_of`]),
-    /// whose first page boundary falls within them.
+    /// whose first page boundary falls within them (on Unix, which maps).
+    #[cfg_attr(not(unix), allow(dead_code))]
     mapped: bool,
     seed: u64,
     opened: u64,
@@ -106,6 +109,8 @@ impl Opener for Split {
             return Err(io::Error::from_raw_os_error(2));
         };
         Ok(match self.stream {
+            // Only Unix maps input.
+            #[cfg(unix)]
             None if self.mapped => {
                 let page = crate::io::source::page_size();
                 let at =

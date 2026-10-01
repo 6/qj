@@ -19,7 +19,7 @@
 //! qj handles every chain jq does and more. `QJ_JQ_COMPAT=1` dies at jq's depth
 //! instead ([`crate::compat::Site::Modules`]).
 
-use std::os::unix::ffi::OsStrExt;
+use crate::os::OsStrExt;
 use std::rc::Rc;
 
 use super::bytecode::OP_IS_CALL_PSEUDO;
@@ -57,7 +57,7 @@ impl JqAttrs {
             lib_dirs: default_lib_dirs(),
             jq_origin: Value::from(jq_origin),
             prog_origin: jq_realpath(Value::from(".")),
-            home: std::env::var_os("HOME").map(|h| lossy(h.as_bytes())),
+            home: crate::os::home_dir().map(|h| lossy(h.as_bytes())),
         }
     }
 }
@@ -88,9 +88,9 @@ pub fn jq_realpath(path: Value) -> Value {
     let Some(p) = path.as_str() else {
         return path;
     };
-    match std::fs::canonicalize(std::ffi::OsStr::from_bytes(cstr(p).as_bytes())) {
-        Ok(r) => Value::string_from_bytes(r.as_os_str().as_bytes()),
-        Err(_) => path,
+    match crate::os::realpath(std::ffi::OsStr::from_bytes(cstr(p).as_bytes())) {
+        Some(r) => Value::string_from_bytes(r.as_bytes()),
+        None => path,
     }
 }
 
@@ -100,15 +100,16 @@ pub fn dirname(p: &str) -> String {
     if b.is_empty() {
         return ".".into();
     }
+    let sep = crate::os::is_separator;
     let mut end = b.len();
-    while end > 1 && b[end - 1] == b'/' {
+    while end > 1 && sep(b[end - 1]) {
         end -= 1;
     }
-    match b[..end].iter().rposition(|&c| c == b'/') {
+    match b[..end].iter().rposition(|&c| sep(c)) {
         None => ".".into(),
         Some(i) => {
             let mut e = i;
-            while e > 0 && b[e - 1] == b'/' {
+            while e > 0 && sep(b[e - 1]) {
                 e -= 1;
             }
             if e == 0 { "/".into() } else { lossy(&b[..e]) }

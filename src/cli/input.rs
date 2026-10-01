@@ -31,10 +31,10 @@
 //! and that starts with that format's magic bytes is decompressed as it is
 //! read. Anything else is read as is, like jq.
 
+use crate::os::OsStrExt;
 use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::io::{self, Read};
-use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
 
 use crate::jq::value::{Array, Error, ParseFlags, Parser, Str, Value};
@@ -209,14 +209,7 @@ impl Read for StdinReader {
         if self.tty {
             super::run::flush_line_buffered_stdout();
         }
-        // SAFETY: fd 0 stays open for the life of the process, and `buf` is
-        // valid for writes of `buf.len()` bytes.
-        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
-        if n < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(n as usize)
-        }
+        crate::os::read_fd(0, buf)
     }
 }
 
@@ -236,8 +229,13 @@ fn default_open(name: &[u8]) -> io::Result<Box<dyn Read>> {
 /// `fopen(name, "r")`, plus qj's transparent decompression.
 fn open_file(name: &[u8]) -> io::Result<Box<dyn Read>> {
     let path = OsStr::from_bytes(name);
-    let mut file = std::fs::File::open(path)?;
     let lossy = String::from_utf8_lossy(name);
+    // In text mode on Windows (see `crate::os`).
+    #[cfg(windows)]
+    if !crate::decompress::is_compressed(&lossy) {
+        return Ok(Box::new(crate::os::CrtFile::open(path)?));
+    }
+    let mut file = std::fs::File::open(path)?;
     if !crate::decompress::is_compressed(&lossy) {
         return Ok(Box::new(file));
     }
@@ -348,7 +346,7 @@ pub fn open_inputs(files: Vec<Vec<u8>>, opts: InputOptions) -> Rc<RefCell<dyn Re
 /// `src/io`'s reader over main.c's inputs, opening them like [`UtilInput`]
 /// does (see `CliOpener`).
 pub fn open_reader(files: Vec<Vec<u8>>, opts: InputOptions) -> crate::io::InputReader {
-    use std::os::unix::ffi::OsStringExt;
+    use crate::os::OsStringExt;
     let names = files
         .into_iter()
         .map(std::ffi::OsString::from_vec)
@@ -498,8 +496,7 @@ impl UtilInput {
             current_line: 0,
             open,
             on_message: Box::new(|m| {
-                use std::io::Write;
-                let _ = io::stderr().write_all(&m.render(crate::compat::prog_name()));
+                crate::os::write_stderr(&m.render(crate::compat::prog_name()));
             }),
         }
     }

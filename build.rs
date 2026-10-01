@@ -65,6 +65,25 @@ fn main() {
         }
     }
 
+    // Windows: jq's release binary has no strptime of the C library's, and
+    // builds its own (src/jq/platform/strptime.c), so qj does too. And the
+    // main thread's stack is what the executable reserves for it (1 MB by
+    // default), not `ulimit -s`, so reserve the 256 MB that qj maps for
+    // itself elsewhere (src/cli/stack.rs; `STACK_BYTES` in src/cli/run.rs):
+    // address space only, committed as it is touched.
+    if target("CARGO_CFG_TARGET_OS") == "windows" {
+        cc::Build::new()
+            .file("src/jq/platform/strptime.c")
+            .compile("jq_strptime");
+        let stack = 256 << 20;
+        if target("CARGO_CFG_TARGET_ENV") == "msvc" {
+            println!("cargo:rustc-link-arg-bins=/STACK:{stack}");
+        } else {
+            println!("cargo:rustc-link-arg-bins=-Wl,--stack,{stack}");
+        }
+    }
+
+    println!("cargo:rerun-if-changed=src/jq/platform/strptime.c");
     println!("cargo:rerun-if-changed=src/simdjson/bridge.cpp");
     println!("cargo:rerun-if-changed=simdjson/simdjson.cpp");
     println!("cargo:rerun-if-changed=simdjson/simdjson.h");

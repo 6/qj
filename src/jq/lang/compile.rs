@@ -1464,7 +1464,7 @@ pub struct Globals<'a> {
 
 /// execute.c/compile.c `make_env`: the process environment as an object.
 pub fn make_env() -> Value {
-    use std::os::unix::ffi::OsStrExt;
+    use crate::os::OsStrExt;
     let mut r = Object::new();
     for (k, v) in std::env::vars_os() {
         r.insert(

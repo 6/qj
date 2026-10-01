@@ -40,14 +40,83 @@ use super::{Error, utf8};
 use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::ptr;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(unix)]
+use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard};
 
-// POSIX's `strptime`, which the libc crate binds on Linux and macOS but not on
-// FreeBSD.
-unsafe extern "C" {
-    #[link_name = "strptime"]
-    fn strptime_c(s: *const c_char, format: *const c_char, tm: *mut libc::tm) -> *mut c_char;
+/// The C library's time functions, as jq calls them on each platform.
+#[cfg(unix)]
+mod sys {
+    use libc::{c_char, tm};
+    pub use libc::{gmtime_r, localtime_r, mktime, strftime, timegm};
+
+    // POSIX's `strptime`, which the libc crate binds on Linux and macOS but
+    // not on FreeBSD.
+    unsafe extern "C" {
+        pub fn strptime(s: *const c_char, format: *const c_char, tm: *mut tm) -> *mut c_char;
+    }
 }
+
+/// On Windows, jq's release binary (MinGW, on UCRT) has no `timegm`, so
+/// `my_mktime` is `_mkgmtime`; no `gmtime_r`/`localtime_r`, so `f_gmtime` and
+/// `f_localtime` call `gmtime`/`localtime`; and no `strptime`, so it builds
+/// its own (`strptime.c`, compiled by build.rs). `time_t` is 64-bit.
+#[cfg(windows)]
+mod sys {
+    use libc::{c_char, size_t, time_t, tm};
+
+    unsafe extern "C" {
+        #[link_name = "_mkgmtime64"]
+        pub fn timegm(tm: *mut tm) -> time_t;
+        #[link_name = "_mktime64"]
+        pub fn mktime(tm: *mut tm) -> time_t;
+        #[link_name = "_gmtime64"]
+        fn gmtime(t: *const time_t) -> *mut tm;
+        #[link_name = "_localtime64"]
+        fn localtime(t: *const time_t) -> *mut tm;
+        pub fn strftime(
+            s: *mut c_char,
+            max: size_t,
+            format: *const c_char,
+            tm: *const tm,
+        ) -> size_t;
+        #[link_name = "jq_strptime"]
+        pub fn strptime(s: *const c_char, format: *const c_char, tm: *mut tm) -> *mut c_char;
+    }
+
+    /// `gmtime`, copied out of the C runtime's per-thread result.
+    pub unsafe fn gmtime_r(t: *const time_t, out: *mut tm) -> *mut tm {
+        // SAFETY: the caller's pointers are valid; the result is this
+        // thread's, valid until its next call.
+        unsafe { copy_out(gmtime(t), out) }
+    }
+
+    /// `localtime`, as [`gmtime_r`].
+    pub unsafe fn localtime_r(t: *const time_t, out: *mut tm) -> *mut tm {
+        // SAFETY: as in `gmtime_r`.
+        unsafe { copy_out(localtime(t), out) }
+    }
+
+    unsafe fn copy_out(r: *mut tm, out: *mut tm) -> *mut tm {
+        if r.is_null() {
+            return r;
+        }
+        // SAFETY: both point to valid `tm`s.
+        unsafe { *out = *r };
+        out
+    }
+}
+
+/// jq's message for a non-number input to `gmtime`/`localtime`, which differs
+/// between its `gmtime_r` and `gmtime` builds (Windows').
+#[cfg(unix)]
+const GMTIME_TYPE: &str = "gmtime() requires numeric inputs";
+#[cfg(windows)]
+const GMTIME_TYPE: &str = "gmtime requires numeric inputs";
+#[cfg(unix)]
+const LOCALTIME_TYPE: &str = "localtime() requires numeric inputs";
+#[cfg(windows)]
+const LOCALTIME_TYPE: &str = "localtime requires numeric inputs";
 
 /// jq's broken-down time (`tm2jv`): `[year, month (0-11), day of month, hours, minutes,
 /// seconds, day of week (0 = Sunday), day of year (0-365)]`. Every element is an
@@ -85,11 +154,16 @@ const ERR_CONVERT: &str = "error converting number of seconds since epoch to dat
 /// (`jv_array_get` on the invalid result).
 #[cfg(target_vendor = "apple")]
 const ABORT_ARRAY_GET: &str = "Assertion failed: (JVP_HAS_KIND(j, JV_KIND_ARRAY)), function jv_array_get, file jv.c, line 1006.";
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(all(unix, not(target_vendor = "apple")))]
 const ABORT_ARRAY_GET: &str =
     "jq: src/jv.c:1006: jv_array_get: Assertion `JVP_HAS_KIND(j, JV_KIND_ARRAY)' failed.";
+/// UCRT's (`_wassert`).
+#[cfg(windows)]
+const ABORT_ARRAY_GET: &str =
+    "Assertion failed: JVP_HAS_KIND(j, JV_KIND_ARRAY), file src/jv.c, line 1006";
 
 /// Text of the macOS `assert()` in `set_tm_yday` (only reachable on macOS).
+#[cfg(unix)]
 const ABORT_SET_TM_YDAY: &str = "Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1549.";
 
 // ---------------------------------------------------------------------------------
@@ -102,18 +176,31 @@ fn lock() -> MutexGuard<'static, ()> {
     TIME_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-struct Locale(libc::locale_t);
+#[cfg(unix)]
+struct Locale(super::LocaleT);
 
 // SAFETY: a locale_t is an immutable, heap-allocated description once created; POSIX
 // allows using it from any thread.
+#[cfg(unix)]
 unsafe impl Send for Locale {}
+#[cfg(unix)]
 unsafe impl Sync for Locale {}
 
+#[cfg(unix)]
 static ENV_LOCALE: OnceLock<Locale> = OnceLock::new();
 
 /// The locale `setlocale(LC_ALL, "")` would select, or the C locale if the
 /// environment names one that doesn't exist (setlocale then fails and leaves "C").
-fn env_locale() -> libc::locale_t {
+/// None on Windows (see [`super::LocaleT`]).
+#[cfg(windows)]
+fn env_locale() -> super::LocaleT {
+    ptr::null_mut()
+}
+
+/// The locale `setlocale(LC_ALL, "")` would select, or the C locale if the
+/// environment names one that doesn't exist (setlocale then fails and leaves "C").
+#[cfg(unix)]
+fn env_locale() -> super::LocaleT {
     ENV_LOCALE
         .get_or_init(|| {
             // SAFETY: newlocale with a NULL base allocates a new locale object.
@@ -134,6 +221,7 @@ fn env_locale() -> libc::locale_t {
 
 /// Run `f` with the calling thread's locale as jq's after its
 /// `setlocale(LC_ALL, "")` (see [`env_locale`]).
+#[cfg(unix)]
 pub(super) fn with_env_locale<R>(f: impl FnOnce() -> R) -> R {
     with_locale(env_locale(), f)
 }
@@ -145,7 +233,7 @@ pub(super) fn with_env_locale<R>(f: impl FnOnce() -> R) -> R {
 /// "Thursday" there, and `strptime("%A")` doesn't read "Donnerstag". Its
 /// `LC_CTYPE` does follow the environment, which `strptime` uses to skip
 /// spaces and jq to check what follows the date.
-fn date_locale() -> libc::locale_t {
+fn date_locale() -> super::LocaleT {
     #[cfg(target_os = "linux")]
     {
         static DATE_LOCALE: OnceLock<Locale> = OnceLock::new();
@@ -178,15 +266,16 @@ fn date_locale() -> libc::locale_t {
 /// Run `f` with `loc` as the calling thread's locale.
 ///
 /// NetBSD's C library has no `uselocale`, so there `f` runs in the process's
-/// locale, which qj leaves as C.
-#[cfg(target_os = "netbsd")]
-fn with_locale<R>(_loc: libc::locale_t, f: impl FnOnce() -> R) -> R {
+/// locale, which qj leaves as C. Windows has no locale objects either, and
+/// there the process's locale is the environment's (see [`super::LocaleT`]).
+#[cfg(any(target_os = "netbsd", windows))]
+fn with_locale<R>(_loc: super::LocaleT, f: impl FnOnce() -> R) -> R {
     f()
 }
 
 /// Run `f` with `loc` as the calling thread's locale.
-#[cfg(not(target_os = "netbsd"))]
-fn with_locale<R>(loc: libc::locale_t, f: impl FnOnce() -> R) -> R {
+#[cfg(all(unix, not(target_os = "netbsd")))]
+fn with_locale<R>(loc: super::LocaleT, f: impl FnOnce() -> R) -> R {
     if loc.is_null() {
         return f();
     }
@@ -283,9 +372,11 @@ fn jv2tm(fields: &[Option<f64>], localtime: bool) -> Option<libc::tm> {
     unsafe {
         if localtime {
             tm.tm_isdst = -1;
-            libc::mktime(&mut tm);
+            sys::mktime(&mut tm);
         } else {
-            libc::timegm(&mut tm);
+            // Without `timegm` (Windows), jq leaves a UTC time as given.
+            #[cfg(unix)]
+            sys::timegm(&mut tm);
         }
     }
     Some(tm)
@@ -317,6 +408,7 @@ fn set_tm_wday(tm: &mut libc::tm) {
 
 /// Port of `set_tm_yday`. `Err` if jq's `assert(yday == tm->tm_yday || tm->tm_yday ==
 /// 367)` fails, which aborts jq.
+#[cfg(unix)]
 fn set_tm_yday(tm: &mut libc::tm) -> Result<(), Error> {
     const D: [c_int; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     let mut mon = tm.tm_mon;
@@ -354,7 +446,7 @@ fn gmtime_unlocked(fsecs: f64) -> Result<BrokenDownTime, Error> {
     let secs = double_to_time_t(fsecs);
     let mut tm = zeroed_tm();
     // SAFETY: valid pointers to locals.
-    if unsafe { libc::gmtime_r(&secs, &mut tm) }.is_null() {
+    if unsafe { sys::gmtime_r(&secs, &mut tm) }.is_null() {
         return Err(Error::msg(ERR_CONVERT));
     }
     let mut r = tm2jv(&tm);
@@ -366,7 +458,7 @@ fn localtime_unlocked(fsecs: f64) -> Result<BrokenDownTime, Error> {
     let secs = double_to_time_t(fsecs);
     let mut tm = zeroed_tm();
     // SAFETY: valid pointers to locals.
-    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
+    if unsafe { sys::localtime_r(&secs, &mut tm) }.is_null() {
         return Err(Error::msg(ERR_CONVERT));
     }
     let mut r = tm2jv(&tm);
@@ -381,7 +473,7 @@ fn localtime_unlocked(fsecs: f64) -> Result<BrokenDownTime, Error> {
 /// input is infinite). NaN converts like 0 on aarch64 and keeps NaN seconds.
 pub fn gmtime(input: TimeInput) -> Result<BrokenDownTime, Error> {
     let TimeInput::Number(fsecs) = input else {
-        return Err(Error::msg("gmtime() requires numeric inputs"));
+        return Err(Error::msg(GMTIME_TYPE));
     };
     let _guard = lock();
     gmtime_unlocked(fsecs)
@@ -392,7 +484,7 @@ pub fn gmtime(input: TimeInput) -> Result<BrokenDownTime, Error> {
 /// Errors: `localtime() requires numeric inputs`, and the conversion error.
 pub fn localtime(input: TimeInput) -> Result<BrokenDownTime, Error> {
     let TimeInput::Number(fsecs) = input else {
-        return Err(Error::msg("localtime() requires numeric inputs"));
+        return Err(Error::msg(LOCALTIME_TYPE));
     };
     let _guard = lock();
     localtime_unlocked(fsecs)
@@ -414,9 +506,9 @@ pub fn mktime(input: TimeInput) -> Result<f64, Error> {
     let _guard = lock();
     let mut tm =
         jv2tm(fields, false).ok_or_else(|| Error::msg("mktime requires parsed datetime inputs"))?;
-    // my_mktime: timegm() on every platform qj supports.
+    // my_mktime: timegm(), or on Windows _mkgmtime().
     // SAFETY: valid struct tm.
-    let t = unsafe { libc::timegm(&mut tm) };
+    let t = unsafe { sys::timegm(&mut tm) };
     if t == -1 {
         return Err(Error::msg("invalid gmtime representation"));
     }
@@ -427,14 +519,14 @@ pub fn mktime(input: TimeInput) -> Result<f64, Error> {
 }
 
 /// `strftime(buf, strlen(fmt) + 100, fmt, tm)` in `loc`, with jq's failure check.
-fn format_tm(tm: &libc::tm, fmt: &str, loc: libc::locale_t, name: &str) -> Result<String, Error> {
+fn format_tm(tm: &libc::tm, fmt: &str, loc: super::LocaleT, name: &str) -> Result<String, Error> {
     let cfmt = c_string(fmt);
     let fmt_not_empty = !cfmt.as_bytes().is_empty();
     let max_size = cfmt.as_bytes().len() + 100;
     let mut buf = vec![0u8; max_size];
     // SAFETY: `buf` has `max_size` bytes; `cfmt` is NUL-terminated; `tm` is valid.
     let n = with_locale(loc, || unsafe {
-        libc::strftime(buf.as_mut_ptr() as *mut c_char, max_size, cfmt.as_ptr(), tm)
+        sys::strftime(buf.as_mut_ptr() as *mut c_char, max_size, cfmt.as_ptr(), tm)
     });
     // "POSIX doesn't provide errno values for strftime() failures; weird"
     if (n == 0 && fmt_not_empty) || n > max_size {
@@ -446,7 +538,7 @@ fn format_tm(tm: &libc::tm, fmt: &str, loc: libc::locale_t, name: &str) -> Resul
 fn strftime_in(
     input: TimeInput,
     format: Option<&str>,
-    loc: libc::locale_t,
+    loc: super::LocaleT,
 ) -> Result<String, Error> {
     let _guard = lock();
     let from_number;
@@ -494,7 +586,7 @@ pub fn strftime(input: TimeInput, format: Option<&str>) -> Result<String, Error>
 fn strflocaltime_in(
     input: TimeInput,
     format: Option<&str>,
-    loc: libc::locale_t,
+    loc: super::LocaleT,
 ) -> Result<String, Error> {
     let _guard = lock();
     let from_number;
@@ -547,7 +639,7 @@ pub fn strflocaltime(input: TimeInput, format: Option<&str>) -> Result<String, E
 fn strptime_in(
     input: Option<&str>,
     format: Option<&str>,
-    loc: libc::locale_t,
+    loc: super::LocaleT,
 ) -> Result<Parsed, Error> {
     let (Some(input), Some(fmt)) = (input, format) else {
         return Err(Error::msg(
@@ -564,7 +656,7 @@ fn strptime_in(
         // SAFETY: NUL-terminated strings and a valid struct tm. `end` points into
         // `cinput` (or is NULL).
         unsafe {
-            let end = strptime_c(cinput.as_ptr(), cfmt.as_ptr(), &mut tm);
+            let end = sys::strptime(cinput.as_ptr(), cfmt.as_ptr(), &mut tm);
             let bad_end = end.is_null() || (*end != 0 && libc::isspace(*end as u8 as c_int) == 0);
             (end, bad_end)
         }
@@ -583,7 +675,10 @@ fn strptime_in(
         set_tm_wday(&mut tm);
         set_tm_yday(&mut tm)?;
     }
-    #[cfg(not(target_vendor = "apple"))]
+    // jq's own strptime (Windows'): `set_tm_wday` only.
+    #[cfg(windows)]
+    set_tm_wday(&mut tm);
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     {
         if tm.tm_wday == 8 && tm.tm_mday != 0 && (0..=11).contains(&tm.tm_mon) {
             set_tm_wday(&mut tm);
@@ -615,7 +710,18 @@ pub fn strptime(input: Option<&str>, format: Option<&str>) -> Result<Parsed, Err
     strptime_in(input, format, date_locale())
 }
 
+/// Port of `f_now`: `gettimeofday` as seconds with microsecond resolution
+/// (MinGW's, on Windows, reads the system time as `SystemTime` does).
+#[cfg(windows)]
+pub fn now() -> f64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    since.as_secs() as f64 + since.subsec_micros() as f64 / 1000000.0
+}
+
 /// Port of `f_now`: `gettimeofday` as seconds with microsecond resolution.
+#[cfg(unix)]
 pub fn now() -> f64 {
     let mut tv = libc::timeval {
         tv_sec: 0,

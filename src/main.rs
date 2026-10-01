@@ -92,6 +92,16 @@ pub unsafe extern "C" fn main(
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    #[cfg(windows)]
+    {
+        qj::os::init();
+        // Compat mode reproduces jq's Unix builds, down to their stacks and
+        // crashes; it has no model of jq.exe.
+        if qj::compat::exactly_jq() {
+            qj::os::write_stderr(b"qj: QJ_JQ_COMPAT=1 is not supported on Windows\n");
+            return 2;
+        }
+    }
     // QJ_JQ_COMPAT=1: on a stack too small for jq to start, die as it does.
     qj::compat::starting();
 

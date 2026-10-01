@@ -30,9 +30,9 @@
 //! and which is flushed when a builtin aborts on macOS, where jq's `abort()`
 //! flushes stdio ([`crate::jq::platform::set_before_abort`]).
 
+use crate::os::OsStrExt;
 use std::cell::RefCell;
 use std::io::{self, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
 
 use super::args::{self, Action, ArgError, ArgValue, Options, print_flags};
@@ -126,6 +126,10 @@ pub(super) struct Stdout {
     line_buffered: bool,
     /// `ferror(stdout)`: the last write error.
     error: Option<io::Error>,
+    /// Standard output when it is a console, which jq writes to with
+    /// `WriteConsoleW` (see `crate::os`).
+    #[cfg(windows)]
+    console: Option<crate::os::Console>,
 }
 
 thread_local! {
@@ -136,6 +140,8 @@ thread_local! {
             allocated: false,
             line_buffered: false,
             error: None,
+            #[cfg(windows)]
+            console: None,
         })
     };
 }
@@ -145,6 +151,13 @@ thread_local! {
 /// when fstat fails or reports none, and `__smakebuf` caps a terminal's at
 /// 4096 (`TTYBUFSIZE`: a tty's `st_blksize` is 64-128 KB). glibc's
 /// `_IO_file_doallocate`: `BUFSIZ`, or `st_blksize` when that is smaller.
+/// The Windows C runtime's (UCRT's `_INTERNAL_BUFSIZ`): 4096.
+#[cfg(windows)]
+fn stdio_buffer_size(_tty: bool) -> usize {
+    4096
+}
+
+#[cfg(unix)]
 fn stdio_buffer_size(tty: bool) -> usize {
     let bufsiz = libc::BUFSIZ as usize;
     // SAFETY: fstat writes a `stat` into `st`, which is valid for writes.
@@ -174,19 +187,25 @@ impl Stdout {
     /// error, as stdio does. Returns whether it all went out.
     fn write_fd(&mut self, bytes: &[u8]) -> bool {
         let mut done = 0;
-        while done < bytes.len() {
-            let chunk = &bytes[done..];
-            // SAFETY: `chunk` is valid for reads of its length.
-            let r = unsafe { libc::write(1, chunk.as_ptr().cast(), chunk.len()) };
-            if r < 0 {
-                let e = io::Error::last_os_error();
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
+        #[cfg(windows)]
+        if let Some(console) = &mut self.console {
+            return match console.write(bytes) {
+                Ok(()) => true,
+                Err(e) => {
+                    self.error = Some(e);
+                    false
                 }
-                self.error = Some(e);
-                return false;
+            };
+        }
+        while done < bytes.len() {
+            match crate::os::write_fd(1, &bytes[done..]) {
+                Ok(n) => done += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    self.error = Some(e);
+                    return false;
+                }
             }
-            done += r as usize;
         }
         true
     }
@@ -398,7 +417,7 @@ fn close_stdout(ret: i32) -> i32 {
         let closed = unsafe { libc::close(1) } == 0;
         match (pending, closed) {
             (Some(e), _) => Some(e),
-            (None, false) => Some(io::Error::last_os_error()),
+            (None, false) => Some(crate::os::errno_error()),
             (None, true) => None,
         }
     });
@@ -409,14 +428,14 @@ fn close_stdout(ret: i32) -> i32 {
             let mut msg = format!("{}: error: writing output failed: ", prog()).into_bytes();
             msg.extend_from_slice(&reason);
             msg.push(b'\n');
-            let _ = io::stderr().write_all(&msg);
+            crate::os::write_stderr(&msg);
             JQ_ERROR_SYSTEM
         }
     }
 }
 
 pub(super) fn write_stderr(bytes: &[u8]) {
-    let _ = io::stderr().write_all(bytes);
+    crate::os::write_stderr(bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1084,7 +1103,20 @@ fn exit_status(opts: &Options<Value>, (ret, last_result): (i32, i32)) -> i32 {
 /// `last_result` for [`exit_status`].
 fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     let no_color = std::env::var_os("NO_COLOR");
-    let dumpopts = opts.dumpopts(stdout_is_tty, no_color.as_deref().map(OsStrExt::as_bytes));
+    #[cfg(unix)]
+    let terminal = stdout_is_tty.then_some(true);
+    // A console (the NUL device is a tty too) gets WriteConsoleW and, if it
+    // takes them, colors.
+    #[cfg(windows)]
+    let terminal = if stdout_is_tty {
+        with_stdout(|s| {
+            s.console = crate::os::Console::stdout();
+            s.console.as_ref().map(|c| c.color)
+        })
+    } else {
+        None
+    };
+    let dumpopts = opts.dumpopts(terminal, no_color.as_deref().map(OsStrExt::as_bytes));
     let colors = match std::env::var_os("JQ_COLORS") {
         None => Colors::default(),
         Some(spec) => {

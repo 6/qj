@@ -20,13 +20,19 @@
 //!
 //! Only aarch64 and x86-64 have the switch ([`switch`]); elsewhere [`run_on`]
 //! calls the function where it is.
+//!
+//! On Windows the main thread's stack is the size the executable reserves for
+//! it, not a limit, and build.rs reserves [`crate::cli::run::STACK_BYTES`], so
+//! qj always runs there.
 
+#[cfg(unix)]
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 
 /// A stack for [`run_on`]: `size` bytes of address space, with an inaccessible
 /// page below them that turns an overflow into `SIGSEGV` (Linux) or `SIGBUS`
 /// (macOS), as a thread's guard page does. Never unmapped: qj exits from it.
+#[cfg(unix)]
 pub struct Stack {
     /// The lowest address of the mapping, where the guard page is.
     base: *mut u8,
@@ -34,6 +40,7 @@ pub struct Stack {
     len: usize,
 }
 
+#[cfg(unix)]
 impl Stack {
     /// Maps a stack of at least `size` bytes.
     pub fn new(size: usize) -> io::Result<Stack> {
@@ -92,6 +99,7 @@ pub const MAIN_STACK_FLOOR: u64 = 8176 << 10;
 /// Runs `f` on the main thread's stack if `RLIMIT_STACK` gives it at least
 /// [`MAIN_STACK_FLOOR`], and otherwise on a [`Stack`] of `size` bytes (or, if
 /// none can be mapped, where it is). A panic comes back as an error.
+#[cfg(unix)]
 pub fn run<F: FnOnce() -> R, R>(size: usize, f: F) -> std::thread::Result<R> {
     // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
@@ -105,9 +113,17 @@ pub fn run<F: FnOnce() -> R, R>(size: usize, f: F) -> std::thread::Result<R> {
     panic::catch_unwind(AssertUnwindSafe(f))
 }
 
+/// Runs `f` where it is: on Windows, the main thread's stack is as big as qj
+/// needs already (see the module docs). A panic comes back as an error.
+#[cfg(windows)]
+pub fn run<F: FnOnce() -> R, R>(_size: usize, f: F) -> std::thread::Result<R> {
+    panic::catch_unwind(AssertUnwindSafe(f))
+}
+
 /// Runs `f` on `stack`, on this thread, and returns what it returns — or, if
 /// it panicked, the panic, caught on `stack` (unwinding doesn't cross the
 /// switch).
+#[cfg(unix)]
 pub fn run_on<F: FnOnce() -> R, R>(stack: &Stack, f: F) -> std::thread::Result<R> {
     struct Call<F, R> {
         f: Option<F>,
@@ -136,7 +152,7 @@ pub fn run_on<F: FnOnce() -> R, R>(stack: &Stack, f: F) -> std::thread::Result<R
 ///
 /// `top` must be the 16-byte aligned top of a stack nothing else uses, big
 /// enough for `f`, and `f` must not unwind.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(unix, target_arch = "aarch64"))]
 unsafe fn switch(top: *mut u8, data: *mut u8, f: unsafe extern "C" fn(*mut u8)) {
     // x20 is callee-saved, so it survives the call; the compiler saves it for
     // this function. The frame pointer is zeroed for the call, so that a walk
@@ -167,7 +183,7 @@ unsafe fn switch(top: *mut u8, data: *mut u8, f: unsafe extern "C" fn(*mut u8)) 
 ///
 /// `top` must be the 16-byte aligned top of a stack nothing else uses, big
 /// enough for `f`, and `f` must not unwind.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(unix, target_arch = "x86_64"))]
 unsafe fn switch(top: *mut u8, data: *mut u8, f: unsafe extern "C" fn(*mut u8)) {
     // r12 is callee-saved, so it survives the call; the compiler saves it for
     // this function. `call` pushes the return address, leaving the stack
@@ -199,13 +215,13 @@ unsafe fn switch(top: *mut u8, data: *mut u8, f: unsafe extern "C" fn(*mut u8)) 
 /// # Safety
 ///
 /// `f` must not unwind.
-#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[cfg(all(unix, not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
 unsafe fn switch(_top: *mut u8, data: *mut u8, f: unsafe extern "C" fn(*mut u8)) {
     // SAFETY: the caller's contract.
     unsafe { f(data) }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
