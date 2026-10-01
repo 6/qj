@@ -119,6 +119,20 @@ pub fn realpath(path: &OsStr) -> Option<OsString> {
     full.ok().map(std::path::PathBuf::into_os_string)
 }
 
+/// linker.c's `path_is_relative`: on Unix, not starting with `/`; on Windows,
+/// `PathIsRelative`'s answer (`C:\x` and `\\server\x` are absolute there, `/x`
+/// isn't).
+pub fn path_is_relative(path: &str) -> bool {
+    #[cfg(unix)]
+    {
+        !path.starts_with('/')
+    }
+    #[cfg(windows)]
+    {
+        windows::path_is_relative(path)
+    }
+}
+
 /// Whether `dirname` splits at byte `b`: `/`, and on Windows (MinGW's
 /// `dirname`) `\` too.
 pub fn is_separator(b: u8) -> bool {
@@ -175,6 +189,17 @@ mod windows {
             written: *mut u32,
             reserved: *mut c_void,
         ) -> i32;
+    }
+
+    #[link(name = "shlwapi")]
+    unsafe extern "system" {
+        fn PathIsRelativeW(path: *const u16) -> i32;
+    }
+
+    pub fn path_is_relative(path: &str) -> bool {
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: `wide` is NUL-terminated.
+        unsafe { PathIsRelativeW(wide.as_ptr()) != 0 }
     }
 
     const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 4;
