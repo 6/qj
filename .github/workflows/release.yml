@@ -122,7 +122,15 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub release
-        run: gh release create "v${{ inputs.version }}" qj-*.tar.gz --generate-notes
+        # docs/releases/vX.Y.Z.md, when the release has one, is its notes;
+        # otherwise GitHub generates them.
+        run: |
+          notes="docs/releases/v${{ inputs.version }}.md"
+          if [ -f "$notes" ]; then
+            gh release create "v${{ inputs.version }}" qj-*.tar.gz --title "v${{ inputs.version }}" --notes-file "$notes"
+          else
+            gh release create "v${{ inputs.version }}" qj-*.tar.gz --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
