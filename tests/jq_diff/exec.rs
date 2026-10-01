@@ -337,17 +337,9 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
 
     let (out, err) = if let Some(mut f) = merged_file {
         // Nothing to read until the child is gone: wait without holding the
-        // lock the watchdog needs to kill it.
-        loop {
-            let exited = child
-                .lock()
-                .map_err(|_| "child mutex poisoned".to_string())?
-                .try_wait()
-                .map_err(|e| format!("wait failed: {e}"))?
-                .is_some();
-            if exited {
-                break;
-            }
+        // lock the watchdog needs to kill it, and without reaping it, so that
+        // its pid can't be reused before the watchdog is joined.
+        while !exited_unreaped(pid).map_err(|e| format!("wait failed: {e}"))? {
             thread::sleep(Duration::from_millis(2));
         }
         use std::io::{Seek, SeekFrom};
@@ -396,6 +388,7 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
         .map_err(|_| "child mutex poisoned".to_string())?
         .wait()
         .map_err(|e| format!("wait failed: {e}"))?;
+    no_disk_trouble(spec, &out, &err)?;
     let status = if mem_over.load(Ordering::SeqCst) {
         Status::MemoryLimit
     } else if timed_out.load(Ordering::SeqCst) {
@@ -414,6 +407,69 @@ pub fn run(spec: &Spec) -> Result<Output, String> {
         stdout: out,
         stderr: err,
     })
+}
+
+/// Whether the child `pid` has exited, without reaping it (`WNOWAIT`).
+fn exited_unreaped(pid: u32) -> std::io::Result<bool> {
+    // SAFETY: waitid writes a siginfo_t into a valid out-pointer.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let r = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if r != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: waitid filled `info` in (si_pid is 0 while the child runs).
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
+/// Free bytes on the filesystem holding `dir`, if it can be told.
+fn free_bytes(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs writes a statvfs into a valid out-pointer.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::statvfs(path.as_ptr(), &mut st) } == 0;
+    // The fields' types differ from one platform to the next.
+    #[allow(clippy::useless_conversion)]
+    let free = u64::from(st.f_bavail) * u64::from(st.f_frsize);
+    ok.then_some(free)
+}
+
+/// Below this, a run's output may have been cut short by a full disk.
+const MIN_FREE_BYTES: u64 = 256 << 20;
+
+/// A full disk makes a tool's writes fail (`No space left on device`), which
+/// looks like a divergence and, for jq, would be cached as its answer. That is
+/// the machine's trouble, not a case's, so it fails the whole run: a CI flake
+/// was exactly this, jq's merged output losing 16 KB and exiting 2 while a
+/// stray `yes` from an earlier test filled the runner's disk.
+fn no_disk_trouble(spec: &Spec, out: &[u8], err: &[u8]) -> Result<(), String> {
+    const ENOSPC: &[u8] = b"No space left on device";
+    let reported = [out, err]
+        .iter()
+        .any(|b| memchr::memmem::find(b, ENOSPC).is_some());
+    let free = free_bytes(spec.cwd);
+    if reported || free.is_some_and(|f| f < MIN_FREE_BYTES) {
+        return Err(format!(
+            "{}: the disk holding {} is full or nearly full ({} MB free{}); \
+             nothing written during this run can be trusted",
+            spec.bin.display(),
+            spec.cwd.display(),
+            free.map_or("?".to_string(), |f| (f >> 20).to_string()),
+            if reported {
+                ", and the tool reported No space left on device"
+            } else {
+                ""
+            }
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -454,6 +510,46 @@ mod tests {
             close_fds: &[],
         })
         .unwrap()
+    }
+
+    /// The exit is seen without reaping the child, so its status is still
+    /// there for `wait`, and its pid isn't free for reuse before then.
+    #[test]
+    fn an_exit_is_seen_without_reaping() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .expect("spawn sh");
+        while !exited_unreaped(child.id()).expect("waitid") {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(exited_unreaped(child.id()).expect("waitid, again"));
+        assert_eq!(child.wait().expect("wait").code(), Some(3));
+    }
+
+    /// A tool that ran out of disk fails the run instead of scoring a case.
+    #[test]
+    fn a_full_disk_fails_the_run() {
+        let args = vec![
+            "-c".to_string(),
+            "echo 'jq: error: writing output failed: No space left on device' >&2; exit 2"
+                .to_string(),
+        ];
+        let r = run(&Spec {
+            bin: Path::new("/bin/sh"),
+            arg0: None,
+            args: &args,
+            cwd: Path::new("/"),
+            env: &[("PATH".into(), "/usr/bin:/bin".into())],
+            stdin: None,
+            timeout: Duration::from_secs(5),
+            max_output: 1 << 16,
+            max_rss: 1 << 30,
+            merge: Merge::File,
+            close_fds: &[],
+        });
+        let e = r.err().expect("an error");
+        assert!(e.contains("full"), "{e}");
     }
 
     #[test]

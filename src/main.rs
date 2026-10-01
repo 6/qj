@@ -40,6 +40,30 @@
 //!
 //! A panic must not unwind out of an `extern "C"` function, so [`main`]
 //! catches it and exits 101, as the runtime would.
+//!
+//! # qj's own stack
+//!
+//! The main thread's stack is as big as `ulimit -s` says, and at a small
+//! enough limit qj's own frames used to run out where jq's don't: jq's
+//! `jq -n 1` starts at 17 KB on macOS and 12 KB on Linux, qj needed more, and
+//! a few programs further up (a regex nested 60 deep, a deep `tojson`) needed
+//! up to twice jq's stack. So [`main`] does no more than jq's C start-up does
+//! before `main` — restore `SIGPIPE`, capture the arguments, and in compat
+//! mode check that jq's start-up would fit — and runs the rest with room to
+//! spare (`qj::cli::stack::run`): on the main thread's stack as it is when
+//! `RLIMIT_STACK` is 8 MB or more (the default on both platforms, and a
+//! hundred times what qj's deepest recursion needs), and below that on a stack
+//! of [`qj::cli::run::STACK_BYTES`] mapped for it, still on the main thread.
+//! qj's own frames never run out where jq's don't, and only compat mode's
+//! models of jq's stack, which read the limit, decide whether a run dies of
+//! it (`src/compat.rs`).
+//!
+//! Nothing else changes: it is the same thread, with the same thread-local
+//! state (the stdout buffer that models jq's stdio, the locale installed per
+//! call with `uselocale`), signal mask and exit path. A signal raised on the
+//! mapped stack — compat mode's `SIGSEGV`, an `abort()`'s `SIGABRT`, a
+//! `SIGPIPE` — kills the process as it would anywhere, with the same wait
+//! status and core dump (`qj::compat::small_core_dump`).
 
 #![no_main]
 
@@ -68,15 +92,21 @@ pub unsafe extern "C" fn main(
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    // QJ_JQ_COMPAT=1: on a stack too small for jq to start, die as it does.
+    qj::compat::starting();
 
     // SAFETY: argc and argv are the C runtime's, valid for this call.
     let args = unsafe { command_line(argc, argv) };
     // qj is the jq 1.8.1 port: jq's main.c (src/cli/run.rs) on the ported
-    // core (src/jq), reading input through src/io. It exits itself; this
-    // returns only if that ever changes.
-    // A panic must not unwind out of an `extern "C"` function, and 101 is the
-    // exit status the runtime would give it.
-    std::panic::catch_unwind(move || qj::cli::run::main_with(args)).unwrap_or(101)
+    // core (src/jq), reading input through src/io, on a stack of its own (see
+    // the module docs). It exits the process itself; this returns only if it
+    // panicked, which the default hook has reported, and 101 is the exit
+    // status the runtime would give that. (A panic must not unwind out of an
+    // `extern "C"` function: `run_on` and `catch_unwind` catch it.)
+    qj::cli::stack::run(qj::cli::run::STACK_BYTES, move || {
+        qj::cli::run::main_with(args)
+    })
+    .unwrap_or(101)
 }
 
 /// The command line as bytes.

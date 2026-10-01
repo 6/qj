@@ -85,8 +85,10 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
   A case can't ask for a stack limit: Darwin refuses `setrlimit(RLIMIT_STACK)` in a process
   forked from a multi-threaded one, so a `stack_kb` option would need a shell per case.
   Cases near one of `QJ_JQ_COMPAT`'s stack-overflow thresholds therefore live in
-  `tests/compat_mode.rs`, which runs qj through `sh -c 'ulimit -s N; exec …'` and sizes the
-  value or chain of modules from the model (`Site::frame_budget_at`).
+  `tests/compat_mode.rs`, which runs qj through `sh -c 'ulimit -s N; exec env -i …'` and
+  sizes the value, program, regex or chain of modules from the model and the child's exact
+  argv and environment (`Site::frame_budget_at`, `compat::area_of`: compat mode counts what
+  they take on the stack).
 - **Modes** for `.test` cases: `compact` (`-c`, stdin), `pretty` (stdin), `file` (`-c`, input
   as a file argument, which qj memory-maps), `ndjson` (`-c`, input line twice in a
   file; only single objects/arrays, no `input`/`$__loc__`/`halt`). `%%FAIL` blocks run once as
@@ -118,13 +120,24 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
   scoreboard on macOS. To record gains made on Linux, commit the `baseline_candidate.txt` files
   from the run's `jq-diff-linux` artifact (the compat one is under `compat/`).
 - jq results are cached in `tests/jq_compat/.cache/jq_diff.json` and `jq_diff_compat.json`
-  (invalidated automatically). The two scoreboards take ~45s cold and ~18s cached on 18
-  cores, and about 5 minutes on GitHub's 4-core Linux runner.
+  (invalidated automatically, a different `ulimit -s` included). The two scoreboards take
+  ~45s cold and ~18s cached on 18 cores, and about 5 minutes on GitHub's 4-core Linux runner.
+- **Stack limits:** every case inherits the harness's `RLIMIT_STACK`, so `ulimit -s 1024;
+  cargo test --release jq_diff -- --ignored` scores both boards at 1 MB, where qj runs on its
+  own mapped stack (`src/cli/stack.rs`): compat mode stays strict on every case there, and
+  default mode differs only where jq's compiler runs out (3 `deep-*` cases in
+  `corpus/cli_basics.toml`). Run it with `JQ_DIFF_BASELINE` and `JQ_DIFF_COMPAT_BASELINE`
+  pointing at files that don't exist.
 - **Core dumps:** the core-dump flag is compared, so a crash matches only if the kernel dumps
   a core for both or for neither. On macOS the harness sets `ulimit -c 0` for everything it
   starts (a macOS core is the whole address space); on Linux it leaves the limit alone, and a
   pipe handler such as systemd-coredump dumps whatever the limit (qj's deliberate cores are a
   few KB, see `compat::small_core_dump`).
+- **A full disk fails the run:** a tool whose output reports `No space left on device`, or a
+  run that ends with under 256 MB free where the case runs, panics with a message instead of
+  scoring (and caching) a case. A CI flake was that: an orphaned `yes` from `exec.rs`'s own
+  output-cap test (dash forks it for `sh -c yes`, and killing sh left it running, before
+  children got their own process group) filled the runner's disk at 1 GB/s mid-run.
 
 - **Unit tests:** `#[cfg(test)]` modules alongside code.
 - **Integration tests:** `tests/e2e.rs` — runs the `qj` binary against known JSON inputs.
@@ -345,17 +358,28 @@ Read by everything (`src/compat.rs`):
   hangs and turns off qj's own additions (glob expansion, `.gz`/`.zst` decompression,
   `--threads`/`--jsonl`/`--debug-timing`, which become jq's "Unknown option"). The crashes
   are a module import cycle (SIGSEGV), `delpaths` with a `nan` path element (hangs,
-  growing), and jq's C stack running out in any of its eleven recursions, each at its own
-  depth. Over values: freeing (`jv_free`), comparing (`jv_equal`/`jv_cmp`, so `==`, `<`,
-  `sort`, `group_by`, `unique`, `min`, `max`, `bsearch`, `-`, `index`),
-  `contains`/`inside`, object `*`, `setpath`/`=`/`|=`, `delpaths`/`del`, printing
-  (`jv_dump_term`, only below about 80 KB of stack), and a chain of `import`s
-  (`load_library`, about 20,000 modules at 8 MB). Over the program, while compiling it:
+  growing), and jq's C stack running out. jq's stack is `RLIMIT_STACK` as the kernel
+  applies it (down to a page on Linux, up to one on macOS) less what argv and the
+  environment take at its top, which compat mode counts (`compat::area_of`), and each
+  model is bytes a level over a base, measured byte-exact against the jq binary with a
+  margin of 512 bytes (on Linux plus the 8,206 of the kernel's stack randomization). The
+  recursions, each at its own depth: over values, freeing (`jv_free`), comparing
+  (`jv_equal`/`jv_cmp`, so `==`, `<`, `sort`, `group_by`, `unique`, `min`, `max`,
+  `bsearch`, `-`, `index`), `contains`/`inside`, object `*`, `setpath`/`=`/`|=`,
+  `delpaths`/`del`, printing (`jv_dump_term`, only below about 80 KB of stack, from
+  `main.c` and, deeper, from `tojson`/`@json`/interpolation/`debug`), and a chain of
+  `import`s (`load_library`, about 20,000 modules at 8 MB); Oniguruma's parser and its walks
+  over the parsed pattern, for a nested regex (`src/compat/regex.rs`); and, over the
+  program, while compiling it:
   binding (`block_bind_subblock_inner`, two frames per level of nesting — 4,990 nested
   `select(...)` needs 2 MB, and a left-associative chain such as `. + . + ...` is not
   bounded by `YYMAXDEPTH` at all, so 37,335 terms overflow the default 8 MB) and
   `compile`/`expand_call_arglist` (one frame per nested closure, which is what nested
-  `def`s reach). Only the depth jq's own traversal reaches counts (`src/compat/depth.rs`),
+  `def`s reach). Below all of those, jq's fixed needs: what it takes to start at all
+  (on macOS the platform's, by release; on Linux glibc's and `main.c`'s), to compile any
+  program, and `--run-tests`' loop, whose buffers sit above everything it runs
+  (`compat::starting`, `compat::compiling`, `compat::running_tests`). Only the depth jq's
+  own traversal reaches counts (`src/compat/depth.rs`),
   and compat mode follows jq's binding exactly, including the lambda bound to itself and
   the actions bison runs as it reduces a program that then fails to parse. Natives, the
   VM's regions and tape evaluation are off here, so everything goes through the value
@@ -380,13 +404,17 @@ Benchmarks require exclusive CPU access for reliable results.
 
 ## Architecture
 qj is a port of jq 1.8.1 (see `docs/JQ_PORT_PLAN.md`). `src/main.rs` restores the default
-SIGPIPE handling and runs `qj::cli::run::main`.
+SIGPIPE handling and runs `qj::cli::run::main` — on the main thread's stack when
+`RLIMIT_STACK` is 8 MB or more, and below that on a 256 MB stack it maps and switches to,
+still on the main thread (`src/cli/stack.rs`), so qj's own frames never run out where
+jq's don't.
 
 - `src/cli/` — the command line, a port of jq's `main.c` and `util.c`: option handling
   (`args.rs`: options, their errors and exit codes, colors, `-f`), qj's own help/version text
   and jq's for compat mode (`usage.rs`), the rest of `main.c` on the port (`run.rs`: compile, `process()`, output, exit
   codes, and whether records can run in parallel), `util.c`'s plain input reader (`input.rs`,
-  behind the `Reader` trait; `QJ_INPUT=util`) and `jq_test.c` (`run_tests.rs`, `--run-tests`)
+  behind the `Reader` trait; `QJ_INPUT=util`), `jq_test.c` (`run_tests.rs`, `--run-tests`),
+  and the stack qj moves to below an 8 MB limit (`stack.rs`)
 - `src/jq/` — the port of jq's core: `value/` (values and numbers, the printer, the JSON
   parser), `lang/` (lexer, parser on bison's tables, compiler, bytecode VM, linker),
   `builtins/` (the C builtins and jq's own `builtin.jq`), `platform/` (Oniguruma regex, libc

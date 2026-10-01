@@ -318,15 +318,20 @@ thread_local! {
 /// Container drops that may recurse natively before switching to
 /// [`drop_values_iteratively`]. Ordinary data never gets close, so drops
 /// stay as cheap as the default drop glue.
-const MAX_DROP_RECURSION: u32 = 256;
+pub(crate) const MAX_DROP_RECURSION: u32 = 256;
 
 /// Runs `drop_contents` one nesting level deeper, or returns false (without
 /// running it) when the recursion budget is used up, in which case the
 /// caller must drop iteratively.
+///
+/// The budget is [`MAX_DROP_RECURSION`], or with `QJ_JQ_COMPAT=1` on a stack
+/// where jq's `jv_free` has fewer frames than that, one short of them
+/// ([`crate::compat::native_drop_limit`]), so that every value too deep for
+/// jq reaches the iterative loop's check.
 #[inline]
 pub(crate) fn drop_nested(drop_contents: impl FnOnce()) -> bool {
     let depth = DROP_DEPTH.with(Cell::get);
-    if depth >= MAX_DROP_RECURSION {
+    if depth >= crate::compat::native_drop_limit() {
         return false;
     }
     DROP_DEPTH.with(|d| d.set(depth + 1));
@@ -349,15 +354,16 @@ pub(crate) fn owns_container(v: &Value) -> bool {
 /// nested values (jq accepts 10000 levels of JSON, and programs can build
 /// deeper ones) cannot overflow the stack.
 pub(crate) fn drop_values_iteratively(items: &mut Vec<Value>) {
+    // QJ_JQ_COMPAT=1: jq's jv_free recurses, so a value this deep overflows
+    // its C stack and the process dies of SIGSEGV. Nothing has been freed
+    // yet, which is where jq dies too. `drop_nested` refused at the storage
+    // of the container one level below the drops in progress, so that many
+    // jv_free frames are already committed above `items` (jq calls jv_free on
+    // a scalar element too, so even scalar `items` are a frame deeper).
+    crate::compat::freeing_iteratively(items, u64::from(DROP_DEPTH.with(Cell::get)) + 1);
     if !items.iter().any(owns_container) {
         return; // plain drop is shallow
     }
-    // QJ_JQ_COMPAT=1: jq's jv_free recurses, so a value this deep overflows
-    // its C stack and the process dies of SIGSEGV. Nothing has been freed
-    // yet, which is where jq dies too. `drop_nested` refuses at the storage
-    // of the container MAX_DROP_RECURSION + 1 levels down, so that many
-    // jv_free frames are already committed above `items`.
-    crate::compat::freeing_iteratively(items, u64::from(MAX_DROP_RECURSION) + 1);
     let mut stack = std::mem::take(items);
     while let Some(mut v) = stack.pop() {
         match &mut v {

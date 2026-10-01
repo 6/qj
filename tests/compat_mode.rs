@@ -33,24 +33,100 @@ fn run(compat: bool, args: &[&str]) -> Output {
     run_in(Path::new("."), compat, args)
 }
 
-/// [`run_in`] with the child's `RLIMIT_STACK` set to `stack_kb`, so that a test
-/// can reach a stack-overflow threshold without a huge value or a huge chain of
-/// modules.
+/// The environment of every qj that [`run_exact`] and [`run_stack`] start,
+/// exactly: compat mode counts what argv and the environment take on the
+/// stack ([`qj::compat::area_of`]), so a test that sizes a program from the
+/// model has to know both.
+fn exact_env(dir: &Path, compat: bool) -> Vec<String> {
+    let mut env = vec![
+        "PATH=/usr/bin:/bin".to_string(),
+        format!("HOME={}", dir.display()),
+    ];
+    if compat {
+        env.push(format!("{}=1", qj::compat::ENV_VAR));
+    }
+    let pad = PAD.with(std::cell::Cell::get);
+    if pad > 0 {
+        env.push(format!("PAD={}", "x".repeat(pad)));
+    }
+    env
+}
+
+thread_local! {
+    /// Bytes of padding [`exact_env`] adds, in a variable of its own: a test
+    /// that wants less of the stack for jq than a page-sized limit leaves can
+    /// take it with the environment, which sits on the stack too.
+    static PAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The stack compat mode sees as jq's in a qj started with `args` by
+/// [`run_exact`] or [`run_stack`] under an `RLIMIT_STACK` of `rlimit` bytes:
+/// the limit as the kernel applies it, less argv and the environment.
+fn jq_stack(dir: &Path, compat: bool, rlimit: u64, args: &[&str]) -> u64 {
+    let argv: Vec<&[u8]> = std::iter::once(env!("CARGO_BIN_EXE_qj"))
+        .chain(args.iter().copied())
+        .map(str::as_bytes)
+        .collect();
+    let env = exact_env(dir, compat);
+    let area = qj::compat::area_of(argv, env.iter().map(|e| e.as_bytes()));
+    qj::compat::effective_limit(rlimit) - area
+}
+
+/// This process's `RLIMIT_STACK`, which a child started without a shell
+/// inherits; `None` when it is unlimited.
+fn own_rlimit() -> Option<u64> {
+    // SAFETY: getrlimit writes an rlimit into a valid out-pointer.
+    let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut lim) } == 0
+        && lim.rlim_cur != libc::RLIM_INFINITY)
+        .then_some(lim.rlim_cur)
+}
+
+/// [`run_in`] with exactly [`exact_env`] for an environment, so that
+/// [`jq_stack`] knows what compat mode sees.
+fn run_exact(dir: &Path, compat: bool, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qj"));
+    cmd.args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_clear();
+    for kv in exact_env(dir, compat) {
+        let (k, v) = kv.split_once('=').expect("NAME=value");
+        cmd.env(k, v);
+    }
+    cmd.output().expect("failed to run qj")
+}
+
+/// A directory holding `program` as `p.jq`, and the arguments that run it:
+/// with the program in a file, argv is the same whatever its depth.
+fn program_file(program: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("p.jq"), program).expect("write the program");
+    dir
+}
+
+const PROGRAM_ARGS: &[&str] = &["-nc", "-f", "p.jq"];
+
+/// [`run_exact`] with the child's `RLIMIT_STACK` set to `stack_kb`, so that a
+/// test can reach a stack-overflow threshold without a huge value or a huge
+/// chain of modules.
 ///
 /// The limit is set by a shell rather than by `Command::pre_exec`, because
 /// Darwin refuses `setrlimit(RLIMIT_STACK)` in a process forked from a
-/// multi-threaded one (`EINVAL`), which every test harness is. `exec` keeps
-/// argv, so qj sees exactly the arguments below.
-///
-/// The environment is cleared down to two variables: argv and the environment
-/// sit on top of the stack, so a few KB of the harness's own would move where
-/// qj's *native* recursion (the printer's, say) overflows a stack this small,
-/// which is not what any of these tests is about.
+/// multi-threaded one (`EINVAL`), which every test harness is. The shell execs
+/// qj through `env -i`, because a shell adds variables of its own (bash adds
+/// `PWD` and `SHLVL`), and both keep argv, so qj sees exactly the arguments
+/// below and [`exact_env`].
 fn run_stack(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Output {
-    let script = format!("ulimit -s {stack_kb}; ulimit -c 0; exec \"$0\" \"$@\"");
+    let script =
+        format!("ulimit -s {stack_kb} || exit 99; ulimit -c 0; exec /usr/bin/env -i \"$@\"");
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
         .arg(script)
+        .arg("sh")
+        .args(exact_env(dir, compat))
         .arg(env!("CARGO_BIN_EXE_qj"))
         .args(args)
         .current_dir(dir)
@@ -58,11 +134,7 @@ fn run_stack(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", dir);
-    if compat {
-        cmd.env(qj::compat::ENV_VAR, "1");
-    }
+        .env("PATH", "/usr/bin:/bin");
     cmd.output().expect("failed to run qj")
 }
 
@@ -329,7 +401,9 @@ fn a_long_module_chain_segfaults_in_compat_mode() {
     // Two small limits: enough to show the threshold follows `ulimit -s`, and
     // short enough that the chains are hundreds of modules, not thousands.
     for stack in [SMALL_STACK_KB * 1024, 1024 * 1024] {
-        let budget = Site::Modules.frame_budget_at(stack, 0);
+        let (probe, prog) = module_chain(1);
+        let args = &["-nc", "-L", ".", prog.as_str()];
+        let budget = Site::Modules.frame_budget_at(jq_stack(probe.path(), true, stack, args), 0);
         assert!(
             budget > 100,
             "implausible module budget {budget} at {stack}"
@@ -339,6 +413,11 @@ fn a_long_module_chain_segfaults_in_compat_mode() {
         for (n, dies) in [(budget - 1, false), (budget, true)] {
             let (dir, prog) = module_chain(n);
             let args = &["-nc", "-L", ".", prog.as_str()];
+            // (Every temporary directory's name is as long as the probe's.)
+            assert_eq!(
+                jq_stack(dir.path(), true, stack, args),
+                jq_stack(probe.path(), true, stack, args)
+            );
             let o = run_stack(dir.path(), true, stack / 1024, args);
             if dies {
                 assert_eq!(
@@ -417,18 +496,19 @@ fn deeply_nested_values_segfault_only_in_compat_mode() {
 /// deeper than the limit crashes, one shallower doesn't.
 #[test]
 fn the_crash_depth_follows_the_stack_limit() {
-    let budget = match qj::compat::free_frame_budget() {
-        Some(b) => b,
-        // An unlimited stack: jq doesn't overflow either.
-        None => return,
+    // An unlimited stack: jq doesn't overflow either.
+    let Some(rlimit) = own_rlimit() else {
+        return;
     };
+    let probe = program_file("");
+    let budget = Site::Free.frame_budget_at(jq_stack(probe.path(), true, rlimit, PROGRAM_ARGS), 0);
     assert!(budget > 1000, "implausible frame budget {budget}");
     // `reduce range(n) as $i (null;[.])` nests n arrays around a null, so
     // freeing it takes n + 1 frames: the deepest n that fits is budget - 1.
     let deepest = budget - 1;
     for (n, dies) in [(deepest, false), (deepest + 1, true), (budget + 1000, true)] {
-        let prog = format!("reduce range({n}) as $i (null;[.]) | length");
-        let o = run(true, &["-nc", &prog]);
+        let dir = program_file(&format!("reduce range({n}) as $i (null;[.]) | length"));
+        let o = run_exact(dir.path(), true, PROGRAM_ARGS);
         if dies {
             assert_eq!(signal(&o), Some(libc::SIGSEGV), "depth {n} should crash");
         } else {
@@ -478,7 +558,10 @@ fn program(site: Site, n: u64) -> String {
         // The printer's depth is capped at `MAX_PRINT_DEPTH`, so it has a
         // threshold only on a tiny stack: see
         // `printing_a_deep_value_crashes_where_jqs_printer_does`.
-        Site::Print => unreachable!("Site::Print needs a small stack"),
+        Site::Print | Site::Dump => unreachable!("{site:?} needs a small stack"),
+        // A regex's depth is its pattern's: see
+        // `a_nested_regex_crashes_where_jqs_oniguruma_does`.
+        Site::RegexParse | Site::RegexTree => unreachable!("{site:?} is driven by a pattern"),
     }
 }
 
@@ -503,15 +586,20 @@ const SITES: &[(Site, &str, u64)] = &[
 /// follows `ulimit -s` (`qj::compat::Site::frame_budget`).
 #[test]
 fn every_recursion_has_its_own_crash_depth_in_compat_mode() {
+    // An unlimited stack: jq doesn't overflow either.
+    let Some(rlimit) = own_rlimit() else {
+        return;
+    };
+    let probe = program_file("");
+    let stack = jq_stack(probe.path(), true, rlimit, PROGRAM_ARGS);
     for &(site, name, extra) in SITES {
-        let Some(budget) = site.frame_budget() else {
-            continue; // an unlimited stack: jq doesn't overflow either
-        };
+        let budget = site.frame_budget_at(stack, 0);
         assert!(budget > 1000, "{name}: implausible budget {budget}");
         let deepest = budget - extra;
         for (n, dies) in [(deepest, false), (deepest + 1, true)] {
             let prog = program(site, n);
-            let o = run(true, &["-nc", &prog]);
+            let dir = program_file(&prog);
+            let o = run_exact(dir.path(), true, PROGRAM_ARGS);
             if dies {
                 assert_eq!(
                     signal(&o),
@@ -526,7 +614,7 @@ fn every_recursion_has_its_own_crash_depth_in_compat_mode() {
                 assert_eq!(code(&o), Some(0), "{name} at {n}: {}", stderr(&o));
             }
             // Without the variable qj answers at either depth.
-            let plain = run(false, &["-nc", &prog]);
+            let plain = run_exact(dir.path(), false, PROGRAM_ARGS);
             assert_eq!(code(&plain), Some(0), "{name} at {n}: {}", stderr(&plain));
         }
     }
@@ -731,7 +819,7 @@ fn nested_defs(n: u64) -> String {
 }
 
 /// The deepest `select(...)` nesting (or chain of binops) compat-mode qj
-/// compiles at `stack_kb`.
+/// compiles, from a file, at `stack_kb`.
 ///
 /// Binding recurses into an instruction's closure body *and* its argument list,
 /// so a level costs two frames: the call at level `k` is bound at frame
@@ -739,14 +827,27 @@ fn nested_defs(n: u64) -> String {
 /// body has nothing unbound in it, so jq skips it, and `n` levels reach frame
 /// `2n - 1`.
 fn deepest_closures(stack_kb: u64) -> u64 {
-    Site::Bind.frame_budget_at(stack_kb * 1024, 0) / 2
+    Site::Bind.frame_budget_at(file_stack(stack_kb), 0) / 2
 }
 
-/// The deepest chain of definitions compat-mode qj compiles at `stack_kb`:
-/// `compile` recurses once per level, and a chain of `n` reaches level `n + 1`
-/// (the top-level function is the first).
+/// [`jq_stack`] at `stack_kb` for a compat-mode qj running [`program_file`]'s
+/// program with [`PROGRAM_ARGS`] (every temporary directory's name is as long).
+fn file_stack(stack_kb: u64) -> u64 {
+    let probe = program_file("");
+    jq_stack(probe.path(), true, stack_kb * 1024, PROGRAM_ARGS)
+}
+
+/// [`run_stack`] of `program` from a file.
+fn run_stack_program(compat: bool, stack_kb: u64, program: &str) -> Output {
+    let dir = program_file(program);
+    run_stack(dir.path(), compat, stack_kb, PROGRAM_ARGS)
+}
+
+/// The deepest chain of definitions compat-mode qj compiles, from a file, at
+/// `stack_kb`: `compile` recurses once per level, and a chain of `n` reaches
+/// level `n + 1` (the top-level function is the first).
 fn deepest_defs(stack_kb: u64) -> u64 {
-    let stack = stack_kb * 1024;
+    let stack = file_stack(stack_kb);
     let budget = Site::Compile.frame_budget_at(stack, 0);
     // What `compile` calls at its deepest level still has to fit, which is what
     // the budget's headroom is for: check that it does.
@@ -770,7 +871,7 @@ fn nested_closures_crash_where_jqs_binding_does() {
             ("select", nested_closures(deepest)),
             ("binop", nested_binops(deepest)),
         ] {
-            let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+            let o = run_stack_program(true, stack_kb, &prog);
             assert_eq!(
                 code(&o),
                 Some(0),
@@ -782,7 +883,7 @@ fn nested_closures_crash_where_jqs_binding_does() {
             ("select", nested_closures(deepest + 1)),
             ("binop", nested_binops(deepest + 1)),
         ] {
-            let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+            let o = run_stack_program(true, stack_kb, &prog);
             assert_eq!(
                 signal(&o),
                 Some(libc::SIGSEGV),
@@ -793,7 +894,7 @@ fn nested_closures_crash_where_jqs_binding_does() {
             );
             assert_eq!(stdout(&o), "", "{shape} at {stack_kb} KB");
             // By default the same program compiles and runs.
-            let plain = run_stack(Path::new("."), false, stack_kb, &["-nc", &prog]);
+            let plain = run_stack_program(false, stack_kb, &prog);
             assert_eq!(
                 code(&plain),
                 Some(0),
@@ -818,12 +919,7 @@ fn nested_defs_crash_where_jqs_compile_does() {
         (100..3000).contains(&deepest),
         "implausible def depth {deepest}"
     );
-    let ok = run_stack(
-        Path::new("."),
-        true,
-        stack_kb,
-        &["-nc", &nested_defs(deepest)],
-    );
+    let ok = run_stack_program(true, stack_kb, &nested_defs(deepest));
     assert_eq!(
         code(&ok),
         Some(0),
@@ -832,7 +928,7 @@ fn nested_defs_crash_where_jqs_compile_does() {
     );
     assert_eq!(stdout(&ok), "1\n");
     let prog = nested_defs(deepest + 1);
-    let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+    let o = run_stack_program(true, stack_kb, &prog);
     assert_eq!(
         signal(&o),
         Some(libc::SIGSEGV),
@@ -841,7 +937,7 @@ fn nested_defs_crash_where_jqs_compile_does() {
         o.status,
         stderr(&o)
     );
-    let plain = run_stack(Path::new("."), false, stack_kb, &["-nc", &prog]);
+    let plain = run_stack_program(false, stack_kb, &prog);
     assert_eq!(code(&plain), Some(0), "by default: {}", stderr(&plain));
     assert_eq!(stdout(&plain), "1\n");
 }
@@ -865,7 +961,7 @@ fn a_syntax_error_after_deep_nesting_crashes_where_jqs_actions_do() {
         ("binop", nested_binops(deepest + 1)),
     ] {
         let prog = format!("{deep} | %%%");
-        let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+        let o = run_stack_program(true, stack_kb, &prog);
         assert_eq!(
             signal(&o),
             Some(libc::SIGSEGV),
@@ -874,7 +970,7 @@ fn a_syntax_error_after_deep_nesting_crashes_where_jqs_actions_do() {
             stderr(&o)
         );
         // By default qj reports the error, as it does for a shallow program.
-        let plain = run_stack(Path::new("."), false, stack_kb, &["-nc", &prog]);
+        let plain = run_stack_program(false, stack_kb, &prog);
         assert_eq!(
             code(&plain),
             Some(3),
@@ -895,26 +991,20 @@ fn a_syntax_error_after_deep_nesting_crashes_where_jqs_actions_do() {
 /// its own; in compat mode it dies at jq's depth instead.
 #[test]
 fn printing_a_deep_value_crashes_where_jqs_printer_does() {
-    // At these stacks qj's own frames count too, and an unoptimized build's are
-    // several times an optimized one's, so it overflows before the model's
-    // threshold; only an optimized build shows where the model puts it (CI
-    // runs the suite with --release).
-    let stacks: &[u64] = if cfg!(debug_assertions) {
-        &[]
-    } else {
-        &[48, 64]
-    };
-    for &stack_kb in stacks {
+    // qj's own frames are on its own thread's stack, so an unoptimized build,
+    // whose frames are several times an optimized one's, dies where the model
+    // puts it too.
+    for stack_kb in [48, 64] {
         // `reduce range(n) as $i (0;[.])` nests n arrays around a 0, which
         // takes n + 1 frames to print.
-        let deepest = Site::Print.frame_budget_at(stack_kb * 1024, 0) - 1;
+        let deepest = Site::Print.frame_budget_at(file_stack(stack_kb), 0) - 1;
         assert!(
             (20..257).contains(&deepest),
             "implausible print depth {deepest} at {stack_kb} KB"
         );
         for (n, dies) in [(deepest, false), (deepest + 1, true)] {
             let prog = format!("reduce range({n}) as $i (0;[.])");
-            let o = run_stack(Path::new("."), true, stack_kb, &["-nc", &prog]);
+            let o = run_stack_program(true, stack_kb, &prog);
             if dies {
                 assert_eq!(
                     signal(&o),
@@ -965,6 +1055,292 @@ fn the_deepest_program_bison_parses_compiles_at_the_default_stack() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Small stacks: jq's start-up, its test loop, regexes, dumps, native frees
+// ---------------------------------------------------------------------------
+
+/// The page size the kernel rounds `RLIMIT_STACK` to.
+fn page_kb() -> u64 {
+    // SAFETY: sysconf has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    (page as u64).max(4096) / 1024
+}
+
+/// The smallest limit (a page multiple, in KB) at which compat mode sees at
+/// least `need` bytes of jq's stack for a qj started with `args` from a
+/// program file.
+fn limit_for(need: u64, args: &[&str]) -> u64 {
+    let probe = program_file("");
+    let step = page_kb();
+    let mut kb = step;
+    while jq_stack(probe.path(), true, kb * 1024, args) < need {
+        kb += step;
+    }
+    kb
+}
+
+/// [`run_stack`], on Linux with the kernel's stack randomization off where
+/// `setarch` is installed (`None` where it isn't): qj's own start-up (the
+/// dynamic loader's) needs about 6 KB of a limit this small, which the
+/// randomization would sometimes take away.
+fn run_stack_norandom(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Option<Output> {
+    if !cfg!(target_os = "linux") {
+        return Some(run_stack(dir, compat, stack_kb, args));
+    }
+    let setarch = ["/usr/bin/setarch", "/bin/setarch"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())?;
+    let script = format!(
+        "ulimit -s {stack_kb} || exit 99; ulimit -c 0; exec {setarch} \"$(uname -m)\" -R /usr/bin/env -i \"$@\""
+    );
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(script)
+        .arg("sh")
+        .args(exact_env(dir, compat))
+        .arg(env!("CARGO_BIN_EXE_qj"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin");
+    Some(cmd.output().expect("failed to run qj"))
+}
+
+fn assert_dies(o: &Output, what: &str) {
+    assert_eq!(
+        signal(o),
+        Some(libc::SIGSEGV),
+        "{what} should crash ({:?}, {})",
+        o.status,
+        stderr(o)
+    );
+    assert_eq!(stdout(o), "", "{what}: nothing is written");
+}
+
+/// On Linux, where jq is linked statically, its start-up needs about 5 KB
+/// (the help text, the version, a usage error) and compiling a program about
+/// 9 KB; between the two, compat mode prints the version and dies compiling.
+/// (On macOS dyld needs more than either, for jq and qj alike.)
+#[test]
+fn compat_mode_needs_what_jqs_start_and_compiler_do() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let needs = qj::compat::fixed_needs();
+    let args = ["-nc", "-f", "p.jq"];
+    // The first limit where jq starts, and where its compiler still dies.
+    let kb = limit_for(needs.start, &args);
+    let dir = program_file("1");
+    assert!(jq_stack(dir.path(), true, kb * 1024, &args) < needs.compile);
+    let Some(o) = run_stack_norandom(dir.path(), true, kb, &args) else {
+        return; // no setarch
+    };
+    assert_dies(&o, &format!("compiling at {kb} KB"));
+    let version =
+        run_stack_norandom(dir.path(), true, kb, &["--version"]).expect("setarch was there");
+    assert_eq!(code(&version), Some(0), "{}", stderr(&version));
+    assert_eq!(stdout(&version), "jq-1.8.1\n");
+    // Below the start-up's need, even the version dies; by default qj answers.
+    let below = kb - page_kb();
+    if jq_stack(dir.path(), true, below * 1024, &["--version"]) < needs.start {
+        let o = run_stack_norandom(dir.path(), true, below, &["--version"]).expect("setarch");
+        assert_dies(&o, &format!("starting at {below} KB"));
+    }
+    let plain = run_stack_norandom(dir.path(), false, kb, &args).expect("setarch");
+    assert_eq!(code(&plain), Some(0), "{}", stderr(&plain));
+    assert_eq!(stdout(&plain), "1\n");
+}
+
+/// jq's `--run-tests` keeps its test loop's buffers on the stack, 28 KB on
+/// macOS and 12 KB on Linux above everything it runs: on a stack that holds a
+/// program but not the loop, compat mode dies where the program answers.
+#[test]
+fn run_tests_needs_jqs_test_loop() {
+    let needs = qj::compat::fixed_needs();
+    let dir = program_file("1");
+    std::fs::write(dir.path().join("t.test"), ".\n1\n1\n\n").expect("write the tests");
+    let args = ["--run-tests", "t.test"];
+    // Where jq starts and compiles a program (dyld needs more than the
+    // compiler on macOS), but not where its test loop fits.
+    let kb = limit_for(needs.start.max(needs.compile), &args);
+    assert!(jq_stack(dir.path(), true, kb * 1024, &args) < needs.run_tests);
+    let o = run_stack(dir.path(), true, kb, &args);
+    assert_dies(&o, &format!("--run-tests at {kb} KB"));
+    let plain = run_stack(dir.path(), false, kb, &args);
+    assert_eq!(code(&plain), Some(0), "{}", stderr(&plain));
+    assert!(
+        stdout(&plain).contains("1 of 1 tests passed"),
+        "{}",
+        stdout(&plain)
+    );
+    // With room for the loop, compat mode runs the tests too.
+    let kb = limit_for(needs.run_tests, &args);
+    let o = run_stack(dir.path(), true, kb, &args);
+    assert_eq!(code(&o), Some(0), "at {kb} KB: {}", stderr(&o));
+    assert!(stdout(&o).contains("1 of 1 tests passed"), "{}", stdout(&o));
+}
+
+/// Oniguruma parses a pattern by recursing once per group, and walks the
+/// parsed tree once per node: both overflow jq's stack on a small one, at
+/// their own depths, and compat mode dies where jq does.
+#[test]
+fn a_nested_regex_crashes_where_jqs_oniguruma_does() {
+    let stack_kb = SMALL_STACK_KB;
+    let stack = file_stack(stack_kb);
+    let parse = Site::RegexParse.frame_budget_at(stack, 0);
+    let tree = Site::RegexTree.frame_budget_at(stack, 0);
+    // `n` groups around an alternation: the parser has a level for the
+    // pattern and one per group, the tree `n + 2` nodes; the parser runs out
+    // first.
+    let groups = (parse - 1).min(tree - 2);
+    // `n` quantified groups: two nodes a level, and one for the leaf.
+    let quantified = (tree - 1) / 2;
+    assert!(
+        (100..500).contains(&groups) && quantified < groups,
+        "implausible regex depths {groups}, {quantified} at {stack_kb} KB"
+    );
+    for (shape, n, open, close, mid) in [
+        ("groups", groups, "(", ")", "a|b"),
+        ("quantified", quantified, "(", ")*", "a"),
+    ] {
+        let prog = |n: u64| {
+            let pattern = format!(
+                "{}{mid}{}",
+                open.repeat(n as usize),
+                close.repeat(n as usize)
+            );
+            format!("\"ab\" | test(\"{pattern}\")")
+        };
+        let ok = run_stack_program(true, stack_kb, &prog(n));
+        assert_eq!(code(&ok), Some(0), "{shape} {n}: {}", stderr(&ok));
+        assert_eq!(stdout(&ok), "true\n", "{shape} {n}");
+        let o = run_stack_program(true, stack_kb, &prog(n + 1));
+        assert_dies(&o, &format!("{shape} {} at {stack_kb} KB", n + 1));
+        let plain = run_stack_program(false, stack_kb, &prog(n + 1));
+        assert_eq!(
+            code(&plain),
+            Some(0),
+            "{shape} by default: {}",
+            stderr(&plain)
+        );
+        assert_eq!(stdout(&plain), "true\n");
+    }
+}
+
+/// jq prints a result from `main.c`, and dumps a value for `tojson` from
+/// deeper in its stack, inside the VM: the same value can print and still
+/// kill jq converted to a string.
+#[test]
+fn a_dump_inside_the_program_has_less_stack_than_the_output() {
+    let stack_kb = 64;
+    let stack = file_stack(stack_kb);
+    let (print, dump) = (
+        Site::Print.frame_budget_at(stack, 0),
+        Site::Dump.frame_budget_at(stack, 0),
+    );
+    assert!(dump < print && print < 258, "{dump} {print}");
+    // `n` arrays around a 0 take `n + 1` frames to dump.
+    let n = dump;
+    let printed = run_stack_program(true, stack_kb, &format!("reduce range({n}) as $i (0;[.])"));
+    assert_eq!(code(&printed), Some(0), "{}", stderr(&printed));
+    let dumped = run_stack_program(
+        true,
+        stack_kb,
+        &format!("reduce range({n}) as $i (0;[.]) | tojson | length"),
+    );
+    assert_dies(&dumped, &format!("tojson of {n} levels at {stack_kb} KB"));
+}
+
+/// qj frees a value natively up to 256 levels deep; where jq's `jv_free` has
+/// fewer frames than that, compat mode stops short of them, so that a value
+/// too deep for jq is checked however shallow it is.
+#[test]
+fn a_shallow_value_on_a_small_stack_is_checked_as_it_is_freed() {
+    // The first limit with room to start and compile, with the environment
+    // taking what jq's stack would have beyond 255 frames for `jv_free` (on
+    // macOS, whose pages are 16 KB, that is most of a page): the most frames
+    // short of qj's 256 leave the platform's loader the most room.
+    let needs = qj::compat::fixed_needs();
+    let need = needs.start.max(needs.compile);
+    let kb = limit_for(need, PROGRAM_ARGS);
+    let unpadded = file_stack(kb);
+    let pad = if Site::Free.frame_budget_at(unpadded, 0) < 256 {
+        0
+    } else {
+        // A byte of padding makes the variable; each byte more takes one.
+        PAD.with(|p| p.set(1));
+        let padded = file_stack(kb);
+        let Some(stack) = (need..=padded)
+            .rev()
+            .find(|&s| Site::Free.frame_budget_at(s, 0) < 256)
+        else {
+            // jq's start-up needs more than that (macOS 26's does).
+            PAD.with(|p| p.set(0));
+            eprintln!("skipped: jq starts on no stack with under 256 frames for jv_free");
+            return;
+        };
+        (1 + padded - stack) as usize
+    };
+    PAD.with(|p| p.set(pad));
+    let budget = Site::Free.frame_budget_at(file_stack(kb), 0);
+    assert!(
+        file_stack(kb) >= need && budget < 256,
+        "{pad} bytes of padding at {kb} KB leave {} bytes, {budget} frames",
+        file_stack(kb)
+    );
+    // What runs before qj's main is the platform's, and needs what it needs,
+    // from one macOS release to the next: on one whose start-up the model
+    // doesn't know, it may need more than this, and then neither jq nor qj
+    // starts here. A trivial program tells: with the same argv and
+    // environment, nothing of qj's can die of the limit, and qj as it is,
+    // given the stack compat mode would have, answers if the loader does.
+    let trivial = program_file("1");
+    let Some(started) = run_stack_norandom(trivial.path(), true, kb, PROGRAM_ARGS) else {
+        return; // no setarch
+    };
+    if code(&started) != Some(0) {
+        let stack = file_stack(kb);
+        // qj as it is has no QJ_JQ_COMPAT: pad its environment by as much.
+        let mut plain_pad = pad;
+        while jq_stack(trivial.path(), false, kb * 1024, PROGRAM_ARGS) > stack {
+            plain_pad += 1;
+            PAD.with(|p| p.set(plain_pad));
+        }
+        let plain = run_stack_norandom(trivial.path(), false, kb, PROGRAM_ARGS);
+        PAD.with(|p| p.set(0));
+        let plain = plain.expect("setarch");
+        assert_ne!(
+            code(&plain),
+            Some(0),
+            "compat mode dies of a trivial program at {kb} KB with {stack} bytes of stack, \
+             where qj as it is answers: {:?}",
+            started.status
+        );
+        eprintln!(
+            "skipped: the platform's loader needs more than {stack} bytes beyond argv and the \
+             environment ({:?})",
+            plain.status
+        );
+        return;
+    }
+    // `n` arrays around a null take `n + 1` frames to free.
+    for (n, dies) in [(budget - 1, false), (budget, true)] {
+        let prog = format!("reduce range({n}) as $i (null;[.]) | length");
+        let dir = program_file(&prog);
+        let o = run_stack_norandom(dir.path(), true, kb, PROGRAM_ARGS).expect("setarch");
+        if dies {
+            assert_dies(&o, &format!("freeing {n} levels at {kb} KB"));
+        } else {
+            assert_eq!(code(&o), Some(0), "{n} at {kb} KB: {}", stderr(&o));
+            assert_eq!(stdout(&o), "1\n");
+        }
+    }
+    PAD.with(|p| p.set(0));
 }
 
 // ---------------------------------------------------------------------------

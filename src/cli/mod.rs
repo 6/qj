@@ -13,4 +13,5 @@ pub mod args;
 pub mod input;
 pub mod run;
 pub mod run_tests;
+pub mod stack;
 pub mod usage;

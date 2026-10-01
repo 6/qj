@@ -30,6 +30,26 @@ fn main() {
 
     build.compile("simdjson");
 
+    // What dyld does before qj's main runs on the stack the user's
+    // `RLIMIT_STACK` sizes, and two things made it need more for qj than for
+    // jq 1.8.1's release binary, so that qj died at a limit where jq started
+    // (see "Small stacks" in docs/COMPATIBILITY.md):
+    //
+    // - Rust's standard library links libiconv, which qj doesn't use; loading
+    //   it costs 144 bytes of stack on macOS 27.
+    // - Below a deployment target of 12.0, the linker writes the old
+    //   opcode-based binding information rather than chained fixups, and
+    //   binding it costs 416 bytes more on macOS 26. Chained fixups load on
+    //   macOS 11 and later, which is every arm64 Mac's; x86-64 builds keep the
+    //   default, for the macOS releases before 11.
+    let target = |key: &str| std::env::var(key).unwrap_or_default();
+    if target("CARGO_CFG_TARGET_OS") == "macos" {
+        println!("cargo:rustc-link-arg-bins=-Wl,-dead_strip_dylibs");
+        if target("CARGO_CFG_TARGET_ARCH") == "aarch64" {
+            println!("cargo:rustc-link-arg-bins=-Wl,-fixup_chains");
+        }
+    }
+
     println!("cargo:rerun-if-changed=src/simdjson/bridge.cpp");
     println!("cargo:rerun-if-changed=simdjson/simdjson.cpp");
     println!("cargo:rerun-if-changed=simdjson/simdjson.h");

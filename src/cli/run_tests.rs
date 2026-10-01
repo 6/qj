@@ -102,6 +102,9 @@ pub fn jq_testsuite(lib_dirs: Option<&[Vec<u8>]>, verbose: bool, args: &[Vec<u8>
         }
         i += 1;
     }
+    // QJ_JQ_COMPAT=1: jq's test loop holds large buffers on its stack, below
+    // which everything it compiles and runs has less.
+    crate::compat::running_tests();
     if let Some(code) = run_jq_tests(lib_dirs, verbose, Stream::new(testdata), skip, take) {
         return Outcome::Exit(code);
     }
@@ -199,6 +202,7 @@ fn run_jq_tests(
             line.extend_from_slice(&program);
             line.extend_from_slice(format!("' at line number {lineno}\n").as_bytes());
             print(&line);
+            crate::compat::compiling();
             let compiled = match jq_compile_args(&program, &opts) {
                 Ok(bc) => {
                     match &mut jq {
@@ -461,24 +465,28 @@ fn start_state_ok(jq: &Jq) -> bool {
 }
 
 /// Port of `run_jq_pthread_tests`: three threads each compile and run a
-/// program.
+/// program, each with qj's own fixed stack (not Rust's default, which
+/// `RUST_MIN_STACK` can shrink).
 fn run_jq_pthread_tests() {
     let threads: Vec<_> = (0..3)
         .map(|_| {
-            std::thread::spawn(|| {
-                let opts = CompileOptions::new(".");
-                let Ok(bc) = jq_compile_args(b".data", &opts) else {
-                    return 0;
-                };
-                let mut jq = Jq::new(bc);
-                let mut parser = crate::jq::value::Parser::new(Default::default());
-                parser.set_buf(b"{ \"data\": 1 }", false);
-                while let Some(Ok(v)) = parser.next() {
-                    jq.start(v, 0);
-                    for _ in &mut jq {}
-                }
-                0
-            })
+            std::thread::Builder::new()
+                .stack_size(super::run::STACK_BYTES)
+                .spawn(|| {
+                    let opts = CompileOptions::new(".");
+                    let Ok(bc) = jq_compile_args(b".data", &opts) else {
+                        return 0;
+                    };
+                    let mut jq = Jq::new(bc);
+                    let mut parser = crate::jq::value::Parser::new(Default::default());
+                    parser.set_buf(b"{ \"data\": 1 }", false);
+                    while let Some(Ok(v)) = parser.next() {
+                        jq.start(v, 0);
+                        for _ in &mut jq {}
+                    }
+                    0
+                })
+                .expect("failed to spawn thread")
         })
         .collect();
     for t in threads {
