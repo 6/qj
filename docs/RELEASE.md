@@ -7,9 +7,13 @@
 
 ## Release process
 
-1. Optionally, write the release notes as `docs/releases/v0.X.Y.md` and commit them to main
-2. Go to Actions → Release → Run workflow
-3. Enter the version (e.g. `0.1.1`)
+1. Run Actions → Release check → Run workflow on main (`gh workflow run release_check.yml`)
+   and wait for it to pass. It builds all four release targets the way the release does, and
+   runs the test suites natively on Linux aarch64 and macOS x86_64, which the Checks workflow
+   doesn't cover. jq_diff's totals for those two are in the run's summary.
+2. Optionally, write the release notes as `docs/releases/v0.X.Y.md` and commit them to main
+3. Go to Actions → Release → Run workflow
+4. Enter the version (e.g. `0.1.1`)
 
 The workflow will:
 - Bump `Cargo.toml` version and commit

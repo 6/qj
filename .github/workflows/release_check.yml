@@ -1,0 +1,135 @@
+name: Release check
+# Run before a release. It builds every release target the way release.yml does
+# (keep the build matrix and steps in sync with release.yml's build job). It also
+# runs the test suites natively on the two release targets the Checks workflow
+# doesn't cover, Linux aarch64 and macOS x86_64, with jq_diff's two scoreboards
+# in report-only mode (there are no baselines for those platforms).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to check (default: the branch it runs on)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-26
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-26
+            cross: false
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04
+            cross: true
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: jdx/mise-action@v2
+
+      - name: Add Rust target
+        if: "!matrix.cross"
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build with cargo
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build with cross
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Describe the binary
+        run: |
+          file target/${{ matrix.target }}/release/qj
+          ls -l target/${{ matrix.target }}/release/qj
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux aarch64 and macOS x86_64, natively.
+        os: [ubuntu-24.04-arm, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: jdx/mise-action@v2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Smoke
+        run: |
+          uname -a
+          file target/release/qj
+          echo '{"a":[1,2.50,1e1000]}' | ./target/release/qj -c '.a, (.a | map(. * 2))'
+          "$(mise which jq)" --version
+
+      - name: Test
+        run: cargo test --release --no-fail-fast
+
+      - name: jq_diff (report only)
+        if: always()
+        run: |
+          # Both scoreboards against jq 1.8.1's release binary for this
+          # platform, without a ratchet: the totals go to the job summary, and
+          # every non-passing case to the artifact's report.txt files.
+          JQ_DIFF_JQ="$(mise which jq)" \
+          JQ_DIFF_BASELINE=target/tmp/no_baseline.txt \
+          JQ_DIFF_COMPAT_BASELINE=target/tmp/no_baseline_compat.txt \
+          cargo test --release jq_diff -- --ignored --nocapture > jq_diff.txt 2>&1 || true
+          grep -E '^(jq_diff|TOTAL|group )' jq_diff.txt || true
+          {
+            echo "### jq_diff on ${{ matrix.os }}"
+            echo '```'
+            grep -E '^(jq_diff[^ ]*: .*(cases|regressions|no baseline)|TOTAL +all)' jq_diff.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload jq_diff results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jq-diff-${{ matrix.os }}
+          path: |
+            jq_diff.txt
+            target/tmp/jq_diff/report.txt
+            target/tmp/jq_diff/results.tsv
+            target/tmp/jq_diff/compat/report.txt
+            target/tmp/jq_diff/compat/results.tsv
+          if-no-files-found: ignore
