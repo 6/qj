@@ -140,7 +140,7 @@ and prints exactly what jq does, and the compat scoreboard compares it unrewritt
   | a value printed on a stack of about 80 KB or less, e.g. one nested 242 levels deep at `ulimit -s 64` | SIGSEGV in the printer, before the `MAX_PRINT_DEPTH` cap can stop it | the answer | SIGSEGV at the same depth |
   | a chain of more than about 20,000 imported modules (8 MB stack; 18,000 on Linux) | SIGSEGV | the answer, however long the chain | SIGSEGV at the same depth |
   | a regex nested deeper than the stack allows Oniguruma's parser or its walks over the parsed pattern, e.g. 60 nested groups at `ulimit -s 48` | SIGSEGV while compiling the regex | the answer | SIGSEGV at the same nesting |
-  | a stack too small for jq to start (macOS: 16 KB or less, where dyld itself can't run; Linux: about 5 KB to print its help, 9 KB to compile a program) or for `--run-tests`' buffers (40 KB on macOS, 24 KB on Linux) | SIGSEGV, with nothing written | the answer, wherever its own start-up fits (see [Small stacks](#small-stacks)) | SIGSEGV |
+  | a stack too small for jq to start (macOS: what the platform's start-up needs, 19 KB beyond argv and the environment on macOS 27 and 28 KB on macOS 26; Linux: about 5 KB to print its help, 9 KB to compile a program) or for `--run-tests`' buffers (40 KB on macOS, 24 KB on Linux) | SIGSEGV, with nothing written | the answer, wherever its own start-up fits (see [Small stacks](#small-stacks)) | SIGSEGV |
   | `--run-tests --skip` with no count | SIGSEGV (`atoi(NULL)`) | SIGSEGV | SIGSEGV |
 
   jq's deliberate aborts, which come from `assert()` and are deterministic, are
@@ -335,7 +335,8 @@ depths, with the largest one any depth showed in brackets; the last column is ho
 levels short of jq's threshold qj's is, everywhere (on Linux, below the bottom of jq's
 window, whose width follows):
 
-macOS/arm64 (jq's release binary, built by Apple clang):
+macOS/arm64 (jq's release binary, built by Apple clang; measured on macOS 27, and on
+GitHub's macOS 26 runner every base is 32 bytes smaller):
 
 | site | bytes a level | jq's base | the model's base | qj short of jq |
 |---|--:|--:|--:|--:|
@@ -469,23 +470,30 @@ program compiles. [Small stacks](#small-stacks) has the check of everything else
 
 On a small enough stack the question is what a whole run needs, not one recursion, and
 three of jq's needs are fixed rather than a depth, in bytes beyond argv and the
-environment, measured as the models were:
+environment, measured as the models were. On macOS what jq needs to start is the
+platform's, and depends on the release: on GitHub's macOS 26 runner jq's recursions need
+what they do on macOS 27, to 32 bytes (every base is 32 bytes smaller there), but its
+start-up needs 9 KB more.
 
-| | macOS/arm64 | Linux/x86-64 |
-|---|--:|--:|
-| to start at all, whatever the program (macOS: dyld; Linux: glibc's start-up and `main.c` up to the help text, the version or a usage error) | 19,272 | 5,164–5,172 |
-| to compile a program, the builtins included, or report its syntax error | less than dyld's | 9,244–9,460 |
-| `--run-tests` for tests that don't nest (its loop keeps three buffers of 4 KB or more on the stack) | 40,106–40,392 | 23,796 |
-| what `--run-tests` holds above everything it compiles and runs | 28,496 | 12,648 |
+| | macOS 27/arm64 | macOS 26/arm64 | Linux/x86-64 |
+|---|--:|--:|--:|
+| to start at all, whatever the program (macOS: the platform's start-up; Linux: glibc's and `main.c`'s up to the help text, the version or a usage error) | 19,272 | 28,704–28,712 | 5,164–5,172 |
+| to compile a program, the builtins included, or report its syntax error | less than the start's | less than the start's | 9,244–9,460 |
+| `--run-tests` for tests that don't nest (its loop keeps three buffers of 4 KB or more on the stack) | 40,066–40,392 | 40,108–40,360 | 23,796 |
+| what `--run-tests` holds above everything it compiles and runs | 28,496 | 28,496 | 12,648 |
 
-On macOS nothing runs below 17 KB — `ulimit -s 16` kills `/bin/echo` as well — and jq's own
-start-up needs less than dyld's; with the rounding to 16 KB pages, `jq -n 1` starts at
-every limit from 17 KB up in an environment of up to 13 KB. On Linux jq starts at 8 KB and
+On macOS nothing runs below 17 KB — `ulimit -s 16` kills `/bin/echo` as well. On macOS 27
+every program needs about 19 KB to start (dyld's, and what `/usr/bin/true` and a C program
+that does nothing need too) and jq's own start-up less, so with the rounding to 16 KB
+pages `jq -n 1` starts at every limit from 17 KB up in an environment of up to 13 KB. On
+macOS 26 a C program that does nothing needs 21,400 bytes (at a path of 120 bytes), and jq
+28,704–28,712: at limits of 17 to 32 KB it starts only in an environment of up to 4 KB. On Linux jq starts at 8 KB and
 compiles from 12 KB (with the randomization off; with it on, 13 runs in 40 answer at 12
 KB, 37 at 16 KB, and every one from 20 KB). Compat mode checks the three at the same points
 of the run (`compat::starting`, `compat::compiling`, `compat::running_tests`), with the
-margin above, and below them dies of `SIGSEGV` with nothing written, as jq does, in every
-run.
+margin above and, on macOS, the start-up of the release it runs on (`kern.osproductversion`;
+a release not measured gets the larger of the two), and below them dies of `SIGSEGV` with
+nothing written, as jq does, in every run.
 
 **qj's own stack.** qj's frames used to be on the main thread's stack too, and at these
 limits they ran out where jq's didn't: `qj -n 1` needed 17 KB on macOS and 16 KB on Linux
@@ -494,14 +502,22 @@ limits they ran out where jq's didn't: `qj -n 1` needed 17 KB on macOS and 16 KB
 both), qj moves to a stack of its own before it does anything — 256 MB of address space,
 committed as it is touched, still on the main thread (`src/cli/stack.rs`) — so nothing of
 qj's own ever runs out, in either mode, and only compat mode's models decide whether a run
-dies of the limit. What runs before qj's `main` is the platform's: on macOS dyld, which
-needs what jq's needs give or take the length of the executable's path; on Linux the
-dynamic loader, which needs 6,226–6,234 bytes, 1 KB more than jq's static start-up needs to
-print its help and 3 KB less than anything jq compiles. So with the kernel's randomization
-on, `qj -h`, `qj --version`, `qj --build-configuration` or a usage error can crash at 8–12
-KB in a run where jq's would have answered; for everything else qj needs less than jq. (A
-statically linked qj needs 5,179 bytes to start, jq's own figure but for its path's
-length.)
+dies of the limit.
+
+What runs before qj's `main` is the platform's, and how qj is linked decides what it
+needs. On macOS two things made it more than jq's (`build.rs`): Rust's standard library
+links libiconv, which qj never calls, and dyld's loading it cost 144 bytes on macOS 27;
+and for the arm64 default deployment target, 11.0, the linker writes the old opcode-based
+binding information rather than chained fixups, which cost dyld 416 bytes more on macOS 26
+(464 for a C program that calls `malloc` and `printf`). qj is linked without libiconv and with chained fixups
+(which load on macOS 11 and later), and at the same executable path's length it now starts
+wherever jq does, to the byte: 19,336 bytes on macOS 27 and 28,776 on macOS 26 for both,
+at a path of 120 bytes. On Linux the dynamic loader needs 6,226–6,234 bytes, 1 KB more than
+jq's static start-up needs to print its help and 3 KB less than anything jq compiles, so
+with the kernel's randomization on, `qj -h`, `qj --version`, `qj --build-configuration` or
+a usage error can crash at 8–12 KB in a run where jq's would have answered; for everything
+else qj needs less than jq. (A statically linked qj needs 5,179 bytes to start, jq's own
+figure but for its path's length.)
 
 The check is a corpus of 121 programs: every modelled recursion; regexes (nested groups
 of every kind, backtracking, classes, `gsub`, `capture`, `scan`, `splits`); `tojson`,
@@ -512,21 +528,27 @@ deep and wide input; parse errors; modules; `--run-tests`, `-f`, `--args`, `--sl
 `$__loc__`, `input`, `halt_error`, and every output option. For each program the stack
 each tool needs beyond argv and the environment was measured byte-exact, and each tool was
 run at every limit from 8 KB to 256 KB (on macOS 8, 16, 32, 48, … 256; on Linux every 4 KB
-to 32 KB, then 40, 48, … 256), in jq_diff's environment:
+to 32 KB, then 40, 48, … 256), in jq_diff's environment, on macOS with jq and qj at
+executable paths of the same length (on macOS 26 also at their own):
 
-| | macOS | Linux |
-|---|---|---|
-| limits × programs | 13 × 121 | 20 × 121 |
-| compat mode needs less than jq (could survive where jq dies) | never | never |
-| compat mode dies where jq answers in every run (a conservative window) | 2 cells: a value 3,000 deep, freed and parsed, at 192 KB | 6 cells: `--run-tests`, freeing 300 levels, printing and dumping 60 to 100, at 24 to 40 KB |
-| compat mode dies where jq answers in some runs (the randomization) | — | at every such limit, by design |
-| where both answer, a different stdout, stderr or status | never | never |
-| qj as it is crashes where jq answers | never, its path's length aside | never with the randomization off; with it on, `-h`, `--version`, `--build-configuration` and a usage error at 8–12 KB (the dynamic loader) |
-| qj as it is answers differently from jq | never | never |
+| | macOS 27 | macOS 26 | Linux |
+|---|---|---|---|
+| limits × programs | 13 × 121 | 13 × 121 | 20 × 121 |
+| compat mode needs less than jq (could survive where jq dies) | never | never | never |
+| compat mode dies where jq answers in every run (a conservative window) | 2 cells: a value 3,000 deep, freed and parsed, at 192 KB | the same 2 cells | 6 cells: `--run-tests`, freeing 300 levels, printing and dumping 60 to 100, at 24 to 40 KB |
+| compat mode dies where jq answers in some runs (the randomization) | — | — | at every such limit, by design |
+| where both answer, a different stdout, stderr or status | never | never | never |
+| qj as it is needs more than jq | never | never | never with the randomization off; with it on, `-h`, `--version`, `--build-configuration` and a usage error at 8–12 KB (the dynamic loader) |
+| qj as it is answers differently from jq | never | never | never |
 
-Program by program, compat mode needs what jq does plus 528 bytes on macOS where dyld's
-floor decides and 528 to 1,472 elsewhere, and on Linux, beyond the randomization's 8,206,
-507 to 2,187 bytes: the margin and the shared base of the value sites.
+Program by program, compat mode needs what jq does plus 456 to 1,400 bytes on macOS 27 and
+456 to 1,432 on macOS 26 (at paths of 120 bytes; at their own, 528 to 1,472 and 528 to
+1,504), and on Linux, beyond the randomization's 8,206, 507 to 2,187 bytes: the margin and
+the shared base of the value sites. Before qj was linked as it is, it needed 416 bytes more
+than jq to start on macOS 26 and 144 more on macOS 27, at the same path's length, and died
+where jq answered, in either mode, in a window that wide; and before compat mode knew macOS
+26's start-up, it started there wherever the platform let it, 8 bytes below jq on the
+runner, whose qj has the shorter path.
 
 ## jq's undefined behaviour
 

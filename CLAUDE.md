@@ -370,10 +370,10 @@ Read by everything (`src/compat.rs`):
   bounded by `YYMAXDEPTH` at all, so 37,335 terms overflow the default 8 MB) and
   `compile`/`expand_call_arglist` (one frame per nested closure, which is what nested
   `def`s reach). Below all of those, jq's fixed needs: what it takes to start at all
-  (dyld's on macOS, glibc's and `main.c`'s on Linux), to compile any program, and
-  `--run-tests`' loop, whose buffers sit above everything it runs (`compat::starting`,
-  `compat::compiling`, `compat::running_tests`). Only the depth jq's own traversal reaches
-  counts (`src/compat/depth.rs`),
+  (on macOS the platform's, by release; on Linux glibc's and `main.c`'s), to compile any
+  program, and `--run-tests`' loop, whose buffers sit above everything it runs
+  (`compat::starting`, `compat::compiling`, `compat::running_tests`). Only the depth jq's
+  own traversal reaches counts (`src/compat/depth.rs`),
   and compat mode follows jq's binding exactly, including the lambda bound to itself and
   the actions bison runs as it reduces a program that then fails to parse. Natives, the
   VM's regions and tape evaluation are off here, so everything goes through the value

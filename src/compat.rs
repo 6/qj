@@ -647,8 +647,10 @@ const RUN_TESTS_BYTES: u64 = 28_496;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const RUN_TESTS_BYTES: u64 = 12_656;
 
-/// What `--run-tests` needs for a file of tests that don't nest: 40,392
-/// bytes on macOS and 23,796 on Linux, the same whether they pass or fail.
+/// What `--run-tests` needs for a file of tests that don't nest: up to 40,392
+/// bytes on macOS 27 and 40,360 on macOS 26 (it varies from one run to the
+/// next there, by up to 330 bytes) and 23,796 on Linux, the same whether they
+/// pass or fail.
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const RUN_TESTS_FLOOR_BYTES: u64 = 40_400;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
