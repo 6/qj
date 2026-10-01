@@ -495,23 +495,51 @@ fn tz_is_restored_after_strftime() {
     });
 }
 
+/// Runs `f` in a process of its own: this test binary again, running only the test
+/// `name` of this module. For what lives in libc for the whole process (`tzname`),
+/// which tests elsewhere in the crate change as they run alongside, and which
+/// `serial()` doesn't keep them from.
+#[cfg(target_os = "macos")]
+fn in_own_process(name: &str, f: impl FnOnce()) {
+    const CHILD: &str = "QJ_TIME_TEST_CHILD";
+    if std::env::var_os(CHILD).is_some_and(|v| v == name) {
+        f();
+        return;
+    }
+    // libtest names a test by its path without the crate's name.
+    let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
+    let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", &format!("{module}::{name}"), "--test-threads=1"])
+        .env(CHILD, name)
+        .output()
+        .expect("run the test binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{name} failed in its own process:\n{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// For a date mktime can't represent, `%Z` comes from libc's `tzname`, which the last
 /// local-time conversion set (jq 1.8.1 prints "JST", "LMT", "JST" for this sequence).
 #[cfg(target_os = "macos")]
 #[test]
 fn pre_1900_zone_name_follows_earlier_conversions() {
-    let _s = serial();
-    if !zone_available("Asia/Tokyo") {
-        return;
-    }
-    with_tz("Asia/Tokyo", || {
-        let zone = || strflocaltime_c(TimeInput::Array(&[]), "%Z").unwrap();
-        localtime(TimeInput::Number(0.0)).unwrap();
-        assert_eq!(zone(), "JST");
-        localtime(TimeInput::Number(-3000000000.0)).unwrap();
-        assert_eq!(zone(), "LMT");
-        localtime(TimeInput::Number(0.0)).unwrap();
-        assert_eq!(zone(), "JST");
+    in_own_process("pre_1900_zone_name_follows_earlier_conversions", || {
+        let _s = serial();
+        if !zone_available("Asia/Tokyo") {
+            return;
+        }
+        with_tz("Asia/Tokyo", || {
+            let zone = || strflocaltime_c(TimeInput::Array(&[]), "%Z").unwrap();
+            localtime(TimeInput::Number(0.0)).unwrap();
+            assert_eq!(zone(), "JST");
+            localtime(TimeInput::Number(-3000000000.0)).unwrap();
+            assert_eq!(zone(), "LMT");
+            localtime(TimeInput::Number(0.0)).unwrap();
+            assert_eq!(zone(), "JST");
+        });
     });
 }
 
