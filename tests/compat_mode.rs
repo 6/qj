@@ -1084,7 +1084,9 @@ fn limit_for(need: u64, args: &[&str]) -> u64 {
 /// [`run_stack`], on Linux with the kernel's stack randomization off where
 /// `setarch` is installed (`None` where it isn't): qj's own start-up (the
 /// dynamic loader's) needs about 6 KB of a limit this small, which the
-/// randomization would sometimes take away.
+/// randomization would sometimes take away. The limit drops only once
+/// `setarch` has turned it off: `uname` and `setarch` run before, with the
+/// randomization still on, and could crash at it too.
 fn run_stack_norandom(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) -> Option<Output> {
     if !cfg!(target_os = "linux") {
         return Some(run_stack(dir, compat, stack_kb, args));
@@ -1093,7 +1095,7 @@ fn run_stack_norandom(dir: &Path, compat: bool, stack_kb: u64, args: &[&str]) ->
         .into_iter()
         .find(|p| Path::new(p).exists())?;
     let script = format!(
-        "ulimit -s {stack_kb} || exit 99; ulimit -c 0; exec {setarch} \"$(uname -m)\" -R /usr/bin/env -i \"$@\""
+        "exec {setarch} \"$(uname -m)\" -R /bin/sh -c 'ulimit -s {stack_kb} || exit 99; ulimit -c 0; exec /usr/bin/env -i \"$@\"' sh \"$@\""
     );
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
