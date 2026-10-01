@@ -92,7 +92,10 @@ jobs:
           bin=target/${{ matrix.target }}/release/qj${{ runner.os == 'Windows' && '.exe' || '' }}
           file "$bin" || true
           ls -l "$bin"
-          "$bin" --version
+          # A cross-built binary is for another architecture than the host's.
+          if [ "${{ matrix.cross }}" != true ]; then
+            "$bin" --version
+          fi
 
   native:
     strategy:
