@@ -113,11 +113,10 @@ jobs:
         run: git ls-files '*.sh' | xargs shellcheck
 
   freebsd:
-    # qj builds from source with `cargo install` wherever Rust does, and
-    # libc's bindings differ by platform (FreeBSD's rlim_t is signed, and
-    # libc has no strptime there), so build it on a FreeBSD VM and run what
-    # touches them: strptime, RLIMIT_STACK below 8 MB (src/cli/stack.rs),
-    # and compat mode's reading of it (src/compat.rs).
+    # qj builds from source with `cargo install` wherever Rust does, and the
+    # libc crate's bindings differ by platform (FreeBSD's rlim_t is signed,
+    # and it has no strptime there), so build qj on FreeBSD and run the smoke
+    # checks.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -134,8 +133,44 @@ jobs:
             freebsd-version
             rustc --version
             cargo build --release
-            qj=./target/release/qj
-            test "$(echo '{"a":1}' | $qj .a)" = 1
-            test "$($qj -n '"2015-03-05T23:51:47Z" | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime')" = 1425599507
-            test "$(ulimit -s 1024; $qj -n '1 + 1')" = 2
-            test "$(QJ_JQ_COMPAT=1 $qj -n '1 + 2')" = 3
+            sh .github/smoke.sh ./target/release/qj
+
+  netbsd:
+    # NetBSD's C library has no uselocale, and the libc crate no binding for it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and smoke test on NetBSD
+        uses: vmactions/netbsd-vm@v1.5.2
+        with:
+          release: '11.0'
+          usesh: true
+          prepare: /usr/sbin/pkg_add rust
+          run: |
+            set -eux
+            uname -r
+            rustc --version
+            cargo build --release
+            sh .github/smoke.sh ./target/release/qj
+
+  musl:
+    # musl, the C library of Alpine and of static Linux builds, where the libc
+    # crate doesn't define LC_ALL_MASK. Alpine's own Rust targets it.
+    runs-on: ubuntu-24.04
+    container: alpine:3.24
+    timeout-minutes: 30
+    steps:
+      - name: Install Rust and a C++ compiler
+        run: apk add --no-cache build-base rust cargo
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          rustc --version --verbose
+          cargo build --release
+
+      - name: Smoke test
+        run: sh .github/smoke.sh ./target/release/qj
