@@ -92,7 +92,7 @@ pub unsafe extern "C" fn main(
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    #[cfg(target_os = "netbsd")]
+    #[cfg(any(target_os = "netbsd", target_os = "freebsd"))]
     qj::os::init();
     #[cfg(windows)]
     {

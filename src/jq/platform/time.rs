@@ -271,16 +271,17 @@ fn date_locale() -> super::LocaleT {
 
 /// Run `f` with `loc` as the calling thread's locale.
 ///
-/// NetBSD's C library has no `uselocale`, and Windows has no locale objects,
-/// so there `f` runs in the process's locale, which is the environment's from
-/// the start, as jq's is (`crate::os::init`).
-#[cfg(any(target_os = "netbsd", windows))]
+/// On NetBSD and FreeBSD (no `uselocale`, or one that doesn't agree with
+/// `setlocale`) and Windows (no locale objects), `f` runs in the process's
+/// locale, which is the environment's from the start, as jq's is
+/// (`crate::os::init`).
+#[cfg(any(target_os = "netbsd", target_os = "freebsd", windows))]
 fn with_locale<R>(_loc: super::LocaleT, f: impl FnOnce() -> R) -> R {
     f()
 }
 
 /// Run `f` with `loc` as the calling thread's locale.
-#[cfg(all(unix, not(target_os = "netbsd")))]
+#[cfg(all(unix, not(any(target_os = "netbsd", target_os = "freebsd"))))]
 fn with_locale<R>(loc: super::LocaleT, f: impl FnOnce() -> R) -> R {
     if loc.is_null() {
         return f();
