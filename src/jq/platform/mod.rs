@@ -84,7 +84,9 @@ impl Error {
         eprintln!("{}", self.message());
         #[cfg(windows)]
         crate::os::write_stderr(format!("{}\n", self.message()).as_bytes());
-        #[cfg(target_vendor = "apple")]
+        // The BSDs' abort() flushes stdio (Apple's libc is FreeBSD's); glibc's,
+        // musl's and the C runtime's don't.
+        #[cfg(any(target_vendor = "apple", target_os = "freebsd", target_os = "netbsd"))]
         {
             use std::io::Write;
             if let Some(flush) = BEFORE_ABORT.get() {
@@ -94,6 +96,36 @@ impl Error {
         }
         crate::compat::small_core_dump();
         std::process::abort()
+    }
+}
+
+/// One of jq's `assert()`s failing, as the C library's `assert` words it
+/// (without the newline). `file` is the path in jq's source tree
+/// (`src/jv.c`), which jq's build passes to the compiler.
+/// - glibc: `jq: src/jv.c:1312: jv_string_indexes: Assertion `EXPR' failed.`,
+///   translated when it aborts ([`glibc_assert_text`]).
+/// - macOS: `Assertion failed: (EXPR), function F, file jv.c, line N.`; jq's
+///   release build names the file without its directory.
+/// - FreeBSD: the same with `src/jv.c` (Apple's libc is FreeBSD's).
+/// - NetBSD: `assertion "EXPR" failed: file "src/jv.c", line N, function "F"`.
+/// - musl: `Assertion failed: EXPR (src/jv.c: F: N)`.
+/// - Windows (UCRT): `Assertion failed: EXPR, file src/jv.c, line N`.
+pub fn assert_text(expr: &str, file: &str, function: &str, line: u32) -> String {
+    if cfg!(target_vendor = "apple") {
+        let base = file.rsplit('/').next().unwrap_or(file);
+        format!("Assertion failed: ({expr}), function {function}, file {base}, line {line}.")
+    } else if cfg!(target_os = "freebsd") {
+        format!("Assertion failed: ({expr}), function {function}, file {file}, line {line}.")
+    } else if cfg!(target_os = "netbsd") {
+        format!(
+            "assertion \"{expr}\" failed: file \"{file}\", line {line}, function \"{function}\""
+        )
+    } else if cfg!(target_env = "musl") {
+        format!("Assertion failed: {expr} ({file}: {function}: {line})")
+    } else if cfg!(windows) {
+        format!("Assertion failed: {expr}, file {file}, line {line}")
+    } else {
+        format!("jq: {file}:{line}: {function}: Assertion `{expr}' failed.")
     }
 }
 
@@ -226,14 +258,15 @@ fn fill_assert_format(format: &[u8], args: &[&str]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// What [`Error::abort_process`] calls on Apple targets before aborting, where
-/// jq's `abort()` flushes stdio: the CLI registers a function that flushes its
+/// What [`Error::abort_process`] calls before aborting on macOS and the BSDs,
+/// where jq's `abort()` flushes stdio: the CLI registers a function that flushes its
 /// own stdout buffer ([`set_before_abort`]).
 static BEFORE_ABORT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
 
 /// Registers the function [`Error::abort_process`] calls to flush buffered
-/// standard output before aborting, on Apple targets only (glibc's `abort()`
-/// doesn't flush, so there the buffered output is lost, as in jq). Only the
+/// standard output before aborting, on macOS and the BSDs only (glibc's and
+/// musl's `abort()` don't flush, so there the buffered output is lost, as in
+/// jq). Only the
 /// first registration counts.
 pub fn set_before_abort(flush: fn()) {
     let _ = BEFORE_ABORT.set(flush);

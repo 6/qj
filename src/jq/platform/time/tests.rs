@@ -771,11 +771,7 @@ fn strptime_macos_specifics() {
     );
     // jq aborts when Apple's tm_yday disagrees with its own.
     for (input, fmt) in [("100", "%j"), ("2015 3 5 100", "%Y %m %d %j")] {
-        assert_eq!(
-            strptime_c(input, fmt),
-            Err(Error::Abort(ABORT_SET_TM_YDAY.into())),
-            "{input}"
-        );
+        assert_eq!(strptime_c(input, fmt), Err(abort_set_tm_yday()), "{input}");
     }
     // %s is converted to local time by Apple's strptime.
     with_tz("UTC", || {
@@ -849,10 +845,7 @@ fn set_tm_wday_and_yday() {
     // The assertion only accepts the sentinel or the same value.
     let mut t = tm(2015, 0, 0);
     t.tm_yday = 99;
-    assert_eq!(
-        set_tm_yday(&mut t),
-        Err(Error::Abort(ABORT_SET_TM_YDAY.into()))
-    );
+    assert_eq!(set_tm_yday(&mut t), Err(abort_set_tm_yday()));
 }
 
 /// The date cases of jq 1.8.1's `jq.test` and `man.test`, evaluated through the
@@ -950,10 +943,6 @@ fn upstream_date_cases() {
 /// in the C locale (see `date_locale`). The locale is read once per process, so this
 /// re-runs the test binary with `LC_ALL` set and checks the result in the child.
 #[test]
-#[cfg_attr(
-    target_os = "netbsd",
-    ignore = "NetBSD has no uselocale: qj stays in the C locale there"
-)]
 fn locale_comes_from_the_environment() {
     if locale("de_DE.UTF-8").is_none() {
         eprintln!("skipping: de_DE.UTF-8 not installed");
@@ -984,6 +973,10 @@ fn env_locale_child() {
     if std::env::var_os("QJ_TEST_ENV_LOCALE_CHILD").is_none() {
         return;
     }
+    // On the BSDs qj sets the process's locale at start-up, as jq's main
+    // does (`crate::os::init`); this child is a test binary, so it does that.
+    #[cfg(any(target_os = "netbsd", target_os = "freebsd"))]
+    crate::os::init();
     let (thursday, january) = if cfg!(target_os = "linux") {
         ("Thursday", "January")
     } else {

@@ -150,21 +150,27 @@ pub struct Parsed {
 
 const ERR_CONVERT: &str = "error converting number of seconds since epoch to datetime";
 
-/// Text of the macOS `assert()` that `f_strflocaltime` trips when `localtime` fails
+/// The `assert()` that `f_strflocaltime` trips when `localtime` fails
 /// (`jv_array_get` on the invalid result).
-#[cfg(target_vendor = "apple")]
-const ABORT_ARRAY_GET: &str = "Assertion failed: (JVP_HAS_KIND(j, JV_KIND_ARRAY)), function jv_array_get, file jv.c, line 1006.";
-#[cfg(all(unix, not(target_vendor = "apple")))]
-const ABORT_ARRAY_GET: &str =
-    "jq: src/jv.c:1006: jv_array_get: Assertion `JVP_HAS_KIND(j, JV_KIND_ARRAY)' failed.";
-/// UCRT's (`_wassert`).
-#[cfg(windows)]
-const ABORT_ARRAY_GET: &str =
-    "Assertion failed: JVP_HAS_KIND(j, JV_KIND_ARRAY), file src/jv.c, line 1006";
+fn abort_array_get() -> Error {
+    Error::Abort(super::assert_text(
+        "JVP_HAS_KIND(j, JV_KIND_ARRAY)",
+        "src/jv.c",
+        "jv_array_get",
+        1006,
+    ))
+}
 
-/// Text of the macOS `assert()` in `set_tm_yday` (only reachable on macOS).
+/// The `assert()` in `set_tm_yday` (only reachable on macOS).
 #[cfg(unix)]
-const ABORT_SET_TM_YDAY: &str = "Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1549.";
+fn abort_set_tm_yday() -> Error {
+    Error::Abort(super::assert_text(
+        "yday == tm->tm_yday || tm->tm_yday == 367",
+        "src/builtin.c",
+        "set_tm_yday",
+        1549,
+    ))
+}
 
 // ---------------------------------------------------------------------------------
 // Global state: one lock for libc time calls, and the environment's locale.
@@ -265,16 +271,17 @@ fn date_locale() -> super::LocaleT {
 
 /// Run `f` with `loc` as the calling thread's locale.
 ///
-/// NetBSD's C library has no `uselocale`, so there `f` runs in the process's
-/// locale, which qj leaves as C. Windows has no locale objects either, and
-/// there the process's locale is the environment's (see [`super::LocaleT`]).
-#[cfg(any(target_os = "netbsd", windows))]
+/// On NetBSD and FreeBSD (no `uselocale`, or one that doesn't agree with
+/// `setlocale`) and Windows (no locale objects), `f` runs in the process's
+/// locale, which is the environment's from the start, as jq's is
+/// (`crate::os::init`).
+#[cfg(any(target_os = "netbsd", target_os = "freebsd", windows))]
 fn with_locale<R>(_loc: super::LocaleT, f: impl FnOnce() -> R) -> R {
     f()
 }
 
 /// Run `f` with `loc` as the calling thread's locale.
-#[cfg(all(unix, not(target_os = "netbsd")))]
+#[cfg(all(unix, not(any(target_os = "netbsd", target_os = "freebsd"))))]
 fn with_locale<R>(loc: super::LocaleT, f: impl FnOnce() -> R) -> R {
     if loc.is_null() {
         return f();
@@ -427,7 +434,7 @@ fn set_tm_yday(tm: &mut libc::tm) -> Result<(), Error> {
         .wrapping_add(tm.tm_mday)
         .wrapping_sub(1);
     if !(yday == tm.tm_yday || tm.tm_yday == 367) {
-        return Err(Error::Abort(ABORT_SET_TM_YDAY.to_owned()));
+        return Err(abort_set_tm_yday());
     }
     tm.tm_yday = yday;
     Ok(())
@@ -598,7 +605,7 @@ fn strflocaltime_in(
             }
             // f_strflocaltime doesn't check localtime's result: with a string format it
             // passes the invalid value to jv2tm, whose jv_array_get asserts.
-            Err(_) if format.is_some() => return Err(Error::Abort(ABORT_ARRAY_GET.to_owned())),
+            Err(_) if format.is_some() => return Err(abort_array_get()),
             Err(_) => return Err(Error::msg("strflocaltime/1 requires a string format")),
         },
         TimeInput::Array(fields) => fields,

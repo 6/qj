@@ -1,0 +1,168 @@
+name: Platform conformance
+# jq_diff on the platforms qj builds for that jq publishes no binary for: Linux
+# with musl, FreeBSD and NetBSD. Each job builds jq 1.8.1 from its release
+# tarball there (.github/build_jq.sh), as a user would, and runs jq_diff's
+# default scoreboard against it, report only (there are no baselines for these
+# platforms): the totals go to the job summary and the log, every non-passing
+# case to the artifact's report.txt. The compat scoreboard isn't run: its
+# stack models were measured on macOS and glibc Linux only.
+#
+# The Release check runs it; it also runs by hand, and on pull requests that
+# change it or the jq_diff harness.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to check (default: the branch it runs on)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/platform_conformance.yml
+      - .github/build_jq.sh
+      - tests/jq_diff.rs
+      - tests/jq_diff/**
+
+env:
+  CARGO_TERM_COLOR: always
+  # Shared by the three jobs. VMs are slower than hosted runners, so jq gets
+  # more than the default 10 s for the deepest programs.
+  JQ_DIFF_RUN: >-
+    ulimit -c 0;
+    JQ_DIFF_TIMEOUT=60
+    JQ_DIFF_JQ="$PWD/target/jq/bin/jq"
+    JQ_DIFF_BASELINE=target/tmp/no_baseline.txt
+    cargo test --release --test jq_diff -- --ignored --exact --nocapture jq_diff > jq_diff.txt 2>&1 || true;
+    grep -E '^(jq_diff|TOTAL|group )' jq_diff.txt || tail -40 jq_diff.txt
+
+jobs:
+  musl:
+    runs-on: ubuntu-24.04
+    container: alpine:3.24
+    timeout-minutes: 90
+    steps:
+      - name: Install Rust, a C++ compiler and jq's build tools
+        run: apk add --no-cache build-base rust cargo curl bash
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Build jq
+        run: sh .github/build_jq.sh "$PWD/target/jq"
+
+      - name: jq_diff (report only)
+        shell: sh
+        run: |
+          eval "$JQ_DIFF_RUN"
+          {
+            echo "### jq_diff on Linux musl (Alpine 3.24)"
+            echo '```'
+            grep -E '^(jq_diff[^ ]*: .*(cases|regressions|no baseline)|TOTAL +all)' jq_diff.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload jq_diff results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jq-diff-musl
+          path: |
+            jq_diff.txt
+            target/tmp/jq_diff/report.txt
+            target/tmp/jq_diff/results.tsv
+          if-no-files-found: ignore
+
+  freebsd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Build jq and run jq_diff on FreeBSD
+        uses: vmactions/freebsd-vm@v1.5.8
+        with:
+          release: '15.1'
+          usesh: true
+          cpu: 4
+          mem: 8192
+          envs: JQ_DIFF_RUN
+          prepare: pkg install -y rust gmake curl
+          run: |
+            set -eu
+            freebsd-version
+            MAKE=gmake sh .github/build_jq.sh "$PWD/target/jq"
+            eval "$JQ_DIFF_RUN"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### jq_diff on FreeBSD 15.1"
+            echo '```'
+            grep -E '^(jq_diff[^ ]*: .*(cases|regressions|no baseline)|TOTAL +all)' jq_diff.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload jq_diff results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jq-diff-freebsd
+          path: |
+            jq_diff.txt
+            target/tmp/jq_diff/report.txt
+            target/tmp/jq_diff/results.tsv
+          if-no-files-found: ignore
+
+  netbsd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Build jq and run jq_diff on NetBSD
+        uses: vmactions/netbsd-vm@v1.5.2
+        with:
+          release: '11.0'
+          usesh: true
+          cpu: 4
+          mem: 8192
+          envs: JQ_DIFF_RUN
+          prepare: /usr/sbin/pkg_add rust gmake curl
+          run: |
+            set -eu
+            uname -r
+            MAKE=gmake sh .github/build_jq.sh "$PWD/target/jq"
+            eval "$JQ_DIFF_RUN"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### jq_diff on NetBSD 11.0"
+            echo '```'
+            grep -E '^(jq_diff[^ ]*: .*(cases|regressions|no baseline)|TOTAL +all)' jq_diff.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload jq_diff results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jq-diff-netbsd
+          path: |
+            jq_diff.txt
+            target/tmp/jq_diff/report.txt
+            target/tmp/jq_diff/results.tsv
+          if-no-files-found: ignore

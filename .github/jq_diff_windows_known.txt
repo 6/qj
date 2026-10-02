@@ -1,0 +1,25 @@
+# Cases of jq_diff's .test files where qj on Windows doesn't match jq 1.8.1's
+# jq-windows-amd64.exe, and why (.github/jq_diff_windows.py --known). Anything
+# else that mismatches fails the windows job.
+
+# lgamma: jq.exe, built with MinGW, has MinGW's own lgamma; qj calls UCRT's,
+# which differs in the last digit for these inputs.
+corpus/builtins_matrix.test:14062:compact
+corpus/builtins_matrix.test:14071:compact
+corpus/builtins_matrix.test:14122:compact
+corpus/builtins_matrix.test:14131:compact
+
+# qj's own help, usage and version text, which differs from
+# jq's by design (jq's with QJ_JQ_COMPAT=1, which isn't supported on Windows).
+corpus/cli_meta.toml:help-before-unknown-option:cli
+corpus/cli_meta.toml:help-in-bundle:cli
+corpus/cli_meta.toml:help-long:cli
+corpus/cli_meta.toml:help-short:cli
+corpus/cli_meta.toml:usage-from-file-without-program:cli
+corpus/cli_meta.toml:version-ignores-jq-colors:cli
+corpus/cli_meta.toml:version:cli
+
+# A program nested deep enough to exhaust jq.exe's 2 MB stack: jq.exe dies of an
+# access violation (0xC0000005), where qj, which reserves 256 MB, answers as jq
+# does with a larger stack (docs/LIMITATIONS.md).
+corpus/cli_basics.toml:deep-binops:cli

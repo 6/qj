@@ -10,8 +10,13 @@ qj=$1
 test "$(echo '{"a":1}' | "$qj" .a)" = 1
 test "$("$qj" -n '"2015-03-05T23:51:47Z" | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime')" = 1425599507
 test "$("$qj" -rn '0 | strftime("%A %B")')" = "Thursday January"
-# The BSDs' sh and BusyBox's ash all have `ulimit -s`.
-# shellcheck disable=SC3045
-test "$(ulimit -s 1024; "$qj" -n '1 + 1')" = 2
+# A stack limit below 8 MB, where qj moves to a stack of its own
+# (src/cli/stack.rs). The limit is lowered in a shell started for it: NetBSD
+# refuses a limit below the stack a process has used (vm_ssize, which only
+# grows, and which a subshell inherits from the script's shell), and a shell
+# just started has used almost none. The BSDs' sh and BusyBox's ash all have
+# `ulimit -s`.
+# shellcheck disable=SC2016
+test "$(sh -c 'ulimit -s 1024 && exec "$0" -n "1 + 1"' "$qj")" = 2
 test "$(QJ_JQ_COMPAT=1 "$qj" -n '1 + 2')" = 3
 echo "smoke checks passed"

@@ -19,6 +19,7 @@
 //! `cargo test --features simdjson-fallback --test simdjson_kernels`.
 
 use qj::simdjson::{TapeParser, active_implementation, padding, supported_implementations};
+use std::io::Write;
 
 const PAYLOAD: u64 = 0x00FF_FFFF_FFFF_FFFF;
 
@@ -71,7 +72,15 @@ impl Kernels {
             .iter()
             .map(|n| TapeParser::with_implementation(n).unwrap())
             .collect();
-        eprintln!("simdjson kernels compared: {}", names.join(", "));
+        // Straight to the stderr handle, which libtest doesn't capture (as
+        // jq_diff's scoreboard), so every run's log says which kernels it
+        // checked: CI's runners differ in CPU, and icelake needs AVX-512.
+        let _ = writeln!(
+            std::io::stderr(),
+            "simdjson kernels compared: {} (active: {})",
+            names.join(", "),
+            active_implementation()
+        );
         Kernels {
             names,
             parsers,

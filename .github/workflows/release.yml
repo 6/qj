@@ -67,14 +67,33 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04
             cross: true
+          # MSVC, whose C runtime (UCRT) is the one jq's Windows release
+          # binary uses (the Checks workflow's windows job compares the two).
+          - target: x86_64-pc-windows-msvc
+            os: windows-2025
+            cross: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    defaults:
+      run:
+        # Git Bash on Windows, so every target runs the same steps.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
           ref: v${{ inputs.version }}
 
       - uses: jdx/mise-action@v2
+        if: runner.os != 'Windows'
+
+      # mise.toml's tools are Unix tooling (and iai-callgrind's runner), so on
+      # Windows install only the Rust it pins.
+      - name: Install Rust (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          rust=$(sed -n 's/^rust = "\(.*\)"/\1/p' mise.toml)
+          rustup toolchain install "$rust" --profile minimal
+          rustup default "$rust"
 
       - name: Add Rust target
         if: "!matrix.cross"
@@ -97,15 +116,22 @@ jobs:
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Package tarball
+        if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../qj-${{ matrix.target }}.tar.gz qj
+
+      - name: Package zip (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ../../../qj-${{ matrix.target }}.zip qj.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: qj-${{ matrix.target }}
-          path: qj-${{ matrix.target }}.tar.gz
+          path: qj-${{ matrix.target }}.*
 
   release:
     needs: build
@@ -127,9 +153,9 @@ jobs:
         run: |
           notes="docs/releases/v${{ inputs.version }}.md"
           if [ -f "$notes" ]; then
-            gh release create "v${{ inputs.version }}" qj-*.tar.gz --title "v${{ inputs.version }}" --notes-file "$notes"
+            gh release create "v${{ inputs.version }}" qj-*.tar.gz qj-*.zip --title "v${{ inputs.version }}" --notes-file "$notes"
           else
-            gh release create "v${{ inputs.version }}" qj-*.tar.gz --generate-notes
+            gh release create "v${{ inputs.version }}" qj-*.tar.gz qj-*.zip --generate-notes
           fi
         env:
           GH_TOKEN: ${{ github.token }}

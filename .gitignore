@@ -28,3 +28,6 @@ tests/jq_compat/.cache/
 
 # Agent worktrees (Claude Code)
 .claude/worktrees/
+
+# Python bytecode (from running the .github/*.py scripts)
+__pycache__/

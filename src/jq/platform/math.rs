@@ -189,20 +189,95 @@ mod c {
     }
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     unsafe extern "C" {
-        pub fn cbrt(x: f64) -> f64;
         pub fn ceil(x: f64) -> f64;
         pub fn copysign(x: f64, y: f64) -> f64;
         pub fn fabs(x: f64) -> f64;
         pub fn fdim(x: f64, y: f64) -> f64;
         pub fn floor(x: f64) -> f64;
         pub fn fma(x: f64, y: f64, z: f64) -> f64;
-        pub fn fmax(x: f64, y: f64) -> f64;
-        pub fn fmin(x: f64, y: f64) -> f64;
         pub fn fmod(x: f64, y: f64) -> f64;
         pub fn rint(x: f64) -> f64;
         pub fn round(x: f64) -> f64;
         pub fn sqrt(x: f64) -> f64;
         pub fn trunc(x: f64) -> f64;
+    }
+
+    // macOS and Windows: their C library's, which nothing shadows.
+    #[cfg(any(target_vendor = "apple", windows))]
+    unsafe extern "C" {
+        pub fn cbrt(x: f64) -> f64;
+        pub fn fmax(x: f64, y: f64) -> f64;
+        pub fn fmin(x: f64, y: f64) -> f64;
+    }
+
+    // musl and the BSDs have no second name for `cbrt`, `fmax` and `fmin`
+    // (the others above give the same results in any implementation), so
+    // `compiler_builtins` would shadow them as on glibc: `dlsym(RTLD_NEXT)`
+    // finds the C library's, past qj's own binary. A statically linked qj
+    // has no dynamic symbols to look in, and keeps `compiler_builtins'.
+    #[cfg(all(
+        unix,
+        not(target_vendor = "apple"),
+        not(all(target_os = "linux", target_env = "gnu"))
+    ))]
+    mod next {
+        use std::sync::OnceLock;
+
+        unsafe extern "C" {
+            #[link_name = "cbrt"]
+            pub fn builtin_cbrt(x: f64) -> f64;
+            #[link_name = "fmax"]
+            pub fn builtin_fmax(x: f64, y: f64) -> f64;
+            #[link_name = "fmin"]
+            pub fn builtin_fmin(x: f64, y: f64) -> f64;
+        }
+
+        /// The C library's `name`, if a later object defines it.
+        pub fn lookup(name: &std::ffi::CStr) -> Option<*mut libc::c_void> {
+            // SAFETY: dlsym with a NUL-terminated name.
+            let p = unsafe { libc::dlsym(libc::RTLD_NEXT, name.as_ptr()) };
+            (!p.is_null()).then_some(p)
+        }
+
+        pub static CBRT: OnceLock<Option<unsafe extern "C" fn(f64) -> f64>> = OnceLock::new();
+        pub static FMAX: OnceLock<Option<unsafe extern "C" fn(f64, f64) -> f64>> = OnceLock::new();
+        pub static FMIN: OnceLock<Option<unsafe extern "C" fn(f64, f64) -> f64>> = OnceLock::new();
+    }
+
+    #[cfg(all(
+        unix,
+        not(target_vendor = "apple"),
+        not(all(target_os = "linux", target_env = "gnu"))
+    ))]
+    pub unsafe fn cbrt(x: f64) -> f64 {
+        // SAFETY: `cbrt`'s C signature.
+        let f = next::CBRT
+            .get_or_init(|| next::lookup(c"cbrt").map(|p| unsafe { std::mem::transmute(p) }));
+        unsafe { f.map_or_else(|| next::builtin_cbrt(x), |f| f(x)) }
+    }
+
+    #[cfg(all(
+        unix,
+        not(target_vendor = "apple"),
+        not(all(target_os = "linux", target_env = "gnu"))
+    ))]
+    pub unsafe fn fmax(x: f64, y: f64) -> f64 {
+        // SAFETY: `fmax`'s C signature.
+        let f = next::FMAX
+            .get_or_init(|| next::lookup(c"fmax").map(|p| unsafe { std::mem::transmute(p) }));
+        unsafe { f.map_or_else(|| next::builtin_fmax(x, y), |f| f(x, y)) }
+    }
+
+    #[cfg(all(
+        unix,
+        not(target_vendor = "apple"),
+        not(all(target_os = "linux", target_env = "gnu"))
+    ))]
+    pub unsafe fn fmin(x: f64, y: f64) -> f64 {
+        // SAFETY: `fmin`'s C signature.
+        let f = next::FMIN
+            .get_or_init(|| next::lookup(c"fmin").map(|p| unsafe { std::mem::transmute(p) }));
+        unsafe { f.map_or_else(|| next::builtin_fmin(x, y), |f| f(x, y)) }
     }
 
     // XSI and BSD extras: Bessel functions.
