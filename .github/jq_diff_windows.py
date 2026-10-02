@@ -16,7 +16,8 @@ reads as `jq:`, as does qj's usage hint). jq is the only expectation.
   where this runner can't do what the harness does, cases that start with a
   standard descriptor closed (`close_fds`) and memory-capped ones (`mem_mb`,
   programs that grow until a cap stops them), and on Windows, cases with a file
-  name Windows can't hold (`*.json`, for globbing); their count is printed.
+  name Windows can't hold (`*.json`, for globbing) and compat-mode cases
+  (QJ_JQ_COMPAT=1, which qj refuses on Windows); their count is printed.
 - Modes, as tests/jq_diff/cases.rs builds them: compact (`-c`, stdin), pretty
   (stdin), file (`-c`, input as a file), ndjson (`-c`, the input twice in a
   file, for a single object or array and no input/$__loc__/halt), and fail
@@ -234,6 +235,8 @@ def cli_jobs(group, path, skipped):
         reason = ("os" if d.get("os") not in (None, OS_NAME) else
                   "close_fds" if d.get("close_fds") else
                   "mem_mb" if d.get("mem_mb") else
+                  "compat mode" if OS_NAME == "windows" and d.get("env", {}).get(
+                      "QJ_JQ_COMPAT", "") not in ("", "0") else
                   "file name" if OS_NAME == "windows" and not all(
                       windows_file_name(f) for f in d.get("files", {})) else None)
         if reason:

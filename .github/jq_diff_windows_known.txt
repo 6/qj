@@ -18,3 +18,8 @@ corpus/cli_meta.toml:help-short:cli
 corpus/cli_meta.toml:usage-from-file-without-program:cli
 corpus/cli_meta.toml:version-ignores-jq-colors:cli
 corpus/cli_meta.toml:version:cli
+
+# A program nested deep enough to exhaust jq.exe's 2 MB stack: jq.exe dies of an
+# access violation (0xC0000005), where qj, which reserves 256 MB, answers as jq
+# does with a larger stack (docs/LIMITATIONS.md).
+corpus/cli_basics.toml:deep-binops:cli
