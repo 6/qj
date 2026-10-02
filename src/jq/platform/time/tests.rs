@@ -943,10 +943,6 @@ fn upstream_date_cases() {
 /// in the C locale (see `date_locale`). The locale is read once per process, so this
 /// re-runs the test binary with `LC_ALL` set and checks the result in the child.
 #[test]
-#[cfg_attr(
-    target_os = "netbsd",
-    ignore = "NetBSD has no uselocale: qj stays in the C locale there"
-)]
 fn locale_comes_from_the_environment() {
     if locale("de_DE.UTF-8").is_none() {
         eprintln!("skipping: de_DE.UTF-8 not installed");
@@ -977,6 +973,10 @@ fn env_locale_child() {
     if std::env::var_os("QJ_TEST_ENV_LOCALE_CHILD").is_none() {
         return;
     }
+    // On the BSDs qj sets the process's locale at start-up, as jq's main
+    // does (`crate::os::init`); this child is a test binary, so it does that.
+    #[cfg(any(target_os = "netbsd", target_os = "freebsd"))]
+    crate::os::init();
     let (thursday, january) = if cfg!(target_os = "linux") {
         ("Thursday", "January")
     } else {
