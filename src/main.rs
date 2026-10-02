@@ -92,6 +92,8 @@ pub unsafe extern "C" fn main(
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    #[cfg(target_os = "netbsd")]
+    qj::os::init();
     #[cfg(windows)]
     {
         qj::os::init();

@@ -771,11 +771,7 @@ fn strptime_macos_specifics() {
     );
     // jq aborts when Apple's tm_yday disagrees with its own.
     for (input, fmt) in [("100", "%j"), ("2015 3 5 100", "%Y %m %d %j")] {
-        assert_eq!(
-            strptime_c(input, fmt),
-            Err(Error::Abort(ABORT_SET_TM_YDAY.into())),
-            "{input}"
-        );
+        assert_eq!(strptime_c(input, fmt), Err(abort_set_tm_yday()), "{input}");
     }
     // %s is converted to local time by Apple's strptime.
     with_tz("UTC", || {
@@ -849,10 +845,7 @@ fn set_tm_wday_and_yday() {
     // The assertion only accepts the sentinel or the same value.
     let mut t = tm(2015, 0, 0);
     t.tm_yday = 99;
-    assert_eq!(
-        set_tm_yday(&mut t),
-        Err(Error::Abort(ABORT_SET_TM_YDAY.into()))
-    );
+    assert_eq!(set_tm_yday(&mut t), Err(abort_set_tm_yday()));
 }
 
 /// The date cases of jq 1.8.1's `jq.test` and `man.test`, evaluated through the

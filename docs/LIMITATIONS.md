@@ -8,11 +8,10 @@ lists the rest.
 ## Platforms
 
 qj builds for macOS and Linux (glibc), where every check runs, and for Linux with musl (as
-on Alpine), FreeBSD, NetBSD and Windows, which CI builds and smoke-tests.
-
-NetBSD's C library has no `uselocale`, so there qj stays in the C locale for what jq takes
-from the environment's (`LANG`, `LC_ALL`): the names `strftime` prints and `strptime`
-reads, and the C library's error messages.
+on Alpine), FreeBSD, NetBSD and Windows, which CI builds and tests. The Platform
+conformance workflow (run by the Release check) runs jq_diff on musl, FreeBSD and NetBSD
+against jq 1.8.1 built there, and the Windows job runs its `.test` cases against jq's
+Windows release binary.
 
 ### Windows
 

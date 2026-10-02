@@ -740,7 +740,7 @@ pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// NetBSD's C library has no `uselocale`, so there `f` runs in the process's
-/// locale, which qj leaves as C.
+/// locale, which is the environment's already (`crate::os::init`), as jq's is.
 #[cfg(target_os = "netbsd")]
 fn in_environment_locale<R>(_mask: c_int, f: impl FnOnce() -> R) -> R {
     f()

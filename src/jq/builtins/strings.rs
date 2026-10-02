@@ -56,16 +56,23 @@ pub fn f_string_implode(_host: &mut dyn Host, input: Value, _args: &mut [Value])
 
 /// The assertions `jv_string_indexes` fails on a non-string input (`j`) or needle
 /// (`k`), as the platform's `assert()` prints them.
-#[cfg(target_vendor = "apple")]
-const ASSERT_INDEXES_J: &str = "Assertion failed: (JVP_HAS_KIND(j, JV_KIND_STRING)), function jv_string_indexes, file jv.c, line 1312.";
-#[cfg(target_vendor = "apple")]
-const ASSERT_INDEXES_K: &str = "Assertion failed: (JVP_HAS_KIND(k, JV_KIND_STRING)), function jv_string_indexes, file jv.c, line 1313.";
-#[cfg(not(target_vendor = "apple"))]
-const ASSERT_INDEXES_J: &str =
-    "jq: src/jv.c:1312: jv_string_indexes: Assertion `JVP_HAS_KIND(j, JV_KIND_STRING)' failed.";
-#[cfg(not(target_vendor = "apple"))]
-const ASSERT_INDEXES_K: &str =
-    "jq: src/jv.c:1313: jv_string_indexes: Assertion `JVP_HAS_KIND(k, JV_KIND_STRING)' failed.";
+fn assert_indexes_j() -> String {
+    crate::jq::platform::assert_text(
+        "JVP_HAS_KIND(j, JV_KIND_STRING)",
+        "src/jv.c",
+        "jv_string_indexes",
+        1312,
+    )
+}
+
+fn assert_indexes_k() -> String {
+    crate::jq::platform::assert_text(
+        "JVP_HAS_KIND(k, JV_KIND_STRING)",
+        "src/jv.c",
+        "jv_string_indexes",
+        1313,
+    )
+}
 
 /// `_strindices` (nargs 2): port of builtin.c `f_string_indexes` (`jv_string_indexes`):
 /// the codepoint offsets of every, possibly overlapping, occurrence of the argument.
@@ -79,8 +86,8 @@ pub fn f_string_indexes(_host: &mut dyn Host, input: Value, args: &mut [Value]) 
     let k = std::mem::take(&mut args[0]);
     match (&input, &k) {
         (Value::String(j), Value::String(k)) => Ok(Value::Array(j.indexes(k))),
-        (Value::String(_), _) => Abort(ASSERT_INDEXES_K.to_owned()).abort_process(),
-        _ => Abort(ASSERT_INDEXES_J.to_owned()).abort_process(),
+        (Value::String(_), _) => Abort(assert_indexes_k()).abort_process(),
+        _ => Abort(assert_indexes_j()).abort_process(),
     }
 }
 
@@ -143,9 +150,9 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         use std::process::{Command, Stdio};
         let cases = [
-            ("input", ASSERT_INDEXES_J),
-            ("both", ASSERT_INDEXES_J),
-            ("needle", ASSERT_INDEXES_K),
+            ("input", assert_indexes_j()),
+            ("both", assert_indexes_j()),
+            ("needle", assert_indexes_k()),
         ];
         // Start the children together, then collect them.
         let children: Vec<_> = cases

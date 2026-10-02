@@ -130,6 +130,10 @@ pub(super) struct Stdout {
     /// `WriteConsoleW` (see `crate::os`).
     #[cfg(windows)]
     console: Option<crate::os::Console>,
+    /// musl's stdout is line buffered until its first write
+    /// ([`Stdout::musl_first_write`]).
+    #[cfg(target_env = "musl")]
+    musl_line_buffered: bool,
 }
 
 thread_local! {
@@ -142,6 +146,8 @@ thread_local! {
             error: None,
             #[cfg(windows)]
             console: None,
+            #[cfg(target_env = "musl")]
+            musl_line_buffered: true,
         })
     };
 }
@@ -160,6 +166,10 @@ fn stdio_buffer_size(_tty: bool) -> usize {
 #[cfg(unix)]
 fn stdio_buffer_size(tty: bool) -> usize {
     let bufsiz = libc::BUFSIZ as usize;
+    // musl's stdout has a static buffer of BUFSIZ (1024), whatever fd 1 is.
+    if cfg!(target_env = "musl") {
+        return bufsiz;
+    }
     // SAFETY: fstat writes a `stat` into `st`, which is valid for writes.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     let blksize = if unsafe { libc::fstat(1, &mut st) } == 0 && st.st_blksize > 0 {
@@ -221,8 +231,51 @@ impl Stdout {
     fn flush(&mut self) {
         let n = self.buf.len();
         if n > 0 {
+            #[cfg(target_env = "musl")]
+            {
+                self.musl_line_buffered = false;
+            }
             self.write_out(n);
         }
+    }
+
+    /// musl's stdout is line buffered until its first write, which makes it
+    /// fully buffered unless fd 1 is a terminal (`__stdout_write`): until
+    /// then, a write that ends a line, or doesn't fit, goes out at once with
+    /// what was buffered (`__fwritex`). A single `fwrite` (`last_newline`)
+    /// is cut at its last newline; a run of jq's token-sized writes at its
+    /// first, the first of them to end a line. Returns whether it took
+    /// `data`; the rest of it is then written as usual.
+    #[cfg(target_env = "musl")]
+    fn musl_first_write(&mut self, data: &[u8], last_newline: bool) -> bool {
+        if !self.musl_line_buffered || self.line_buffered {
+            return false;
+        }
+        let size = self.size();
+        let cut = if self.buf.len() + data.len() > size {
+            Some(data.len())
+        } else if last_newline {
+            memchr::memrchr(b'\n', data).map(|i| i + 1)
+        } else {
+            memchr::memchr(b'\n', data).map(|i| i + 1)
+        };
+        let Some(cut) = cut else {
+            return false;
+        };
+        self.musl_line_buffered = false;
+        self.allocated = true;
+        let mut out = std::mem::take(&mut self.buf);
+        out.extend_from_slice(&data[..cut]);
+        self.write_fd(&out);
+        out.clear();
+        self.buf = out;
+        let rest = &data[cut..];
+        if last_newline {
+            self.fwrite(rest);
+        } else {
+            self.write(rest);
+        }
+        true
     }
 
     /// After bytes were appended to the buffer as jq writes them, a character
@@ -245,6 +298,10 @@ impl Stdout {
     /// Output written a character or token at a time (`jv_dumpf`, `printf`).
     pub(super) fn write(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
+            return;
+        }
+        #[cfg(target_env = "musl")]
+        if self.musl_first_write(bytes, false) {
             return;
         }
         self.allocated = true;
@@ -275,6 +332,10 @@ impl Stdout {
     fn fwrite(&mut self, data: &[u8]) {
         // (An empty fwrite does nothing, not even allocate the buffer.)
         if data.is_empty() {
+            return;
+        }
+        #[cfg(target_env = "musl")]
+        if self.musl_first_write(data, true) {
             return;
         }
         let size = self.size();
@@ -1036,10 +1097,22 @@ pub fn run(argv: &[Vec<u8>]) -> i32 {
     let mut opts = match args::with_environment_locale(|| args::parse(argv, &mut PortArgs)) {
         Ok(Action::Run(opts)) => opts,
         Ok(Action::Help) => {
-            // usage(0, 0): qj's own text.
-            with_stdout(|s| s.buf.extend_from_slice(super::usage::help().as_bytes()));
+            // usage(0, 0): qj's own text, and exit status 2 if the first
+            // fprintf failed. Elsewhere it fits in the buffer, so it can't;
+            // musl's stdout, line buffered until its first write, writes that
+            // fprintf's first line at once.
+            #[cfg(target_env = "musl")]
+            let failed = with_stdout(|s| {
+                s.write(super::usage::help().as_bytes());
+                s.error.is_some()
+            });
+            #[cfg(not(target_env = "musl"))]
+            let failed = with_stdout(|s| {
+                s.buf.extend_from_slice(super::usage::help().as_bytes());
+                false
+            });
             with_stdout(Stdout::flush);
-            return 0;
+            return if failed { 2 } else { 0 };
         }
         Ok(Action::Version) => {
             with_stdout(|s| s.buf.extend_from_slice(super::usage::version().as_bytes()));
