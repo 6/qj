@@ -123,6 +123,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The VM gets the workspace with rsync and gives it back afterwards, so
+      # target/ and a CARGO_HOME inside it can be cached on the host.
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-home
+            target
+          key: freebsd-15.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: freebsd-15.1-
+
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@v1.5.8
         with:
@@ -133,9 +144,13 @@ jobs:
             set -eux
             freebsd-version
             rustc --version
-            cargo build --release
+            export CARGO_HOME="$PWD/.cargo-home"
+            cargo test --release --no-run
             sh .github/smoke.sh ./target/release/qj
             cargo test --release --no-fail-fast
+
+      - name: Prune the Cargo cache
+        run: sh .github/prune_cargo_cache.sh
 
   netbsd:
     # NetBSD's C library has no uselocale, and the libc crate no binding for it.
@@ -143,6 +158,17 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      # The VM gets the workspace with rsync and gives it back afterwards, so
+      # target/ and a CARGO_HOME inside it can be cached on the host.
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-home
+            target
+          key: netbsd-11.0-${{ hashFiles('Cargo.lock') }}
+          restore-keys: netbsd-11.0-
 
       - name: Build and test on NetBSD
         uses: vmactions/netbsd-vm@v1.5.2
@@ -154,9 +180,13 @@ jobs:
             set -eux
             uname -r
             rustc --version
-            cargo build --release
+            export CARGO_HOME="$PWD/.cargo-home"
+            cargo test --release --no-run
             sh .github/smoke.sh ./target/release/qj
             cargo test --release --no-fail-fast
+
+      - name: Prune the Cargo cache
+        run: sh .github/prune_cargo_cache.sh
 
   musl:
     # musl, the C library of Alpine and of static Linux builds, where the libc
@@ -170,10 +200,12 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build
         run: |
           rustc --version --verbose
-          cargo build --release
+          cargo test --release --no-run
 
       - name: Smoke test
         run: sh .github/smoke.sh ./target/release/qj
