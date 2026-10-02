@@ -15,7 +15,6 @@
 mod common;
 
 use serde::Deserialize;
-use std::process::Command;
 
 extern crate serde_json;
 
