@@ -29,11 +29,11 @@ ends the input), `-b` puts the standard streams in binary mode, output to a cons
 out as UTF-16 with colors only where the console takes them, the time builtins are the C
 runtime's (with jq's own `strptime`), messages carry the C runtime's `errno` text, and
 `~` is `%USERPROFILE%` when `HOME` isn't set (`src/os.rs`). CI compares qj with
-`jq-windows-amd64.exe` byte for byte on jq_diff's 33,102 `.test` cases in every mode
-(`.github/jq_diff_windows.py`; the accepted mismatches are in
-`.github/jq_diff_windows_known.txt`) and on cases that lean on the above
-(`.github/windows_smoke.sh`). jq_diff's command-line cases and compat scoreboard don't run
-there, so other differences can exist. Known ones:
+`jq-windows-amd64.exe` byte for byte on jq_diff's cases, its `.test` cases in every mode
+and its command-line cases (`.github/jq_diff_windows.py`, which leaves out the few it
+can't run as the harness does, such as closed standard descriptors; the accepted
+mismatches are in `.github/jq_diff_windows_known.txt`), and on cases that lean on the
+above (`.github/windows_smoke.sh`). Known differences:
 
 - `QJ_JQ_COMPAT=1` isn't supported: its models are of jq's Unix builds, so qj refuses
   to run.
