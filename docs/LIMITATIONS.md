@@ -13,6 +13,13 @@ conformance workflow (run by the Release check) runs jq_diff on musl, FreeBSD an
 against jq 1.8.1 built there, and the Windows job runs its `.test` cases against jq's
 Windows release binary.
 
+On musl, FreeBSD and NetBSD, everything matches jq except two things. First, where stdout
+and stderr go to the same file, the order of large outputs between them (when qj's stdout
+buffer goes out) differs: on musl it depends on the size of each of jq's writes, which qj
+doesn't model, and on FreeBSD on a few buffer-boundary cases. Second, compat mode's
+stack-overflow depths, whose models were measured on macOS and glibc Linux only (see
+[COMPATIBILITY.md](COMPATIBILITY.md)).
+
 ### Windows
 
 On Windows, qj is built for MSVC, whose C runtime (UCRT) is the one jq's Windows release
