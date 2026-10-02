@@ -136,7 +136,77 @@ fn rss_bytes(pid: u32) -> Option<u64> {
     Some(pages * u64::try_from(page).ok()?)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// The process's `kinfo_proc` (`sysctl kern.proc.pid.<pid>`), whose
+/// `ki_rssize` counts pages.
+#[cfg(target_os = "freebsd")]
+fn rss_bytes(pid: u32) -> Option<u64> {
+    let mut mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_PID,
+        pid as libc::c_int,
+    ];
+    let mut info: libc::kinfo_proc = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::kinfo_proc>();
+    // SAFETY: `info` is a writable buffer of `len` bytes.
+    let r = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            (&mut info as *mut libc::kinfo_proc).cast(),
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if r != 0 || len != std::mem::size_of::<libc::kinfo_proc>() {
+        return None;
+    }
+    // SAFETY: sysconf has no preconditions.
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+    Some(u64::try_from(info.ki_rssize).ok()? * page)
+}
+
+/// The process's `kinfo_proc2` (`sysctl kern.proc2`), whose `p_vm_rssize`
+/// counts pages.
+#[cfg(target_os = "netbsd")]
+fn rss_bytes(pid: u32) -> Option<u64> {
+    let size = std::mem::size_of::<libc::kinfo_proc2>();
+    let mut mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROC2,
+        libc::KERN_PROC_PID,
+        pid as libc::c_int,
+        size as libc::c_int,
+        1,
+    ];
+    let mut info: libc::kinfo_proc2 = unsafe { std::mem::zeroed() };
+    let mut len = size;
+    // SAFETY: `info` is a writable buffer of `len` bytes.
+    let r = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            (&mut info as *mut libc::kinfo_proc2).cast(),
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if r != 0 || len != size {
+        return None;
+    }
+    // SAFETY: sysconf has no preconditions.
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+    Some(u64::try_from(info.p_vm_rssize).ok()? * page)
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
 fn rss_bytes(_pid: u32) -> Option<u64> {
     None
 }
@@ -609,7 +679,12 @@ mod tests {
     /// Only where [`rss_bytes`] can measure a process (elsewhere there is no
     /// memory cap).
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    ))]
     fn memory_limit_kills() {
         // qj itself, which is wherever the tests are; an array of 10^8 numbers
         // is gigabytes.
