@@ -155,9 +155,10 @@ thread_local! {
 /// The buffer size stdio picks for stdout (fd 1) when it's first written to.
 /// macOS's `__swhatbuf`: `st_blksize` up to 64 KB (`MAXBUFSIZE`), or `BUFSIZ`
 /// when fstat fails or reports none, and `__smakebuf` caps a terminal's at
-/// 4096 (`TTYBUFSIZE`: a tty's `st_blksize` is 64-128 KB). glibc's
-/// `_IO_file_doallocate`: `BUFSIZ`, or `st_blksize` when that is smaller.
-/// The Windows C runtime's (UCRT's `_INTERNAL_BUFSIZ`): 4096.
+/// 4096 (`TTYBUFSIZE`: a tty's `st_blksize` is 64-128 KB). FreeBSD's and
+/// NetBSD's: `st_blksize`, uncapped. glibc's `_IO_file_doallocate`: `BUFSIZ`,
+/// or `st_blksize` when that is smaller. musl's: `BUFSIZ`. The Windows C
+/// runtime's (UCRT's `_INTERNAL_BUFSIZ`): 4096.
 #[cfg(windows)]
 fn stdio_buffer_size(_tty: bool) -> usize {
     4096
@@ -179,9 +180,13 @@ fn stdio_buffer_size(tty: bool) -> usize {
     };
     if cfg!(target_os = "linux") {
         blksize.filter(|&b| b < bufsiz).unwrap_or(bufsiz)
-    } else {
+    } else if cfg!(target_vendor = "apple") {
         let size = blksize.map_or(bufsiz, |b| b.min(1 << 16));
         if tty { size.min(4096) } else { size }
+    } else {
+        // FreeBSD's and NetBSD's __swhatbuf: st_blksize, uncapped (macOS's
+        // MAXBUFSIZE and TTYBUFSIZE caps are Apple's own).
+        blksize.unwrap_or(bufsiz)
     }
 }
 
