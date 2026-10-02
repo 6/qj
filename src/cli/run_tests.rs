@@ -400,10 +400,14 @@ fn run_jq_tests(
 
 /// The assertion jq_test.c makes after comparing an expected value with a result
 /// (`#ifdef USE_DECNUM`, and jq 1.8.1 is built with decNumber).
-#[cfg(target_vendor = "apple")]
-const ASSERT_REPARSED: &str = "Assertion failed: (jv_equal(jv_copy(expected), jv_copy(reparsed))), function run_jq_tests, file jq_test.c, line 204.";
-#[cfg(not(target_vendor = "apple"))]
-const ASSERT_REPARSED: &str = "jq: src/jq_test.c:204: run_jq_tests: Assertion `jv_equal(jv_copy(expected), jv_copy(reparsed))' failed.";
+fn assert_reparsed() -> String {
+    crate::jq::platform::assert_text(
+        "jv_equal(jv_copy(expected), jv_copy(reparsed))",
+        "src/jq_test.c",
+        "run_jq_tests",
+        204,
+    )
+}
 
 /// jq_test.c dumps the expected value (with random print flags, none of which change
 /// what the text parses back to), parses the text again, and asserts that the result
@@ -413,7 +417,7 @@ const ASSERT_REPARSED: &str = "jq: src/jq_test.c:204: run_jq_tests: Assertion `j
 fn assert_reparses(expected: &Value) {
     let text = dump_string(expected, &DumpOptions::default());
     if !parse_sized(text.as_bytes()).is_ok_and(|reparsed| expected.equal(&reparsed)) {
-        crate::jq::platform::Error::Abort(ASSERT_REPARSED.to_owned()).abort_process();
+        crate::jq::platform::Error::Abort(assert_reparsed()).abort_process();
     }
 }
 

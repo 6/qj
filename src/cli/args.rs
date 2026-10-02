@@ -739,16 +739,16 @@ pub fn with_environment_locale<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// NetBSD's C library has no `uselocale`, so there `f` runs in the process's
-/// locale, which qj leaves as C.
-#[cfg(target_os = "netbsd")]
+/// On NetBSD and FreeBSD `f` runs in the process's locale, which is the
+/// environment's already, as jq's is (`crate::os::init` says why).
+#[cfg(any(target_os = "netbsd", target_os = "freebsd"))]
 fn in_environment_locale<R>(_mask: c_int, f: impl FnOnce() -> R) -> R {
     f()
 }
 
 /// Run `f` with the categories in `mask` of the calling thread's locale set
 /// from the environment, as `setlocale(LC_ALL, "")` would set them.
-#[cfg(all(unix, not(target_os = "netbsd")))]
+#[cfg(all(unix, not(any(target_os = "netbsd", target_os = "freebsd"))))]
 fn in_environment_locale<R>(mask: c_int, f: impl FnOnce() -> R) -> R {
     struct Restore {
         previous: libc::locale_t,

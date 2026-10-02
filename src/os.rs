@@ -108,6 +108,20 @@ impl Read for FdReader {
     }
 }
 
+/// What jq's `main` does, `setlocale(LC_ALL, "")` for the whole process, once,
+/// before any other thread exists, so that its time functions, `strerror` and
+/// the option parser's ctype calls follow the environment as jq's do. Where
+/// the C library has `uselocale`, qj gets the same effect thread by thread
+/// instead (see `crate::jq::platform::time`), but NetBSD has none, and on
+/// FreeBSD the two don't agree: under `uselocale` of a UTF-8 locale,
+/// `isalpha(0xC3)` is true, while after `setlocale` (and from `isalpha_l`)
+/// it's false, so `jq -é` is a program there and wasn't in qj.
+#[cfg(any(target_os = "netbsd", target_os = "freebsd"))]
+pub fn init() {
+    // SAFETY: called once at start-up, before any other thread exists.
+    unsafe { libc::setlocale(libc::LC_ALL, c"".as_ptr()) };
+}
+
 /// util.c's `jq_realpath` without its fallback: `realpath`, or on Windows
 /// `_fullpath`, which makes a path absolute without resolving links or
 /// needing it to exist (as `std::path::absolute` does). `None` if it fails.
