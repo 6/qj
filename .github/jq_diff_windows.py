@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""jq_diff's .test cases, for a platform the Rust harness doesn't run on (Windows).
+"""jq_diff's cases, for a platform the Rust harness doesn't run on (Windows).
 
 tests/jq_diff.rs is the conformance gate, but its runner is Unix-only (process
 groups, rlimits, signals). This runs the same filter/input cases, from the same
@@ -9,7 +9,13 @@ reads as `jq:`, as does qj's usage hint). jq is the only expectation.
 
 - Cases: tests/jq_compat/*.test (jq's suites) and tests/jq_compat/corpus/*.test,
   parsed as tests/jq_diff/testfile.rs does, with its `# jq_diff: modes=/os=`
-  directives. The TOML CLI cases aren't run.
+  directives; and the CLI cases, tests/jq_compat/corpus/*.toml, expanded as
+  tests/jq_diff/cli.rs does (cases and sweeps, files, environment, stdin,
+  stderr merged into stdout's file or pipe), each in its own directory two
+  levels below the work directory. Left out: cases for another OS (`os`), and
+  where this runner can't do what the harness does, cases that start with a
+  standard descriptor closed (`close_fds`) and memory-capped ones (`mem_mb`,
+  programs that grow until a cap stops them); their count is printed.
 - Modes, as tests/jq_diff/cases.rs builds them: compact (`-c`, stdin), pretty
   (stdin), file (`-c`, input as a file), ndjson (`-c`, the input twice in a
   file, for a single object or array and no input/$__loc__/halt), and fail
@@ -30,6 +36,7 @@ now match, so the list can shrink.
 """
 
 import argparse
+import base64
 import concurrent.futures
 import hashlib
 import os
@@ -38,11 +45,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ALL_MODES = ["compact", "pretty", "file", "ndjson", "fail"]
+ALL_MODES = ["compact", "pretty", "file", "ndjson", "fail", "cli"]
 OS_NAME = {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform)
 if OS_NAME.startswith("linux"):
     OS_NAME = "linux"
@@ -156,27 +164,76 @@ def jobs_for(group, cases, file_modes, modes):
     def enabled(m):
         return m in modes and (m == "fail" or file_modes is None or m in file_modes)
 
+    def job(mode, line, args, stdin=None, files=()):
+        return {"id": f"{group}:{line}:{mode}", "group": group, "mode": mode, "args": args,
+                "stdin": stdin, "files": list(files), "cwd": "", "env": {}, "merge": None}
+
     jobs = []
     for line, program, inp in cases:
         if inp is None:
             if enabled("fail"):
-                jobs.append((f"{group}:{line}:fail", group, "fail", test_args("fail", program), None, None))
+                jobs.append(job("fail", line, test_args("fail", program)))
             continue
         for mode in ("compact", "pretty", "file", "ndjson"):
             if not enabled(mode) or (mode == "ndjson" and not ndjson_eligible(program, inp)):
                 continue
             data = (inp + "\n").encode()
             if mode in ("compact", "pretty"):
-                jobs.append((f"{group}:{line}:{mode}", group, mode, test_args(mode, program), data, None))
+                jobs.append(job(mode, line, test_args(mode, program), stdin=data))
             else:
                 ext = "json" if mode == "file" else "ndjson"
                 content = data if mode == "file" else (inp + "\n" + inp + "\n").encode()
                 name = f"in/{hashlib.sha1(content).hexdigest()[:16]}.{ext}"
-                jobs.append((f"{group}:{line}:{mode}", group, mode, test_args(mode, program, name), None, (name, content)))
+                jobs.append(job(mode, line, test_args(mode, program, name), files=[(name, content)]))
     return jobs
 
 
-def collect(modes, filt):
+# --- tests/jq_diff/cli.rs --------------------------------------------------
+
+
+def content_bytes(c, base):
+    """A case's `stdin` or file content: text, {b64}, {path} or {repeat}."""
+    if isinstance(c, str):
+        return c.encode()
+    if "b64" in c:
+        return base64.b64decode(c["b64"])
+    if "path" in c:
+        return (base / c["path"]).read_bytes()
+    return b"".join(s.encode() * n for s, n in c["repeat"])
+
+
+def cli_jobs(group, path, skipped):
+    """The CLI cases of one TOML file, as tests/jq_diff/cli.rs expands them."""
+    base = path.parent
+    doc = tomllib.loads(path.read_text(encoding="utf-8"))
+    cases = []
+    for c in doc.get("case", []):
+        cases.append((c["name"], c["args"], c, None))
+    for sw in doc.get("sweep", []):
+        for vname, template in sw["variants"].items():
+            for i, program in enumerate(sw["programs"]):
+                args = [program if a == "{program}" else a for a in template]
+                cases.append((f"{sw['name']}/{vname}/{i}", args, sw, program))
+    jobs = []
+    for name, args, d, _ in cases:
+        reason = ("os" if d.get("os") not in (None, OS_NAME) else
+                  "close_fds" if d.get("close_fds") else
+                  "mem_mb" if d.get("mem_mb") else None)
+        if reason:
+            skipped[reason] += 1
+            continue
+        stdin = content_bytes(d["stdin"], base) if "stdin" in d else None
+        files = [(p, content_bytes(v, base)) for p, v in sorted(d.get("files", {}).items())]
+        env = dict(d.get("env", {}))
+        h = hashlib.sha1(repr((args, stdin, files, sorted(env.items()), d.get("merge"))).encode())
+        cwd = f"cli/{h.hexdigest()[:16]}"
+        jobs.append({"id": f"{group}:{name}:cli", "group": group, "mode": "cli", "args": args,
+                     "stdin": stdin, "files": [(f"{cwd}/{p}", b) for p, b in files], "cwd": cwd,
+                     "env": env, "merge": d.get("merge")})
+    return jobs
+
+
+def collect(modes, filt, skipped):
     jobs = []
     files = sorted((ROOT / "tests/jq_compat").glob("*.test")) + sorted(
         (ROOT / "tests/jq_compat/corpus").glob("*.test")
@@ -187,7 +244,11 @@ def collect(modes, filt):
         cases, file_modes, oses = parse_test_file(path.read_text(encoding="utf-8", errors="surrogateescape"))
         if oses is not None and OS_NAME not in oses:
             continue
-        jobs += [j for j in jobs_for(group, cases, file_modes, modes) if filt in j[0]]
+        jobs += [j for j in jobs_for(group, cases, file_modes, modes) if filt in j["id"]]
+    if "cli" in modes:
+        for path in sorted((ROOT / "tests/jq_compat/corpus").glob("*.toml")):
+            group = path.relative_to(ROOT / "tests/jq_compat").as_posix()
+            jobs += [j for j in cli_jobs(group, path, skipped) if filt in j["id"]]
     return jobs
 
 
@@ -201,17 +262,45 @@ def normalize_stderr(err):
     return err.replace(b"Use qj --help for help with command-line options,", b"Use jq --help for help with command-line options,")
 
 
-def run(tool, args, stdin, cwd, env, timeout):
-    try:
-        p = subprocess.run([tool] + args, input=stdin or b"", cwd=cwd, env=env, capture_output=True, timeout=timeout)
-        return (p.stdout, p.returncode, p.stderr)
-    except subprocess.TimeoutExpired as e:
-        return (e.stdout or b"", "timeout", e.stderr or b"")
+def run(tool, job, work, env, timeout):
+    """(stdout, exit code or "timeout", stderr). Without stdin, stdin is the null
+    device. Merged, stderr goes to stdout's file or pipe, compared as stdout."""
+    cwd = work / job["cwd"]
+    env = {**env, **job["env"]}
+    stdin = subprocess.DEVNULL if job["stdin"] is None else subprocess.PIPE
+    with tempfile.TemporaryFile() as merged:
+        if job["merge"] == "file":
+            out, err = merged, subprocess.STDOUT
+        elif job["merge"] == "pipe":
+            out, err = subprocess.PIPE, subprocess.STDOUT
+        else:
+            out, err = subprocess.PIPE, subprocess.PIPE
+        p = subprocess.Popen([tool] + job["args"], stdin=stdin, stdout=out, stderr=err, cwd=cwd, env=env)
+        try:
+            o, e = p.communicate(job["stdin"], timeout=timeout)
+            code = p.returncode
+        except subprocess.TimeoutExpired:
+            p.kill()
+            o, e = p.communicate()
+            code = "timeout"
+        if job["merge"] == "file":
+            merged.seek(0)
+            o = merged.read()
+    return (o or b"", code, e or b"")
 
 
-def compare(jq, qj):
+def normalize_merged(stream):
+    """tests/jq_diff/compare.rs normalize_merged: stdout's buffer goes out in
+    blocks that split lines, so in a merged stream stderr's `qj: ` can start
+    mid-line; it's rewritten wherever it appears, on both sides."""
+    return normalize_stderr(stream.replace(b"qj: ", b"jq: "))
+
+
+def compare(jq, qj, merged):
     jout, jcode, jerr = jq
     qout, qcode, qerr = qj
+    if merged:
+        jout, qout = normalize_merged(jout), normalize_merged(qout)
     if jcode == "timeout" or qcode == "timeout":
         return "pass" if jcode == qcode else "fail"
     if jout != qout or jcode != qcode:
@@ -241,7 +330,8 @@ def main():
     if version != "jq-1.8.1":
         sys.exit(f"{jq} is {version!r}; jq_diff's cases need jq-1.8.1")
     modes = a.modes.split(",")
-    jobs = collect(modes, a.filter)
+    skipped = defaultdict(int)
+    jobs = collect(modes, a.filter, skipped)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -249,9 +339,11 @@ def main():
     shutil.copytree(ROOT / "tests/jq_compat/modules", work / "modules")
     (work / "home").mkdir()
     (work / "in").mkdir()
-    for _, _, _, _, _, f in jobs:
-        if f:
-            (work / f[0]).write_bytes(f[1])
+    for job in jobs:
+        (work / job["cwd"]).mkdir(parents=True, exist_ok=True)
+        for name, content in job["files"]:
+            (work / name).parent.mkdir(parents=True, exist_ok=True)
+            (work / name).write_bytes(content)
     env = {"HOME": str(work / "home"), "LC_ALL": "C", "TZ": "America/New_York", "PAGER": "less"}
     # What a process needs to start (and its C runtime to find its files).
     keep = ["PATH", "SystemRoot", "SystemDrive", "WINDIR", "TEMP", "TMP", "ComSpec"] if OS_NAME == "windows" else []
@@ -260,22 +352,23 @@ def main():
         env["PATH"] = "/usr/bin:/bin"
 
     def one(job):
-        jid, group, mode, args, stdin, _ = job
-        j = run(jq, args, stdin, work, env, a.timeout)
-        q = run(qj, args, stdin, work, env, a.timeout)
-        return job, compare(j, q), j, q
+        j = run(jq, job, work, env, a.timeout)
+        q = run(qj, job, work, env, a.timeout)
+        return job, compare(j, q, job["merge"] is not None), j, q
 
-    print(f"jq_diff_windows: {version} vs {qj} | {len(jobs)} cases | {a.jobs} jobs | {OS_NAME}", flush=True)
+    left_out = ", ".join(f"{n} {k}" for k, n in sorted(skipped.items())) or "none"
+    print(f"jq_diff_windows: {version} vs {qj} | {len(jobs)} cases | {a.jobs} jobs | {OS_NAME}"
+          f" | CLI cases left out: {left_out}", flush=True)
     board = defaultdict(lambda: defaultdict(int))
     report, results = [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as pool:
         for n, (job, level, j, q) in enumerate(pool.map(one, jobs), 1):
-            jid, group, mode, args, stdin, _ = job
-            board[(group, mode)][level] += 1
-            results.append(f"{jid}\t{level}\n")
+            board[(job["group"], job["mode"])][level] += 1
+            results.append(f"{job['id']}\t{level}\n")
             if level != "pass":
+                extra = "".join(f"{k}: {job[k]!r}\n" for k in ("env", "merge") if job[k])
                 report.append(
-                    f"=== {jid} [{level}]\nargs: {args}\nstdin: {show(stdin or b'')!r}\n"
+                    f"=== {job['id']} [{level}]\nargs: {job['args']}\n{extra}stdin: {show(job['stdin'] or b'')!r}\n"
                     f"jq exit {j[1]}\n--- jq stdout\n{show(j[0])}\n--- qj stdout\n{show(q[0])}\n"
                     f"--- jq stderr\n{show(j[2])}\n--- qj stderr\n{show(q[2])}\n"
                     f"qj exit {q[1]}\n"
@@ -298,7 +391,7 @@ def main():
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
-            f.write(f"### jq_diff's .test cases on {OS_NAME} ({version})\n```\n" + "\n".join(rows) + "\n```\n")
+            f.write(f"### jq_diff's cases on {OS_NAME} ({version})\n```\n" + "\n".join(rows) + "\n```\n")
     if a.known:
         known = set()
         for line in Path(a.known).read_text(encoding="utf-8").splitlines():

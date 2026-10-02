@@ -8,3 +8,13 @@ corpus/builtins_matrix.test:14062:compact
 corpus/builtins_matrix.test:14071:compact
 corpus/builtins_matrix.test:14122:compact
 corpus/builtins_matrix.test:14131:compact
+
+# qj's own help, usage and version text, which differs from
+# jq's by design (jq's with QJ_JQ_COMPAT=1, which isn't supported on Windows).
+corpus/cli_meta.toml:help-before-unknown-option:cli
+corpus/cli_meta.toml:help-in-bundle:cli
+corpus/cli_meta.toml:help-long:cli
+corpus/cli_meta.toml:help-short:cli
+corpus/cli_meta.toml:usage-from-file-without-program:cli
+corpus/cli_meta.toml:version-ignores-jq-colors:cli
+corpus/cli_meta.toml:version:cli
