@@ -284,6 +284,22 @@ impl Stdout {
     /// gets every complete line.
     fn settle(&mut self) {
         self.allocated |= !self.buf.is_empty();
+        // musl, line buffered until its first write: everything up to the
+        // first newline (or a buffer's worth) goes out once it's printed
+        // ([`Stdout::musl_first_write`]).
+        #[cfg(target_env = "musl")]
+        if self.musl_line_buffered && !self.line_buffered {
+            let size = self.size();
+            let cut = match memchr::memchr(b'\n', &self.buf) {
+                Some(i) => Some(i + 1),
+                None if self.buf.len() > size => Some(self.buf.len()),
+                None => None,
+            };
+            if let Some(cut) = cut {
+                self.musl_line_buffered = false;
+                self.write_out(cut);
+            }
+        }
         if self.line_buffered
             && let Some(nl) = memchr::memrchr(b'\n', &self.buf)
         {
