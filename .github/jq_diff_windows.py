@@ -15,7 +15,8 @@ reads as `jq:`, as does qj's usage hint). jq is the only expectation.
   levels below the work directory. Left out: cases for another OS (`os`), and
   where this runner can't do what the harness does, cases that start with a
   standard descriptor closed (`close_fds`) and memory-capped ones (`mem_mb`,
-  programs that grow until a cap stops them); their count is printed.
+  programs that grow until a cap stops them), and on Windows, cases with a file
+  name Windows can't hold (`*.json`, for globbing); their count is printed.
 - Modes, as tests/jq_diff/cases.rs builds them: compact (`-c`, stdin), pretty
   (stdin), file (`-c`, input as a file), ndjson (`-c`, the input twice in a
   file, for a single object or array and no input/$__loc__/halt), and fail
@@ -202,6 +203,20 @@ def content_bytes(c, base):
     return b"".join(s.encode() * n for s, n in c["repeat"])
 
 
+WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                    *(f"LPT{i}" for i in range(1, 10))}
+
+
+def windows_file_name(name):
+    """Whether Windows can hold a file at this relative path."""
+    for seg in name.split("/"):
+        if any(c in '<>:"|?*\\' or ord(c) < 32 for c in seg) or seg.endswith((".", " ")):
+            return False
+        if seg.split(".")[0].upper() in WINDOWS_RESERVED:
+            return False
+    return True
+
+
 def cli_jobs(group, path, skipped):
     """The CLI cases of one TOML file, as tests/jq_diff/cli.rs expands them."""
     base = path.parent
@@ -218,7 +233,9 @@ def cli_jobs(group, path, skipped):
     for name, args, d, _ in cases:
         reason = ("os" if d.get("os") not in (None, OS_NAME) else
                   "close_fds" if d.get("close_fds") else
-                  "mem_mb" if d.get("mem_mb") else None)
+                  "mem_mb" if d.get("mem_mb") else
+                  "file name" if OS_NAME == "windows" and not all(
+                      windows_file_name(f) for f in d.get("files", {})) else None)
         if reason:
             skipped[reason] += 1
             continue
