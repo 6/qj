@@ -397,8 +397,9 @@ def main():
                 print(f"  {n}/{len(jobs)}", flush=True)
     shutil.rmtree(work, ignore_errors=True)
 
-    (out / "report.txt").write_text("".join(report), encoding="utf-8")
-    (out / "results.tsv").write_text("".join(results), encoding="utf-8")
+    # "\n" lines on every platform, as jq_diff's reports have.
+    (out / "report.txt").write_text("".join(report), encoding="utf-8", newline="\n")
+    (out / "results.tsv").write_text("".join(results), encoding="utf-8", newline="\n")
     rows, tot = [], defaultdict(int)
     for (group, mode), c in sorted(board.items()):
         n = sum(c.values())
