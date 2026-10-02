@@ -31,3 +31,6 @@ tests/jq_compat/.cache/
 
 # Python bytecode (from running the .github/*.py scripts)
 __pycache__/
+
+# CI: Cargo home inside the workspace, for the VM jobs cache
+/.cargo-home/
