@@ -8585,3 +8585,41 @@ fn a_module_chain_past_jqs_stack_still_works() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// jq 1.8.2's input chunks (util.c): 4091 bytes, completed as UTF-8
+// ---------------------------------------------------------------------------
+
+/// A character straddling the 4091-byte chunk boundary is completed by
+/// `fread`, so `-R` keeps it whole, and long lines of multi-byte characters
+/// read and count lines as in jq.
+#[test]
+fn raw_input_completes_characters_at_chunk_boundaries() {
+    let euro = format!("{}€\n", "a".repeat(4090));
+    assert_jq_compat_strict(&["-R", "length"], &euro);
+    assert_jq_compat_strict(&["-Rs", "length"], &euro);
+    let emoji = format!("{}😀\nb\n", "a".repeat(4089));
+    assert_jq_compat_strict(&["-R", "-c", "[length, input_line_number]"], &emoji);
+    let long = format!("{}\n{}\n", "é".repeat(5000), "a€".repeat(3000));
+    assert_jq_compat_strict(&["-R", "-c", "[length, input_line_number]"], &long);
+    let json = format!("\"{}\"\n[1]\n", "é".repeat(5000));
+    assert_jq_compat_strict(&["-c", "[length, input_line_number]"], &json);
+}
+
+/// NUL bytes in JSON input reach jq's parser: no chunk is cut at one.
+#[test]
+fn nul_bytes_in_json_input_reach_the_parser() {
+    assert_jq_compat_strict(&["-c", "."], "1 2\u{0}3 4");
+    assert_jq_compat_strict(&["-c", "."], "[1,2]\u{0}");
+    assert_jq_compat_strict(&["-c", "."], "\"a\u{0}b\" 1");
+    assert_jq_compat_strict(&["-c", "-s", "."], "1\u{0}");
+    assert_jq_compat_strict(&["-R", "-c", "."], "a\u{0}b\nc\u{0}d");
+}
+
+/// jq 1.8.2 limits a function to 4095 subfunctions (4096 still compile).
+#[test]
+fn too_many_subfunctions_is_a_compile_error() {
+    let lambdas = |n: usize| format!("def g: [{}first(1)] | length; g", "first(1),".repeat(n - 1));
+    assert_jq_compat_strict(&["-n", &lambdas(4096)], "");
+    assert_jq_compat_strict(&["-n", &lambdas(4097)], "");
+}
