@@ -491,8 +491,8 @@ args = [
 ]
 env = { QJ_JQ_COMPAT = "1" }
 
-# jq_test.c reads the argument after --skip with atoi(argv[i+1]), which is
-# atoi(NULL) at the end of argv. (qj does this in every mode.)
+# --skip or --take at the end of argv: jq 1.8.1 read atoi(NULL) and crashed;
+# jq 1.8.2 says the option needs an argument.
 [[case]]
 name = "run-tests-skip-without-a-count"
 args = ["--run-tests", "--skip"]

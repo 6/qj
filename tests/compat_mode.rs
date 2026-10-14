@@ -777,17 +777,12 @@ fn getpath_does_not_crash_however_small_the_stack() {
 }
 
 #[test]
-fn run_tests_without_a_count_segfaults_in_both_modes() {
-    // jq_test.c's `atoi(argv[i+1])` is `atoi(NULL)` at the end of argv.
+fn run_tests_without_a_count_is_an_error_in_both_modes() {
     for compat in [false, true] {
         for opt in ["--skip", "--take"] {
             let o = run(compat, &["--run-tests", opt]);
-            assert_eq!(
-                signal(&o),
-                Some(libc::SIGSEGV),
-                "compat={compat} {opt}: {:?}",
-                o.status
-            );
+            assert_eq!(code(&o), Some(1), "compat={compat} {opt}: {:?}", o.status);
+            assert_eq!(stderr(&o), format!("{opt} requires an argument\n"));
         }
     }
 }
