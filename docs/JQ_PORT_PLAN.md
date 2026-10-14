@@ -363,8 +363,7 @@ interface scaffold before spawning it.
 - 2026-10-14: **Retargeted to jq 1.8.2**, the patch release of 2026-06-20 (86 commits,
   most of them security fixes that change behavior). Both scoreboards are back at 100%
   strict (40,348 cases on macOS and 40,372 on Linux; the default exempts only qj's help
-  and version text). What
-  changed:
+  and version text). What changed:
   - Messages: `Cannot index X with Y (key)`, and 30-byte truncation buffers that keep a
     closing quote or bracket.
   - Depth limits: equality, comparison, containment, object merge and paths give up past
