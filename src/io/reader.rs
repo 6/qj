@@ -304,39 +304,48 @@ impl FileData {
     }
 
     /// Walks the chunks from `a`, the start of the one holding `from`, to
-    /// the one holding `to` (`from <= to <= end`): its start, and how many
-    /// newlines in `[from, to)` were swallowed (`fread` added them, so they
-    /// end no chunk).
-    fn walk(&self, mut a: usize, from: usize, to: usize) -> (usize, u64) {
-        let mut swallowed = 0;
-        let count = |x: usize, y: usize| -> u64 {
-            let (x, y) = (x.max(from), y.min(to));
-            if x >= y {
-                0
-            } else {
-                memchr::memchr_iter(b'\n', self.slice(x, y)).count() as u64
-            }
+    /// the one holding `to` (`from <= to <= end`), counting the newlines in
+    /// `[from, to)` on the way.
+    fn walk(&self, a: usize, from: usize, to: usize) -> Walk {
+        let mut a = a;
+        let mut w = Walk {
+            anchor: a,
+            newlines: 0,
+            swallowed: 0,
+            last_newline: None,
         };
         loop {
             let lim = (a + CHUNK).min(to);
             if lim > a
                 && let Some(i) = memchr::memrchr(b'\n', self.slice(a, lim))
             {
+                // (No newline is in a chunk's first 4091 bytes before `from`.)
+                let x = a.max(from);
+                w.newlines += memchr::memchr_iter(b'\n', self.slice(x, a + i)).count() as u64 + 1;
+                w.last_newline = Some(a + i);
                 a += i + 1;
                 continue;
             }
             if to < a + CHUNK {
-                return (a, swallowed);
+                w.anchor = a;
+                return w;
             }
             let b = a + CHUNK;
             let want = b + utf8_completion(self.slice(a, b));
             // (Past the bytes read so far, fread's may still be coming, or
             // the input ends there: `to` is in the chunk either way.)
-            if to < want {
-                swallowed += count(b, to);
-                return (a, swallowed);
+            let (x, y) = (b.max(from), want.min(to));
+            for (i, &c) in self.slice(x, y.max(x)).iter().enumerate() {
+                if c == b'\n' {
+                    w.newlines += 1;
+                    w.swallowed += 1;
+                    w.last_newline = Some(x + i);
+                }
             }
-            swallowed += count(b, want);
+            if to < want {
+                w.anchor = a;
+                return w;
+            }
             a = want;
         }
     }
@@ -406,6 +415,17 @@ impl FileData {
             }
         }
     }
+}
+
+/// What [`FileData::walk`] found.
+struct Walk {
+    /// The start of the chunk holding the walk's end.
+    anchor: usize,
+    /// Newlines walked over, and of those, the ones `fread` added (which
+    /// end no chunk), and where the last one is.
+    newlines: u64,
+    swallowed: u64,
+    last_newline: Option<usize>,
 }
 
 /// Position bookkeeping within the current input.
@@ -855,28 +875,32 @@ impl InputReader {
             return;
         }
         let cur = self.cur.as_ref().expect("an open input");
-        let bytes = cur.slice(from, to);
-        // (Counted in vector blocks: a pretty-printed text has a newline
-        // every few dozen bytes, too many to find one by one.)
-        let last = memchr::memrchr(b'\n', bytes);
-        let n = last.map_or(0, |i| {
-            memchr::memchr_iter(b'\n', &bytes[..i]).count() as u64 + 1
-        });
         let anchor = self.fp.anchor;
-        let (anchor, swallowed) = if to - anchor < CHUNK {
+        let w = if to - anchor < CHUNK {
             // Within the first 4091 bytes of a chunk, every newline ends one.
-            (last.map_or(anchor, |i| from + i + 1), 0)
+            // (Counted in vector blocks: a pretty-printed text has a newline
+            // every few dozen bytes, too many to find one by one.)
+            let bytes = cur.slice(from, to);
+            let last = memchr::memrchr(b'\n', bytes).map(|i| from + i);
+            Walk {
+                anchor: last.map_or(anchor, |l| l + 1),
+                newlines: last.map_or(0, |l| {
+                    memchr::memchr_iter(b'\n', &bytes[..l - from]).count() as u64 + 1
+                }),
+                swallowed: 0,
+                last_newline: last,
+            }
         } else {
             cur.walk(anchor, from, to)
         };
         self.fp.pos = to;
-        self.fp.nl += n - swallowed;
-        self.fp.anchor = anchor;
+        self.fp.nl += w.newlines - w.swallowed;
+        self.fp.anchor = w.anchor;
         if count_parser {
-            match last {
-                Some(i) => {
-                    self.pline = self.pline.wrapping_add(n as i32);
-                    self.pcol = (to - (from + i + 1)) as i32;
+            match w.last_newline {
+                Some(l) => {
+                    self.pline = self.pline.wrapping_add(w.newlines as i32);
+                    self.pcol = (to - (l + 1)) as i32;
                 }
                 None => self.pcol = self.pcol.wrapping_add((to - from) as i32),
             }
@@ -890,10 +914,17 @@ impl InputReader {
         if to <= from {
             return;
         }
-        if to - self.fp.anchor >= CHUNK {
-            let cur = self.cur.as_ref().expect("an open input");
-            self.fp.anchor = cur.walk(self.fp.anchor, from, to).0;
+        // With no newline, only a chunk's length can end it.
+        let cur = self.cur.as_ref().expect("an open input");
+        let mut a = self.fp.anchor;
+        while to >= a + CHUNK {
+            let want = a + CHUNK + utf8_completion(cur.slice(a, a + CHUNK));
+            if to < want {
+                break;
+            }
+            a = want;
         }
+        self.fp.anchor = a;
         self.fp.pos = to;
         self.pcol = self.pcol.wrapping_add((to - from) as i32);
     }
@@ -1376,8 +1407,12 @@ impl InputReader {
             let cur = self.cur.as_ref().expect("an open input");
             let p = self.fp.pos;
             match cur.chunk_at(self.fp.anchor, p) {
-                ChunkAt::Chunk { end, .. } => {
-                    self.advance(end, false);
+                ChunkAt::Chunk { end, has_nl, .. } => {
+                    // The rest of a chunk: the next starts at its end, and
+                    // a newline in it counts only if it ended the chunk.
+                    self.fp.pos = end;
+                    self.fp.anchor = end;
+                    self.fp.nl += has_nl as u64;
                     self.current_line = self.fp.nl;
                     return Some((p, end));
                 }
