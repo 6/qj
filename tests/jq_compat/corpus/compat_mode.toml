@@ -19,8 +19,9 @@
 # whatever it had buffered on stdout lost.
 # ---------------------------------------------------------------------------
 
-# A module that imports itself: jq's load_library adds a module to its table
-# only after loading the module's own imports, so it recurses forever.
+# A module that imports itself: jq 1.8.1 recursed until its stack overflowed;
+# jq 1.8.2 records a module before loading its imports and reports the
+# circular import, in both modes.
 [[case]]
 name = "module-imports-itself"
 args = ["-nc", "-L", ".", "include \"a\"; 1"]
@@ -44,6 +45,102 @@ env = { QJ_JQ_COMPAT = "1" }
 name = "module-imported-twice-is-fine"
 args = ["-nc", "-L", ".", "include \"a\"; include \"b\"; f + g"]
 files = { "a.jq" = "def f: 1;\n", "b.jq" = "include \"a\";\ndef g: f + 1;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# jq 1.8.2 links modules in the order it recorded them, each before the ones
+# it imports, and block_drop_unreferenced, walking backwards, then frees the
+# definitions of a module three imports from the program although the one two
+# away calls them (it never walks that one's body). Compiling the call reads
+# the freed definition, whose memory a RET allocated since has taken, and
+# expand_call_arglist's assert() fails; a data import's global, freed the same
+# way, fails stack_push's assert() when it is read. Deterministic on macOS and
+# glibc, each in its own assert format; by default qj keeps what is called.
+[[case]]
+name = "module-chain-of-three-aborts"
+args = ["-L", ".", "-nc", "include \"m0\"; f"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: 0 + m::f;\n", "m1.jq" = "import \"m2\" as m;\ndef f: 1 + m::f;\n", "m2.jq" = "def f: 2;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-chain-of-three-namespaced-aborts"
+args = ["-L", ".", "-nc", "import \"m0\" as m; m::f"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: 0 + m::f;\n", "m1.jq" = "import \"m2\" as m;\ndef f: 1 + m::f;\n", "m2.jq" = "def f: 2;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-chain-of-three-called-through-a-closure-aborts"
+args = ["-L", ".", "-nc", "include \"m0\"; f"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: 0 + m::f;\n", "m1.jq" = "import \"m2\" as m;\ndef f: first(m::f);\n", "m2.jq" = "def f: 2;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-chain-of-three-errors-before-the-abort"
+args = ["-L", ".", "-nc", "include \"m0\"; f"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: 0 + m::f;\n", "m1.jq" = "import \"m2\" as m;\ndef f: $nope + m::f;\n", "m2.jq" = "def f: 2;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-chain-of-three-not-called"
+args = ["-L", ".", "-nc", "include \"m0\"; 1"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: 0 + m::f;\n", "m1.jq" = "import \"m2\" as m;\ndef f: 1 + m::f;\n", "m2.jq" = "def f: 2;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-chain-of-three-with-an-error-in-the-program"
+args = ["-L", ".", "-nc", "include \"m0\"; f, $nope"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: 0 + m::f;\n", "m1.jq" = "import \"m2\" as m;\ndef f: 1 + m::f;\n", "m2.jq" = "def f: 2;\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-chain-of-twelve-aborts"
+args = ["-L", ".", "-nc", "include \"m0\"; f"]
+env = { QJ_JQ_COMPAT = "1" }
+
+[case.files]
+"m0.jq" = "import \"m1\" as m;\ndef f: 0 + m::f;\n"
+"m1.jq" = "import \"m2\" as m;\ndef f: 1 + m::f;\n"
+"m2.jq" = "import \"m3\" as m;\ndef f: 2 + m::f;\n"
+"m3.jq" = "import \"m4\" as m;\ndef f: 3 + m::f;\n"
+"m4.jq" = "import \"m5\" as m;\ndef f: 4 + m::f;\n"
+"m5.jq" = "import \"m6\" as m;\ndef f: 5 + m::f;\n"
+"m6.jq" = "import \"m7\" as m;\ndef f: 6 + m::f;\n"
+"m7.jq" = "import \"m8\" as m;\ndef f: 7 + m::f;\n"
+"m8.jq" = "import \"m9\" as m;\ndef f: 8 + m::f;\n"
+"m9.jq" = "import \"m10\" as m;\ndef f: 9 + m::f;\n"
+"m10.jq" = "import \"m11\" as m;\ndef f: 10 + m::f;\n"
+"m11.jq" = "def f: 11;\n"
+
+[[case]]
+name = "module-diamond-below-a-module-aborts"
+args = ["-L", ".", "-nc", "include \"top\"; t"]
+files = { "top.jq" = "import \"left\" as l;\nimport \"right\" as r;\ndef t: [l::v, r::v];\n", "left.jq" = "import \"base\" as b;\ndef v: [\"l\", b::v];\n", "right.jq" = "import \"base\" as b;\ndef v: [\"r\", b::v];\n", "base.jq" = "def v: \"base\";\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-data-import-in-a-chain-aborts-when-read"
+args = ["-L", ".", "-nc", "include \"m0\"; 1, f"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: m::f;\n", "m1.jq" = "import \"d\" as $d;\ndef f: $d;\n", "d.json" = "[1,2,3]\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "module-data-import-in-a-chain-not-read"
+args = ["-L", ".", "-nc", "include \"m0\"; f"]
+files = { "m0.jq" = "import \"m1\" as m;\ndef f: m::f;\n", "m1.jq" = "import \"d\" as $d;\ndef f: if false then $d else 7 end;\n", "d.json" = "[1,2,3]\n" }
+env = { QJ_JQ_COMPAT = "1" }
+
+# jq 1.8.2's limit of 4095 subfunctions or parameters: an error, and where a
+# function is cut short before any of its code, or a parameter past the limit
+# is called, an assert() fails. By default qj reports the errors.
+[[case]]
+name = "too-many-parameters-then-the-last-called"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["def f(", 1], ["a;", 4096], ["x): x; def g: f(", 1], ["1;", 4096], ["1); g", 1]] } }
+env = { QJ_JQ_COMPAT = "1" }
+
+[[case]]
+name = "too-many-parameters-then-empty-code"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["def f(", 1], ["a;", 4096], ["x): 1; def g: f(", 1], ["1;", 4096], ["1); g", 1]] } }
 env = { QJ_JQ_COMPAT = "1" }
 
 # jq's jv_free recurses once per level of nesting; past `ulimit -s` the

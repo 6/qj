@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `linker.c`: `import`/`include`, module search paths, data
+//! Port of jq 1.8.2's `linker.c`: `import`/`include`, module search paths, data
 //! imports, `modulemeta`'s `load_module_meta`, and `load_program` (which also adds
 //! jq's implicit `~/.jq` include).
 //!
@@ -172,6 +172,9 @@ fn build_lib_search_chain(
 
 /// `validate_relpath`.
 fn validate_relpath(name: &str) -> Result<String, String> {
+    if name.contains('\0') {
+        return Err("Module path contains a NUL byte".into());
+    }
     let s = cstr(name);
     if s.contains('\\') {
         return Err(format!(
@@ -280,20 +283,23 @@ fn default_search(attrs: &JqAttrs, value: Option<&Value>) -> Value {
     }
 }
 
-/// `lib_loading_state`: modules loaded so far (by resolved path) and their
-/// definitions.
+/// `lib_loading_state`: the modules loaded so far, in the order they were
+/// registered: a code module once it parses, before its own imports (so
+/// that a module importing one still `loading` is a circular import), a
+/// data module once it is read.
 #[derive(Default)]
 struct LibState {
-    names: Vec<String>,
-    defs: Vec<Block>,
-    /// Modules whose imports are still being processed, innermost last.
-    ///
-    /// jq has no such list: `load_library` adds a module to `names` only
-    /// *after* its own imports are loaded, so a module that imports itself,
-    /// directly or through others, recurses until jq's stack overflows and it
-    /// dies of `SIGSEGV`. qj reports the cycle instead, and reproduces the
-    /// crash under `QJ_JQ_COMPAT=1`.
-    loading: Vec<String>,
+    entries: Vec<LibEntry>,
+}
+
+/// `struct lib_entry`.
+struct LibEntry {
+    /// The resolved path.
+    name: String,
+    /// The definitions (a no-op while `loading`).
+    def: Block,
+    /// Its own imports are being processed.
+    loading: bool,
 }
 
 /// `jq_parse`: parses (reporting syntax errors) and lowers a program.
@@ -364,7 +370,8 @@ struct Frame {
 
 /// `load_library`'s locals for a module whose imports are being processed.
 struct Module {
-    lib_path: String,
+    /// Its entry in `lib_state`.
+    entry: usize,
     /// The parsed module: `block_bind_self` and `lib_state` get it once its
     /// own imports are done.
     program: Block,
@@ -473,11 +480,20 @@ fn process_dependencies(
 
             // Can't reuse data libs because the wrong name is bound
             let loaded = (!is_data)
-                .then(|| lib_state.names.iter().position(|n| *n == resolved))
+                .then(|| lib_state.entries.iter().position(|e| e.name == resolved))
                 .flatten();
             if let Some(idx) = loaded {
+                if lib_state.entries[idx].loading {
+                    c.report(format!(
+                        "jq: error: circular import of {}\n",
+                        cstr(&resolved)
+                    ));
+                    // This frame returns 1, whatever it had counted before.
+                    stack[top].nerrors = usize::MAX;
+                    break;
+                }
                 // Bind the library to the program
-                let defs = lib_state.defs[idx];
+                let defs = lib_state.entries[idx].def;
                 let bk = stack[top].block;
                 stack[top].block =
                     c.block_bind_library(defs, bk, OP_IS_CALL_PSEUDO, as_str.as_deref());
@@ -525,9 +541,6 @@ fn process_dependencies(
             }
         }
         if let Some(child) = descend {
-            lib_state
-                .loading
-                .push(child.module.as_ref().expect("a module").lib_path.clone());
             stack.push(child);
             continue;
         }
@@ -542,10 +555,10 @@ fn process_dependencies(
             debug_assert!(stack.is_empty());
             return nerrors;
         };
-        lib_state.loading.pop();
         let program = c.block_bind_self(module.program, OP_IS_CALL_PSEUDO);
-        lib_state.names.push(module.lib_path);
-        lib_state.defs.push(program);
+        let entry = &mut lib_state.entries[module.entry];
+        entry.def = program;
+        entry.loading = false;
         returned = Some((nerrors, program));
     }
 }
@@ -555,9 +568,8 @@ fn process_dependencies(
 /// [`Loaded::Descend`], for [`process_dependencies`] to go into; everything
 /// else is [`Loaded::Done`], with the error count and the definitions.
 ///
-/// The module is recorded in `lib_state` by the caller, after its imports are
-/// loaded — which is why a module that imports itself makes jq recurse until
-/// its stack overflows.
+/// A code module is recorded in `lib_state` once it parses, before its
+/// imports are loaded; a data module once it is read; neither if it fails.
 fn load_library(
     c: &mut Compiler,
     lib_path: String,
@@ -568,18 +580,6 @@ fn load_library(
     lib_state: &mut LibState,
 ) -> Loaded {
     let mut nerrors = 0;
-    // A module already being loaded is importing itself, directly or through
-    // others; jq recurses here until its stack overflows.
-    if !is_data && lib_state.loading.contains(&lib_path) {
-        if crate::compat::exactly_jq() {
-            crate::compat::die_of_stack_overflow();
-        }
-        c.report(format!(
-            "jq: error: {} imports itself (import cycle)\n",
-            cstr(&lib_path)
-        ));
-        return Loaded::Done(1, Block::NOOP);
-    }
     // `jv_load_file(path, 0)` parses JSON only for (non-raw) data imports.
     let data = load_file(cstr(&lib_path), !is_data || raw);
     let program = match data {
@@ -596,11 +596,18 @@ fn load_library(
                 ));
                 nerrors += 1;
             }
-            // jq's `goto out`: nothing is recorded in lib_state.
             return Loaded::Done(nerrors, Block::NOOP);
         }
         // import "foo" as $bar;
-        Ok(data) if is_data => c.gen_const_global(data, as_.unwrap_or("")),
+        Ok(data) if is_data => {
+            let program = c.gen_const_global(data, as_.unwrap_or(""));
+            lib_state.entries.push(LibEntry {
+                name: lib_path,
+                def: program,
+                loading: false,
+            });
+            program
+        }
         // import "foo" as bar;
         Ok(data) => {
             let text = match &data {
@@ -609,23 +616,28 @@ fn load_library(
             };
             let lf = c.add_locfile(Rc::new(LocFile::new(&lib_path, &text)));
             match jq_parse_library(c, lf) {
-                // jq skips both the imports and block_bind_self when the
-                // module doesn't parse, but still records it.
+                // Not recorded: importing it again parses it again.
                 Err(n) => {
                     nerrors += n;
                     Block::NOOP
                 }
                 Ok(program) => {
+                    // Registered before its dependencies are processed, so that
+                    // circular imports can be detected.
+                    let lib_origin = Value::from(dirname(&lib_path));
+                    let entry = lib_state.entries.len();
+                    lib_state.entries.push(LibEntry {
+                        name: lib_path,
+                        def: Block::NOOP,
+                        loading: true,
+                    });
                     let mut program = program;
                     let deps = c.block_take_imports(&mut program);
-                    let lib_origin = Value::from(dirname(&lib_path));
-                    return Loaded::Descend(Module { lib_path, program }, deps, lib_origin);
+                    return Loaded::Descend(Module { entry, program }, deps, lib_origin);
                 }
             }
         }
     };
-    lib_state.names.push(lib_path);
-    lib_state.defs.push(program);
     Loaded::Done(nerrors, program)
 }
 
@@ -711,13 +723,16 @@ pub fn load_program(c: &mut Compiler, attrs: &JqAttrs, lf: LocFileId) -> Result<
         return Err(nerrors);
     }
     let mut libs = Block::NOOP;
-    for defs in lib_state.defs {
-        if !c.block_is_const(defs) {
-            libs = c.block_join(libs, defs);
+    for entry in lib_state.entries {
+        if !c.block_is_const(entry.def) {
+            libs = c.block_join(libs, entry.def);
         }
     }
     let all = c.block_join(libs, program);
-    Ok(c.block_drop_unreferenced(all))
+    // The libraries come in the order they were registered, each before the
+    // ones it imports, and there jq's walk can drop a definition still in use
+    // (see `block_drop_unreferenced`): only `QJ_JQ_COMPAT=1` follows it.
+    Ok(c.block_drop_unreferenced(all, crate::compat::exactly_jq()))
 }
 
 #[cfg(test)]

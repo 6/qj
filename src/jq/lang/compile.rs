@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `compile.c`: the block/instruction IR that parser.y's actions
+//! Port of jq 1.8.2's `compile.c`: the block/instruction IR that parser.y's actions
 //! build ([`super::lower`]), lexical binding (`block_bind_*`), and `block_compile`,
 //! which turns a bound program into [`Bytecode`].
 //!
@@ -100,6 +100,10 @@ pub(crate) struct Inst {
     /// implementation: its [`NativeId`](crate::jq::builtins::native::NativeId) + 1
     /// (not jq's; it doesn't change the bytecode).
     native: u16,
+    /// `block_drop_unreferenced` freed this definition although code that is
+    /// kept still refers to it (only with jq's marking, see
+    /// [`Compiler::block_drop_unreferenced`]).
+    freed: bool,
 }
 
 /// Owns the instruction arena, the source files instructions point into, and the
@@ -213,6 +217,7 @@ impl Compiler {
             compiled: 0,
             bytecode_pos: -1,
             native: 0,
+            freed: false,
         });
         id
     }
@@ -707,21 +712,37 @@ impl Compiler {
         body
     }
 
-    /// `block_mark_referenced` (iterative, same visiting order).
-    fn block_mark_referenced(&mut self, body: Block) {
+    /// `block_mark_referenced` (iterative, same visiting order). Walking
+    /// backwards from the end, jq skips a definition after `TOP` (a library's)
+    /// that nothing walked so far refers to, body and all, even if something
+    /// before it refers to it later: then what only its body refers to is
+    /// never marked. With `complete`, such a body is walked once its
+    /// definition is referenced, so everything kept is reachable.
+    fn block_mark_referenced(&mut self, body: Block, complete: bool) {
         // (cursor walking backwards, saw_top)
         let mut stack: Vec<(Option<InstId>, bool)> = vec![(body.last, false)];
+        // Definitions skipped while unreferenced (with `complete`).
+        let mut skipped: std::collections::HashSet<InstId> = std::collections::HashSet::new();
         while let Some((mut cur, mut saw_top)) = stack.pop() {
             while let Some(i) = cur {
                 cur = self.inst(i).prev;
                 let inst = self.inst(i);
                 if saw_top && inst.bound_by == Some(i) && !inst.referenced {
+                    if complete {
+                        skipped.insert(i);
+                    }
                     continue;
                 }
                 if inst.op == TOP {
                     saw_top = true;
                 }
                 if let Some(b) = inst.bound_by {
+                    if complete && skipped.remove(&b) {
+                        let def = self.inst(b);
+                        let (arglist, subfn) = (def.arglist, def.subfn);
+                        stack.push((subfn.last, false));
+                        stack.push((arglist.last, false));
+                    }
                     self.inst_mut(b).referenced = true;
                 }
                 let inst = self.inst(i);
@@ -737,15 +758,21 @@ impl Compiler {
         }
     }
 
-    /// `block_drop_unreferenced`.
-    pub fn block_drop_unreferenced(&mut self, body: Block) -> Block {
-        self.block_mark_referenced(body);
+    /// `block_drop_unreferenced`. With `jq_marking`, jq's own walk, which can
+    /// drop a library definition that kept code still calls (when a module is
+    /// loaded before the modules it imports, as jq 1.8.2 orders them): the
+    /// definition is marked `freed`, and compiling a use of it fails as jq's
+    /// use of freed memory does. Otherwise only what nothing kept reaches is
+    /// dropped, which is what jq drops whenever it doesn't fail.
+    pub fn block_drop_unreferenced(&mut self, body: Block, jq_marking: bool) -> Block {
+        self.block_mark_referenced(body, !jq_marking);
         let mut body = body;
         let mut refd = Block::NOOP;
         while let Some(curr) = self.block_take(&mut body) {
             let inst = self.inst(curr);
             if inst.bound_by == Some(curr) && !inst.referenced {
                 // inst_free
+                self.inst_mut(curr).freed = true;
             } else {
                 refd = self.block_join(refd, Self::inst_block(curr));
             }
@@ -1613,6 +1640,16 @@ impl Compiler {
             let mut prelude = Block::NOOP;
             if self.inst(curr).op == CALL_JQ {
                 let callee = self.inst(curr).bound_by.unwrap();
+                if self.inst(callee).freed {
+                    // jq reads the freed definition, whose memory an instruction
+                    // allocated since (a `RET`) has taken.
+                    self.die_like_jq(
+                        "0 && \"Unknown function type\"",
+                        "src/compile.c",
+                        "expand_call_arglist",
+                        1158,
+                    );
+                }
                 match self.inst(callee).op {
                     CLOSURE_CREATE | CLOSURE_PARAM => {
                         let mut callargs = Block::NOOP;
@@ -1666,18 +1703,18 @@ impl Compiler {
         level
     }
 
-    /// `compile` for one function: expands calls, lays out the code, reports errors,
-    /// and (if there were none) emits the code. Returns the error count and the
-    /// subfunctions to compile next, as (`CLOSURE_CREATE` inst, subfunction id).
-    fn compile_fn(
+    /// The first half of jq's `compile` for one function: expands calls, lays
+    /// out the code and reports its errors. Returns what the rest needs: the
+    /// subfunctions to compile (none after an error), in order.
+    fn lay_out(
         &mut self,
-        fns: &mut Vec<FnState>,
+        fns: &mut [FnState],
         fid: usize,
         b: Block,
         lf: LocFileId,
         globals: &mut Globals<'_>,
         cfunctions: &mut Vec<CFunction>,
-    ) -> (usize, Vec<(InstId, usize)>) {
+    ) -> Laid {
         let (b, mut errors) = self.expand_call_arglist(b, globals);
         let ret = self.gen_op_simple(RET);
         let b = self.block_join(b, ret);
@@ -1698,7 +1735,7 @@ impl Compiler {
             }
             pos += length;
             let is_var_binder = flags(op) & OP_HAS_VARIABLE != 0 && inst.bound_by == Some(i);
-            let symbol = inst.symbol.clone();
+            let (symbol, source) = (inst.symbol.clone(), inst.source);
             let inst = self.inst_mut(i);
             inst.bytecode_pos = pos as i32;
             inst.compiled = compiled;
@@ -1710,6 +1747,19 @@ impl Compiler {
             }
             if op == CLOSURE_CREATE {
                 debug_assert_eq!(inst.bound_by, Some(i));
+                // Prevent subfunction index from overflowing into ARG_NEWCLOSURE flag
+                if nsubfunctions >= ARG_NEWCLOSURE {
+                    self.locate(
+                        Some(lf),
+                        source,
+                        &format!(
+                            "too many function parameters or local function definitions (max {})",
+                            ARG_NEWCLOSURE - 1
+                        ),
+                    );
+                    errors += 1;
+                    break;
+                }
                 inst.intval = nsubfunctions;
                 nsubfunctions += 1;
             }
@@ -1730,71 +1780,126 @@ impl Compiler {
         }
         fns[fid].debuginfo.locals = localnames;
 
-        let mut children = Vec::new();
-        if nsubfunctions > 0 && errors == 0 {
-            for i in self.iter(b).collect::<Vec<_>>() {
-                if self.inst(i).op != CLOSURE_CREATE {
-                    continue;
-                }
-                let sid = fns.len();
-                let scompiled = sid as u32 + 1;
-                let mut params = Vec::new();
-                let mut p = self.inst(i).arglist.first;
-                while let Some(param) = p {
-                    debug_assert_eq!(self.inst(param).op, CLOSURE_PARAM);
-                    debug_assert_eq!(self.inst(param).bound_by, Some(param));
-                    let pi = self.inst_mut(param);
-                    pi.intval = params.len() as u16;
-                    pi.compiled = scompiled;
-                    params.push(pi.symbol.as_deref().unwrap_or("").to_string());
-                    p = pi.next;
-                }
-                let nclosures = params.len();
-                fns.push(FnState {
-                    code: Vec::new(),
-                    nlocals: 0,
-                    nclosures,
-                    constants: Vec::new(),
-                    debuginfo: DebugInfo {
-                        name: Some(self.inst(i).symbol.as_deref().unwrap_or("").to_string()),
-                        params,
-                        locals: Vec::new(),
-                    },
-                    subfunctions: Vec::new(),
-                    parent: Some(fid),
-                    native: self.inst(i).native,
-                });
-                fns[fid].subfunctions.push(sid);
-                children.push((i, sid));
-            }
+        let children = if nsubfunctions > 0 && errors == 0 {
+            self.iter(b)
+                .filter(|&i| self.inst(i).op == CLOSURE_CREATE)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if pos == 0 && crate::compat::exactly_jq() {
+            // A function cut short before its first instruction with code (all
+            // of its subfunctions come first): jq allocates its empty code.
+            self.die_like_jq("nemb > 0 && sz > 0", "src/jv_alloc.c", "jv_mem_calloc", 154);
         }
-        if errors > 0 {
-            return (errors, children);
+        Laid {
+            fid,
+            b,
+            pos,
+            errors,
+            children,
+            next: 0,
         }
+    }
 
-        // Emit the code.
-        let mut code: Vec<u16> = Vec::with_capacity(pos);
+    /// jq's `compile` creating a subfunction, before compiling it: assigns
+    /// its parameters (reporting a function with too many) and returns its id.
+    fn new_subfunction(
+        &mut self,
+        fns: &mut Vec<FnState>,
+        parent: &mut Laid,
+        i: InstId,
+        lf: LocFileId,
+    ) -> usize {
+        let sid = fns.len();
+        let scompiled = sid as u32 + 1;
+        let mut params = Vec::new();
+        let mut p = self.inst(i).arglist.first;
+        while let Some(param) = p {
+            debug_assert_eq!(self.inst(param).op, CLOSURE_PARAM);
+            debug_assert_eq!(self.inst(param).bound_by, Some(param));
+            // Prevent closure index from overflowing into ARG_NEWCLOSURE flag
+            if params.len() >= ARG_NEWCLOSURE as usize {
+                let source = self.inst(i).source;
+                self.locate(
+                    Some(lf),
+                    source,
+                    &format!(
+                        "function has too many parameters (max {})",
+                        ARG_NEWCLOSURE - 1
+                    ),
+                );
+                parent.errors += 1;
+                break;
+            }
+            let pi = self.inst_mut(param);
+            pi.intval = params.len() as u16;
+            pi.compiled = scompiled;
+            params.push(pi.symbol.as_deref().unwrap_or("").to_string());
+            p = pi.next;
+        }
+        let nclosures = params.len();
+        fns.push(FnState {
+            code: Vec::new(),
+            nlocals: 0,
+            nclosures,
+            constants: Vec::new(),
+            debuginfo: DebugInfo {
+                name: Some(self.inst(i).symbol.as_deref().unwrap_or("").to_string()),
+                params,
+                locals: Vec::new(),
+            },
+            subfunctions: Vec::new(),
+            parent: Some(parent.fid),
+            native: self.inst(i).native,
+        });
+        fns[parent.fid].subfunctions.push(sid);
+        sid
+    }
+
+    /// `nesting_level` for the code of `fid`: `None` where jq's first
+    /// assertion fails, for a target never compiled (a parameter past the
+    /// limit, which jq leaves unassigned).
+    fn level_of(fns: &[FnState], fid: usize, target_compiled: u32) -> Option<u16> {
+        if target_compiled == 0 {
+            return None;
+        }
+        Some(Self::nesting_level(fns, fid, target_compiled))
+    }
+
+    /// The second half of jq's `compile`, run once the subfunctions are
+    /// compiled and only if neither they nor the function had errors: emits
+    /// the code. `false` where jq's `nesting_level` fails its first assertion
+    /// instead, on a parameter past the limit, which jq leaves unassigned.
+    fn emit(&mut self, fns: &mut [FnState], laid: &Laid, cfunctions: &mut Vec<CFunction>) -> bool {
+        let fid = laid.fid;
+        let missing = || false;
+        let mut code: Vec<u16> = Vec::with_capacity(laid.pos);
         let mut constants: Vec<Value> = Vec::new();
         let mut maxvar: i32 = -1;
-        for i in self.iter(b) {
+        for i in self.iter(laid.b) {
             let inst = self.inst(i);
             let op = inst.op;
             let desc = op.describe();
             if desc.length == 0 {
                 continue;
             }
-            code.push(op as u16);
             debug_assert!(op != CLOSURE_REF && op != CLOSURE_PARAM);
             if op == CALL_BUILTIN {
+                code.push(op as u16);
                 let callee = inst.bound_by.unwrap();
                 debug_assert_eq!(self.inst(callee).op, CLOSURE_CREATE_C);
                 code.push(inst.intval);
                 code.push(self.inst(callee).intval);
             } else if op == CALL_JQ {
+                code.push(op as u16);
                 let callee = self.inst(inst.bound_by.unwrap());
                 debug_assert!(matches!(callee.op, CLOSURE_CREATE | CLOSURE_PARAM));
                 code.push(inst.intval);
-                code.push(Self::nesting_level(fns, fid, callee.compiled));
+                let Some(level) = Self::level_of(fns, fid, callee.compiled) else {
+                    return missing();
+                };
+                code.push(level);
                 code.push(
                     callee.intval
                         | if callee.op == CLOSURE_CREATE {
@@ -1807,28 +1912,52 @@ impl Compiler {
                     let a = self.inst(arg);
                     let target = self.inst(a.bound_by.unwrap());
                     debug_assert!(a.op == CLOSURE_REF && target.op == CLOSURE_CREATE);
-                    code.push(Self::nesting_level(fns, fid, target.compiled));
+                    let Some(level) = Self::level_of(fns, fid, target.compiled) else {
+                        return missing();
+                    };
+                    code.push(level);
                     code.push(target.intval | ARG_NEWCLOSURE);
                 }
             } else if desc.flags & OP_HAS_CONSTANT != 0 && desc.flags & OP_HAS_VARIABLE != 0 {
                 // STORE_GLOBAL: constant global, basically
+                code.push(op as u16);
                 code.push(constants.len() as u16);
                 constants.push(inst.constant.clone());
                 let binder = self.inst(inst.bound_by.unwrap());
-                code.push(Self::nesting_level(fns, fid, binder.compiled));
+                let Some(level) = Self::level_of(fns, fid, binder.compiled) else {
+                    return missing();
+                };
+                code.push(level);
                 let var = binder.intval;
                 code.push(var);
                 maxvar = maxvar.max(var as i32);
             } else if desc.flags & OP_HAS_CONSTANT != 0 {
+                code.push(op as u16);
                 code.push(constants.len() as u16);
                 constants.push(inst.constant.clone());
             } else if desc.flags & OP_HAS_VARIABLE != 0 {
                 let binder = self.inst(inst.bound_by.unwrap());
-                code.push(Self::nesting_level(fns, fid, binder.compiled));
+                if binder.freed {
+                    // A data import's global that `block_drop_unreferenced` freed
+                    // (see `Inst::freed`): jq reads a variable nothing stored, and
+                    // dies when the instruction runs. Same length as `LOADV`.
+                    debug_assert_eq!(op, LOADV);
+                    code.push(CALL_BUILTIN as u16);
+                    code.push(1);
+                    code.push(cfunctions.len() as u16);
+                    cfunctions.push(UNSTORED_GLOBAL);
+                    continue;
+                }
+                code.push(op as u16);
+                let Some(level) = Self::level_of(fns, fid, binder.compiled) else {
+                    return missing();
+                };
+                code.push(level);
                 let var = binder.intval;
                 code.push(var);
                 maxvar = maxvar.max(var as i32);
             } else if desc.flags & OP_HAS_BRANCH != 0 {
+                code.push(op as u16);
                 let target = self.inst(inst.target.unwrap()).bytecode_pos;
                 let here = code.len() as i32;
                 debug_assert!(target != -1);
@@ -1836,14 +1965,16 @@ impl Compiler {
                 code.push((target - (here + 1)) as u16);
             } else if desc.length > 1 {
                 panic!("codegen not implemented for {op:?}");
+            } else {
+                code.push(op as u16);
             }
         }
-        debug_assert_eq!(code.len(), pos);
+        debug_assert_eq!(code.len(), laid.pos);
         let f = &mut fns[fid];
         f.code = code;
         f.constants = constants;
         f.nlocals = (maxvar + 2) as usize;
-        (0, children)
+        true
     }
 
     /// `block_compile`: compiles a bound program. Returns the top-level function, or
@@ -1865,25 +1996,48 @@ impl Compiler {
             native: 0,
         }];
         let mut cfunctions = Vec::new();
-        let mut nerrors = 0;
         // QJ_JQ_COMPAT=1: jq's `compile` recurses once per nested closure, and
         // what it does at each level (`expand_call_arglist`, freeing the block)
         // runs with those frames held.
         let descent = crate::compat::Descent::new(crate::compat::Site::Compile);
-        // Depth-first, in subfunction order (the order jq reports errors in), with
-        // the depth of jq's recursion for each.
-        let mut stack: Vec<(usize, Block, u64)> = vec![(0, b, 1)];
-        while let Some((fid, body, depth)) = stack.pop() {
-            descent.at(depth);
-            let (errors, children) =
-                self.compile_fn(&mut fns, fid, body, lf, globals, &mut cfunctions);
-            nerrors += errors;
-            for &(inst, sid) in children.iter().rev() {
-                let body = self.inst(inst).subfn;
-                self.inst_mut(inst).subfn = Block::NOOP;
-                stack.push((sid, body, depth + 1));
+        // jq's recursion, as a stack: a function is laid out, then each of its
+        // subfunctions compiled in order (the order jq reports errors in), and
+        // its code emitted last, if nothing in it had errors.
+        descent.at(1);
+        let top = self.lay_out(&mut fns, 0, b, lf, globals, &mut cfunctions);
+        let mut stack: Vec<Laid> = vec![top];
+        let nerrors = loop {
+            let top = stack.len() - 1;
+            if stack[top].next < stack[top].children.len() {
+                let i = stack[top].children[stack[top].next];
+                stack[top].next += 1;
+                let sid = self.new_subfunction(&mut fns, &mut stack[top], i, lf);
+                let body = self.inst(i).subfn;
+                self.inst_mut(i).subfn = Block::NOOP;
+                descent.at(stack.len() as u64 + 1);
+                let child = self.lay_out(&mut fns, sid, body, lf, globals, &mut cfunctions);
+                stack.push(child);
+                continue;
             }
-        }
+            let done = stack.pop().expect("a function being compiled");
+            if done.errors == 0
+                && !self.emit(&mut fns, &done, &mut cfunctions)
+                && crate::compat::exactly_jq()
+            {
+                // Otherwise the error that left the parameter unassigned
+                // makes the program fail.
+                self.die_like_jq(
+                    "bc && target && target->compiled",
+                    "src/compile.c",
+                    "nesting_level",
+                    1086,
+                );
+            }
+            match stack.last_mut() {
+                Some(parent) => parent.errors += done.errors,
+                None => break done.errors,
+            }
+        };
         drop(descent);
         if nerrors > 0 {
             return Err(nerrors);
@@ -1891,6 +2045,48 @@ impl Compiler {
         Ok(build_bytecode(fns, &Rc::new(SymbolTable { cfunctions })))
     }
 }
+
+/// What [`Compiler::lay_out`] leaves for the rest of jq's `compile`.
+struct Laid {
+    fid: usize,
+    /// The expanded body, ending in `RET`.
+    b: Block,
+    /// The code's length.
+    pos: usize,
+    /// Errors in the function and, once compiled, its subfunctions.
+    errors: usize,
+    /// Its `CLOSURE_CREATE`s, in order.
+    children: Vec<InstId>,
+    /// How many of `children` have been compiled.
+    next: usize,
+}
+
+impl Compiler {
+    /// One of jq's `assert()`s failing while it compiles (only under
+    /// `QJ_JQ_COMPAT=1`): the messages jq printed before it, then the abort.
+    fn die_like_jq(&mut self, expr: &str, file: &str, function: &str, line: u32) -> ! {
+        let mut text = String::new();
+        for m in self.messages.drain(..) {
+            text.push_str(&m);
+            text.push('\n');
+        }
+        crate::os::write_stderr(text.as_bytes());
+        abort_like_jq_in(expr, file, function, line)
+    }
+}
+
+fn abort_like_jq_in(expr: &str, file: &str, function: &str, line: u32) -> ! {
+    use crate::jq::platform::{Error, assert_text};
+    Error::Abort(assert_text(expr, file, function, line)).abort_process()
+}
+
+/// What a `$name` of a freed data import compiles to: execute.c's
+/// `stack_push` fails its assertion on the variable nothing stored.
+const UNSTORED_GLOBAL: CFunction = CFunction {
+    name: "$__unstored_global",
+    nargs: 1,
+    f: |_, _, _| abort_like_jq_in("jv_is_valid(val)", "src/execute.c", "stack_push", 163),
+};
 
 /// Builds the `Rc<Bytecode>` tree, bottom up, applying execute.c's tail-call
 /// optimization to each function, then links the parents.

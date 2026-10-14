@@ -1,0 +1,79 @@
+# jq_diff CLI cases for what jq 1.8.2 changed in main.c, the linker and the
+# compiler (format: tests/jq_diff/cli.rs). The input layer's are generated
+# into cli_io.toml (gen_cli_io.py), the linker's into modules.toml
+# (gen_modules.py), and the ones where jq 1.8.2 aborts are in compat_mode.toml.
+
+# --- compile.c: at most 4095 subfunctions and parameters per function -------
+# (jq's check comes before the index is used, so 4096 of each still compile.)
+
+[[case]]
+name = "subfunctions-4096-in-a-def"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["def g: [", 1], ["first(1),", 4095], ["first(1)] | length; g", 1]] } }
+
+[[case]]
+name = "subfunctions-4097-in-a-def"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["def g: [", 1], ["first(1),", 4096], ["first(1)] | length; g", 1]] } }
+
+[[case]]
+name = "subfunctions-4096-at-top-level"
+note = "the top level also holds `first` itself"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["[", 1], ["first(1),", 4095], ["first(1)] | length", 1]] } }
+
+[[case]]
+name = "subfunctions-4097-defs-at-top-level"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["def g: [", 1], ["first(1),", 4096], ["first(1)] | length; def h: 1; [g, h]", 1]] } }
+
+[[case]]
+name = "parameters-4096"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["def f(", 1], ["a;", 4095], ["a): a; def g: f(", 1], ["1;", 4095], ["1); g", 1]] } }
+
+[[case]]
+name = "parameters-4097-never-called"
+note = "an unreferenced definition is dropped before it is compiled"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { repeat = [["def f(", 1], ["a;", 4096], ["a): a; 1", 1]] } }
+
+# --- parser.y: check_object_key's buffer is 30 bytes -------------------------
+
+[[case]]
+name = "object-key-not-a-string-long"
+args = ["-nc", "{({\"file\":\"<top-level>\",\"line\":1}): 1}"]
+
+[[case]]
+name = "object-key-loc"
+args = ["-nc", "{($__loc__): 1}"]
+
+[[case]]
+name = "object-key-number"
+args = ["-nc", "{(123456789012345678901234567890): 1}"]
+
+# --- main.c ---------------------------------------------------------------
+
+[[case]]
+name = "from-file-nul-at-start"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { b64 = "AC4=" } }
+
+[[case]]
+name = "from-file-nul-at-end"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { b64 = "LgA=" } }
+
+[[case]]
+name = "from-file-nul-after-bad-utf8"
+args = ["-nc", "-f", "p.jq"]
+files = { "p.jq" = { b64 = "Iv8iAA==" } }
+
+[[case]]
+name = "from-file-nul-with-args"
+args = ["-nc", "--arg", "x", "1", "-f", "p.jq", "--args", "a"]
+files = { "p.jq" = { b64 = "JHgALg==" } }
+
+[[case]]
+name = "unknown-option-hint"
+args = ["--nope"]
