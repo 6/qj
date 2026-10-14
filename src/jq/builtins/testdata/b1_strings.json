@@ -1,4 +1,4 @@
-{"jq": "jq-1.8.1", "cases": [
+{"jq": "jq-1.8.2", "cases": [
 {"f":"startswith","in":"\"\"","args":["\"\""],"out":"[0,true]"},
 {"f":"startswith","in":"\"\"","args":["\"a\""],"out":"[0,false]"},
 {"f":"startswith","in":"\"\"","args":["\"abc\""],"out":"[0,false]"},

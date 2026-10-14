@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the value-layer test fixtures from the jq 1.8.1 binary.
+"""Regenerate the value-layer test fixtures from the jq 1.8.2 binary.
 
     python3 src/jq/value/testdata/gen.py            # uses `jq` on PATH
     JQ=/path/to/jq python3 src/jq/value/testdata/gen.py
@@ -504,8 +504,8 @@ def gen_ops():
 
 def main():
     ver = run(["--version"])[0].decode().strip()
-    if ver != "jq-1.8.1":
-        raise SystemExit(f"expected jq-1.8.1, got {ver!r}")
+    if ver != "jq-1.8.2":
+        raise SystemExit(f"expected jq-1.8.2, got {ver!r}")
     gen_numbers()
     gen_dtoa()
     gen_compare()
