@@ -256,7 +256,8 @@ fn aborting_cases_abort_like_jq() {
         .iter()
         .filter(|c| matches!(c.expect, Expect::Abort(_)) && c.applies())
         .collect();
-    assert!(!aborting.is_empty());
+    // jq 1.8.2's only platform abort left is `set_tm_yday`'s, on macOS.
+    assert_eq!(aborting.is_empty(), !cfg!(target_os = "macos"));
     for case in aborting {
         let Expect::Abort(assertion) = &case.expect else {
             unreachable!()

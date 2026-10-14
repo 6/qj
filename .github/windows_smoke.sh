@@ -114,9 +114,9 @@ printf '%.0s[' $(seq 3000) > deep.json
 printf '%.0s]' $(seq 3000) >> deep.json
 check deep-nesting empty -c . deep.json
 
-# qj only: values nested 100,000 deep, compared recursively, don't run out of
-# stack (jq's 2 MB stack would).
-deep='def deep: reduce range(100000) as $_ (null; [.]); deep as $a | deep as $b | $a == $b'
+# qj only: values nested 10,000 deep (as deep as jq 1.8.2 compares), compared
+# recursively, don't run out of stack.
+deep='def deep: reduce range(10000) as $_ (null; [.]); deep as $a | deep as $b | $a == $b'
 if [ "$("$qj" -n "$deep" | tr -d '\r')" = true ]; then
     echo "ok   deep-values"
 else
