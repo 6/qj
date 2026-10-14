@@ -1,4 +1,4 @@
-# Cases of jq_diff's .test files where qj on Windows doesn't match jq 1.8.1's
+# Cases of jq_diff's .test files where qj on Windows doesn't match jq 1.8.2's
 # jq-windows-amd64.exe, and why (.github/jq_diff_windows.py --known). Anything
 # else that mismatches fails the windows job.
 

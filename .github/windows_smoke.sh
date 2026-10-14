@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke checks for qj on Windows, where the conformance suites don't run yet:
-# each case runs qj and jq 1.8.1's Windows release binary with the same
+# each case runs qj and jq 1.8.2's Windows release binary with the same
 # arguments and stdin, and compares stdout, stderr (with `qj:` read as `jq:`)
 # and the exit status byte for byte. The cases lean on what Windows does
 # differently: text-mode stdio (CRLF out, CRLF and Ctrl-Z in) and `-b`, input

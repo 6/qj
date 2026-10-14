@@ -12,7 +12,7 @@ on:
 
 jobs:
   build-and-test:
-    # The jq 1.8.1 port's suites (jq_diff's ~37k cases, fuzz-found corpora,
+    # The jq 1.8.2 port's suites (jq_diff's ~37k cases, fuzz-found corpora,
     # iai-callgrind) take far longer than the old 15 minutes on hosted runners.
     timeout-minutes: 60
     strategy:
@@ -58,7 +58,7 @@ jobs:
       - name: Compat suites
         if: matrix.os == 'ubuntu-24.04'
         run: |
-          # Strict differential runs against jq 1.8.1, both scoreboards: qj as
+          # Strict differential runs against jq 1.8.2, both scoreboards: qj as
           # it is (ratcheting against tests/jq_compat/diff_baseline_linux.txt)
           # and QJ_JQ_COMPAT=1 with nothing normalized (against
           # diff_baseline_compat_linux.txt). After a fix, record the gains

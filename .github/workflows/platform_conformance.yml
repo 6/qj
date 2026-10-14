@@ -1,6 +1,6 @@
 name: Platform conformance
 # jq_diff on the platforms qj builds for that jq publishes no binary for: Linux
-# with musl, FreeBSD and NetBSD. Each job builds jq 1.8.1 from its release
+# with musl, FreeBSD and NetBSD. Each job builds jq 1.8.2 from its release
 # tarball there (.github/build_jq.sh), as a user would, and runs jq_diff's
 # default scoreboard against it, report only (there are no baselines for these
 # platforms): the totals go to the job summary and the log, every non-passing
