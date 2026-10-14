@@ -1,0 +1,254 @@
+# jq 1.8.2's changes to the value layer and the C builtins
+#
+# Format: jq's .test format (see tests/jq_compat/jq.test), without expected
+# output lines: each case is a program line followed by one input line, and
+# cases are separated by blank lines. jq_diff runs every case under jq and qj
+# and compares stdout, exit code and stderr byte for byte.
+#
+# `D($n)` nests `1` in `$n` arrays and `O($n)` in `$n` objects, so the `1` is
+# at depth `$n`. jq 1.8.2 stops comparing, containing and merging past depth
+# 10000, and takes paths of at most 10000 elements.
+
+# Index errors: always `Cannot index <kind> with <kind> (<value>)`, the value
+# dumped into 30 bytes (`...` and the closing delimiter when it doesn't fit).
+.[] as $k | try ([1,2] | .[$k]) catch .
+["a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true, false, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15], {"aaaaaaaaaaaaaaaaaaaaaaaaaaa":1}, "ééééééééééééééééééééééééééé", "\n\n\n\n\n\n\n\n\n\n", "a\"b\\c"]
+
+.[] as $k | try ({} | .[$k]) catch .
+[0, 1.5, -1e1000, 1e1000, 123456789012345678901234567890123, [], [1], {}, true]
+
+.[] as $t | try ($t | .a) catch .
+[1, "x", true, false, [1,2]]
+
+.[] as $t | try ($t | .[0]) catch .
+[{}, "abc", true, 12345678901234567890123456789012345678]
+
+try .["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] catch .
+[1,2]
+
+.[] | try .["x"] catch .
+[[1], 2, "s", true]
+
+[.[] | try .[0] catch .]
+[{"a":1}, "a", false]
+
+# Dumped values in other errors: type errors, iteration, object keys.
+.[] as $v | try ($v - {}) catch .
+["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16], {"aaaaaaaaaaaaaaa":"bbbbbbbbbbbbbbbbb"}, 12345678901234567890123456789, "ab", "ééééééééééééééééééééé", "€€€€€€€€€€€€€€€€€€€€€€€€", "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀", "\u0001\u0001\u0001\u0001\u0001\u0001"]
+
+.[] as $v | try ($v | .[]) catch .
+[123456789012345678901234567890123, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true, null, "€€€€€€€€€€€€€€€€€€"]
+
+.[] as $k | try {($k): 1} catch .
+[1, 123456789012345678901234567890123, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15], {"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":1}, null, true]
+
+try {(123456789012345678901234567890123): 1} catch .
+null
+
+try {([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]): 1} catch .
+null
+
+try path(.[0] | reverse | .["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]) catch .
+[[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]]
+
+try path(.[0] | reverse | .[123456789012345678901234567890]) catch .
+[[1,2,3]]
+
+try path(.[0] | reverse | .[]) catch .
+[[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]]
+
+.[] as $v | try ($v | implode) catch .
+[["a"], [1,2,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+
+try ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" | test(1)) catch .
+null
+
+try ([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18] | ltrimstr("a") | has(0) | keys) catch .
+null
+
+# Equality: `==`, `!=`, `-`, array `indices`, `IN`.
+def D($n): reduce range($n) as $_ (1; [.]); [9999, 10000, 10001, 10002][] as $n | [$n, (try (D($n) == D($n)) catch .), (try (D($n) != D($n)) catch .)]
+null
+
+def O($n): reduce range($n) as $_ (1; {a: .}); [9999, 10000, 10001, 10002][] as $n | [$n, (try (O($n) == O($n)) catch .), (try (O($n) != O($n)) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); D(10001) as $d | [($d == $d), ([$d] == [$d]), (try ([$d] == [D(10001)]) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [(try ([0, D(10001)] == [1, D(10001)]) catch .), (try ([D(10001), 0] == [D(10001), 1]) catch .), (try ([D(10001)] == [D(10001), 1]) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [(try ({a: D(10001)} == {a: D(10001), b: 1}) catch .), (try ({a: D(10001), b: 1} == {a: D(10001)}) catch .), (try ({b: 1, a: D(10001)} == {b: 2, a: D(10001)}) catch .), (try ({a: D(10001), b: 1} == {b: 2, a: D(10001)}) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [(try (D(10001) == D(10000)) catch .), (try (D(10001) == (D(10000) | .[0] = "x")) catch .), (try ([[1]] == D(10001)) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [10000, 10001][] as $n | [(try ([D($n)] - [D($n)]) catch .), (try ([1, D($n)] - [D($n)] | length) catch .), (try ([D($n)] - [1]) | length catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [9999, 10000, 10001][] as $n | [(try ([D($n), 1] | indices([D($n)])) catch .), (try ([D($n)] | index([D($n)])) catch .), (try ([1, 2] | indices([D($n)])) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [10000, 10001][] as $n | [(try (D($n) | IN(D($n))) catch .), (try (D($n) | IN(1, D($n))) catch .), (try (IN(D($n); 1, D($n))) catch .), (try (D($n) | IN(1, 2)) catch .)]
+null
+
+# Ordering: `<` and friends, sort, sort_by, group_by, unique, min/max, bsearch.
+def D($n): reduce range($n) as $_ (1; [.]); [9999, 10000, 10001, 10002][] as $n | [$n, (try (D($n) < D($n)) catch .), (try (D($n) <= D($n)) catch .), (try (D($n) > D($n)) catch .), (try (D($n) >= D($n)) catch .)]
+null
+
+def O($n): reduce range($n) as $_ (1; {a: .}); [9998, 9999, 10000, 10001][] as $n | [$n, (try (O($n) < O($n)) catch .), (try ([O($n), O($n)] | sort | length) catch .)]
+null
+
+def E($n): reduce range($n) as $_ ({}; [.]); [9998, 9999, 10000, 10001][] as $n | [$n, (try (E($n) < E($n)) catch .), (try (E($n) == E($n)) catch .), (try (E($n) | contains(E($n))) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [10000, 10001][] as $n | [(try ([D($n), D($n)] | sort | length) catch .), (try ([D($n)] | sort | length) catch .), (try ([D($n), 1, "a"] | sort | map(type)) catch .), (try ([D($n), 2, D($n), 1] | sort | length) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [10000, 10001][] as $n | [(try ([D($n), D($n)] | sort_by(.) | length) catch .), (try ([D($n), D($n)] | group_by(.) | length) catch .), (try ([D($n), D($n)] | unique | length) catch .), (try ([D($n), D($n)] | unique_by(.) | length) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [9999, 10000, 10001][] as $n | [(try ([D($n), D($n)] | min | length) catch .), (try ([D($n), D($n)] | max | length) catch .), (try ([D($n), D($n)] | min_by(.) | length) catch .), (try ([D($n), D($n)] | max_by(.) | length) catch .), (try ([1, D($n)] | min) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [9999, 10000, 10001][] as $n | [(try ([D($n)] | bsearch(D($n))) catch .), (try ([1, 2] | bsearch(D($n))) catch .), (try ([D($n), D($n), D($n)] | bsearch(0)) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [(try ([[0, D(10001)], [1, D(10001)]] | sort | length) catch .), (try ([[D(10001), 0], [D(10001), 1]] | sort | length) catch .)]
+null
+
+# jv_cmp sorts by the sorted keys, jv_equal walks the first object's keys in
+# order: group_by and unique can sort, then fail on equality.
+def D($n): reduce range($n) as $_ (1; [.]); [{b: D(10000), a: 1}, {b: D(10000), a: 1}] | [(try unique catch .), (try (group_by(.) | length) catch .), (try (sort | length) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [{b: D(10001), a: 1}, {b: D(10001), a: 2}] | [(try (unique | length) catch .), (try (group_by(.) | length) catch .), (try (sort | length) catch .), (try (sort_by(.a) | length) catch .), (try (unique_by(.a) | length) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [{a: 1, b: D(10001)}, {a: 2, b: D(10001)}] | [(try (unique | length) catch .), (try (group_by(.) | length) catch .)]
+null
+
+# Containment.
+def D($n): reduce range($n) as $_ (1; [.]); [9999, 10000, 10001, 10002][] as $n | [$n, (try (D($n) | contains(D($n))) catch .), (try (D($n) | inside(D($n))) catch .)]
+null
+
+def O($n): reduce range($n) as $_ ("abc"; {a: .}); [9999, 10000, 10001][] as $n | [$n, (try (O($n) | contains(O($n))) catch .), (try (O($n) | contains({b: 1})) catch .)]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); [(try ({a: D(10001), b: 1} | contains({b: 2, a: D(10001)})) catch .), (try ({a: D(10001), b: 1} | contains({a: D(10001), b: 2})) catch .), (try ([1, D(10001)] | contains([D(10001)])) catch .), (try ([D(10001), 1] | contains([1])) catch .), (try ([D(10001)] | contains([1])) catch .)]
+null
+
+def O($n): reduce range($n) as $_ ({}; {a: .}); [9999, 10000, 10001][] as $n | [$n, (try (O($n) | contains(O($n) | setpath([range($n) | "a"] + ["b"]; 1))) catch .)]
+null
+
+# Object merge (`*`).
+def O($n): reduce range($n) as $_ (1; {a: .}); [9999, 10000, 10001, 10002, 10003][] as $n | [$n, (try (O($n) * O($n) | [paths] | length) catch .)]
+null
+
+def O($n): reduce range($n) as $_ (1; {a: .}); [(try ({b: 1} * O(10003) | keys) catch .), (try (O(10003) * {a: 2}) catch .), (try ({x: O(10003)} * {x: O(10003)} | keys) catch .), (try ({x: O(10002)} * {x: O(10002)} | keys) catch .)]
+null
+
+# Paths longer than 10000 elements.
+[9999, 10000, 10001][] as $n | [$n, (try ([range($n) | 0] as $p | null | setpath($p; 1) | getpath($p)) catch .), (try (null | getpath([range($n) | 0])) catch .), (try (null | setpath([range($n) | "a"]; 1) | [paths] | length) catch .)]
+null
+
+[10000, 10001][] as $n | [range($n) | 0] as $p | [(try (null | setpath($p; 1) | delpaths([$p]) | [paths] | length) catch .), (try ([1] | delpaths([$p])) catch .), (try ([1] | delpaths([[0], $p])) catch .), (try ([1] | delpaths([$p, 1])) catch .), (try (1 | getpath($p)) catch .), (try (1 | setpath($p; 1)) catch .)]
+null
+
+[10000, 10001][] as $n | [(try (reduce range($n) as $_ (1; [.]) | [tostream] | length) catch .), (try (reduce range($n) as $_ (1; [.]) | [leaf_paths] | length) catch .), (try (reduce range($n) as $_ (1; [.]) | [paths] | length) catch .)]
+null
+
+try (null | setpath([range(10001) | 0]; 1)) catch ., try ({} | getpath("a")) catch ., try ({} | setpath("a"; 1)) catch ., try ({} | delpaths("a")) catch ., try ({} | delpaths([1])) catch .
+null
+
+[10000, 10001][] as $n | reduce range($n) as $_ (1; [.]) | [(try (del(.. | select(. == 1)) | [paths] | length) catch .), (try ((.. | select(type == "number")) |= . + 1 | [leaf_paths] | length) catch .)]
+null
+
+# delpaths: NaN keys are skipped (jq 1.8.1 hung on them).
+[1,2,3] | delpaths([[nan]]), del(.[nan]), delpaths([[nan], [1]]), delpaths([[1], [nan], [nan]]), (try delpaths([[nan, 0]]) catch .)
+null
+
+[[1,2]] | delpaths([[0, nan]]), delpaths([[0, nan], [0, 0]]), (try ({"a": 1} | delpaths([[nan]])) catch .)
+null
+
+# Printing: depth 10000 prints in full, anything deeper is `<skipped: too deep>`.
+def D($n): reduce range($n) as $_ (1; [.]); [9999, 10000, 10001, 10002][] as $n | D($n) | tojson | [length, .[-25:]]
+null
+
+def O($n): reduce range($n) as $_ (1; {a: .}); [9999, 10000, 10001][] as $n | O($n) | tojson | [length, .[-25:]]
+null
+
+def D($n): reduce range($n) as $_ (1; [.]); D(10002) | tostring | length, (try error catch (tojson | length)), ([[.]] | @json | length), ("\(.)" | length)
+null
+
+# tonumber/toboolean reject a NUL inside the string.
+.[] | try tonumber catch .
+["123\u0000456", "1\u0000", "\u00001", "12", "1e2", " 1", "nan"]
+
+.[] | try toboolean catch .
+["true\u0000x", "false\u0000", "\u0000true", "true", "false"]
+
+# @uri and @urid: every byte decoded, the result validated as a whole.
+.[] | try @urid catch .
+["%00", "a\u0000b", "%", "%4", "%4g", "%C3%A9", "é", "%e9", "%ED%A0%80", "%F0%9F%98%80", "%C3é", "%C3%", "%zz", "a%2", "%%41", "%c3%a9%41", "%C3%A9%C3", "%EF%BF%BF", "%F4%90%80%80", "%C0%80", "+%20", ""]
+
+.[] | try @urid catch .
+[1, [1, "%41"], null, {"a": "%ZZ"}]
+
+.[] | @uri
+["\u0000é~-._ /", "😀", "a+b=c&d", "", "ABCxyz019"]
+
+[.[] | @uri | @urid] == .
+["\u0000é~-._ /", "😀", "a+b=c&d", "", "ABCxyz019"]
+
+# _strindices checks its arguments.
+.[] as [$a, $b] | try ($a | _strindices($b)) catch .
+[[1, "a"], [null, 1], ["a", 1], ["abcabc", "bc"], [[1], "a"], ["a", ["a"]], ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {}]]
+
+# strflocaltime reports localtime's failure.
+.[] as [$t, $f] | try ($t | strflocaltime($f)) catch .
+[[1e30, "%c"], [-1e1000, "%c"], [1e30, 1], [1e30, null], ["x", "%c"], [[], 1]]
+
+try (1e30 | localtime) catch ., try (1e30 | gmtime) catch ., try (1e30 | strftime("%c")) catch .
+null
+
+# from_entries is `map(...) | add // {}`; rtrimstr cuts `length - ($right | length)`.
+.[] | try from_entries catch .
+[[], [{"key": "a", "value": false}], [{"key": "a"}], [{"k": "a", "v": 1}], [{"name": "a", "value": null}], [{"key": false, "Key": "b", "value": 1}], {"x": {"key": "a", "value": 1}}, [{"key": 1, "value": 1}], [{"key": null}], "abc", null]
+
+.[] | try with_entries(select(.value)) catch .
+[{"a": false, "b": null}, {}, {"a": 1}, [1, false]]
+
+.[] as [$s, $r] | try ($s | rtrimstr($r)) catch .
+[["abc", ""], ["abc", "c"], ["abc", "abc"], ["abc", "bc"], ["aé", "é"], ["éé", "é"], ["", ""], ["a", "ab"], [1, "a"], ["a", 1], [null, ""], ["😀😀", "😀"]]
+
+.[] as [$s, $r] | try ($s | trimstr($r)) catch .
+[["abca", "a"], ["abc", ""], ["aa", "a"], ["a", "a"], ["", "a"], [1, 1]]
+
+# Modulo saturates 2^63 to INTMAX_MAX on every platform.
+.[] as [$a, $b] | try ($a % $b) catch .
+[[9223372036854775808, 3], [5, 9223372036854775808], [-9223372036854775808, 7], [9223372036854775807, 2], [1e19, 3], [-1e19, 3], [5, -9223372036854775808], [5, 1e19], [5, -1e19], [9223372036854775808, -1]]
+
+[9223372036854775808 % 3, 5 % 9223372036854775808, -9223372036854775808 % 7, 1e19 % 7, 5 % -1e19]
+null
+
+# Repeating a string: a result of INT_MAX - 8 bytes or more is too long.
+.[] as [$s, $n] | try ($s * $n) catch .
+[["x", 2147483639], ["x", 2147483640], ["x", 2147483647], ["x", 2147483648], ["x", 1e300], ["ab", 1073741820], ["abc", 715827880], ["abcd", 536870910], ["", 2147483647], ["x", -1], ["x", 0], ["ab", 3], ["x", 0.5], ["x", nan]]
+
+try ("x" * 2147483639) catch ., try (2147483639 * "x") catch ., try ("abc" * 715827880) catch .
+null
+
+# Appending to a string: the same bound, checked before allocating (each of
+# these holds 1 GB).
+"x" * 1073741820 | try (. + .) catch .
+null
+
+"x" * 1073741820 | try ([., .] | add) catch .
+null
+
+# NaN indexes an array as null; NaN keys can't set.
+[1,2] | .[nan], .[-nan], (try (.[nan] = 1) catch .), (try setpath([nan]; 1) catch .), has(nan)
+null
