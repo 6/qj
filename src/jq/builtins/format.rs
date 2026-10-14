@@ -212,17 +212,12 @@ fn uri(s: &str) -> Value {
     Value::from(line)
 }
 
-/// The `urid` branch of `f_format`, reproducing jq's byte-level loop:
-/// * decoding stops at the first NUL (`while (*s)`);
-/// * a `%XX` run is read as one UTF-8 sequence, its length taken from the lead byte,
-///   and must be valid UTF-8 (`%C3%A9` is `é`; `%80`, `%ED%A0%80`, `%C3A9` are errors);
-/// * any other byte is appended on its own (`jv_string_append_buf(line, s++, 1)`), so a
-///   literal non-ASCII character becomes one U+FFFD per byte: `"é" | @urid` is `"��"`.
+/// The `urid` branch of `f_format`: every `%XX` becomes the byte it encodes and
+/// every other byte (NUL included) stays as it is; then the whole result must be
+/// valid UTF-8 (`%C3%A9` is `é`; `%80`, `%ED%A0%80`, `%C3A9` are errors).
 fn urid(input: Value) -> CResult {
     const ERRMSG: &str = "is not a valid uri encoding";
-    let s = as_text(&input).as_c_str().as_bytes();
-    // Reads past the end see C's terminating NUL.
-    let at = |i: usize| s.get(i).copied().unwrap_or(0);
+    let s = as_text(&input).as_bytes();
     let hex = |c: u8| -> Option<u8> {
         match c {
             b'0'..=b'9' => Some(c - b'0'),
@@ -231,42 +226,28 @@ fn urid(input: Value) -> CResult {
             _ => None,
         }
     };
-    let mut line = String::with_capacity(s.len());
+    let mut result = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
         if s[i] != b'%' {
-            if s[i] < 0x80 {
-                line.push(s[i] as char);
-            } else {
-                line.push('\u{FFFD}');
-            }
-            i += 1;
-            continue;
-        }
-        let mut unicode = [0u8; 4];
-        let mut b = 0;
-        // check leading bits of first octet to determine length of unicode character
-        // (https://datatracker.ietf.org/doc/html/rfc3629#section-3)
-        while b == 0 || (b < 4 && unicode[0] >> 7 & 1 != 0 && unicode[0] >> (7 - b) & 1 != 0) {
-            if at(i) != b'%' {
-                return Err(Error::type_error(&input, ERRMSG));
-            }
-            i += 1;
+            result.push(s[i]);
+        } else {
+            let mut byte = 0u8;
             for _ in 0..2 {
-                let Some(d) = hex(at(i)) else {
+                i += 1;
+                let Some(d) = s.get(i).copied().and_then(hex) else {
                     return Err(Error::type_error(&input, ERRMSG));
                 };
-                i += 1;
-                unicode[b] = (unicode[b] << 4) | d;
+                byte = (byte << 4) | d;
             }
-            b += 1;
+            result.push(byte);
         }
-        if !utf8_is_valid(&unicode[..b]) {
-            return Err(Error::type_error(&input, ERRMSG));
-        }
-        line.push_str(std::str::from_utf8(&unicode[..b]).expect("validated"));
+        i += 1;
     }
-    Ok(Value::from(line))
+    if !utf8_is_valid(&result) {
+        return Err(Error::type_error(&input, ERRMSG));
+    }
+    Ok(Value::from(String::from_utf8(result).expect("validated")))
 }
 
 /// `BASE64_ENCODE_TABLE`.

@@ -415,10 +415,13 @@ fn match_checks_types_in_jqs_order() {
         m(r#""a""#, &[r#""(""#, "null", "true"]),
         "Regex failure: end pattern with unmatched parenthesis"
     );
-    // jv_dump_string_trunc keeps 11 bytes without splitting a character.
+    // jv_dump_string_trunc keeps at most 25 bytes, without splitting a character.
     assert_eq!(
-        m(r#"{"é":"😀😀😀😀"}"#, &[r#""a""#, "null", "false"]),
-        r#"object ({"é":"😀...) cannot be matched, as it is not a string"#
+        m(
+            r#"{"é":"😀😀😀😀😀😀😀😀😀"}"#,
+            &[r#""a""#, "null", "false"]
+        ),
+        r#"object ({"é":"😀😀😀😀...}) cannot be matched, as it is not a string"#
     );
 }
 
@@ -644,8 +647,8 @@ fn libm_type_errors_in_argument_order() {
         r#"string ("a") number required"#
     );
     assert_eq!(
-        err("frexp", "[1,2,3,4,5,6,7,8,9]", &[]),
-        "array ([1,2,3,4,5,...) number required"
+        err("frexp", "[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]", &[]),
+        "array ([1,2,3,4,5,6,7,8,9,10,11,...]) number required"
     );
     // A two- or three-argument builtin ignores its input.
     assert_eq!(ok("pow", r#""x""#, &["2", "10"]), "1024");

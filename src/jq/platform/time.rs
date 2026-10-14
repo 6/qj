@@ -150,17 +150,6 @@ pub struct Parsed {
 
 const ERR_CONVERT: &str = "error converting number of seconds since epoch to datetime";
 
-/// The `assert()` that `f_strflocaltime` trips when `localtime` fails
-/// (`jv_array_get` on the invalid result).
-fn abort_array_get() -> Error {
-    Error::Abort(super::assert_text(
-        "JVP_HAS_KIND(j, JV_KIND_ARRAY)",
-        "src/jv.c",
-        "jv_array_get",
-        1006,
-    ))
-}
-
 /// The `assert()` in `set_tm_yday` (only reachable on macOS).
 #[cfg(unix)]
 fn abort_set_tm_yday() -> Error {
@@ -168,7 +157,7 @@ fn abort_set_tm_yday() -> Error {
         "yday == tm->tm_yday || tm->tm_yday == 367",
         "src/builtin.c",
         "set_tm_yday",
-        1549,
+        1621,
     ))
 }
 
@@ -603,10 +592,7 @@ fn strflocaltime_in(
                 from_number = bt.map(Some);
                 &from_number[..]
             }
-            // f_strflocaltime doesn't check localtime's result: with a string format it
-            // passes the invalid value to jv2tm, whose jv_array_get asserts.
-            Err(_) if format.is_some() => return Err(abort_array_get()),
-            Err(_) => return Err(Error::msg("strflocaltime/1 requires a string format")),
+            Err(e) => return Err(e),
         },
         TimeInput::Array(fields) => fields,
         TimeInput::Other => {
@@ -636,9 +622,7 @@ fn strflocaltime_in(
 /// evaluation) can differ.
 ///
 /// Errors: as [`strftime`] with `strflocaltime/1` in the messages, except that a number
-/// whose `localtime` conversion fails gives `strflocaltime/1 requires a string format`
-/// if the format isn't a string and otherwise an [`Error::Abort`]: jq 1.8.1 crashes on
-/// `1e30 | strflocaltime("%c")`.
+/// whose `localtime` conversion fails gives that error, before the format is checked.
 pub fn strflocaltime(input: TimeInput, format: Option<&str>) -> Result<String, Error> {
     strflocaltime_in(input, format, date_locale())
 }

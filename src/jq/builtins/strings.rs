@@ -4,7 +4,6 @@
 //! Port of builtin.c. Owned by Track B1 (docs/JQ_PORT_PLAN.md).
 
 use super::{CResult, Host};
-use crate::jq::platform::Error::Abort;
 use crate::jq::value::unicode::codepoint_is_whitespace;
 use crate::jq::value::{Error, Str, Value};
 
@@ -54,40 +53,17 @@ pub fn f_string_implode(_host: &mut dyn Host, input: Value, _args: &mut [Value])
     Str::implode(&input).map(Value::String)
 }
 
-/// The assertions `jv_string_indexes` fails on a non-string input (`j`) or needle
-/// (`k`), as the platform's `assert()` prints them.
-fn assert_indexes_j() -> String {
-    crate::jq::platform::assert_text(
-        "JVP_HAS_KIND(j, JV_KIND_STRING)",
-        "src/jv.c",
-        "jv_string_indexes",
-        1312,
-    )
-}
-
-fn assert_indexes_k() -> String {
-    crate::jq::platform::assert_text(
-        "JVP_HAS_KIND(k, JV_KIND_STRING)",
-        "src/jv.c",
-        "jv_string_indexes",
-        1313,
-    )
-}
-
 /// `_strindices` (nargs 2): port of builtin.c `f_string_indexes` (`jv_string_indexes`):
 /// the codepoint offsets of every, possibly overlapping, occurrence of the argument.
-///
-/// jq 1.8.1 doesn't check the types here (`indices` does, before calling it): called
-/// directly with a non-string, it fails an assertion and dies of SIGABRT
-/// (`jq -n '1 | _strindices("a")'` exits 134), which `try` can't catch. The port
-/// reproduces the crash as the platform builtins do
-/// ([`crate::jq::platform::Error::abort_process`]).
 pub fn f_string_indexes(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
     let k = std::mem::take(&mut args[0]);
     match (&input, &k) {
         (Value::String(j), Value::String(k)) => Ok(Value::Array(j.indexes(k))),
-        (Value::String(_), _) => Abort(assert_indexes_k()).abort_process(),
-        _ => Abort(assert_indexes_j()).abort_process(),
+        (Value::String(_), _) => Err(Error::type_error(&k, "is not a string")),
+        _ => Err(Error::type_error(
+            &input,
+            "cannot be searched, as it is not a string",
+        )),
     }
 }
 
@@ -133,74 +109,28 @@ pub fn f_string_rtrim(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -
 
 #[cfg(test)]
 mod tests {
-    //! The fixture suite (`general/tests.rs`) covers these builtins; this checks the one
-    //! case it can't: `_strindices` crashing like jq.
     use super::*;
     use crate::jq::builtins::testing::TestHost;
 
-    /// Env var telling the child which call to make.
-    const CHILD_ENV: &str = "QJ_TEST_B1_STRINDICES_CHILD";
-
-    /// `jq -n '1 | _strindices("a")'` and `jq -n '"a" | _strindices(1)'` die of SIGABRT
-    /// after printing the failed assertion (the input is checked first). Each call runs
-    /// in a child process: this test binary, running `strindices_abort_child`.
-    #[cfg(unix)]
+    /// jq 1.8.2 checks the input, then the needle (`jq -n '1 | _strindices("a")'`).
     #[test]
-    fn strindices_on_non_strings_aborts_like_jq() {
-        use std::os::unix::process::ExitStatusExt;
-        use std::process::{Command, Stdio};
-        let cases = [
-            ("input", assert_indexes_j()),
-            ("both", assert_indexes_j()),
-            ("needle", assert_indexes_k()),
-        ];
-        // Start the children together, then collect them.
-        let children: Vec<_> = cases
-            .iter()
-            .map(|(which, _)| {
-                Command::new(std::env::current_exe().unwrap())
-                    .args([
-                        "--exact",
-                        "jq::builtins::strings::tests::strindices_abort_child",
-                        "--ignored",
-                        "--nocapture",
-                        "--test-threads=1",
-                    ])
-                    .env(CHILD_ENV, which)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .unwrap()
-            })
-            .collect();
-        for ((which, assertion), child) in cases.into_iter().zip(children) {
-            let out = child.wait_with_output().unwrap();
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            assert_eq!(
-                out.status.signal(),
-                Some(libc::SIGABRT),
-                "{which}: expected SIGABRT, got {:?}\nstderr: {stderr}",
-                out.status
-            );
-            assert!(
-                stderr.lines().any(|l| l == assertion),
-                "{which}: stderr lacks {assertion:?}:\n{stderr}"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "run by strindices_on_non_strings_aborts_like_jq"]
-    fn strindices_abort_child() {
-        let Ok(which) = std::env::var(CHILD_ENV) else {
-            return;
+    fn strindices_type_errors() {
+        let call = |input: Value, needle: Value| {
+            f_string_indexes(&mut TestHost::default(), input, &mut [needle])
+                .unwrap_err()
+                .to_string()
         };
-        let (input, needle) = match which.as_str() {
-            "input" => (Value::from(1.0), Value::from("a")),
-            "both" => (Value::Null, Value::from(1.0)),
-            _ => (Value::from("a"), Value::from(1.0)),
-        };
-        let got = f_string_indexes(&mut TestHost::default(), input, &mut [needle]);
-        panic!("{which}: returned instead of aborting: {got:?}");
+        assert_eq!(
+            call(Value::from(1.0), Value::from("a")),
+            "number (1) cannot be searched, as it is not a string"
+        );
+        assert_eq!(
+            call(Value::Null, Value::from(1.0)),
+            "null (null) cannot be searched, as it is not a string"
+        );
+        assert_eq!(
+            call(Value::from("a"), Value::from(1.0)),
+            "number (1) is not a string"
+        );
     }
 }
