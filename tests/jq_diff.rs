@@ -1,4 +1,4 @@
-//! jq_diff: strict differential conformance harness, qj vs jq 1.8.1.
+//! jq_diff: strict differential conformance harness, qj vs jq 1.8.2.
 //!
 //! Every case runs jq and qj with identical argv, stdin, environment and
 //! working directory, and compares stdout bytes, exit code (or the signal,
@@ -21,7 +21,7 @@
 //! pass, shown in the scoreboard's `unfin` column; anything else is a fail.
 //!
 //! Case sources (see `tests/jq_diff/cases.rs` for modes):
-//! - `tests/jq_compat/*.test`: jq 1.8.1's own suites (`upstream/...`).
+//! - `tests/jq_compat/*.test`: jq 1.8.2's own suites (`upstream/...`).
 //! - `tests/jq_compat/corpus/*.test`: qj's corpus in the same format.
 //! - `tests/jq_compat/corpus/*.toml`: CLI cases (`tests/jq_diff/cli.rs`).
 //!
@@ -78,7 +78,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const REQUIRED_JQ: &str = "jq-1.8.1";
+const REQUIRED_JQ: &str = "jq-1.8.2";
 const MAX_OUTPUT: usize = 16 << 20;
 
 /// Write to the real stderr, bypassing libtest's output capture.
