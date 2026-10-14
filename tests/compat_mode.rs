@@ -226,7 +226,7 @@ fn version_and_build_configuration_are_jqs_in_compat_mode() {
     let compat = run(true, &["--version"]);
     assert_eq!(
         (code(&compat), stdout(&compat).as_str()),
-        (Some(0), "jq-1.8.1\n")
+        (Some(0), "jq-1.8.2\n")
     );
 
     let plain = run(false, &["--build-configuration"]);
@@ -249,7 +249,7 @@ fn help_and_usage_are_jqs_in_compat_mode() {
     let compat = run(true, &["-h"]);
     assert_eq!(code(&compat), Some(0));
     let help = stdout(&compat);
-    assert!(help.starts_with("jq - commandline JSON processor [version 1.8.1]\n\nUsage:\tjq "));
+    assert!(help.starts_with("jq - commandline JSON processor [version 1.8.2]\n\nUsage:\tjq "));
     assert!(!help.contains("qj"), "{help}");
 
     // `usage(2, 1)`: no program, `-f` given.
@@ -297,23 +297,51 @@ fn messages_say_jq_in_compat_mode() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_module_import_cycle_is_an_error_by_default_and_a_segfault_in_compat_mode() {
+fn a_module_import_cycle_is_an_error_in_both_modes() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join("a.jq"), "import \"a\" as a;\ndef f: 1;\n").unwrap();
     let args = &["-nc", "-L", ".", "include \"a\"; 1"];
+    let path = dir.path().canonicalize().unwrap().join("a.jq");
+    for (compat, prog) in [(false, "qj"), (true, "jq")] {
+        let o = run_in(dir.path(), compat, args);
+        assert_eq!(code(&o), Some(3), "{}", stderr(&o));
+        assert_eq!(
+            stderr(&o),
+            format!(
+                "{prog}: error: circular import of {}\n\n{prog}: 1 compile error\n",
+                path.display()
+            )
+        );
+    }
+}
 
+/// jq 1.8.2 loads a module before the modules it imports, and then drops
+/// the definitions of the third module of a chain although the second still
+/// calls them: compiling the call reads freed memory, and jq aborts.
+#[test]
+fn a_chain_of_three_modules_aborts_in_compat_mode() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (name, text) in [
+        ("m0.jq", "import \"m1\" as m;\ndef f: 0 + m::f;\n"),
+        ("m1.jq", "import \"m2\" as m;\ndef f: 1 + m::f;\n"),
+        ("m2.jq", "def f: 2;\n"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let args = &["-nc", "-L", ".", "include \"m0\"; f"];
     let plain = run_in(dir.path(), false, args);
-    assert_eq!(code(&plain), Some(3), "{}", stderr(&plain));
-    assert!(
-        stderr(&plain).contains("imports itself (import cycle)"),
-        "{}",
-        stderr(&plain)
-    );
-
+    assert_eq!((code(&plain), stdout(&plain).as_str()), (Some(0), "3\n"));
     let compat = run_in(dir.path(), true, args);
-    assert_eq!(signal(&compat), Some(libc::SIGSEGV));
+    assert_eq!(signal(&compat), Some(libc::SIGABRT));
     assert_eq!(stdout(&compat), "");
-    assert_eq!(stderr(&compat), "");
+    assert!(
+        stderr(&compat).contains("Unknown function type"),
+        "{}",
+        stderr(&compat)
+    );
+    // Two deep, everything is kept.
+    let compat = run_in(dir.path(), true, &["-nc", "-L", ".", "include \"m1\"; f"]);
+    assert_eq!((code(&compat), stdout(&compat).as_str()), (Some(0), "3\n"));
 }
 
 /// A directory with `n` modules, each importing the next, and the program that
@@ -1141,7 +1169,7 @@ fn compat_mode_needs_what_jqs_start_and_compiler_do() {
     let version =
         run_stack_norandom(dir.path(), true, kb, &["--version"]).expect("setarch was there");
     assert_eq!(code(&version), Some(0), "{}", stderr(&version));
-    assert_eq!(stdout(&version), "jq-1.8.1\n");
+    assert_eq!(stdout(&version), "jq-1.8.2\n");
     // Below the start-up's need, even the version dies; by default qj answers.
     let below = kb - page_kb();
     if jq_stack(dir.path(), true, below * 1024, &["--version"]) < needs.start {

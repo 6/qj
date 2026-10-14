@@ -7,8 +7,16 @@ the order they are loaded and bound in, reuse, data imports and the errors
 
 qj links with a loop where jq's `load_library` and `process_dependencies`
 recurse (see `docs/COMPATIBILITY.md`), so these cases pin the order down: a
-module is recorded only after its own imports are loaded, imports bind last
+module is recorded once it parses, before its own imports are loaded (a module
+still loading that is imported again is a circular import), imports bind last
 first, and an error stops exactly what jq's stops.
+
+jq 1.8.2 links the modules in the order they were recorded, and then drops
+the definitions of a module three imports from the program although the one
+two imports away still calls them: compiling that call reads freed memory and
+jq aborts. So the definitions here call each other at most two imports deep;
+the deeper chains are loaded and bound all the way, with only the first two
+modules' definitions called. `corpus/compat_mode.toml` has the aborts.
 
 The chains here are tens of modules, not the ~20,000 it takes to overflow jq's
 stack: a case that long would mean that many files. `tests/compat_mode.rs`
@@ -30,39 +38,48 @@ def case(name, files, args, note=None):
 L = ["-L", "."]
 
 
-def chain(n, body="def f: %(i)d + m::f;", leaf="def f: %(i)d;"):
-    """`n` modules, m0 importing m1 … importing m{n-1}."""
+def chain(n, body="def f: %(i)d + m::f;", leaf="def f: %(i)d;", deeper=None):
+    """`n` modules, m0 importing m1 … importing m{n-1}. With `deeper`, the
+    modules after m0 that import another use it instead of `body`."""
     files = {}
     for i in range(n):
         if i + 1 < n:
-            files["m%d.jq" % i] = 'import "m%d" as m;\n%s\n' % (i + 1, body % {"i": i})
+            b = body if i == 0 or deeper is None else deeper
+            files["m%d.jq" % i] = 'import "m%d" as m;\n%s\n' % (i + 1, b % {"i": i})
         else:
             files["m%d.jq" % i] = "%s\n" % (leaf % {"i": i})
     return files
 
 
-# --- chains: every module in one, and the sum it computes ------------------
-for n in (1, 2, 3, 12, 40):
+# --- chains: every module in one, and what the first two compute -----------
+for n in (1, 2):
     case(
         "chain-%d" % n,
         chain(n),
         L + ["-nc", 'include "m0"; f'],
         "a chain of %d modules: jq recurses once per module" % n,
     )
+for n in (3, 12, 40):
+    case(
+        "chain-%d-called-two-deep" % n,
+        chain(n, deeper="def f: %(i)d;"),
+        L + ["-nc", 'include "m0"; f'],
+        "a chain of %d modules: jq recurses once per module" % n,
+    )
 
 # The same chain reached by `import`, so every level is namespaced.
 case(
-    "chain-12-namespaced",
-    chain(12),
+    "chain-12-namespaced-called-two-deep",
+    chain(12, deeper="def f: %(i)d;"),
     L + ["-nc", 'import "m0" as m; m::f'],
 )
 
-# A chain whose modules are all recorded in lib_state, then all bound: the
-# deepest is loaded first, so `get_search_list` and the defs come back in jq's
-# order.
+# A chain whose modules are all recorded in lib_state, then all bound: each is
+# recorded before the ones it imports, so `get_search_list` and the defs come
+# back in jq's order.
 case(
     "chain-12-defs-order",
-    chain(12, body='def f: %(i)d + m::f;\ndef g%(i)d: "%(i)d";'),
+    chain(12, body='def f: %(i)d + m::f;\ndef g%(i)d: "%(i)d";', deeper='def f: %(i)d;\ndef g%(i)d: "%(i)d";'),
     L + ["-nc", 'include "m0"; [f, g0, g5]'],
 )
 
@@ -87,9 +104,18 @@ case(
 case(
     "diamond",
     {
-        "top.jq": 'import "left" as l;\nimport "right" as r;\ndef t: [l::v, r::v];\n',
         "left.jq": 'import "base" as b;\ndef v: ["l", b::v];\n',
         "right.jq": 'import "base" as b;\ndef v: ["r", b::v];\n',
+        "base.jq": 'def v: "base";\n',
+    },
+    L + ["-nc", 'import "left" as l; import "right" as r; [l::v, r::v]'],
+)
+case(
+    "diamond-below-a-module",
+    {
+        "top.jq": 'import "left" as l;\nimport "right" as r;\ndef t: [l::v, r::v];\n',
+        "left.jq": 'import "base" as b;\ndef v: "l";\n',
+        "right.jq": 'import "base" as b;\ndef v: "r";\n',
         "base.jq": 'def v: "base";\n',
     },
     L + ["-nc", 'include "top"; t'],
@@ -119,13 +145,22 @@ case(
 )
 case("data-import-bad-json", {"d.json": "{oops\n"}, L + ["-nc", 'import "d" as $d; $d'])
 case(
-    "data-import-in-a-chain",
+    "data-import-in-a-module",
     {
-        "m0.jq": 'import "m1" as m;\ndef f: m::f;\n',
         "m1.jq": 'import "d" as $d;\ndef f: $d;\n',
         "d.json": "[1,2,3]\n",
     },
+    L + ["-nc", 'include "m1"; f'],
+)
+case(
+    "data-import-in-a-chain-unused",
+    {
+        "m0.jq": 'import "m1" as m;\ndef f: m::f;\n',
+        "m1.jq": 'import "d" as $d;\ndef f: if false then $d else 7 end;\n',
+        "d.json": "[1,2,3]\n",
+    },
     L + ["-nc", 'include "m0"; f'],
+    "jq frees the data global, but this never reads it",
 )
 
 # --- errors ---------------------------------------------------------------
@@ -169,7 +204,72 @@ case(
     "syntax-error-module-then-a-good-one",
     {"bad.jq": "def f: ;\n", "a.jq": "def g: 1;\n"},
     L + ["-nc", 'include "bad"; include "a"; g'],
-    "jq records the module that didn't parse, and skips block_bind_self",
+)
+case(
+    "syntax-error-module-twice",
+    {"bad.jq": "def f: ;\n"},
+    L + ["-nc", 'import "bad" as a; import "bad" as b; 1'],
+    "a module that didn't parse isn't recorded: the second import parses it again",
+)
+case(
+    "syntax-error-module-twice-from-two-modules",
+    {"x.jq": 'import "bad" as a;\ndef f: 1;\n', "y.jq": 'import "bad" as b;\ndef g: 1;\n', "bad.jq": "def f: ;\n"},
+    L + ["-nc", 'import "x" as x; import "y" as y; 1'],
+)
+case(
+    "module-imports-itself",
+    {"a.jq": 'import "a" as a;\ndef f: 1;\n'},
+    L + ["-nc", 'include "a"; 1'],
+    "a module still loading that is imported again is a circular import",
+)
+case(
+    "module-includes-itself",
+    {"a.jq": 'include "a";\ndef f: 1;\n'},
+    L + ["-nc", 'import "a" as a; a::f'],
+)
+case(
+    "module-import-cycle-of-two",
+    {"a.jq": 'import "b" as b;\ndef f: b::g;\n', "b.jq": 'import "a" as a;\ndef g: 1;\n'},
+    L + ["-nc", 'import "a" as a; a::f'],
+)
+case(
+    "module-import-cycle-of-three",
+    {
+        "a.jq": 'import "b" as b;\ndef f: b::g;\n',
+        "b.jq": 'import "c" as c;\ndef g: 1;\n',
+        "c.jq": 'import "a" as a;\ndef h: 1;\n',
+    },
+    L + ["-nc", 'import "a" as a; a::f'],
+)
+case(
+    "module-import-cycle-then-another-import",
+    {"a.jq": 'import "a" as a;\ndef f: 1;\n', "b.jq": "def g: 1;\n"},
+    L + ["-nc", 'import "b" as b; import "a" as a; 1'],
+)
+case(
+    "data-module-imported-by-itself-is-no-cycle",
+    {"a.jq": 'import "a" as $a;\ndef f: $a;\n', "a.json": "[1]\n"},
+    L + ["-nc", 'import "a" as a; a::f'],
+)
+case(
+    "module-path-with-a-nul-byte",
+    {"a.jq": "def f: 1;\n"},
+    L + ["-nc", 'import "a\\u0000b" as a; 1'],
+)
+case(
+    "module-path-with-a-nul-byte-include",
+    {"a.jq": "def f: 1;\n"},
+    L + ["-nc", 'include "a\\u0000b"; 1'],
+)
+case(
+    "data-module-path-with-a-nul-byte",
+    {"a.json": "1\n"},
+    L + ["-nc", 'import "a\\u0000b" as $a; 1'],
+)
+case(
+    "module-path-with-a-nul-byte-in-a-module",
+    {"m.jq": 'import "a\\u0000b" as a;\ndef f: 1;\n', "a.jq": "def g: 1;\n"},
+    L + ["-nc", 'import "m" as m; m::f'],
 )
 case(
     "syntax-error-deep-in-a-chain",
@@ -223,6 +323,13 @@ case(
     "modulemeta lists the imports without loading them",
 )
 case("modulemeta-missing", {}, L + ["-c", "-n", '"nope" | modulemeta'])
+case("modulemeta-nul-byte", {"a.jq": "def f: 1;\n"}, L + ["-c", "-n", '"a\\u0000b" | modulemeta'])
+case(
+    "modulemeta-of-an-import-with-a-nul-byte",
+    {"m.jq": 'import "a\\u0000b" as a;\ndef f: 1;\n'},
+    L + ["-c", "-n", '"m" | modulemeta'],
+    "gen_import keeps the whole path",
+)
 case("modulemeta-syntax-error", {"bad.jq": "def f: ;\n"}, L + ["-c", "-n", '"bad" | modulemeta'])
 case(
     "modulemeta-of-a-chain-head",

@@ -8510,30 +8510,53 @@ fn module_chain_dir(n: usize, carry: bool) -> tempfile::TempDir {
 ///
 /// (Chains stay under 4,096 here: past that jq itself resolves `m::f` 4,096
 /// levels too shallow, which qj reproduces — see `docs/COMPATIBILITY.md`.)
+///
+/// jq 1.8.2 aborts where a module's definitions call into a module three
+/// imports from the program (`block_drop_unreferenced` frees what they
+/// call), so carrying a value through the chain is compared with jq only two
+/// deep; further, qj gives the answer. A chain whose definitions don't call
+/// each other is compared with jq at every length.
 #[test]
 fn long_module_chains_match_jq() {
     if !jq_available() {
         return;
     }
-    for n in [1usize, 2, 3, 40, 500, 3000] {
-        let dir = module_chain_dir(n, true);
-        let args = ["-nc", "-L", ".", "include \"m0\"; f"];
-        let qj = Command::new(env!("CARGO_BIN_EXE_qj"))
-            .args(args)
+    let run = |tool: &str, dir: &tempfile::TempDir| {
+        Command::new(tool)
+            .args(["-nc", "-L", ".", "include \"m0\"; f"])
             .current_dir(dir.path())
             .output()
-            .expect("failed to run qj");
-        let jq = Command::new("jq")
-            .args(args)
-            .current_dir(dir.path())
-            .output()
-            .expect("failed to run jq");
+            .expect("failed to run")
+    };
+    let qj_bin = env!("CARGO_BIN_EXE_qj");
+    for (n, carry) in [
+        (1usize, true),
+        (2, true),
+        (3, true),
+        (40, true),
+        (3000, true),
+        (3, false),
+        (40, false),
+        (500, false),
+        (3000, false),
+    ] {
+        let dir = module_chain_dir(n, carry);
+        let qj = run(qj_bin, &dir);
+        let want = if carry {
+            (n - 1).to_string()
+        } else {
+            "1".into()
+        };
         assert_eq!(
             String::from_utf8_lossy(&qj.stdout).trim(),
-            (n - 1).to_string(),
+            want,
             "{n} modules: qj stderr {}",
             String::from_utf8_lossy(&qj.stderr)
         );
+        if carry && n > 2 {
+            continue;
+        }
+        let jq = run("jq", &dir);
         assert_eq!(
             String::from_utf8_lossy(&qj.stdout),
             String::from_utf8_lossy(&jq.stdout),
