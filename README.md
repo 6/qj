@@ -13,7 +13,7 @@ Benchmarked on M5 Max MacBook Pro:
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and direct evaluation of simple filters on simdjson's tape. It's often **~95–200x** faster than jq for common streaming filters, and **~60–170x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
-**Large JSON files.** qj is 5-18x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~5x faster.
+**Large JSON files.** qj is 5-28x faster than jq on a single file. Printing large parts of a document (`.`, `.statuses`, `walk`) sees the biggest gains (~25x); heavier transforms (`group_by`, `sort_by`) are ~5x faster.
 
 **Memory usage.** qj trades memory for speed, using a ~80–410 MB sliding window for a 3.4 GB file vs jq's ~6 MB.
 
