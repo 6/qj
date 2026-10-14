@@ -1,5 +1,5 @@
 //! Track B1's fixture suite: every case in `../testdata/b1_*.json` calls one C builtin
-//! through [`function_list`] and compares with what the jq 1.8.1 binary printed for
+//! through [`function_list`] and compares with what the jq 1.8.2 binary printed for
 //! `try [0, NAME($a; $b)] catch [1, .]`. Regenerate the fixtures with
 //! `python3 src/jq/builtins/testdata/b1_gen.py`.
 
@@ -95,7 +95,7 @@ fn run_fixture(name: &str, json: &str) {
         let n = failures.len();
         failures.truncate(40);
         panic!(
-            "{name}: {n} of {} cases differ from jq 1.8.1:\n{}",
+            "{name}: {n} of {} cases differ from jq 1.8.2:\n{}",
             cases.len(),
             failures.join("\n")
         );
