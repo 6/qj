@@ -1395,8 +1395,8 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
 /// itself; `halt`/`halt_error` stop the run; `debug`/`stderr` interleave
 /// with other stderr output as they run; `%Z` in local times depends on the
 /// order of earlier libc time calls (`localtime`, `strflocaltime`,
-/// `mktime`); `strptime` and `_strindices` can abort the process like jq's
-/// `assert()`, which on macOS flushes the output produced so far;
+/// `mktime`); `strptime` can abort the process like jq's `assert()`, which
+/// on macOS flushes the output produced so far;
 /// `modulemeta` reports module errors through the error callback; `now` would
 /// come out of order across records, where jq's values never decrease.
 /// (`input_filename` and `input_line_number` are fine: workers answer them
@@ -1412,7 +1412,6 @@ const SEQUENTIAL_BUILTINS: &[&str] = &[
     "strflocaltime",
     "mktime",
     "strptime",
-    "_strindices",
     "modulemeta",
 ];
 
