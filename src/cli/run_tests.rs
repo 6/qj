@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `jq_test.c` (`--run-tests`): runs a jq test file
+//! Port of jq 1.8.2's `jq_test.c` (`--run-tests`): runs jq test files
 //! (`.test` format: program, input, expected outputs, blank line;
 //! `%%FAIL` blocks for programs that must not compile) and prints jq's
 //! report.
@@ -15,7 +15,6 @@
 
 use crate::os::OsStrExt;
 use std::ffi::CString;
-use std::io::Read;
 
 use super::input::{StdinReader, Stream};
 use super::run::{TraceOut, default_err_cb, with_prog_name, with_stdout, write_stderr};
@@ -30,6 +29,9 @@ pub enum Outcome {
     Exit(i32),
     Return(i32),
 }
+
+/// `fgets(buf, 4096, testdata)` reads at most this many bytes.
+const LINE_MAX: usize = 4095;
 
 fn print(s: &[u8]) {
     with_stdout(|out| out.write(s));
@@ -69,17 +71,21 @@ fn atoi(s: &[u8]) -> i32 {
     unsafe { libc::atoi(c.as_ptr()) }
 }
 
-/// Port of `jq_testsuite(libdirs, verbose, argc, argv)`.
+/// Port of `jq_testsuite(libdirs, verbose, argc, argv)`: each file is run
+/// as it comes, with the `--skip` and `--take` given before it; standard
+/// input if there is none.
 pub fn jq_testsuite(lib_dirs: Option<&[Vec<u8>]>, verbose: bool, args: &[Vec<u8>]) -> Outcome {
-    let mut testdata: Box<dyn Read> = Box::new(StdinReader::new());
     let mut skip = -1;
     let mut take = -1;
+    let mut nfiles = 0;
     let mut i = 0;
     while i < args.len() {
         if args[i] == b"--skip" || args[i] == b"--take" {
             let Some(n) = args.get(i + 1) else {
-                // atoi(argv[argc]) is atoi(NULL): jq dies of a segfault.
-                crate::compat::die_by_signal(libc::SIGSEGV);
+                let mut msg = args[i].clone();
+                msg.extend_from_slice(b" requires an argument\n");
+                write_stderr(&msg);
+                return Outcome::Exit(1);
             };
             if args[i] == b"--skip" {
                 skip = atoi(n);
@@ -88,8 +94,8 @@ pub fn jq_testsuite(lib_dirs: Option<&[Vec<u8>]>, verbose: bool, args: &[Vec<u8>
             }
             i += 1;
         } else {
-            match std::fs::File::open(std::ffi::OsStr::from_bytes(&args[i])) {
-                Ok(f) => testdata = Box::new(f),
+            let testdata = match std::fs::File::open(std::ffi::OsStr::from_bytes(&args[i])) {
+                Ok(f) => f,
                 Err(e) => {
                     // perror("fopen")
                     let mut msg = b"fopen: ".to_vec();
@@ -98,17 +104,29 @@ pub fn jq_testsuite(lib_dirs: Option<&[Vec<u8>]>, verbose: bool, args: &[Vec<u8>
                     write_stderr(&msg);
                     return Outcome::Exit(1);
                 }
+            };
+            // QJ_JQ_COMPAT=1: jq's test loop holds large buffers on its
+            // stack, below which everything it compiles and runs has less.
+            crate::compat::running_tests();
+            let testdata = Stream::new(Box::new(testdata));
+            if let Some(code) = run_jq_tests(lib_dirs, verbose, testdata, skip, take) {
+                return Outcome::Exit(code);
             }
+            nfiles += 1;
         }
         i += 1;
     }
-    // QJ_JQ_COMPAT=1: jq's test loop holds large buffers on its stack, below
-    // which everything it compiles and runs has less.
-    crate::compat::running_tests();
-    if let Some(code) = run_jq_tests(lib_dirs, verbose, Stream::new(testdata), skip, take) {
-        return Outcome::Exit(code);
+    if nfiles == 0 {
+        crate::compat::running_tests();
+        let testdata = Stream::new(Box::new(StdinReader::new()));
+        if let Some(code) = run_jq_tests(lib_dirs, verbose, testdata, skip, take) {
+            return Outcome::Exit(code);
+        }
     }
     run_jq_start_state_tests();
+    run_jq_compile_args_tests();
+    run_jq_recompile_tests();
+    run_jq_exhaust_and_reuse_tests();
     run_jq_pthread_tests();
     Outcome::Return(0)
 }
@@ -155,7 +173,7 @@ fn run_jq_tests(
     let mut jq: Option<Jq> = None;
 
     loop {
-        if !testdata.fgets(&mut prog) {
+        if !testdata.fgets_max(&mut prog, LINE_MAX) {
             break;
         }
         lineno += 1;
@@ -245,7 +263,7 @@ fn run_jq_tests(
                     break 'test Then::Fail;
                 }
                 let mut err_buf: &[u8] = c_bytes(&err_msg);
-                while testdata.fgets(&mut buf) {
+                while testdata.fgets_max(&mut buf, LINE_MAX) {
                     lineno += 1;
                     if skipline(&buf) {
                         break;
@@ -312,7 +330,7 @@ fn run_jq_tests(
                 print(jq.dump_disassembly(2).as_bytes());
                 print(b"\n");
             }
-            if !testdata.fgets(&mut buf) {
+            if !testdata.fgets_max(&mut buf, LINE_MAX) {
                 invalid += 1;
                 return finish(tests, passed, invalid, tests_to_skip, skip);
             }
@@ -326,7 +344,7 @@ fn run_jq_tests(
             };
             jq.start(input, if verbose { JQ_DEBUG_TRACE } else { 0 });
 
-            while testdata.fgets(&mut buf) {
+            while testdata.fgets_max(&mut buf, LINE_MAX) {
                 lineno += 1;
                 if skipline(&buf) {
                     break;
@@ -353,7 +371,22 @@ fn run_jq_tests(
                             print(&line);
                             pass = false;
                         }
-                        assert_reparses(&expected);
+                        // The expected value must survive printing and
+                        // parsing back (a NaN doesn't: it prints as null).
+                        let text = dump_string(&expected, &DumpOptions::default());
+                        let reparsed = parse_sized(text.as_bytes());
+                        if !reparsed.as_ref().is_ok_and(|r| expected.equal(r)) {
+                            print(b"*** Expected result should be equal after reparsing, but got ");
+                            match &reparsed {
+                                Ok(r) => dump(r),
+                                Err(_) => print(b"<invalid>"),
+                            }
+                            let mut line = format!(" for test at line {lineno}: ").into_bytes();
+                            line.extend_from_slice(c_bytes(&buf));
+                            line.push(b'\n');
+                            print(&line);
+                            pass = false;
+                        }
                     }
                     _ => {
                         let mut line =
@@ -386,7 +419,7 @@ fn run_jq_tests(
             Then::Next => {}
         }
         // next:
-        while testdata.fgets(&mut buf) {
+        while testdata.fgets_max(&mut buf, LINE_MAX) {
             lineno += 1;
             if skipline(&buf) {
                 break;
@@ -396,29 +429,6 @@ fn run_jq_tests(
         check_msg = false;
     }
     finish(tests, passed, invalid, tests_to_skip, skip)
-}
-
-/// The assertion jq_test.c makes after comparing an expected value with a result
-/// (`#ifdef USE_DECNUM`, and jq 1.8.1 is built with decNumber).
-fn assert_reparsed() -> String {
-    crate::jq::platform::assert_text(
-        "jv_equal(jv_copy(expected), jv_copy(reparsed))",
-        "src/jq_test.c",
-        "run_jq_tests",
-        204,
-    )
-}
-
-/// jq_test.c dumps the expected value (with random print flags, none of which change
-/// what the text parses back to), parses the text again, and asserts that the result
-/// equals the expected value. It doesn't for a NaN, which prints as `null`, so an
-/// expected `nan` (or `[nan]`, ...) makes jq die of SIGABRT once the test has a result;
-/// the port dies the same way.
-fn assert_reparses(expected: &Value) {
-    let text = dump_string(expected, &DumpOptions::default());
-    if !parse_sized(text.as_bytes()).is_ok_and(|reparsed| expected.equal(&reparsed)) {
-        crate::jq::platform::Error::Abort(assert_reparsed()).abort_process();
-    }
 }
 
 /// The end of `run_jq_tests`: the summary, and jq's exits.
@@ -466,6 +476,94 @@ fn run_jq_start_state_tests() {
 
 fn start_state_ok(jq: &Jq) -> bool {
     jq.error_message().is_none() && jq.exit_code().is_none() && !jq.halted()
+}
+
+/// Compiles `prog` with named arguments (onto `jq`, if there is one) and
+/// checks that it gives exactly `expected` for `input`.
+fn compile_and_check(
+    jq: &mut Option<Jq>,
+    prog: &str,
+    args: &[(&str, Value)],
+    input: &str,
+    expected: Value,
+) {
+    let mut opts = CompileOptions::new(".");
+    for (name, value) in args {
+        opts.args.insert((*name).into(), value.clone());
+    }
+    let bc = jq_compile_args(prog.as_bytes(), &opts).expect("compiles");
+    let jq = match jq {
+        Some(jq) => {
+            jq.set_bytecode(bc);
+            jq
+        }
+        None => jq.insert(Jq::new(bc)),
+    };
+    jq.start(parse_sized(input.as_bytes()).expect("valid"), 0);
+    match jq.next() {
+        Some(Ok(v)) => assert!(v.equal(&expected), "{prog}"),
+        other => panic!("{prog}: {other:?}"),
+    }
+    assert!(jq.next().is_none(), "{prog}");
+}
+
+/// Port of `run_jq_compile_args_tests`: `jq_compile_args` with named
+/// arguments (jq's array form becomes this object).
+fn run_jq_compile_args_tests() {
+    print(b"Test jq_compile_args with array args\n");
+    let n = |x: f64| Value::from(x);
+    let s = |x: &str| Value::from(x);
+    let mut jq = None;
+    for (prog, args, expected) in [
+        ("42", vec![], n(42.0)),
+        ("$val", vec![("val", n(42.0))], n(42.0)),
+        ("$x + $y", vec![("x", n(1.0)), ("y", n(2.0))], n(3.0)),
+        (
+            "$a + $b + $c",
+            vec![("a", s("hello")), ("b", s(" ")), ("c", s("world"))],
+            s("hello world"),
+        ),
+        ("$x * $y", vec![("x", n(10.0)), ("y", n(20.0))], n(200.0)),
+    ] {
+        print(format!("  subtest: {prog}\n").as_bytes());
+        compile_and_check(&mut jq, prog, &args, "null", expected);
+    }
+}
+
+/// Port of `run_jq_recompile_tests`: compiling again on the same state.
+fn run_jq_recompile_tests() {
+    print(b"Test jq recompile on same state\n");
+    let n = |x: f64| Value::from(x);
+    let mut jq = None;
+    compile_and_check(&mut jq, ". + 1", &[], "1", n(2.0));
+    compile_and_check(&mut jq, ". * 2", &[], "5", n(10.0));
+    let args = [("n", n(100.0)), ("m", n(7.0))];
+    compile_and_check(&mut jq, "$n + $m", &args, "null", n(107.0));
+    compile_and_check(&mut jq, ". - 1", &[], "10", n(9.0));
+}
+
+/// Port of `run_jq_exhaust_and_reuse_tests`: running a compiled program
+/// again after it ran out of results.
+fn run_jq_exhaust_and_reuse_tests() {
+    print(b"Test jq exhaust and reuse\n");
+    let opts = CompileOptions::new(".");
+    let bc = jq_compile_args(b".[]", &opts).expect("compiles");
+    let mut jq = Jq::new(bc);
+    for (input, want) in [
+        ("[1,2,3]", &[1.0, 2.0, 3.0][..]),
+        ("[10,20]", &[10.0, 20.0]),
+        ("[]", &[]),
+        ("[99]", &[99.0]),
+    ] {
+        jq.start(parse_sized(input.as_bytes()).expect("valid"), 0);
+        for &w in want {
+            match jq.next() {
+                Some(Ok(v)) => assert!(v.equal(&Value::from(w)), "{input}"),
+                other => panic!("{input}: {other:?}"),
+            }
+        }
+        assert!(jq.next().is_none(), "{input}");
+    }
 }
 
 /// Port of `run_jq_pthread_tests`: three threads each compile and run a
