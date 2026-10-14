@@ -106,7 +106,7 @@ pub fn render(entries: &[Entry]) -> String {
     let mut out = String::from(
         "# jq_diff ratchet baseline (see tests/jq_diff.rs and CLAUDE.md).\n\
          # <level> <case id> <fingerprint>; level `pass` = stdout, exit code and stderr\n\
-         # match jq 1.8.1, `stdout` = stdout and exit code match. Unlisted cases fail.\n\
+         # match jq 1.8.2, `stdout` = stdout and exit code match. Unlisted cases fail.\n\
          # Regenerate with JQ_DIFF_UPDATE_BASELINE=1; don't edit by hand.\n",
     );
     for e in sorted {
