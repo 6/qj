@@ -635,18 +635,17 @@ fn program_arguments(opts: &mut Options<Value>) -> (Object, Value) {
     (vars, args)
 }
 
-/// `-f`: `jv_load_file(program, 1)`, which `jq_compile_args` reads as a C
-/// string (up to its first NUL).
+/// `-f`: `jv_load_file(program, 1)`, refused if it holds a NUL byte.
 fn load_program_text(path: &[u8]) -> Result<Vec<u8>, ArgError> {
     let data = args::load_file(path).map_err(ArgError::ProgramFile)?;
     let text = match load_file_data(&data, true) {
         Ok(Value::String(s)) => s.as_bytes().to_vec(),
         _ => data,
     };
-    Ok(match memchr::memchr(0, &text) {
-        Some(nul) => text[..nul].to_vec(),
-        None => text,
-    })
+    if memchr::memchr(0, &text).is_some() {
+        return Err(ArgError::ProgramFile(args::PROGRAM_NUL.to_vec()));
+    }
+    Ok(text)
 }
 
 // ---------------------------------------------------------------------------
@@ -1278,7 +1277,7 @@ fn run_program(opts: &mut Options<Value>, stdout_is_tty: bool) -> (i32, i32) {
     copts.attrs.lib_dirs = Value::Null;
     copts.attrs.jq_origin = Value::Null;
     copts.attrs.prog_origin = Value::Null;
-    jq.set_attr("VERSION_DIR", Value::from("1.8.1"));
+    jq.set_attr("VERSION_DIR", Value::from("1.8.2"));
     jq.set_trace_writer(Some(Box::new(TraceOut)));
 
     if opts.dump_disasm {
@@ -1560,7 +1559,7 @@ impl crate::io::parallel::WorkerFactory for PortFactory {
             .unwrap_or_else(|_| unreachable!("the program compiled on the main thread"));
         let mut jq = Jq::new(bc);
         jq.set_jq_attrs(&copts.attrs);
-        jq.set_attr("VERSION_DIR", Value::from("1.8.1"));
+        jq.set_attr("VERSION_DIR", Value::from("1.8.2"));
         let position = Rc::new(RefCell::new((None, 0)));
         jq.set_input(Some(Box::new(RecordPosition(position.clone()))));
         PortWorker {

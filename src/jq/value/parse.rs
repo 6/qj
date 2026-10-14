@@ -17,6 +17,9 @@ use super::{Array, Error, Number, Object, Str, Value};
 pub const MAX_PARSING_DEPTH: usize = 10000;
 
 const RS: u8 = 0x1E;
+/// The longest token `tokenadd` keeps: its buffer starts at 256 bytes and
+/// doubles, and won't grow past `INT_MAX / 2`, keeping one byte spare.
+const TOKEN_MAX: usize = (1 << 30) - 1;
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 /// Parser flags (`JV_PARSE_SEQ`, `JV_PARSE_STREAMING`,
@@ -570,6 +573,15 @@ impl Parser {
     }
 
     #[inline]
+    fn tokenadd(&mut self, ch: u8) -> PResult {
+        if self.token.len() >= TOKEN_MAX {
+            return Err("Token too long");
+        }
+        self.token.push(ch);
+        Ok(())
+    }
+
+    #[inline]
     fn token(&mut self, ch: u8) -> PResult {
         if self.streaming() {
             self.stream_token(ch)
@@ -792,7 +804,7 @@ impl Parser {
                 }
             }
             match cls {
-                ChClass::Literal => self.token.push(ch),
+                ChClass::Literal => self.tokenadd(ch)?,
                 ChClass::Whitespace => {}
                 ChClass::Quote => self.st = State::String,
                 ChClass::Structure => self.token(ch)?,
@@ -807,7 +819,7 @@ impl Parser {
                 answer = true;
             }
         } else {
-            self.token.push(ch);
+            self.tokenadd(ch)?;
             if ch == b'\\' && self.st == State::String {
                 self.st = State::StringEscape;
             } else {
@@ -836,7 +848,9 @@ impl Parser {
     #[inline]
     fn fast_string_run(&mut self, pos: usize) -> usize {
         let buf = &self.buf[pos..];
-        let n = memchr::memchr3(b'"', b'\\', b'\n', buf).unwrap_or(buf.len());
+        let n = memchr::memchr3(b'"', b'\\', b'\n', buf)
+            .unwrap_or(buf.len())
+            .min(TOKEN_MAX.saturating_sub(self.token.len()));
         if n > 0 {
             self.token.extend_from_slice(&buf[..n]);
             self.column += n as i32;
@@ -855,7 +869,8 @@ impl Parser {
         let n = buf
             .iter()
             .position(|&c| classify(c) != ChClass::Literal || (seq && c == RS))
-            .unwrap_or(buf.len());
+            .unwrap_or(buf.len())
+            .min(TOKEN_MAX.saturating_sub(self.token.len()));
         if n > 0 {
             self.token.extend_from_slice(&buf[..n]);
             self.column += n as i32;
@@ -927,8 +942,12 @@ impl Parser {
                 State::Normal => {
                     let c = self.buf[self.buf_pos];
                     if classify(c) == ChClass::Literal && !(self.flags.seq && c == RS) {
-                        self.buf_pos = self.fast_literal_run(self.buf_pos);
-                        continue;
+                        let p = self.fast_literal_run(self.buf_pos);
+                        if p > self.buf_pos {
+                            self.buf_pos = p;
+                            continue;
+                        }
+                        // A full token: `scan` reports it.
                     }
                 }
                 _ => {}

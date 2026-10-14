@@ -164,12 +164,17 @@ fn named_arguments_and_args() {
 }
 
 #[test]
-fn program_files_are_repaired_then_cut_at_nul() {
+fn program_files_are_repaired_and_refused_with_nul() {
     let dir = std::env::temp_dir();
     let f = dir.join(format!("qj-run-program-{}.jq", std::process::id()));
-    std::fs::write(&f, b".a | \"\xff\"\x00 garbage").unwrap();
+    std::fs::write(&f, b".a | \"\xff\"").unwrap();
     let text = load_program_text(f.as_os_str().as_bytes()).unwrap();
     assert_eq!(text, ".a | \"\u{FFFD}\"".as_bytes());
+    std::fs::write(&f, b".a | \"\xff\"\x00 garbage").unwrap();
+    match load_program_text(f.as_os_str().as_bytes()) {
+        Err(ArgError::ProgramFile(m)) => assert_eq!(m, b"program file contains NUL bytes"),
+        other => panic!("{other:?}"),
+    }
     std::fs::remove_file(&f).unwrap();
     let missing = dir.join("qj-run-program-missing.jq");
     match load_program_text(missing.as_os_str().as_bytes()) {

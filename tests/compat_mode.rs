@@ -263,13 +263,13 @@ fn help_and_usage_are_jqs_in_compat_mode() {
     assert_eq!(
         stderr(&plain),
         "qj: Unknown option --bogus\nUse qj --help for help with command-line options,\n\
-         or see the jq manpage, or online docs  at https://jqlang.org\n"
+         or see the jq manpage, or online docs at https://jqlang.org\n"
     );
     let compat = run(true, &["--bogus"]);
     assert_eq!(
         stderr(&compat),
         "jq: Unknown option --bogus\nUse jq --help for help with command-line options,\n\
-         or see the jq manpage, or online docs  at https://jqlang.org\n"
+         or see the jq manpage, or online docs at https://jqlang.org\n"
     );
 }
 
