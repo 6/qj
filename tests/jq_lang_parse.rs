@@ -1,7 +1,7 @@
-//! jq 1.8.1 parser conformance for `qj::jq::lang` (Track P).
+//! jq 1.8.2 parser conformance for `qj::jq::lang` (Track P).
 //!
 //! * `parse_matches_recorded_jq`: fast. Replays `tests/jq_lang/cases.jsonl`, which
-//!   records what jq 1.8.1 does with every program from the upstream `.test` files
+//!   records what jq 1.8.2 does with every program from the upstream `.test` files
 //!   (including `%%FAIL` blocks), the module files, `builtin.jq`, the hand-written
 //!   corpus (`tests/jq_lang/corpus.jsonl`), and a sample of generated syntax-error
 //!   mutations. Every program must be classified exactly as jq classifies it (syntax
@@ -12,7 +12,7 @@
 //!
 //!   ```text
 //!   cargo test --release --test jq_lang_parse -- --ignored --nocapture
-//!   QJ_BLESS=1 QJ_JQ_TESTS=/path/to/jq-1.8.1/tests cargo test --release --test jq_lang_parse parse_vs_live_jq -- --ignored --nocapture
+//!   QJ_BLESS=1 QJ_JQ_TESTS=/path/to/jq-1.8.2/tests cargo test --release --test jq_lang_parse parse_vs_live_jq -- --ignored --nocapture
 //!   ```
 //!
 //!   `QJ_JQ_TESTS` adds a directory of upstream `.test` files (man.test, onig.test,
@@ -887,8 +887,8 @@ fn parse_vs_live_jq() {
         .expect("jq not found");
     assert_eq!(
         String::from_utf8_lossy(&version.stdout).trim(),
-        "jq-1.8.1",
-        "set JQ to a jq 1.8.1 binary"
+        "jq-1.8.2",
+        "set JQ to a jq 1.8.2 binary"
     );
 
     // Sources: upstream test files, module files, builtin.jq, corpus.
