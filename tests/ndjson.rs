@@ -1600,6 +1600,52 @@ fn golden_ndjson_parallel_large_input() {
     );
 }
 
+/// `_strindices` runs in parallel: its type errors on non-string records
+/// come out in record order, between the results, as jq prints them.
+#[test]
+fn golden_ndjson_parallel_strindices_errors() {
+    let values = [
+        r#""abcabca""#,
+        r#""xa""#,
+        "1",
+        r#"{"a":1}"#,
+        r#""aaaa""#,
+        "null",
+    ];
+    let mut rng = Rng::new(99002);
+    let input: String = (0..20000)
+        .map(|_| format!("{}\n", values[rng.next() as usize % values.len()]))
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("input.ndjson");
+    std::fs::write(&path, &input).unwrap();
+    let run = |cmd: &str, extra: &[&str]| {
+        Command::new(cmd)
+            .args(extra)
+            .args(["-c", r#"indices("a"), _strindices("a")"#])
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .output()
+    };
+    let Ok(jq) = run("jq", &[]) else {
+        return;
+    };
+    let qj = run(env!("CARGO_BIN_EXE_qj"), &["--threads", "4"]).expect("failed to run qj");
+    let qj_stderr = String::from_utf8_lossy(&qj.stderr).replace("qj: error", "jq: error");
+    assert_eq!(
+        (
+            qj.status.code(),
+            String::from_utf8_lossy(&qj.stdout),
+            qj_stderr.as_str()
+        ),
+        (
+            jq.status.code(),
+            String::from_utf8_lossy(&jq.stdout),
+            &*String::from_utf8_lossy(&jq.stderr)
+        ),
+    );
+}
+
 /// Number literals (scientific notation, trailing zeros, etc.) print as jq
 /// prints them, through each shape.
 #[test]
