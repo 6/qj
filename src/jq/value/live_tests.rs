@@ -1,5 +1,5 @@
 //! Live differential tests against the `jq` binary on PATH (must be
-//! jq-1.8.1). Ignored by default; run with
+//! jq-1.8.2). Ignored by default; run with
 //!
 //! ```text
 //! cargo test --release --lib jq::value::live_tests -- --ignored --nocapture
@@ -46,8 +46,8 @@ fn jq_available() -> bool {
     match Command::new("jq").arg("--version").output() {
         Ok(o) => {
             let v = String::from_utf8_lossy(&o.stdout);
-            if v.trim() != "jq-1.8.1" {
-                eprintln!("skipping: jq on PATH is {v:?}, need jq-1.8.1");
+            if v.trim() != "jq-1.8.2" {
+                eprintln!("skipping: jq on PATH is {v:?}, need jq-1.8.2");
                 return false;
             }
             true
@@ -770,7 +770,7 @@ fn live_nan_sorts() {
                         .iter()
                         .map(|v| Value::from(vec![get(v, "k"), get(v, "i")]))
                         .collect();
-                    let sorted = sort(&pairs, &pairs);
+                    let sorted = sort(&pairs, &pairs).unwrap();
                     Value::from(
                         sorted
                             .iter()
@@ -784,10 +784,11 @@ fn live_nan_sorts() {
                         Value::from(a.iter().map(|v| get(v, "i")).collect::<Vec<_>>())
                     };
                     match prog {
-                        "sort_by(.k) | map(.i)" => ids(&sort(arr, &keys)),
-                        "unique_by(.k) | map(.i)" => ids(&unique(arr, &keys)),
+                        "sort_by(.k) | map(.i)" => ids(&sort(arr, &keys).unwrap()),
+                        "unique_by(.k) | map(.i)" => ids(&unique(arr, &keys).unwrap()),
                         _ => Value::from(
                             group(arr, &keys)
+                                .unwrap()
                                 .iter()
                                 .map(|g| ids(g.as_array().unwrap()))
                                 .collect::<Vec<_>>(),
@@ -874,6 +875,7 @@ fn live_lossy_literal_sorts() {
             .collect();
         let got = Value::from(
             sort(arr, &keys)
+                .unwrap()
                 .iter()
                 .map(|v| get(v, "i"))
                 .collect::<Vec<_>>(),
@@ -973,7 +975,9 @@ fn live_string_ops() {
             "split" => Ok(Value::Array(sa.split(&sb))),
             "indices" => Ok(Value::Array(sa.indexes(&sb))),
             "contains" => Ok(Value::from(
-                Value::String(sa.clone()).contains(&Value::String(sb.clone())),
+                Value::String(sa.clone())
+                    .contains(&Value::String(sb.clone()))
+                    .unwrap(),
             )),
             "explode" => Ok(Value::Array(sa.explode())),
             "roundtrip" => Str::implode(&Value::Array(sa.explode())).map(Value::String),
@@ -998,8 +1002,7 @@ fn live_string_ops() {
             ])),
             "concat" => {
                 let mut x = sa.clone();
-                x.concat(&sb);
-                Ok(Value::String(x))
+                x.concat(&sb).map(|()| Value::String(x))
             }
             "tojson" => Ok(Value::from(Value::String(sa.clone()).to_json())),
             _ => {

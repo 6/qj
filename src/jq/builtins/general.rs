@@ -8,6 +8,7 @@
 
 use std::cmp::Ordering;
 
+use super::binops::comparison_too_deep;
 use super::{CResult, Host};
 use crate::jq::value::{self, Error, Number, Object, Str, Value, parse_sized};
 
@@ -26,13 +27,14 @@ pub fn f_json_parse(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> 
 
 /// `tonumber` (nargs 1): port of builtin.c `f_tonumber` (built with `USE_DECNUM`).
 /// Numbers are returned as they are; strings become literals
-/// (`jv_number_with_literal`, which reads the C string up to the first NUL), so
-/// `"1e2" | tonumber` prints `1E+2` and `"nan" | tonumber` is NaN.
+/// (`jv_number_with_literal`), so `"1e2" | tonumber` prints `1E+2` and
+/// `"nan" | tonumber` is NaN. A string with a NUL in it is an error.
 pub fn f_tonumber(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
     if matches!(input, Value::Number(_)) {
         return Ok(input);
     }
     if let Value::String(s) = &input
+        && !s.as_bytes().contains(&0)
         && let Some(n) = Number::from_c_literal(s.as_bytes())
     {
         return Ok(Value::Number(n));
@@ -40,12 +42,12 @@ pub fn f_tonumber(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CR
     Err(Error::type_error(&input, "cannot be parsed as a number"))
 }
 
-/// `toboolean` (nargs 1): port of builtin.c `f_toboolean` (`strcmp`, so the string is
-/// read up to its first NUL).
+/// `toboolean` (nargs 1): port of builtin.c `f_toboolean`. A string with a NUL in it
+/// is an error.
 pub fn f_toboolean(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
     match &input {
         Value::Bool(_) => return Ok(input),
-        Value::String(s) => match s.as_c_str() {
+        Value::String(s) => match s.as_str() {
             "true" => return Ok(Value::Bool(true)),
             "false" => return Ok(Value::Bool(false)),
             _ => {}
@@ -118,7 +120,10 @@ pub fn f_has(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult 
 pub fn f_contains(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
     let b = std::mem::take(&mut args[0]);
     if input.kind() == b.kind() {
-        Ok(Value::Bool(input.contains(&b)))
+        input
+            .contains(&b)
+            .map(Value::Bool)
+            .map_err(|_| Error::msg("Containment check too deep"))
     } else {
         Err(Error::type_error2(
             &input,
@@ -206,7 +211,7 @@ pub fn f_nan(_host: &mut dyn Host, _input: Value, _args: &mut [Value]) -> CResul
 /// `sort` (nargs 1): port of builtin.c `f_sort` (`jv_sort(input, input)`).
 pub fn f_sort(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
     match &input {
-        Value::Array(a) => Ok(Value::Array(value::sort(a, a))),
+        Value::Array(a) => value::sort(a, a).map(Value::Array),
         _ => Err(Error::type_error(
             &input,
             "cannot be sorted, as it is not an array",
@@ -219,10 +224,10 @@ pub fn f_sort(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResul
 fn by_impl(
     input: Value,
     keys: Value,
-    f: fn(&value::Array, &value::Array) -> value::Array,
+    f: fn(&value::Array, &value::Array) -> Result<value::Array, Error>,
 ) -> CResult {
     match (&input, &keys) {
-        (Value::Array(a), Value::Array(k)) if a.len() == k.len() => Ok(Value::Array(f(a, k))),
+        (Value::Array(a), Value::Array(k)) if a.len() == k.len() => f(a, k).map(Value::Array),
         _ => Err(Error::type_error2(
             &input,
             &keys,
@@ -244,7 +249,7 @@ pub fn f_group_by_impl(_host: &mut dyn Host, input: Value, args: &mut [Value]) -
 /// `unique` (nargs 1): port of builtin.c `f_unique` (`jv_unique(input, input)`).
 pub fn f_unique(_host: &mut dyn Host, input: Value, _args: &mut [Value]) -> CResult {
     match &input {
-        Value::Array(a) => Ok(Value::Array(value::unique(a, a))),
+        Value::Array(a) => value::unique(a, a).map(Value::Array),
         _ => Err(Error::type_error(
             &input,
             "cannot be sorted, as it is not an array",
@@ -269,7 +274,10 @@ pub fn f_bsearch(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CRes
     let mut end = a.len();
     while start < end {
         let mid = start + (end - start) / 2;
-        match target.compare(&a[mid]) {
+        match target
+            .compare_checked(&a[mid])
+            .map_err(comparison_too_deep)?
+        {
             Ordering::Equal => return Ok(Value::from(mid)),
             Ordering::Less => end = mid,
             Ordering::Greater => start = mid + 1,
@@ -296,7 +304,7 @@ fn minmax_by(values: &Value, keys: &Value, is_min: bool) -> CResult {
     };
     let mut ret = 0;
     for (i, item) in ks.iter().enumerate().skip(1) {
-        let cmp = item.compare(retkey);
+        let cmp = item.compare_checked(retkey).map_err(comparison_too_deep)?;
         if (cmp == Ordering::Less) == is_min {
             retkey = item;
             ret = i;

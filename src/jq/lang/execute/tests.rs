@@ -1,5 +1,5 @@
-//! VM tests. Most compare with the jq 1.8.1 binary (they are skipped when `jq` on
-//! PATH isn't jq 1.8.1), running each program twice: on jq's own bytecode (rebuilt
+//! VM tests. Most compare with the jq 1.8.2 binary (they are skipped when `jq` on
+//! PATH isn't jq 1.8.2), running each program twice: on jq's own bytecode (rebuilt
 //! from `--debug-dump-disasm` by [`super::disasm`]), which isolates the VM, and on the
 //! bytecode from our compiler ([`jq_compile_args`]), which checks the whole core.
 //! Outputs, errors and `--debug-trace` output (refcounts included) must match.
@@ -26,7 +26,7 @@ fn jq_ok() -> bool {
         static OK: bool = Command::new("jq")
             .arg("--version")
             .output()
-            .map(|o| o.stdout.starts_with(b"jq-1.8.1"))
+            .map(|o| o.stdout.starts_with(b"jq-1.8.2"))
             .unwrap_or(false);
     }
     OK.with(|ok| *ok)

@@ -321,17 +321,12 @@ thread_local! {
 pub(crate) const MAX_DROP_RECURSION: u32 = 256;
 
 /// Runs `drop_contents` one nesting level deeper, or returns false (without
-/// running it) when the recursion budget is used up, in which case the
-/// caller must drop iteratively.
-///
-/// The budget is [`MAX_DROP_RECURSION`], or with `QJ_JQ_COMPAT=1` on a stack
-/// where jq's `jv_free` has fewer frames than that, one short of them
-/// ([`crate::compat::native_drop_limit`]), so that every value too deep for
-/// jq reaches the iterative loop's check.
+/// running it) when the recursion budget ([`MAX_DROP_RECURSION`]) is used up,
+/// in which case the caller must drop iteratively.
 #[inline]
 pub(crate) fn drop_nested(drop_contents: impl FnOnce()) -> bool {
     let depth = DROP_DEPTH.with(Cell::get);
-    if depth >= crate::compat::native_drop_limit() {
+    if depth >= MAX_DROP_RECURSION {
         return false;
     }
     DROP_DEPTH.with(|d| d.set(depth + 1));
@@ -352,15 +347,8 @@ pub(crate) fn owns_container(v: &Value) -> bool {
 
 /// Drops `items` without recursing into nested containers, so that deeply
 /// nested values (jq accepts 10000 levels of JSON, and programs can build
-/// deeper ones) cannot overflow the stack.
+/// deeper ones) cannot overflow the stack. (jq's `jv_free` is iterative too.)
 pub(crate) fn drop_values_iteratively(items: &mut Vec<Value>) {
-    // QJ_JQ_COMPAT=1: jq's jv_free recurses, so a value this deep overflows
-    // its C stack and the process dies of SIGSEGV. Nothing has been freed
-    // yet, which is where jq dies too. `drop_nested` refused at the storage
-    // of the container one level below the drops in progress, so that many
-    // jv_free frames are already committed above `items` (jq calls jv_free on
-    // a scalar element too, so even scalar `items` are a frame deeper).
-    crate::compat::freeing_iteratively(items, u64::from(DROP_DEPTH.with(Cell::get)) + 1);
     if !items.iter().any(owns_container) {
         return; // plain drop is shallow
     }
@@ -644,15 +632,18 @@ impl Array {
     }
 
     /// `jv_array_indexes`: the start positions where `b` occurs as a
-    /// contiguous run in `self`, comparing with `jv_equal`.
-    pub fn indexes(&self, b: &Array) -> Array {
+    /// contiguous run in `self`, comparing with `jv_equal` (`Equality check
+    /// too deep` when that is).
+    pub fn indexes(&self, b: &Array) -> Result<Array, super::Error> {
         let mut res = Array::new();
         let a = self.as_slice();
         let mut idx: i64 = -1;
         for ai in 0..a.len() {
             for (bi, belem) in b.iter().enumerate() {
                 let eq = match a.get(ai + bi) {
-                    Some(x) => x.equal(belem),
+                    Some(x) => x
+                        .equal_checked(belem)
+                        .map_err(|_| super::Error::msg("Equality check too deep"))?,
                     None => false,
                 };
                 if !eq {
@@ -666,7 +657,7 @@ impl Array {
             }
             idx = -1;
         }
-        res
+        Ok(res)
     }
 
     /// Converts into a `Vec`, moving the elements out when the storage is
@@ -802,10 +793,16 @@ mod tests {
     fn indexes() {
         // `jq -nc '[1,2,1,2] | .[[1,2]]'` => [0,2]
         let a = arr(&[1.0, 2.0, 1.0, 2.0]);
-        assert_eq!(nums(&a.indexes(&arr(&[1.0, 2.0]))), [Some(0.0), Some(2.0)]);
-        assert_eq!(nums(&a.indexes(&arr(&[]))), Vec::<Option<f64>>::new());
         assert_eq!(
-            nums(&a.indexes(&arr(&[2.0, 3.0]))),
+            nums(&a.indexes(&arr(&[1.0, 2.0])).unwrap()),
+            [Some(0.0), Some(2.0)]
+        );
+        assert_eq!(
+            nums(&a.indexes(&arr(&[])).unwrap()),
+            Vec::<Option<f64>>::new()
+        );
+        assert_eq!(
+            nums(&a.indexes(&arr(&[2.0, 3.0])).unwrap()),
             Vec::<Option<f64>>::new()
         );
     }

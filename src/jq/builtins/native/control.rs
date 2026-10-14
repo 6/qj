@@ -179,11 +179,16 @@ pub(super) fn is_in(vm: &mut Jq, input: Value, src: Option<Closure>, s: Closure)
     };
     while let Some((ss, b)) = rs {
         match src {
-            None => {
-                if binop_equal(b, input.clone()).is_ok_and(|v| v.is_truthy()) {
+            None => match binop_equal(b, input.clone()) {
+                Ok(v) if v.is_truthy() => {
                     return Outcome::Yield(Value::Bool(true), Held::new(vec![ss], vec![input]));
                 }
-            }
+                Ok(_) => {}
+                Err(e) => {
+                    vm.sub_abandon(ss);
+                    return Stop::from(e).into();
+                }
+            },
             Some(src) => {
                 let mut ra = match vm.sub_start(src, input.clone()) {
                     Ok(r) => r,
@@ -193,11 +198,19 @@ pub(super) fn is_in(vm: &mut Jq, input: Value, src: Option<Closure>, s: Closure)
                     }
                 };
                 while let Some((sa, a)) = ra {
-                    if binop_equal(a, b.clone()).is_ok_and(|v| v.is_truthy()) {
-                        return Outcome::Yield(
-                            Value::Bool(true),
-                            Held::new(vec![ss, sa], vec![input]),
-                        );
+                    match binop_equal(a, b.clone()) {
+                        Ok(v) if v.is_truthy() => {
+                            return Outcome::Yield(
+                                Value::Bool(true),
+                                Held::new(vec![ss, sa], vec![input]),
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            vm.sub_abandon(sa);
+                            vm.sub_abandon(ss);
+                            return Stop::from(e).into();
+                        }
                     }
                     ra = match vm.sub_next(sa) {
                         Ok(r) => r,

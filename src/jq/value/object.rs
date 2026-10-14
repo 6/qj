@@ -337,7 +337,9 @@ impl Object {
 
     /// `jv_object_merge_recursive` (object `*`): nested objects present on
     /// both sides are merged recursively, anything else is replaced.
-    pub fn merge_recursive(&mut self, other: &Object) {
+    /// Nesting merged deeper than [`super::MAX_DEPTH`] levels is
+    /// `Object merge too deep`.
+    pub fn merge_recursive(&mut self, other: &Object) -> Result<(), super::Error> {
         // QJ_JQ_COMPAT=1: jq's recursion overflows its C stack when both
         // sides nest objects deeper than it allows.
         crate::compat::merging(self, other);
@@ -362,11 +364,16 @@ impl Object {
         }];
         loop {
             descent.at(stack.len() as u64);
+            let depth = stack.len() as u32;
             let top = stack.last_mut().expect("a frame is active");
             if let Some((k, v)) = top.other.get_index(top.i) {
                 top.i += 1;
                 match (top.target.get_str(k), v) {
                     (Some(Value::Object(a)), Value::Object(b)) => {
+                        // jvp_object_merge_recursive(elem, v, depth + 1)
+                        if depth > super::MAX_DEPTH {
+                            return Err(super::Error::msg("Object merge too deep"));
+                        }
                         // Like jq, `a` stays referenced by the target
                         // meanwhile, so the nested object is copied rather
                         // than updated in place.
@@ -385,7 +392,7 @@ impl Object {
                 match stack.last_mut() {
                     None => {
                         *self = done.target;
-                        return;
+                        return Ok(());
                     }
                     Some(parent) => parent.target.insert(
                         done.key.expect("nested frames have a key"),

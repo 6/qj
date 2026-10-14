@@ -7,10 +7,14 @@
 
 use std::io::{self, Write};
 
-use super::{Number, Value};
+use super::{Number, Str, Value};
 
 /// Nesting depth after which jq prints `<skipped: too deep>` (`MAX_PRINT_DEPTH`).
-pub const MAX_PRINT_DEPTH: usize = 256;
+pub const MAX_PRINT_DEPTH: usize = 10000;
+
+/// Levels the printer recurses natively before continuing with an explicit
+/// stack ([`Printer::term_iter`]).
+const PRINT_RECURSION: usize = 64;
 
 const ESC: &str = "\x1b";
 const COLRESET: &[u8] = b"\x1b[0m";
@@ -575,6 +579,21 @@ pub fn write_json_string(s: &str, ascii_only: bool, out: &mut Vec<u8>) {
     out.push(b'"');
 }
 
+/// The elements of a container [`Printer::term_iter`] is printing.
+enum PrintItems<'v> {
+    Arr(&'v [Value]),
+    Obj(Vec<(&'v Str, &'v Value)>),
+}
+
+/// A container [`Printer::term_iter`] is printing: its next element `i`.
+struct PrintFrame<'v> {
+    x: &'v Value,
+    items: PrintItems<'v>,
+    i: usize,
+    indent: usize,
+    color: Option<&'v [u8]>,
+}
+
 struct Printer<'o> {
     opts: &'o DumpOptions,
     /// Spaces per level (pretty) — ignored with tabs.
@@ -609,8 +628,21 @@ impl Printer<'_> {
         }
     }
 
+    /// Whether printing `x` at depth `indent` descends into elements.
+    fn has_elements(x: &Value, indent: usize) -> bool {
+        indent <= MAX_PRINT_DEPTH
+            && match x {
+                Value::Array(a) => !a.is_empty(),
+                Value::Object(o) => !o.is_empty(),
+                _ => false,
+            }
+    }
+
     /// Port of `jv_dump_term`.
     fn term<S: Sink>(&self, x: &Value, indent: usize, sink: &mut S) -> io::Result<()> {
+        if indent >= PRINT_RECURSION && Self::has_elements(x, indent) {
+            return self.term_iter(x, indent, sink);
+        }
         // QJ_JQ_COMPAT=1: jq recurses here once a level, and on a small stack
         // it runs out before `MAX_PRINT_DEPTH` can stop it.
         if indent as u64 >= self.frames {
@@ -699,6 +731,128 @@ impl Printer<'_> {
         }
         if color.is_some() {
             sink.buf().extend_from_slice(COLRESET);
+        }
+        Ok(())
+    }
+
+    /// `jv_dump_term` up to the first element of `x`, a container with some.
+    fn open<'v, S: Sink>(&'v self, x: &'v Value, indent: usize, sink: &mut S) -> PrintFrame<'v> {
+        if indent as u64 >= self.frames {
+            crate::compat::die_of_stack_overflow();
+        }
+        let color = self.opts.colors.as_ref().map(|c| c.for_value(x));
+        if let Some(c) = color {
+            sink.buf().extend_from_slice(c);
+        }
+        let items = match x {
+            Value::Array(a) => {
+                sink.buf().push(b'[');
+                PrintItems::Arr(a.as_slice())
+            }
+            Value::Object(o) => {
+                sink.buf().push(b'{');
+                let mut entries: Vec<_> = o.iter().collect();
+                if self.opts.sort_keys {
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                }
+                PrintItems::Obj(entries)
+            }
+            _ => unreachable!("a container"),
+        };
+        PrintFrame {
+            x,
+            items,
+            i: 0,
+            indent,
+            color,
+        }
+    }
+
+    /// [`Printer::term`] for a container with elements, with an explicit stack
+    /// of the containers being printed instead of native recursion (values
+    /// can be printed 10000 levels deep). The output is the same.
+    fn term_iter<'v, S: Sink>(
+        &'v self,
+        x: &'v Value,
+        indent: usize,
+        sink: &mut S,
+    ) -> io::Result<()> {
+        let mut stack = vec![self.open(x, indent, sink)];
+        while let Some(top) = stack.last_mut() {
+            let (i, indent, color) = (top.i, top.indent, top.color);
+            let child = match &top.items {
+                PrintItems::Arr(a) => a.get(i).map(|v| (None, v)),
+                PrintItems::Obj(e) => e.get(i).map(|&(k, v)| (Some(k), v)),
+            };
+            let Some((key, child)) = child else {
+                // The end of the container.
+                let close = if matches!(top.items, PrintItems::Arr(_)) {
+                    b']'
+                } else {
+                    b'}'
+                };
+                let x = top.x;
+                stack.pop();
+                let out = sink.buf();
+                if self.pretty {
+                    out.push(b'\n');
+                    self.indent(indent, out);
+                }
+                if let Some(c) = color {
+                    out.extend_from_slice(c);
+                }
+                out.push(close);
+                self.put_refcnt(x, out);
+                if color.is_some() {
+                    out.extend_from_slice(COLRESET);
+                }
+                if !stack.is_empty() {
+                    sink.checkpoint()?;
+                }
+                continue;
+            };
+            top.i += 1;
+            let out = sink.buf();
+            if i != 0 {
+                if let Some(c) = color {
+                    out.extend_from_slice(c);
+                }
+                out.push(b',');
+            }
+            if color.is_some() {
+                out.extend_from_slice(COLRESET);
+            }
+            if self.pretty {
+                out.push(b'\n');
+                self.indent(indent + 1, out);
+            }
+            if let Some(key) = key {
+                // The rest of `field`, before the value.
+                if let Some(colors) = &self.opts.colors {
+                    out.extend_from_slice(colors.field());
+                }
+                write_json_string(key.as_str(), self.opts.ascii, out);
+                if color.is_some() {
+                    out.extend_from_slice(COLRESET);
+                }
+                if let Some(c) = color {
+                    out.extend_from_slice(c);
+                }
+                out.push(b':');
+                if color.is_some() {
+                    out.extend_from_slice(COLRESET);
+                }
+                if self.pretty {
+                    out.push(b' ');
+                }
+            }
+            if Self::has_elements(child, indent + 1) {
+                let frame = self.open(child, indent + 1, sink);
+                stack.push(frame);
+            } else {
+                self.term(child, indent + 1, sink)?;
+                sink.checkpoint()?;
+            }
         }
         Ok(())
     }
@@ -835,11 +989,25 @@ pub fn dump_string(v: &Value, opts: &DumpOptions) -> String {
     String::from_utf8(out).expect("valid UTF-8")
 }
 
-/// Port of `jv_dump_string_trunc(x, outbuf, bufsize)`: the compact dump,
-/// cut to at most `bufsize - 1` bytes with a trailing `...` when it does
-/// not fit (without splitting a UTF-8 sequence). jq uses `bufsize` 15 or 30
-/// in error messages.
+/// Port of `jv_dump_string_trunc(x, outbuf, bufsize)`: the compact dump, cut
+/// to at most `bufsize - 1` bytes when it does not fit. With `bufsize >= 8`
+/// the cut keeps whole characters and ends in `...`, followed by the closing
+/// `"`, `]` or `}` when the dump starts with its opener. jq's error messages
+/// use `bufsize` 30.
 pub fn dump_string_trunc(v: &Value, bufsize: usize) -> String {
+    if bufsize == 0 {
+        return String::new();
+    }
+    // jq slices a long string to its first `bufsize` codepoints before
+    // dumping it (which can't change the result).
+    let sliced;
+    let v = match v {
+        Value::String(s) if s.len() > bufsize => {
+            sliced = Value::String(s.slice(0, bufsize as i64));
+            &sliced
+        }
+        _ => v,
+    };
     let mut sink = TruncSink {
         buf: Vec::new(),
         limit: bufsize,
@@ -849,18 +1017,21 @@ pub fn dump_string_trunc(v: &Value, bufsize: usize) -> String {
     let mut out = sink.buf;
     // strlen(): the dump never contains NUL (it is escaped).
     let len = out.len();
-    if bufsize == 0 {
-        return String::new();
-    }
-    if len > bufsize - 1 && bufsize >= 4 {
-        out.truncate(bufsize);
-        // Indicate truncation with '...' without breaking UTF-8.
-        let mut cut = bufsize - 4;
-        if let Some(s) = super::unicode::utf8_backtrack(&out, bufsize - 4, 0, None) {
-            cut = s;
+    if len > bufsize - 1 && bufsize >= 8 {
+        let delim = match out[0] {
+            b'"' => Some(b'"'),
+            b'[' => Some(b']'),
+            b'{' => Some(b'}'),
+            _ => None,
+        };
+        // "...", the delimiter (if any) and the NUL
+        let mut l = bufsize - if delim.is_some() { 5 } else { 4 };
+        if let Some(s) = super::unicode::utf8_backtrack(&out, l, 0, None) {
+            l = s;
         }
-        out.truncate(cut);
+        out.truncate(l);
         out.extend_from_slice(b"...");
+        out.extend(delim);
     } else {
         out.truncate(bufsize - 1);
     }

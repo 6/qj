@@ -9,7 +9,7 @@
 //! jq's duplicate-key rule (the last value at the first key's position),
 //! number literals in decNumber's canonical form, strings re-escaped by jq's
 //! rules, jq's pretty-printing, sorted keys, ASCII output, and its
-//! `<skipped: too deep>` past 256 levels. The tests (`src/io/tests/tape.rs`)
+//! `<skipped: too deep>` past 10000 levels. The tests (`src/io/tests/tape.rs`)
 //! check exactly that, against the builder and the value printer, for every
 //! layout.
 //!

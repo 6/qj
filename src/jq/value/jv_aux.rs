@@ -3,7 +3,11 @@
 use std::cmp::Ordering;
 
 use super::string::double_to_int;
-use super::{Array, Error, Object, Str, Value};
+use super::{Array, Error, Object, Str, TooDeep, Value};
+
+/// jq's `MAX_PATH_DEPTH`: the longest path `getpath`, `setpath` and
+/// `delpaths` take (`Path too deep`).
+pub const MAX_PATH_DEPTH: usize = 10000;
 
 /// `INT_MIN`/`INT_MAX` clamping followed by C's `(int)` truncation.
 fn clamp_index(d: f64) -> i64 {
@@ -111,28 +115,16 @@ impl Value {
                 let (start, end) = parse_slice(s.codepoint_len(), slice)?;
                 Ok(Value::String(s.slice(start as i64, end as i64)))
             }
-            (Value::Array(a), Value::Array(b)) => Ok(Value::Array(a.indexes(b))),
+            (Value::Array(a), Value::Array(b)) => a.indexes(b).map(Value::Array),
             (Value::Null, Value::String(_) | Value::Number(_) | Value::Object(_)) => {
                 Ok(Value::Null)
             }
-            _ => {
-                // If k is a short string it's probably from a jq .foo
-                // expression or similar.
-                if let Value::String(key) = k
-                    && key.len() < 30
-                {
-                    return Err(Error::msg(format!(
-                        "Cannot index {} with string \"{}\"",
-                        self.kind_name(),
-                        key.as_c_str()
-                    )));
-                }
-                Err(Error::msg(format!(
-                    "Cannot index {} with {}",
-                    self.kind_name(),
-                    k.kind_name()
-                )))
-            }
+            _ => Err(Error::msg(format!(
+                "Cannot index {} with {} ({})",
+                self.kind_name(),
+                k.kind_name(),
+                super::dump_string_trunc(k, 30)
+            ))),
         }
     }
 
@@ -240,6 +232,9 @@ impl Value {
             Value::Array(p) => p,
             _ => return Err(Error::msg("Path must be specified as an array")),
         };
+        if path.len() > MAX_PATH_DEPTH {
+            return Err(Error::msg("Path too deep"));
+        }
         let mut cur = self.clone();
         for k in path.iter() {
             cur = cur.get(k)?;
@@ -255,6 +250,9 @@ impl Value {
             Value::Array(p) => p,
             _ => return Err(Error::msg("Path must be specified as an array")),
         };
+        if path.len() > MAX_PATH_DEPTH {
+            return Err(Error::msg("Path too deep"));
+        }
         setpath_rec(self, path.as_slice(), value)
     }
 
@@ -265,13 +263,30 @@ impl Value {
             Value::Array(p) => p,
             _ => return Err(Error::msg("Paths must be specified as an array")),
         };
-        let paths = sort(paths, paths);
+        let paths = match sort(paths, paths) {
+            Ok(paths) => paths,
+            // jq goes on with the invalid result, which jv_array_foreach
+            // asserts is an array.
+            Err(_) => crate::jq::platform::Error::Abort(crate::jq::platform::assert_text(
+                "JVP_HAS_KIND(j, JV_KIND_ARRAY)",
+                "src/jv.c",
+                "jv_array_length",
+                991,
+            ))
+            .abort_process(),
+        };
         for p in paths.iter() {
-            if !matches!(p, Value::Array(_)) {
-                return Err(Error::msg(format!(
-                    "Path must be specified as array, not {}",
-                    p.kind_name()
-                )));
+            match p {
+                Value::Array(p) if p.len() > MAX_PATH_DEPTH => {
+                    return Err(Error::msg("Path too deep"));
+                }
+                Value::Array(_) => {}
+                _ => {
+                    return Err(Error::msg(format!(
+                        "Path must be specified as array, not {}",
+                        p.kind_name()
+                    )));
+                }
             }
         }
         if paths.is_empty() {
@@ -335,14 +350,22 @@ impl Value {
     /// lexicographically; objects compare their sorted key lists first, then
     /// the values key by key. A NaN compares below every number — including
     /// another NaN, so `nan < nan` (this order is not antisymmetric; use
-    /// [`sort`] rather than a std sort with it).
+    /// [`sort`] rather than a std sort with it). A comparison deeper than
+    /// [`super::MAX_DEPTH`] levels is `Less`, as `jv_cmp`'s `INT_MIN` is
+    /// where a caller doesn't check for it; see [`Value::compare_checked`].
     pub fn compare(&self, other: &Value) -> Ordering {
+        cmp_impl(self, other, false).unwrap_or(Ordering::Less)
+    }
+
+    /// `jv_cmp` with its `INT_MIN`: [`TooDeep`] when the comparison goes
+    /// deeper than [`super::MAX_DEPTH`] levels (`Comparison too deep`).
+    pub fn compare_checked(&self, other: &Value) -> Result<Ordering, TooDeep> {
         cmp_impl(self, other, false)
     }
 }
 
 /// jv_cmp; with `total`, NaN == NaN (a consistent order for sorting).
-fn cmp_impl(a: &Value, b: &Value, total: bool) -> Ordering {
+fn cmp_impl(a: &Value, b: &Value, total: bool) -> Result<Ordering, TooDeep> {
     super::deep::compare(a, b, total)
 }
 
@@ -407,7 +430,9 @@ fn dels(t: Value, keys: Vec<Value>) -> Result<Value, Error> {
             for key in &keys {
                 match key {
                     Value::Number(n) => {
-                        if n.value() < 0.0 {
+                        if n.is_nan() {
+                            // ignored
+                        } else if n.value() < 0.0 {
                             neg_keys.push(n.value());
                         } else {
                             nonneg_keys.push(n.value());
@@ -548,24 +573,16 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
         let mut descend: Option<Frame<'_>> = None;
         while f.i < f.paths.len() {
             let i = f.i;
-            let mut j = i;
             let path_len = f.paths[i].as_array().expect("paths are arrays").len();
             debug_assert!(path_len > f.start);
             let delkey = path_len == f.start + 1;
             let key = path_at(f.paths, i, f.start).unwrap_or_default();
-            while j < f.paths.len() && path_at(f.paths, j, f.start).is_some_and(|k| key.equal(&k)) {
+            // A key too deep to compare (or a NaN) ends the group.
+            let mut j = i + 1;
+            while j < f.paths.len()
+                && path_at(f.paths, j, f.start).is_some_and(|k| key.equal_checked(&k) == Ok(true))
+            {
                 j += 1;
-            }
-            // Deviation: a NaN key is unequal to itself, so jq 1.8.1 never
-            // advances here. It loops forever, appending the key to `delkeys`
-            // on every turn, so it also grows without bound
-            // (`[1] | delpaths([[nan]])` hangs). Treat such a key as a group
-            // of one instead — unless QJ_JQ_COMPAT asks for exactly jq.
-            if j == i {
-                if crate::compat::exactly_jq() {
-                    crate::compat::spin_forever(&key);
-                }
-                j = i + 1;
             }
             // if i <= entry < j, then entry starts with key
             if delkey {
@@ -608,21 +625,40 @@ fn delpaths_sorted(object: Value, paths: &[Value], start: usize) -> Result<Value
     }
 }
 
-/// jq's `sort_items`: indices of `keys` in sorted order, stable.
-fn sort_items(keys: &Array) -> Vec<usize> {
+/// jq's `sort_items`: indices of `keys` in sorted order, stable, or
+/// `Comparison too deep` when any comparison the sort made was.
+fn sort_items(keys: &Array) -> Result<Vec<usize>, Error> {
     let mut idx: Vec<usize> = (0..keys.len()).collect();
     let k = keys.as_slice();
-    // jq's sort_cmp: jv_cmp, then the index (which makes the sort stable).
-    let sort_cmp = |a: usize, b: usize| cmp_impl(&k[a], &k[b], false).then(a.cmp(&b));
+    let too_deep = std::cell::Cell::new(false);
+    // jq's sort_cmp: jv_cmp, then the index (which makes the sort stable);
+    // a comparison too deep is 0 and fails the sort once it's done.
+    let sort_cmp = |a: usize, b: usize, tie: Ordering| match cmp_impl(&k[a], &k[b], false) {
+        Ok(r) => r.then(a.cmp(&b)),
+        Err(TooDeep) => {
+            too_deep.set(true);
+            tie
+        }
+    };
     if super::qsort::needs_platform_qsort(k) {
         // jv_cmp is not a consistent order here, so the result depends on
         // the sorting algorithm: use the C library's qsort, as jq does.
-        super::qsort::platform_qsort(&mut idx, &sort_cmp);
+        super::qsort::platform_qsort(&mut idx, &|a, b| sort_cmp(a, b, Ordering::Equal));
     } else {
-        // A strict total order: every correct sort gives jq's result.
-        idx.sort_by(|&a, &b| sort_cmp(a, b));
+        // A strict total order: every correct sort gives jq's result. Values
+        // too deep to compare form runs of keys alike down to that depth, so
+        // breaking their ties by index keeps the order total, and any sort
+        // compares two of a run (as jq's must), failing as jq's does.
+        idx.sort_by(|&a, &b| sort_cmp(a, b, a.cmp(&b)));
     }
-    idx
+    if too_deep.get() {
+        return Err(Error::msg("Comparison too deep"));
+    }
+    Ok(idx)
+}
+
+fn equality_too_deep(_: TooDeep) -> Error {
+    Error::msg("Equality check too deep")
 }
 
 /// `jv_sort(objects, keys)`: `objects` reordered by `keys` (same length),
@@ -631,21 +667,21 @@ fn sort_items(keys: &Array) -> Vec<usize> {
 /// jq sorts with `qsort` and `jv_cmp`, whose NaN handling is not a
 /// consistent order; here NaNs compare equal to each other, which gives the
 /// stable result every `qsort` produces on small inputs.
-pub fn sort(objects: &Array, keys: &Array) -> Array {
+pub fn sort(objects: &Array, keys: &Array) -> Result<Array, Error> {
     debug_assert_eq!(objects.len(), keys.len());
-    let order = sort_items(keys);
+    let order = sort_items(keys)?;
     let mut ret = Array::new();
     for i in order {
         ret.push(objects.get(i).cloned().unwrap_or_default());
     }
-    ret
+    Ok(ret)
 }
 
 /// `jv_group(objects, keys)`: sorts like [`sort`], then groups runs of
 /// `jv_equal` keys (`group_by`).
-pub fn group(objects: &Array, keys: &Array) -> Array {
+pub fn group(objects: &Array, keys: &Array) -> Result<Array, Error> {
     debug_assert_eq!(objects.len(), keys.len());
-    let order = sort_items(keys);
+    let order = sort_items(keys)?;
     let mut ret = Array::new();
     let mut iter = order.into_iter();
     if let Some(first) = iter.next() {
@@ -654,7 +690,7 @@ pub fn group(objects: &Array, keys: &Array) -> Array {
         group.push(objects.get(first).cloned().unwrap_or_default());
         for i in iter {
             let k = &keys.as_slice()[i];
-            if !curr_key.equal(k) {
+            if !curr_key.equal_checked(k).map_err(equality_too_deep)? {
                 curr_key = k;
                 ret.push(Value::Array(std::mem::take(&mut group)));
             }
@@ -662,23 +698,25 @@ pub fn group(objects: &Array, keys: &Array) -> Array {
         }
         ret.push(Value::Array(group));
     }
-    ret
+    Ok(ret)
 }
 
 /// `jv_unique(objects, keys)`: sorts like [`sort`], keeping the first
 /// element of each run of `jv_equal` keys (`unique`, `unique_by`).
-pub fn unique(objects: &Array, keys: &Array) -> Array {
+pub fn unique(objects: &Array, keys: &Array) -> Result<Array, Error> {
     debug_assert_eq!(objects.len(), keys.len());
-    let order = sort_items(keys);
+    let order = sort_items(keys)?;
     let mut ret = Array::new();
     let mut curr_key: Option<&Value> = None;
     for i in order {
         let k = &keys.as_slice()[i];
-        if curr_key.is_some_and(|c| c.equal(k)) {
+        if let Some(c) = curr_key
+            && c.equal_checked(k).map_err(equality_too_deep)?
+        {
             continue;
         }
         curr_key = Some(k);
         ret.push(objects.get(i).cloned().unwrap_or_default());
     }
-    ret
+    Ok(ret)
 }

@@ -1,4 +1,4 @@
-//! Replays fixtures whose expectations come from the jq 1.8.1 binary.
+//! Replays fixtures whose expectations come from the jq 1.8.2 binary.
 //!
 //! The JSON files in `testdata/` are produced by `testdata/gen.py`, which runs
 //! the real `jq`; these tests check the port against them without needing jq.
@@ -10,7 +10,7 @@ use serde_json::Value as J;
 
 fn fixture(src: &str) -> Vec<J> {
     let v: J = serde_json::from_str(src).expect("fixture is JSON");
-    assert_eq!(v["jq"], "jq-1.8.1", "fixture generated with another jq");
+    assert_eq!(v["jq"], "jq-1.8.2", "fixture generated with another jq");
     v["cases"].as_array().expect("cases").clone()
 }
 
@@ -360,7 +360,7 @@ fn binop_plus(a: Value, b: Value) -> Result<Value, Error> {
         (a, Value::Null) => a,
         (Value::Number(x), Value::Number(y)) => Value::number(x.value() + y.value()),
         (Value::String(mut x), Value::String(y)) => {
-            x.concat(&y);
+            x.concat(&y)?;
             Value::String(x)
         }
         (Value::Array(mut x), Value::Array(y)) => {
@@ -390,16 +390,20 @@ fn binop_multiply(a: Value, b: Value) -> Result<Value, Error> {
             s.repeat(n)
         }
         (Value::Object(mut x), Value::Object(y)) => {
-            x.merge_recursive(&y);
+            x.merge_recursive(&y)?;
             Ok(Value::Object(x))
         }
         (a, b) => Err(Error::type_error2(&a, &b, "cannot be multiplied")),
     }
 }
 
-fn by_impl(a: &Value, b: &Value, f: fn(&Array, &Array) -> Array) -> Result<Value, Error> {
+fn by_impl(
+    a: &Value,
+    b: &Value,
+    f: fn(&Array, &Array) -> Result<Array, Error>,
+) -> Result<Value, Error> {
     match (a, b) {
-        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => Ok(Value::Array(f(x, y))),
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => f(x, y).map(Value::Array),
         _ => Err(Error::type_error2(
             a,
             b,
@@ -420,11 +424,12 @@ pub(super) fn run_op(op: &str, a: Value, b: Value, c: Value) -> Result<Value, Er
         "keys" => a.keys(),
         "keys_unsorted" => a.keys_unsorted(),
         "sort" | "unique" => match &a {
-            Value::Array(x) => Ok(Value::Array(if op == "sort" {
+            Value::Array(x) => if op == "sort" {
                 sort(x, x)
             } else {
                 unique(x, x)
-            })),
+            }
+            .map(Value::Array),
             _ => Err(Error::type_error(
                 &a,
                 "cannot be sorted, as it is not an array",
@@ -435,7 +440,9 @@ pub(super) fn run_op(op: &str, a: Value, b: Value, c: Value) -> Result<Value, Er
         "unique_by_impl" => by_impl(&a, &b, unique),
         "contains" => {
             if a.kind() == b.kind() {
-                Ok(Value::from(a.contains(&b)))
+                a.contains(&b)
+                    .map(Value::from)
+                    .map_err(|_| Error::msg("Containment check too deep"))
             } else {
                 Err(Error::type_error2(
                     &a,
@@ -545,10 +552,13 @@ fn slice_views_are_equal_like_jq() {
     assert!(x.equal(&y));
     assert_eq!(x.compare(&y), std::cmp::Ordering::Less);
     let pair = Array::from_vec(vec![x.clone(), y.clone()]);
-    assert_eq!(Value::Array(unique(&pair, &pair)).to_json(), "[[1,2]]");
+    assert_eq!(
+        Value::Array(unique(&pair, &pair).unwrap()).to_json(),
+        "[[1,2]]"
+    );
     let keys = Array::from_vec(vec![arr(vec![x]), arr(vec![y])]);
     assert_eq!(
-        Value::Array(group(&pair, &keys)).to_json(),
+        Value::Array(group(&pair, &keys).unwrap()).to_json(),
         "[[[1,2],[3,4]]]"
     );
     // Views at offset >= 65536 are copies:
@@ -571,10 +581,11 @@ fn setpath_writes_past_unique_view_like_jq() {
 
 #[test]
 fn nan_delpaths_terminates() {
-    // jq 1.8.1 loops forever here; the port deletes as if NaN were 0 (the
-    // arm64 result of C's (int)NaN in jv_dels).
+    // jv_dels skips a NaN array index (jq 1.8.1 looped forever here).
     let r = jv("[0,1,2]").delpaths(&jv("[[nan]]")).unwrap();
-    assert_eq!(r.to_json(), "[1,2]");
+    assert_eq!(r.to_json(), "[0,1,2]");
+    let r = jv("[0,1,2]").delpaths(&jv("[[nan],[1]]")).unwrap();
+    assert_eq!(r.to_json(), "[0,2]");
     let r = jv("{\"a\":1}").delpaths(&jv("[[nan]]"));
     assert_eq!(
         r.unwrap_err().to_string(),
@@ -628,33 +639,52 @@ fn in_place_mutation_when_unique() {
 
 #[test]
 fn dump_string_trunc_cases() {
-    // Expectations from `jq -n '<v> | -.'` (type_error uses bufsize 15).
+    // Expectations from `jq -n --argjson v '<v>' '$v | -.'` (type_error uses
+    // bufsize 30): cut at a character boundary, then `...` and the closing
+    // delimiter of a string, array or object.
+    let s = |body: String| format!("\"{body}\"");
+    let a = |n: usize| "a".repeat(n);
+    let e = |n: usize| "\u{e9}".repeat(n);
+    let euro = |n: usize| "\u{20ac}".repeat(n);
+    let smile = |n: usize| "\u{1F600}".repeat(n);
     let cases = [
-        ("\"abc\"", "\"abc\""),
-        ("\"12345678901234\"", "\"1234567890..."),
-        ("\"123456789012\"", "\"123456789012\""),
-        ("\"1234567890123\"", "\"1234567890..."),
+        (s(a(3)), s(a(3))),
+        (s(a(27)), s(a(27))),
+        (s(a(28)), s(a(24) + "...")),
+        (s(a(40)), s(a(24) + "...")),
+        (s(e(13)), s(e(13))),
+        (s(e(14)), s(e(12) + "...")),
+        (s(e(20)), s(e(12) + "...")),
+        (s(euro(10)), s(euro(8) + "...")),
         (
-            "\"\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\"",
-            "\"\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}...",
-        ),
-        ("[1,2,3,4,5,6,7,8]", "[1,2,3,4,5,..."),
-        ("{\"a\":\"bbbbbbbbbbbbbbbbb\"}", "{\"a\":\"bbbbb..."),
-        (
-            "\"\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\"",
-            "\"\u{20ac}\u{20ac}\u{20ac}...",
+            s("a".to_owned() + &euro(10)),
+            s("a".to_owned() + &euro(7) + "..."),
         ),
         (
-            "\"a\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\"",
-            "\"a\u{20ac}\u{20ac}\u{20ac}...",
+            s("ab".to_owned() + &euro(10)),
+            s("ab".to_owned() + &euro(7) + "..."),
         ),
+        (s(smile(8)), s(smile(6) + "...")),
+        (s("\\n".repeat(20)), s("\\n".repeat(12) + "...")),
         (
-            "\"ab\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\"",
-            "\"ab\u{20ac}\u{20ac}...",
+            "[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]".to_owned(),
+            "[1,2,3,4,5,6,7,8,9,10,11,...]".to_owned(),
         ),
+        (format!("{{{}:1}}", s(a(30))), format!("{{\"{}...}}", a(23))),
+        (
+            format!("{}1{}", "[".repeat(30), "]".repeat(30)),
+            format!("{}...]", "[".repeat(25)),
+        ),
+        // No delimiter after a number: 26 bytes and `...`.
+        (
+            "123456789012345678901234567890123".to_owned(),
+            "12345678901234567890123456...".to_owned(),
+        ),
+        ("1.5e300".to_owned(), "1.5E+300".to_owned()),
+        ("true".to_owned(), "true".to_owned()),
     ];
     for (v, want) in cases {
-        assert_eq!(dump_string_trunc(&jv(v), 15), want, "{v}");
+        assert_eq!(dump_string_trunc(&jv(&v), 30), want, "{v}");
     }
 }
 
@@ -673,9 +703,18 @@ fn deep_json_limits() {
             .unwrap(),
         "Exceeds depth limit for parsing at line 1, column 10001"
     );
-    // Printing a deep value is fine (MAX_PRINT_DEPTH elides past 256).
+    // Printing it is fine: MAX_PRINT_DEPTH elides only past depth 10000.
     let v = parse_sized(ok.as_bytes()).unwrap();
-    assert!(v.to_json().contains("<skipped: too deep>"));
+    assert_eq!(v.to_json(), ok);
+    let v = Value::from(vec![Value::from(vec![v])]);
+    assert_eq!(
+        v.to_json(),
+        format!(
+            "{}<skipped: too deep>{}",
+            "[".repeat(10001),
+            "]".repeat(10001)
+        )
+    );
     drop(v);
 }
 
@@ -807,7 +846,7 @@ fn deep_values_compare_without_overflow() {
                 assert!(a.equal(&b));
                 assert!(!a.equal(&c));
                 assert_eq!(a.compare(&c), std::cmp::Ordering::Less);
-                assert!(a.contains(&b));
+                assert_eq!(a.contains(&b), Ok(true));
                 assert!(!a.identical(&b));
                 // Paths as deep as the values.
                 let step = if open == "[" {
@@ -824,15 +863,20 @@ fn deep_values_compare_without_overflow() {
                     .delpaths(&Value::from(vec![path.clone()]))
                     .unwrap();
                 assert!(!e.equal(&a));
-                // Sorting deep keys, and printing (elided past depth 256).
+                // Sorting deep keys, and printing (elided past depth 10000).
                 let arr = Array::from_vec(vec![c.clone(), a.clone()]);
-                let sorted = sort(&arr, &arr);
+                let sorted = sort(&arr, &arr).unwrap();
                 assert!(sorted.get(0).unwrap().equal(&a));
-                assert!(a.to_json().contains("<skipped: too deep>"));
+                assert!(!a.to_json().contains("<skipped: too deep>"));
+                let wrapped = Value::from(vec![Value::from(vec![a.clone()])]);
+                assert_eq!(
+                    wrapped.to_json().contains("<skipped: too deep>"),
+                    levels == 10000
+                );
                 // Object `*` merges all the way down.
                 if let (Value::Object(x), Value::Object(y)) = (&a, &c) {
                     let mut m = x.clone();
-                    m.merge_recursive(y);
+                    m.merge_recursive(y).unwrap();
                     assert!(Value::Object(m).equal(&c));
                 }
             }

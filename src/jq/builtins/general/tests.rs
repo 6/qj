@@ -381,7 +381,7 @@ mod host {
         let cur = host.current.clone();
         assert_eq!(
             show(f_getpath(&mut host, v("{\"a\":1}"), &mut args)),
-            r#"ERR "Cannot index number with string \"b\"""#
+            r#"ERR "Cannot index number with string (\"b\")""#
         );
         assert!(host.current.identical(&cur));
     }

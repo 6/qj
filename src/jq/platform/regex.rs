@@ -15,7 +15,7 @@
 //!
 //! The builtin layer checks the argument types in `f_match`'s order and raises these
 //! type errors itself (`<kind>` is `jv_kind_name`, `<dump>` is
-//! `jv_dump_string_trunc(v, buf, 15)`):
+//! `jv_dump_string_trunc(v, buf, 30)`):
 //!
 //! 1. input not a string: `<kind> (<dump>) cannot be matched, as it is not a string`
 //! 2. `re` not a string: `<kind> (<dump>) is not a string`
