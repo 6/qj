@@ -7,7 +7,9 @@ undefined behaviours is a function of the program and input at all:
 - `--debug-trace=all` reading a stack word nothing wrote;
 - `lgamma_r`'s uninitialized sign.
 
-They aren't part of any test suite; run them by hand.
+They aren't part of any test suite; run them by hand. They were written against jq 1.8.1;
+jq 1.8.2 fixed the first (`jv_dels` frees the key once and raises the slice error), and
+the other two remain.
 
 ```
 python3 ub_corpus.py > corpus.json              # the corpus as JSON, counts on stderr (ub_run.py imports it)

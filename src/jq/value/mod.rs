@@ -81,9 +81,6 @@
 //!
 //! # Deviations
 //!
-//! * `delpaths` with a NaN path element terminates (jq 1.8.1 loops forever),
-//!   and a malformed slice key in `delpaths` on an array just errors (jq
-//!   double-frees the key and corrupts its heap).
 //! * No `Object too big` error (jq's limit is 2^29 slots).
 
 pub mod array;
