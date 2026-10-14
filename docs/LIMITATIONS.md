@@ -1,6 +1,6 @@
 # Known limitations
 
-qj runs a port of jq 1.8.1 (see [JQ_PORT_PLAN.md](JQ_PORT_PLAN.md)), so its behavior is
+qj runs a port of jq 1.8.2 (see [JQ_PORT_PLAN.md](JQ_PORT_PLAN.md)), so its behavior is
 jq's: what differs is listed in [COMPATIBILITY.md](COMPATIBILITY.md) under exemptions
 (help and version text, the `qj:` name in messages, jq's own nondeterminism). This page
 lists the rest.
@@ -10,7 +10,7 @@ lists the rest.
 qj builds for macOS and Linux (glibc), where every check runs, and for Linux with musl (as
 on Alpine), FreeBSD, NetBSD and Windows, which CI builds and tests. The Platform
 conformance workflow (run by the Release check) runs jq_diff on musl, FreeBSD and NetBSD
-against jq 1.8.1 built there, and the Windows job runs its `.test` cases against jq's
+against jq 1.8.2 built there, and the Windows job runs its `.test` cases against jq's
 Windows release binary.
 
 On musl, FreeBSD and NetBSD, everything matches jq except two things. First, where stdout

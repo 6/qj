@@ -9,7 +9,7 @@ Benchmarked on M5 Max MacBook Pro:
 
 ## qj vs jq
 
-**Drop-in replacement.** qj is a port of jq 1.8.1 itself, so output, errors and exit codes match jq byte for byte: 100% feature coverage (181/181) and 100% pass rate on all of jq's official test suites. All filters, builtins, and flags. Other reimplementations differ from jq in places: on jq's own `jq.test`, gojq passes 425 of 497 cases and jaq 343. ([details](docs/COMPATIBILITY.md))
+**Drop-in replacement.** qj is a port of jq 1.8.2 itself, so output, errors and exit codes match jq byte for byte: 100% feature coverage (181/181) and 100% pass rate on all of jq's official test suites. All filters, builtins, and flags. Other reimplementations differ from jq in places: on jq's own `jq.test`, gojq passes 435 of 525 cases and jaq 348. ([details](docs/COMPATIBILITY.md))
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and direct evaluation of simple filters on simdjson's tape. It's often **~95–200x** faster than jq for common streaming filters, and **~60–170x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
@@ -64,7 +64,7 @@ On single JSON files (49 MB) with no parallelism, qj is 5-28x faster than jq, 2-
 
 ## How it works
 
-- **A port of jq itself.** qj's core is jq 1.8.1 ported to Rust: its value and number model, parser, compiler, bytecode VM, builtins and `builtin.jq`, checked change by change against the jq binary by a differential harness.
+- **A port of jq itself.** qj's core is jq 1.8.2 ported to Rust: its value and number model, parser, compiler, bytecode VM, builtins and `builtin.jq`, checked change by change against the jq binary by a differential harness.
 - **SIMD parsing.** C++ [simdjson](https://github.com/simdjson/simdjson) (NEON/AVX2) via FFI. Single-file vendored build, no cmake.
 - **Parallel NDJSON.** Worker threads, ~1 MB chunks, each thread with its own compiled program. Output order always matches input order despite parallel processing. Files are mmap'd. Falls back to streaming read() for stdin/pipes, processing each record as soon as it arrives.
 - **Apple Silicon tuning.** Uses every non-efficiency core (P-cores, or Super + Performance cores on M5 Pro/Max), avoiding E-cores whose slower throughput creates stragglers that bottleneck the parallel pipeline.
@@ -83,6 +83,6 @@ Limitations vs jq:
 
 ## Credits / Inspiration
 
-qj's core is a port of [jq](https://github.com/jqlang/jq) 1.8.1 (MIT licensed); see [LICENSE-jq](LICENSE-jq).
+qj's core is a port of [jq](https://github.com/jqlang/jq) 1.8.2 (MIT licensed); see [LICENSE-jq](LICENSE-jq).
 
 thanks to [lemire](https://github.com/lemire)+team for the ultra-speedy simdjson library, [01mf02](https://github.com/01mf02) for pioneering Rust jq rewrite, and [aikoschurmann](https://github.com/aikoschurmann) for inspiring the raw byte-scan approach to NDJSON filtering.

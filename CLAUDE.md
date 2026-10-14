@@ -1,6 +1,6 @@
 # qj — a fast, jq-compatible JSON processor
 
-A faithful Rust port of jq 1.8.1, made fast by its input layer: SIMD parsing (C++ simdjson via FFI), memory-mapped and streaming input, and ordered parallel processing of NDJSON.
+A faithful Rust port of jq 1.8.2, made fast by its input layer: SIMD parsing (C++ simdjson via FFI), memory-mapped and streaming input, and ordered parallel processing of NDJSON.
 
 ## After writing Rust code
 ```
@@ -24,7 +24,7 @@ leniently or cover less, and jq_diff subsumes them.
 
 ```
 cargo test                                                              # fast suite
-cargo test --release jq_diff -- --ignored                               # THE GATE: strict differential vs jq 1.8.1, both scoreboards (on stderr)
+cargo test --release jq_diff -- --ignored                               # THE GATE: strict differential vs jq 1.8.2, both scoreboards (on stderr)
 cargo test --release jq_diff_compat -- --ignored                        # only the compat scoreboard (QJ_JQ_COMPAT=1, nothing normalized)
 cargo test --release jq_diff -- --ignored --exact                       # only the default scoreboard
 JQ_DIFF_FILTER=onig.test JQ_DIFF_VERBOSE=1 cargo test --release jq_diff -- --ignored  # one suite, with details
@@ -51,7 +51,7 @@ can OOM `tail` on macOS. Use `grep` to filter if needed, or run the non-verbose 
 ### jq_diff: the conformance gate
 
 `tests/jq_diff.rs` (`#[ignore]`) measures the definition of done in `docs/JQ_PORT_PLAN.md`,
-and is the gate for every change to qj's behavior. It runs jq 1.8.1 and qj with identical
+and is the gate for every change to qj's behavior. It runs jq 1.8.2 and qj with identical
 argv, stdin, environment and cwd, and compares stdout bytes, the exit code (or the signal, and
 the wait status's core-dump flag), and stderr. jq's output is the only expectation. Two
 scoreboards run the same cases, one after the other (`cargo test --release jq_diff --
@@ -70,7 +70,7 @@ finishes a case (killed at the timeout, the output cap or the memory cap), qj ma
 not finishing the same way: the same cap, with byte-identical stdout and stderr up to it. That
 counts as a strict pass and is shown in the scoreboard's `unfin` column; anything else (an
 answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per suite and mode.
-- **Cases:** `tests/jq_compat/*.test` (jq 1.8.1's own suites, `upstream/...`);
+- **Cases:** `tests/jq_compat/*.test` (jq 1.8.2's own suites, `upstream/...`);
   `tests/jq_compat/corpus/*.test` (qj's corpus: program line, input line, blank line; no
   expected output); `tests/jq_compat/corpus/*.toml` (CLI cases with any argv, files, env,
   binary stdin, or standard descriptors closed with `close_fds = [0, 1, 2]`;
@@ -147,7 +147,7 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
     use `assert_jq_compat` to verify output matches jq exactly. Never write tests that
     accept output differing from jq — if a fast path (such as the reader's simdjson path)
     would produce different results, it must hand over to jq's parser or VM.
-  - Includes **number literal tests** — jq 1.8.1's decNumber semantics: literals keep their
+  - Includes **number literal tests** — jq 1.8.2's decNumber semantics: literals keep their
     exact value and print canonically (trailing zeros kept, `1e2` → `1E+2`), arithmetic is f64.
   - `assert_jq_compat_strict` also compares stderr and the exact exit code, as jq_diff does.
 - **NDJSON tests:** `tests/ndjson.rs` — NDJSON integration tests (parallel engine, ordering,
@@ -191,7 +191,7 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
      with `JQ_DIFF_UPDATE_BASELINE=1`
   3. If the scoreboard's totals change, update the numbers in `README.md` and
      `docs/COMPATIBILITY.md`
-  The builtin set is jq 1.8.1's `builtins`: don't add qj-only builtins.
+  The builtin set is jq 1.8.2's `builtins`: don't add qj-only builtins.
 - **When adding a fast path** (anything that produces values or output without going through
   jq's parser or VM, like the reader's simdjson path), prove it equivalent before enabling it:
   1. Add its shapes to the jq_diff corpus: the `fastpath` sweep in
@@ -393,20 +393,24 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
   modules (see `SEQUENTIAL_BUILTINS` and `parallel_plan` in `src/cli/run.rs`).
 
 Read by everything (`src/compat.rs`):
-- `QJ_JQ_COMPAT=1` — **be exactly jq 1.8.1, bugs included.** Reproduces jq's crashes and
-  hangs and turns off qj's own additions (glob expansion, `.gz`/`.zst` decompression,
+- `QJ_JQ_COMPAT=1` — **be exactly jq 1.8.2, bugs included.** Reproduces jq's crashes and
+  turns off qj's own additions (glob expansion, `.gz`/`.zst` decompression,
   `--threads`/`--jsonl`/`--debug-timing`, which become jq's "Unknown option"). The crashes
-  are a module import cycle (SIGSEGV), `delpaths` with a `nan` path element (hangs,
-  growing), and jq's C stack running out. jq's stack is `RLIMIT_STACK` as the kernel
+  are the linker's use-after-free on a chain of modules (a definition two imports from the
+  program that calls into a third: `assert()` in `expand_call_arglist`, SIGABRT; see
+  `src/jq/lang/linker.rs`), the aborts after the compiler's 4,095-closure limit, and jq's C
+  stack running out. jq's stack is `RLIMIT_STACK` as the kernel
   applies it (down to a page on Linux, up to one on macOS) less what argv and the
   environment take at its top, which compat mode counts (`compat::area_of`), and each
   model is bytes a level over a base, measured byte-exact against the jq binary with a
   margin of 512 bytes (on Linux plus the 8,206 of the kernel's stack randomization). The
-  recursions, each at its own depth: over values, freeing (`jv_free`), comparing
-  (`jv_equal`/`jv_cmp`, so `==`, `<`, `sort`, `group_by`, `unique`, `min`, `max`,
-  `bsearch`, `-`, `index`), `contains`/`inside`, object `*`, `setpath`/`=`/`|=`,
-  `delpaths`/`del`, printing (`jv_dump_term`, only below about 80 KB of stack, from
-  `main.c` and, deeper, from `tojson`/`@json`/interpolation/`debug`), and a chain of
+  recursions, each at its own depth: over values, comparing (`jv_equal`, so `==`, `-`,
+  `index`, `unique`, `group_by`; and `jv_cmp`, so `<`, `sort`, `min`, `max`, `bsearch`),
+  `contains`/`inside`, object `*`, `setpath`/`=`/`|=`, `delpaths`/`del`, printing
+  (`jv_dump_term`, from `main.c` and, deeper, from `tojson`/`@json`/interpolation/`debug`)
+  — all of which jq 1.8.2 stops at 10,000 levels ("Equality check too deep", "Path too
+  deep", ... in both modes), so they overflow only on a stack of about 3 MB or less, and
+  `jv_free` doesn't recurse at all any more — and a chain of
   `import`s (`load_library`, about 20,000 modules at 8 MB); Oniguruma's parser and its walks
   over the parsed pattern, for a nested regex (`src/compat/regex.rs`); and, over the
   program, while compiling it:
@@ -423,7 +427,7 @@ Read by everything (`src/compat.rs`):
   the actions bison runs as it reduces a program that then fails to parse. Natives, the
   VM's regions and tape evaluation are off here, so everything goes through the value
   layer. It is jq's identity too: messages say `jq:` (`compat::prog_name`), and `-h`, the
-  usage after errors, `--version` (`jq-1.8.1`) and `--build-configuration` (the release
+  usage after errors, `--version` (`jq-1.8.2`) and `--build-configuration` (the release
   binary's `JQ_CONFIG` for the platform, also `$JQ_BUILD_CONFIGURATION`) are jq's text
   (`src/cli/usage.rs`); glibc's `assert()` line carries `argv[0]`, as jq's does. Parallel
   processing stays on. Read once at start-up; set means anything but empty or `0`.
@@ -442,7 +446,7 @@ Never run benchmarks concurrently with tests or other CPU-intensive processes.
 Benchmarks require exclusive CPU access for reliable results.
 
 ## Architecture
-qj is a port of jq 1.8.1 (see `docs/JQ_PORT_PLAN.md`). `src/main.rs` restores the default
+qj is a port of jq 1.8.2 (see `docs/JQ_PORT_PLAN.md`). `src/main.rs` restores the default
 SIGPIPE handling and runs `qj::cli::run::main` — on the main thread's stack when
 `RLIMIT_STACK` is 8 MB or more, and below that on a 256 MB stack it maps and switches to,
 still on the main thread (`src/cli/stack.rs`), so qj's own frames never run out where

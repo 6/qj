@@ -1,6 +1,6 @@
-# jq 1.8.1 port plan: 100% conformance
+# jq 1.8.2 port plan: 100% conformance
 
-**Goal:** qj is indistinguishable from jq 1.8.1 (same stdout bytes, exit codes, and error
+**Goal:** qj is indistinguishable from jq 1.8.2 (same stdout bytes, exit codes, and error
 messages) for every program, input, and flag, while keeping qj's speed advantage
 (SIMD parsing, mmap, parallel NDJSON).
 
@@ -36,7 +36,7 @@ The root causes are structural, and they are the reason for the port:
 
 ## Definition of done
 
-1. **Upstream suites:** every case in jq 1.8.1's `jq.test`, `man.test`, `manonig.test`,
+1. **Upstream suites:** every case in jq 1.8.2's `jq.test`, `man.test`, `manonig.test`,
    `onig.test`, `base64.test`, `uri.test`, `optional.test` passes **byte-exact** (stdout,
    exit code, normalized stderr). It must pass in compact and pretty mode, with input on
    stdin, as a file argument, and as multi-line NDJSON.
@@ -62,12 +62,12 @@ code 3 are required.
 
 ## Decisions (defaults; revisit only with the user)
 
-- **Numbers are jq-exact by default.** The port follows jq 1.8.1 built with decNumber:
+- **Numbers are jq-exact by default.** The port follows jq 1.8.2 built with decNumber:
   literals are preserved and printed canonically (`1e2` → `1E+2`), literals compare
   precisely against each other, arithmetic is f64, and `have_decnum` is true.
   qj's old i64-exact arithmetic goes away. `QJ_JQ_COMPAT` becomes a no-op once the port is
   the default.
-- **The builtin set equals jq 1.8.1's `builtins`.** qj-only names jq removed (`leaf_paths`,
+- **The builtin set equals jq 1.8.2's `builtins`.** qj-only names jq removed (`leaf_paths`,
   `date`, `dateadd`, `datesub`, `ascii`) are dropped.
 - **qj extensions kept:** `--threads N`, `--jsonl`, transparent `.gz`/`.zst`, and glob
   expansion when a literal path doesn't exist. None may change output relative to jq.
@@ -78,7 +78,7 @@ code 3 are required.
 
 ## Reference
 
-- jq 1.8.1 source: `bash tests/jq_compat/fetch_jq_source.sh` → `target/jq-src/jq-1.8.1/`
+- jq 1.8.2 source: `bash tests/jq_compat/fetch_jq_source.sh` → `target/jq-src/jq-1.8.2/`
   (per worktree, gitignored). The files that matter:
 
   | jq file | lines | ported to |
@@ -95,7 +95,7 @@ code 3 are required.
   | `builtin.jq` | 243 | vendored verbatim |
   | `main.c`, `util.c` | 1977 | CLI / input layer |
 
-- The `jq` 1.8.1 binary (via mise) is the oracle. When the source and the binary disagree,
+- The `jq` 1.8.2 binary (via mise) is the oracle. When the source and the binary disagree,
   the binary wins.
 
 ## Porting rules
@@ -108,7 +108,7 @@ code 3 are required.
    `Rc::make_mut` for jq's refcount-1 in-place mutation, `IndexMap`-style objects, and
    Rust's shortest-float digits instead of porting dtoa.
 3. **Test against the binary.** Every ported behavior gets tests whose expectations came
-   from running jq 1.8.1, not from reading the C.
+   from running jq 1.8.2, not from reading the C.
 4. **No O(n²) where jq is O(n).** Mutation must happen in place when the value is unique.
 
 ## Module ownership (parallel tracks edit disjoint files)
@@ -360,6 +360,28 @@ interface scaffold before spawning it.
   starts on the same stack as jq. The earlier CI flake was a full disk, caused by an orphan
   left over from before EX's process groups; jq_diff now fails loudly on a full disk. Both
   scoreboards unchanged.
+- 2026-10-14: **Retargeted to jq 1.8.2**, the patch release of 2026-06-20 (86 commits,
+  most of them security fixes that change behavior). Both scoreboards are back at 100%
+  strict (40,342 cases; the default exempts only qj's help and version text). What
+  changed:
+  - Messages: `Cannot index X with Y (key)`, and 30-byte truncation buffers that keep a
+    closing quote or bracket.
+  - Depth limits: equality, comparison, containment, object merge and paths give up past
+    10,000 levels ("... too deep"). `jv_free` became iterative, and the printer's depth
+    limit is 10,000.
+  - Builtins: `tonumber`/`toboolean` reject NULs, the `@uri`/`@urid` rewrite, `_strindices`'
+    type errors, `rtrimstr("")`, `from_entries`.
+  - Input: util.c reads in 4,091-byte chunks and completes a UTF-8 sequence split at the
+    chunk's end, and no longer cuts at a NUL. `-f` rejects NUL bytes, and `die()`'s text
+    changed.
+  - Linker and compiler: circular imports are an error, there are closure limits (4,095),
+    and `--run-tests` takes several files.
+  - Compat mode: the 1.8.1 crashes that are gone (import cycles, `delpaths` with `nan`,
+    `jv_free` overflows) are gone in compat mode too. Its stack models were re-measured on
+    macOS 27, macOS 26 and Linux x86-64: `jv_equal` and `jv_cmp` are separate sites now,
+    with 160 and 144 bytes a level on Linux. jq 1.8.2's new crash, the linker's
+    use-after-free on a chain of modules three deep, aborts the same way every time on
+    macOS and Linux, and compat mode reproduces it.
 - Wave 3 CLI requirements from B2:
   1. When a builtin aborts like jq (SIGABRT), jq's already-buffered stdout survives on macOS
      (Apple's `abort()` flushes stdio) but is lost on glibc. Flush qj's stdout before
