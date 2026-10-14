@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# qj vs jq 1.8.1's Windows release binary, for the Benchmarks workflow's
+# qj vs jq 1.8.2's Windows release binary, for the Benchmarks workflow's
 # Windows job. bench_tools (the Linux and macOS jobs') doesn't run on Windows
 # yet: it builds hyperfine commands for a POSIX shell. So this times qj and
 # jq only, on GH Archive-like records generated with qj, and writes

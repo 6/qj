@@ -3,7 +3,7 @@
 
 tests/jq_diff.rs is the conformance gate, but its runner is Unix-only (process
 groups, rlimits, signals). This runs the same filter/input cases, from the same
-files, the same way, under qj and under a jq 1.8.1 binary, and compares stdout
+files, the same way, under qj and under a jq 1.8.2 binary, and compares stdout
 bytes, the exit code and stderr (jq_diff's normalization: a line-initial `qj:`
 reads as `jq:`, as does qj's usage hint). jq is the only expectation.
 
@@ -347,8 +347,8 @@ def main():
 
     qj, jq = os.path.abspath(a.qj), os.path.abspath(a.jq)
     version = subprocess.run([jq, "--version"], capture_output=True).stdout.decode().strip()
-    if version != "jq-1.8.1":
-        sys.exit(f"{jq} is {version!r}; jq_diff's cases need jq-1.8.1")
+    if version != "jq-1.8.2":
+        sys.exit(f"{jq} is {version!r}; jq_diff's cases need jq-1.8.2")
     modes = a.modes.split(",")
     skipped = defaultdict(int)
     jobs = collect(modes, a.filter, skipped)
