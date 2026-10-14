@@ -24916,7 +24916,6 @@ pass corpus/modules.toml:chain-40-called-two-deep:cli 5912e3680efd
 pass corpus/modules.toml:data-import-bad-json:cli 7ba9dbee4b62
 pass corpus/modules.toml:data-import-in-a-chain-not-called:cli f058d4d37cf5
 pass corpus/modules.toml:data-import-in-a-chain-not-referred-to:cli 71945cbb9b33
-pass corpus/modules.toml:data-import-in-a-chain-unused:cli 477c9538f646
 pass corpus/modules.toml:data-import-in-a-module:cli 4c476acbc3b0
 pass corpus/modules.toml:data-import-namespaced:cli d267b4740b29
 pass corpus/modules.toml:data-import-raw:cli 93c6716f9bb6

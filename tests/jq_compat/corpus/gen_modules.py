@@ -152,17 +152,8 @@ case(
     },
     L + ["-nc", 'include "m1"; f'],
 )
-case(
-    "data-import-in-a-chain-unused",
-    {
-        "m0.jq": 'import "m1" as m;\ndef f: m::f;\n',
-        "m1.jq": 'import "d" as $d;\ndef f: if false then $d else 7 end;\n',
-        "d.json": "[1,2,3]\n",
-    },
-    L + ["-nc", 'include "m0"; f'],
-    "jq frees the data global, but this never reads it (with glibc, compiling the reference aborts)",
-    os="macos",
-)
+# (A definition two imports below that refers to the data makes jq abort on
+# most platforms: compat_mode.toml.)
 case(
     "data-import-in-a-chain-not-referred-to",
     {

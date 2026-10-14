@@ -52,9 +52,11 @@ env = { QJ_JQ_COMPAT = "1" }
 # away calls them (it never walks that one's body). Compiling the call reads
 # the freed definition, whose memory a RET allocated since has taken, and
 # expand_call_arglist's assert() fails. A data import's global, freed the same
-# way, fails nesting_level's assert() when a reference to it is compiled with
-# glibc, and on macOS stack_push's when it is read. Deterministic on macOS and
-# glibc, each in its own assert format; by default qj keeps what is called.
+# way, fails nesting_level's assert() when a reference to it is compiled on
+# Linux (glibc and musl) and Intel macOS, and on arm64 macOS stack_push's when
+# it is read. Deterministic on each, in its own assert format; by default qj
+# keeps what is called. (The macOS cases below show arm64's behaviour; on
+# Intel, jq and qj both abort while compiling.)
 [[case]]
 name = "module-chain-of-three-aborts"
 args = ["-L", ".", "-nc", "include \"m0\"; f"]
@@ -130,7 +132,7 @@ os = "macos"
 files = { "m0.jq" = "import \"m1\" as m;\ndef f: m::f;\n", "m1.jq" = "import \"d\" as $d;\ndef f: if false then $d else 7 end;\n", "d.json" = "[1,2,3]\n" }
 env = { QJ_JQ_COMPAT = "1" }
 
-# With glibc the same programs abort while compiling: nothing is printed.
+# On Linux the same programs abort while compiling: nothing is printed.
 [[case]]
 name = "module-data-import-in-a-chain-aborts-when-compiled-then-read"
 args = ["-L", ".", "-nc", "include \"m0\"; 1, f"]

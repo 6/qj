@@ -344,8 +344,9 @@ fn a_chain_of_three_modules_aborts_in_compat_mode() {
     assert_eq!((code(&compat), stdout(&compat).as_str()), (Some(0), "3\n"));
 }
 
-/// A data import two modules below the program is freed the same way: with
-/// glibc, compiling a reference to it aborts; on macOS, reading it does.
+/// A data import two modules below the program is freed the same way: on
+/// Linux and Intel macOS, compiling a reference to it aborts; on arm64
+/// macOS, reading it does.
 #[test]
 fn a_data_import_in_a_chain_aborts_in_compat_mode() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -364,8 +365,10 @@ fn a_data_import_in_a_chain_aborts_in_compat_mode() {
     );
     let compat = run_in(dir.path(), true, args);
     assert_eq!(signal(&compat), Some(libc::SIGABRT));
-    let (out, assert) = if cfg!(all(target_os = "linux", target_env = "gnu")) {
+    let (out, assert) = if cfg!(target_os = "linux") {
         ("", "bc && bc == target->compiled")
+    } else if cfg!(all(target_vendor = "apple", target_arch = "x86_64")) {
+        ("", "bc && target && target->compiled")
     } else {
         ("1\n", "jv_is_valid(val)")
     };

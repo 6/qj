@@ -18,10 +18,3 @@ corpus/cli_meta.toml:help-short:cli
 corpus/cli_meta.toml:usage-from-file-without-program:cli
 corpus/cli_meta.toml:version-ignores-jq-colors:cli
 corpus/cli_meta.toml:version:cli
-
-# jq 1.8.2's linker frees the definitions of a module two imports below the
-# program while calls to them are still compiled (docs/COMPATIBILITY.md, "jq's
-# undefined behaviour"). On macOS and Linux this chain never reaches the freed
-# blocks and answers 7; jq.exe's heap leaves them so that it fails
-# nesting_level's assert() and aborts. qj answers 7.
-corpus/modules.toml:data-import-in-a-chain-unused:cli
