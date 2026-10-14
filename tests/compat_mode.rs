@@ -344,6 +344,35 @@ fn a_chain_of_three_modules_aborts_in_compat_mode() {
     assert_eq!((code(&compat), stdout(&compat).as_str()), (Some(0), "3\n"));
 }
 
+/// A data import two modules below the program is freed the same way: with
+/// glibc, compiling a reference to it aborts; on macOS, reading it does.
+#[test]
+fn a_data_import_in_a_chain_aborts_in_compat_mode() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (name, text) in [
+        ("m0.jq", "import \"m1\" as m;\ndef f: m::f;\n"),
+        ("m1.jq", "import \"d\" as $d;\ndef f: $d;\n"),
+        ("d.json", "[1]\n"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let args = &["-nc", "-L", ".", "include \"m0\"; 1, f"];
+    let plain = run_in(dir.path(), false, args);
+    assert_eq!(
+        (code(&plain), stdout(&plain).as_str()),
+        (Some(0), "1\n[[1]]\n")
+    );
+    let compat = run_in(dir.path(), true, args);
+    assert_eq!(signal(&compat), Some(libc::SIGABRT));
+    let (out, assert) = if cfg!(all(target_os = "linux", target_env = "gnu")) {
+        ("", "bc && bc == target->compiled")
+    } else {
+        ("1\n", "jv_is_valid(val)")
+    };
+    assert_eq!(stdout(&compat), out);
+    assert!(stderr(&compat).contains(assert), "{}", stderr(&compat));
+}
+
 /// A directory with `n` modules, each importing the next, and the program that
 /// enters the chain: `m0` imports `m1` … imports `m{n-1}`, which imports
 /// nothing. `f` is defined in every one of them, so the chain is also bound and

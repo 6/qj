@@ -1869,11 +1869,16 @@ impl Compiler {
 
     /// The second half of jq's `compile`, run once the subfunctions are
     /// compiled and only if neither they nor the function had errors: emits
-    /// the code. `false` where jq's `nesting_level` fails its first assertion
-    /// instead, on a parameter past the limit, which jq leaves unassigned.
-    fn emit(&mut self, fns: &mut [FnState], laid: &Laid, cfunctions: &mut Vec<CFunction>) -> bool {
+    /// the code, or says which of jq's `nesting_level` assertions fails
+    /// instead.
+    fn emit(
+        &mut self,
+        fns: &mut [FnState],
+        laid: &Laid,
+        cfunctions: &mut Vec<CFunction>,
+    ) -> Result<(), EmitFailure> {
         let fid = laid.fid;
-        let missing = || false;
+        let missing = || Err(EmitFailure::Unassigned);
         let mut code: Vec<u16> = Vec::with_capacity(laid.pos);
         let mut constants: Vec<Value> = Vec::new();
         let mut maxvar: i32 = -1;
@@ -1939,9 +1944,15 @@ impl Compiler {
                 let binder = self.inst(inst.bound_by.unwrap());
                 if binder.freed {
                     // A data import's global that `block_drop_unreferenced` freed
-                    // (see `Inst::freed`): jq reads a variable nothing stored, and
-                    // dies when the instruction runs. Same length as `LOADV`.
+                    // (see `Inst::freed`). With glibc, `nesting_level` finds the
+                    // freed instruction's memory compiled into another function;
+                    // with Apple's libc it passes, jq reads a variable nothing
+                    // stored, and dies when the instruction runs (same length as
+                    // `LOADV`). musl is unmeasured.
                     debug_assert_eq!(op, LOADV);
+                    if cfg!(all(target_os = "linux", target_env = "gnu")) {
+                        return Err(EmitFailure::FreedGlobal);
+                    }
                     code.push(CALL_BUILTIN as u16);
                     code.push(1);
                     code.push(cfunctions.len() as u16);
@@ -1974,7 +1985,7 @@ impl Compiler {
         f.code = code;
         f.constants = constants;
         f.nlocals = (maxvar + 2) as usize;
-        true
+        Ok(())
     }
 
     /// `block_compile`: compiles a bound program. Returns the top-level function, or
@@ -2021,17 +2032,17 @@ impl Compiler {
             }
             let done = stack.pop().expect("a function being compiled");
             if done.errors == 0
-                && !self.emit(&mut fns, &done, &mut cfunctions)
+                && let Err(failure) = self.emit(&mut fns, &done, &mut cfunctions)
                 && crate::compat::exactly_jq()
             {
                 // Otherwise the error that left the parameter unassigned
-                // makes the program fail.
-                self.die_like_jq(
-                    "bc && target && target->compiled",
-                    "src/compile.c",
-                    "nesting_level",
-                    1086,
-                );
+                // makes the program fail (a global is freed only in compat
+                // mode).
+                let (expr, line) = match failure {
+                    EmitFailure::Unassigned => ("bc && target && target->compiled", 1086),
+                    EmitFailure::FreedGlobal => ("bc && bc == target->compiled", 1091),
+                };
+                self.die_like_jq(expr, "src/compile.c", "nesting_level", line);
             }
             match stack.last_mut() {
                 Some(parent) => parent.errors += done.errors,
@@ -2044,6 +2055,14 @@ impl Compiler {
         }
         Ok(build_bytecode(fns, &Rc::new(SymbolTable { cfunctions })))
     }
+}
+
+/// Where jq's codegen (`nesting_level`) fails an assertion.
+enum EmitFailure {
+    /// A parameter past the limit, which jq leaves unassigned.
+    Unassigned,
+    /// A data import's freed global (with glibc).
+    FreedGlobal,
 }
 
 /// What [`Compiler::lay_out`] leaves for the rest of jq's `compile`.
