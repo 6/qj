@@ -1,5 +1,5 @@
-//! The input layer against the jq 1.8.1 binary (skipped when `jq` on PATH
-//! isn't 1.8.1): real files in a temporary directory, missing files,
+//! The input layer against the jq 1.8.2 binary (skipped when `jq` on PATH
+//! isn't 1.8.2): real files in a temporary directory, missing files,
 //! directories, and standard input.
 //!
 //! Two programs observe the reader:
@@ -349,7 +349,10 @@ fn scenarios() -> Vec<(Vec<F>, Flags)> {
         "x".repeat(4000),
         " ".repeat(200)
     );
-    let euro_split = format!("{}€\n", "a".repeat(4094)); // € straddles byte 4095
+    let euro_split = format!("{}€\n", "a".repeat(4090)); // € straddles byte 4091
+    let mut swallow = b"\"".to_vec();
+    swallow.extend(std::iter::repeat_n(b'a', 4089));
+    swallow.extend_from_slice(b"\xe2\nb\"\n7\n");
     vec![
         (vec![d("a", "1"), d("b", "2\n")], JSON),
         (vec![d("a", "1"), d("b", "\n2\n")], JSON),
@@ -417,6 +420,12 @@ fn scenarios() -> Vec<(Vec<F>, Flags)> {
             Flags { slurp: true, ..raw },
         ),
         (vec![F::Data("a", b"a\x00b\nc\xffd".to_vec())], raw),
+        // fread completes the sequence with a newline and more: the line
+        // goes on, and the newline isn't counted.
+        (vec![F::Stdin(swallow.clone())], raw),
+        (vec![F::Data("a", swallow.clone())], JSON),
+        (vec![F::Data("a", b"1 2\x003 4 [5]\x00".to_vec())], JSON),
+        (vec![F::Data("a", b"\"a\x00b\" 1".to_vec())], JSON),
         (
             vec![d("a", "x\ny"), d("b", "z\n")],
             Flags { slurp: true, ..raw },
@@ -452,7 +461,7 @@ fn scenarios() -> Vec<(Vec<F>, Flags)> {
 #[test]
 fn reader_matches_jq_binary() {
     if jq().is_none() {
-        eprintln!("skipped: jq 1.8.1 not on PATH");
+        eprintln!("skipped: jq 1.8.2 not on PATH");
         return;
     }
     let mut failures = Vec::new();
@@ -471,7 +480,7 @@ fn reader_matches_jq_binary() {
 #[ignore]
 fn reader_matches_jq_binary_generated() {
     if jq().is_none() {
-        eprintln!("skipped: jq 1.8.1 not on PATH");
+        eprintln!("skipped: jq 1.8.2 not on PATH");
         return;
     }
     let n: u64 = std::env::var("QJ_IO_LIVE_CASES")

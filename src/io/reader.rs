@@ -4,22 +4,29 @@
 //! # What jq does
 //!
 //! jq reads every input with `fgets` into a 4096-byte buffer, so it sees
-//! "chunks": one line, or 4095 bytes of a longer line. Each chunk goes to one
-//! `jv_parser` shared by all inputs, which means:
+//! "chunks": one line, or 4091 bytes of a longer line, plus the up to 3
+//! bytes that complete the UTF-8 sequence those end in (which jq `fread`s,
+//! newlines included). Each chunk goes to one `jv_parser` shared by all
+//! inputs, which means:
 //!
 //! * texts continue across file boundaries (`printf 1 > a; printf 2 > b;
 //!   jq . a b` prints `12`), and the parser's line/column counters used in
 //!   error messages run on across files;
-//! * a chunk without a newline is cut at its first NUL (`strlen`);
 //! * after a parse error the rest of the *chunk* is discarded;
-//! * `input_line_number` is the number of newlines in the chunks read so far
-//!   from the current input (reset when the next input is opened), and
-//!   `input_filename` the current input's name (`<stdin>` for `-`);
+//! * `input_line_number` is the number of chunks ending in a newline read so
+//!   far from the current input (reset when the next input is opened): a
+//!   newline among the bytes `fread` added ends no chunk and isn't counted
+//!   ("swallowed"). `input_filename` is the current input's name (`<stdin>`
+//!   for `-`);
 //! * the next input is opened only when the parser needs more bytes. A file
 //!   that fails to open prints `Could not open file ...` and counts as a
 //!   failure; `input_filename` still becomes its name.
-//! * raw input (`-R`) converts each chunk to a string on its own, so a
-//!   multibyte character split at a 4095-byte boundary becomes two U+FFFD.
+//! * raw input (`-R`) converts each chunk to a string on its own, so an
+//!   invalid UTF-8 sequence becomes U+FFFD per chunk, and a line goes on
+//!   past a swallowed newline.
+//!
+//! Where chunks start is a matter of where the last one ended, so the
+//! reader keeps an *anchor*: the start of the chunk its position is in.
 //!
 //! # How this reproduces it quickly
 //!
@@ -34,17 +41,16 @@
 //! the chunks jq's `fgets` produces. The fast path takes over again once that
 //! parser is idle. `--seq` and `--stream` always use jq's parser.
 //!
-//! The fast path never consumes a NUL byte, so its view of a chunk and jq's
-//! (`strlen`-truncated) view agree up to wherever it hands over.
+//! The fast path never consumes a NUL byte: jq's parser judges it.
 //!
 //! # What stays resident
 //!
 //! A stream's buffer drops consumed bytes as it's refilled. A memory-mapped
 //! input is released instead, from the start up to the lowest position
 //! anything can still read ([`InputReader`]'s `release_consumed`): the
-//! reader itself reads nothing before its position (the start of the chunk
-//! last fed to jq's parser, which copies its chunks, or of a text whose end
-//! is still being looked for), values own their bytes (strings, number
+//! reader itself reads nothing before its position or its anchor (the start
+//! of the chunk last fed to jq's parser, which copies its chunks, or of a
+//! text whose end is still being looked for), values own their bytes (strings, number
 //! literals, keys), and what a [`TapeSink`] prints from the text is written
 //! before the reader moves on. The only other readers are the parallel
 //! engine's jobs, which hold a `Pin` at their start while their worker
@@ -63,8 +69,21 @@ use super::tape_eval::Decline;
 use crate::jq::value::{Array, Error, Number, ParseFlags, Parser, Str, Value, unicode};
 use crate::simdjson::tape_error;
 
-/// `fgets(buf, 4096, f)` reads at most this many bytes per chunk.
-pub const CHUNK: usize = 4095;
+/// `fgets(buf, sizeof(buf) - 4, f)` reads at most this many bytes per chunk
+/// (before `fread` completes the UTF-8 sequence they end in).
+pub const CHUNK: usize = 4091;
+
+/// How many bytes jq's `fread` adds to a chunk that `fgets` cut short after
+/// `body` (its 4091 bytes): what the UTF-8 sequence it ends in is missing,
+/// as `jvp_utf8_backtrack` counts it (0 when that finds no sequence).
+#[inline]
+pub(crate) fn utf8_completion(body: &[u8]) -> usize {
+    let mut missing = 0;
+    match unicode::utf8_backtrack(body, body.len() - 1, 0, Some(&mut missing)) {
+        Some(_) => missing,
+        None => 0,
+    }
+}
 
 /// Bytes kept readable after the data of a stream buffer, so simdjson can
 /// parse texts in place.
@@ -119,9 +138,9 @@ struct FileData {
     /// The read error that ended this input (`ferror`), reported when the
     /// input is left, like jq's next `read_more`.
     error: Option<io::Error>,
-    /// Start of the line containing `end` (the last line seen so far; only
-    /// for streams, as a whole input is at EOF).
-    last_line_start: usize,
+    /// The end of the last complete `fgets` chunk in `[base, end)` (only for
+    /// streams, as a whole input is at EOF).
+    boundary: usize,
     /// The bytes can be released ([`super::source::InputBytes::release`]).
     releasable: bool,
 }
@@ -153,7 +172,7 @@ impl FileData {
                 base: 0,
                 eof: true,
                 error: None,
-                last_line_start: 0,
+                boundary: 0,
             },
             Opened::Stream { reader, fd } => FileData {
                 kind: DataKind::Stream {
@@ -165,7 +184,7 @@ impl FileData {
                 end: 0,
                 eof: false,
                 error: None,
-                last_line_start: 0,
+                boundary: 0,
                 releasable: false,
             },
         }
@@ -194,17 +213,131 @@ impl FileData {
         &self.buf()[a - self.base..b - self.base]
     }
 
-    /// End of the last complete `fgets` chunk: everything if at EOF,
-    /// otherwise up to the last newline or the last full 4095-byte chunk of
-    /// the unfinished line. jq emits nothing from a chunk it hasn't finished
-    /// reading, and neither does the fast path.
+    /// End of the last complete `fgets` chunk: everything if at EOF. jq
+    /// emits nothing from a chunk it hasn't finished reading, and neither
+    /// does the fast path.
     #[inline]
     fn avail_end(&self) -> usize {
-        if self.eof {
-            self.end
-        } else {
-            let ls = self.last_line_start;
-            ls + (self.end - ls) / CHUNK * CHUNK
+        if self.eof { self.end } else { self.boundary }
+    }
+
+    /// Moves `boundary` over the chunks complete in the bytes read so far.
+    fn extend_boundary(&mut self) {
+        let mut c = self.boundary;
+        loop {
+            let stop = (c + CHUNK).min(self.end);
+            // Every newline within a chunk's first 4091 bytes ends one.
+            if let Some(i) = memchr::memrchr(b'\n', self.slice(c, stop)) {
+                c += i + 1;
+                continue;
+            }
+            if stop < c + CHUNK {
+                break;
+            }
+            let e = c + CHUNK + utf8_completion(self.slice(c, c + CHUNK));
+            if e > self.end {
+                break;
+            }
+            c = e;
+        }
+        self.boundary = c;
+    }
+
+    /// The `fgets` chunk that holds `p` (or starts there), given `c`, the
+    /// start of a chunk at or before it with no newline ending one between
+    /// them: where it ends, and whether in a newline, or that jq's `fgets`
+    /// (or `fread`) would need more bytes than there are yet.
+    fn chunk_at(&self, mut c: usize, p: usize) -> ChunkAt {
+        loop {
+            if p >= self.end {
+                return if self.eof {
+                    ChunkAt::Exhausted
+                } else {
+                    ChunkAt::NeedData
+                };
+            }
+            let body_end = c + CHUNK;
+            if p < body_end {
+                let stop = body_end.min(self.end);
+                if let Some(i) = memchr::memchr(b'\n', self.slice(p, stop)) {
+                    return ChunkAt::Chunk {
+                        end: p + i + 1,
+                        has_nl: true,
+                        eof_hit: false,
+                    };
+                }
+                if stop < body_end {
+                    // fgets runs into the end of the input.
+                    return if self.eof {
+                        ChunkAt::Chunk {
+                            end: self.end,
+                            has_nl: false,
+                            eof_hit: true,
+                        }
+                    } else {
+                        ChunkAt::NeedData
+                    };
+                }
+            }
+            let want = body_end + utf8_completion(self.slice(c, body_end));
+            if want > self.end {
+                // fread runs into the end of the input.
+                return if self.eof {
+                    ChunkAt::Chunk {
+                        end: self.end,
+                        has_nl: false,
+                        eof_hit: true,
+                    }
+                } else {
+                    ChunkAt::NeedData
+                };
+            }
+            if p < want {
+                return ChunkAt::Chunk {
+                    end: want,
+                    has_nl: false,
+                    eof_hit: false,
+                };
+            }
+            c = want;
+        }
+    }
+
+    /// Walks the chunks from `a`, the start of the one holding `from`, to
+    /// the one holding `to` (`from <= to <= end`): its start, and how many
+    /// newlines in `[from, to)` were swallowed (`fread` added them, so they
+    /// end no chunk).
+    fn walk(&self, mut a: usize, from: usize, to: usize) -> (usize, u64) {
+        let mut swallowed = 0;
+        let count = |x: usize, y: usize| -> u64 {
+            let (x, y) = (x.max(from), y.min(to));
+            if x >= y {
+                0
+            } else {
+                memchr::memchr_iter(b'\n', self.slice(x, y)).count() as u64
+            }
+        };
+        loop {
+            let lim = (a + CHUNK).min(to);
+            if lim > a
+                && let Some(i) = memchr::memrchr(b'\n', self.slice(a, lim))
+            {
+                a += i + 1;
+                continue;
+            }
+            if to < a + CHUNK {
+                return (a, swallowed);
+            }
+            let b = a + CHUNK;
+            let want = b + utf8_completion(self.slice(a, b));
+            // (Past the bytes read so far, fread's may still be coming, or
+            // the input ends there: `to` is in the chunk either way.)
+            if to < want {
+                swallowed += count(b, to);
+                return (a, swallowed);
+            }
+            swallowed += count(b, want);
+            a = want;
         }
     }
 
@@ -215,6 +348,15 @@ impl FileData {
     /// bytes are buffered. So a fast producer gives large windows, and a
     /// slow one never delays records that are complete.
     fn fill(&mut self, keep: usize, wait: bool, max: usize) {
+        let end = self.end;
+        self.read_bytes(keep, wait, max);
+        if self.end > end && !self.eof {
+            self.extend_boundary();
+        }
+    }
+
+    /// [`FileData::fill`]'s reads.
+    fn read_bytes(&mut self, keep: usize, wait: bool, max: usize) {
         let DataKind::Stream { reader, buf, fd } = &mut self.kind else {
             return;
         };
@@ -252,12 +394,7 @@ impl FileData {
                 Ok(0) => {
                     self.eof = true;
                 }
-                Ok(n) => {
-                    if let Some(i) = memchr::memrchr(b'\n', &buf[len..len + n]) {
-                        self.last_line_start = self.end + i + 1;
-                    }
-                    self.end += n;
-                }
+                Ok(n) => self.end += n,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
                     self.error = Some(e);
@@ -277,20 +414,20 @@ struct FilePos {
     /// Absolute parse position (fast path), or the start of the chunk last
     /// fed to jq's parser.
     pos: usize,
-    /// Newlines in `[0, pos)`.
+    /// Newlines in `[0, pos)` that ended a chunk (`input_line_number`'s
+    /// count).
     nl: u64,
-    /// Start of the line containing `pos`.
-    line_start: usize,
+    /// The anchor: the start of the chunk holding `pos` (or one before it
+    /// with no newline ending a chunk in between).
+    anchor: usize,
 }
 
-/// A chunk handed to jq's parser.
+/// A chunk handed to jq's parser: the part of a chunk from where the parser
+/// took over, or a whole chunk.
 #[derive(Clone, Copy)]
 struct FedChunk {
     start: usize,
-    /// End of the chunk in the input (before any NUL truncation).
     end: usize,
-    /// Bytes given to the parser.
-    fed: usize,
 }
 
 enum Json {
@@ -674,12 +811,14 @@ impl InputReader {
 
     /// The first byte of the current input the reader can still read: its
     /// position (for jq's parser, the start of the chunk it was fed last,
-    /// which it copied), or the start of a text whose end it's looking for.
+    /// which it copied) or its anchor, or the start of a text whose end it's
+    /// looking for.
     #[inline]
     fn keep(&self) -> usize {
+        let at = self.fp.pos.min(self.fp.anchor);
         match self.pending_scan {
-            Some(s) => s.start.min(self.fp.pos),
-            None => self.fp.pos,
+            Some(s) => s.start.min(at),
+            None => at,
         }
     }
 
@@ -708,7 +847,8 @@ impl InputReader {
     }
 
     /// Advances `fp` to `to`, counting newlines. `pline`/`pcol` follow when
-    /// `count_parser` is set (bytes the fast path consumes).
+    /// `count_parser` is set (bytes the fast path consumes): jq's parser
+    /// counts every newline, swallowed ones too.
     fn advance(&mut self, to: usize, count_parser: bool) {
         let from = self.fp.pos;
         if to <= from {
@@ -722,29 +862,63 @@ impl InputReader {
         let n = last.map_or(0, |i| {
             memchr::memchr_iter(b'\n', &bytes[..i]).count() as u64 + 1
         });
+        let anchor = self.fp.anchor;
+        let (anchor, swallowed) = if to - anchor < CHUNK {
+            // Within the first 4091 bytes of a chunk, every newline ends one.
+            (last.map_or(anchor, |i| from + i + 1), 0)
+        } else {
+            cur.walk(anchor, from, to)
+        };
         self.fp.pos = to;
-        if let Some(i) = last {
-            self.fp.nl += n;
-            self.fp.line_start = from + i + 1;
-            if count_parser {
-                self.pline = self.pline.wrapping_add(n as i32);
-                self.pcol = (to - (from + i + 1)) as i32;
+        self.fp.nl += n - swallowed;
+        self.fp.anchor = anchor;
+        if count_parser {
+            match last {
+                Some(i) => {
+                    self.pline = self.pline.wrapping_add(n as i32);
+                    self.pcol = (to - (from + i + 1)) as i32;
+                }
+                None => self.pcol = self.pcol.wrapping_add((to - from) as i32),
             }
-        } else if count_parser {
-            self.pcol = self.pcol.wrapping_add((to - from) as i32);
         }
     }
 
-    /// `input_line_number` when jq's parser emits a value at byte `e`: the
-    /// newlines up to the end of the chunk containing `e`. `fp` must be
-    /// valid for `e` (no newline in `[fp.pos, e)`).
+    /// [`InputReader::advance`] (counting the parser's position) where
+    /// `[fp.pos, to)` holds no newline.
+    fn advance_in_line(&mut self, to: usize) {
+        let from = self.fp.pos;
+        if to <= from {
+            return;
+        }
+        if to - self.fp.anchor >= CHUNK {
+            let cur = self.cur.as_ref().expect("an open input");
+            self.fp.anchor = cur.walk(self.fp.anchor, from, to).0;
+        }
+        self.fp.pos = to;
+        self.pcol = self.pcol.wrapping_add((to - from) as i32);
+    }
+
+    /// `input_line_number` when jq's parser emits a value at byte `e`, the
+    /// reader's position: one more than the newlines counted so far if the
+    /// chunk holding `e` ends in one.
     fn emission_line(&self, e: usize) -> u64 {
+        debug_assert_eq!(self.fp.pos, e);
         let cur = self.cur.as_ref().expect("an open input");
-        let ls = self.fp.line_start;
-        let limit = ls + ((e - ls) / CHUNK + 1) * CHUNK;
-        let stop = limit.min(cur.end);
-        let has_nl = e < stop && memchr::memchr(b'\n', cur.slice(e, stop)).is_some();
+        let has_nl = matches!(
+            cur.chunk_at(self.fp.anchor, e),
+            ChunkAt::Chunk { has_nl: true, .. }
+        );
         self.fp.nl + has_nl as u64
+    }
+
+    /// Advances to `e`, where jq's parser emits a value, then to `to`
+    /// (counting the parser's position), and returns the value's
+    /// `input_line_number`.
+    fn emit_at(&mut self, e: usize, to: usize) -> u64 {
+        self.advance(e, true);
+        let line = self.emission_line(e);
+        self.advance(to, true);
+        line
     }
 
     // ---- JSON --------------------------------------------------------
@@ -833,7 +1007,7 @@ impl InputReader {
                         let (line, column) = parser.position();
                         let rem = parser.remaining();
                         let resume = match chunk {
-                            Some(c) if rem > 0 => c.start + c.fed - rem,
+                            Some(c) if rem > 0 => c.end - rem,
                             Some(c) => c.end,
                             None => self.fp.pos,
                         };
@@ -877,27 +1051,16 @@ impl InputReader {
         let mut fed: Option<FedChunk> = None;
         while let Some(cur) = self.cur.as_ref() {
             let p = self.fp.pos;
-            match next_chunk(cur, p, self.fp.line_start) {
-                ChunkAt::Chunk { end, has_nl } => {
-                    let bytes = cur.slice(p, end);
-                    let len = if has_nl {
-                        bytes.len()
-                    } else {
-                        // `strlen`: a chunk without a newline stops at NUL.
-                        memchr::memchr(0, bytes).unwrap_or(bytes.len())
-                    };
-                    fed = Some(FedChunk {
-                        start: p,
-                        end,
-                        fed: len,
-                    });
+            match cur.chunk_at(self.fp.anchor, p) {
+                ChunkAt::Chunk {
+                    end,
+                    has_nl,
+                    eof_hit,
+                } => {
+                    fed = Some(FedChunk { start: p, end });
                     self.current_line = self.fp.nl + has_nl as u64;
-                    let ls = self.fp.line_start;
-                    let limit = ls + ((p - ls) / CHUNK + 1) * CHUNK;
-                    if !has_nl && end == cur.end && cur.eof && end < limit {
-                        // fgets hit the end while reading this chunk.
-                        self.jq_eof = true;
-                    }
+                    // fgets (or fread) hit the end while reading this chunk.
+                    self.jq_eof |= eof_hit;
                     break;
                 }
                 ChunkAt::NeedData => self.fill(),
@@ -919,7 +1082,7 @@ impl InputReader {
         match fed {
             Some(c) => {
                 let cur = self.cur.as_ref().expect("an open input");
-                parser.set_buf(cur.slice(c.start, c.start + c.fed), !is_last);
+                parser.set_buf(cur.slice(c.start, c.end), !is_last);
                 *chunk = Some(c);
             }
             None => parser.set_buf(&[], !is_last),
@@ -943,9 +1106,7 @@ impl InputReader {
                 };
             }
             if cur.at(p) == 0 {
-                // jq's parser may never see this byte (a chunk without a
-                // newline ends at its first NUL), so whether a BOM comes
-                // first is for jq's parser to decide, on exactly jq's chunks.
+                // A NUL is for jq's parser to judge.
                 return Fast::Slow;
             } else if cur.at(p) != 0xEF {
                 self.bom_done = true;
@@ -1015,9 +1176,9 @@ impl InputReader {
                 };
                 match parse_text(&mut self.simd, tape, cur.buf(), p - cur.base, t - cur.base) {
                     Ok(f) => {
-                        self.pcol = self.pcol.wrapping_add((t - p) as i32);
-                        self.fp.pos = t;
+                        self.advance_in_line(t - 1);
                         self.current_line = self.emission_line(t - 1);
+                        self.advance_in_line(t);
                         return f;
                     }
                     Err(Rejected(code)) if !is_extent_error(code) => return Fast::Slow,
@@ -1059,8 +1220,7 @@ impl InputReader {
                     && let Ok(f) =
                         parse_text(&mut self.simd, tape, cur.buf(), p - cur.base, t - cur.base)
                 {
-                    self.advance(t, true);
-                    self.current_line = self.emission_line(t - 1);
+                    self.current_line = self.emit_at(t - 1, t);
                     return f;
                 }
             }
@@ -1123,8 +1283,7 @@ impl InputReader {
             e + 1 - cur.base,
         ) {
             Ok(f) => {
-                self.advance(e + 1, true);
-                self.current_line = self.emission_line(e);
+                self.current_line = self.emit_at(e, e + 1);
                 f
             }
             Err(_) => Fast::Slow,
@@ -1149,14 +1308,13 @@ impl InputReader {
         let delim = buf[q - base];
         if !matches!(delim, b' ' | b'\t' | b'\r' | b'\n' | b'[' | b'{' | b'"') {
             // `]`, `}`, `,`, `:` right after a literal is an error that also
-            // drops the literal; NUL needs jq's chunk view.
+            // drops the literal; a NUL continues the token.
             return Fast::Slow;
         }
         let Some(v) = check_literal(&buf[p - base..q - base]) else {
             return Fast::Slow;
         };
-        self.pcol = self.pcol.wrapping_add((q - p) as i32);
-        self.fp.pos = q;
+        self.advance_in_line(q);
         self.current_line = self.emission_line(q);
         if matches!(delim, b' ' | b'\t' | b'\r' | b'\n') {
             self.advance(q + 1, true);
@@ -1174,12 +1332,13 @@ impl InputReader {
             // (Between chunks: the bytes of the last one were copied.)
             self.release_consumed();
             match self.raw_chunk() {
-                Some((a, b, has_nl)) => {
+                Some((a, b)) => {
                     let cur = self.cur.as_ref().expect("an open input");
                     let bytes = cur.slice(a, b);
                     if let Some(Value::String(s)) = &mut self.slurped {
                         s.push_bytes(bytes);
-                    } else if has_nl {
+                    } else if bytes.last() == Some(&b'\n') {
+                        // (Even a newline fread added ends the line.)
                         let line = &bytes[..bytes.len() - 1];
                         let s = match value {
                             None => Str::from_bytes(line),
@@ -1203,9 +1362,9 @@ impl InputReader {
         }
     }
 
-    /// The next raw `fgets` chunk `(start, end, has_newline)` (consumed), or
-    /// `None` when all inputs are exhausted.
-    fn raw_chunk(&mut self) -> Option<(usize, usize, bool)> {
+    /// The next raw `fgets` chunk `(start, end)` (consumed), or `None` when
+    /// all inputs are exhausted.
+    fn raw_chunk(&mut self) -> Option<(usize, usize)> {
         loop {
             if self.ended {
                 return None;
@@ -1216,11 +1375,11 @@ impl InputReader {
             }
             let cur = self.cur.as_ref().expect("an open input");
             let p = self.fp.pos;
-            match next_chunk(cur, p, self.fp.line_start) {
-                ChunkAt::Chunk { end, has_nl } => {
+            match cur.chunk_at(self.fp.anchor, p) {
+                ChunkAt::Chunk { end, .. } => {
                     self.advance(end, false);
                     self.current_line = self.fp.nl;
-                    return Some((p, end, has_nl));
+                    return Some((p, end));
                 }
                 ChunkAt::NeedData => self.fill(),
                 ChunkAt::Exhausted => {
@@ -1255,8 +1414,24 @@ impl InputReader {
         Some(Cut {
             generation: self.generation,
             pos: self.fp.pos,
-            line_start: self.fp.line_start,
+            first_end: self.first_end()?,
         })
+    }
+
+    /// Where the chunk holding the reader's position ends ([`Cut::first_end`]),
+    /// if that's known and a chunk starts after the line's newline.
+    fn first_end(&self) -> Option<usize> {
+        let cur = self.cur.as_ref()?;
+        let pos = self.fp.pos;
+        if self.fp.anchor == pos {
+            return Some(pos);
+        }
+        match cur.chunk_at(self.fp.anchor, pos) {
+            // Not where fread swallowed the newline: then the next line
+            // doesn't start a chunk.
+            ChunkAt::Chunk { end, has_nl, .. } if has_nl || cur.at(end - 1) != b'\n' => Some(end),
+            _ => None,
+        }
     }
 
     /// Newlines before the reader's position in the current input (its
@@ -1336,7 +1511,7 @@ impl InputReader {
             base,
             start,
             end,
-            line_start: at.line_start,
+            first_end: at.first_end,
             generation: at.generation,
             raw: self.opts.raw,
             pin,
@@ -1344,7 +1519,7 @@ impl InputReader {
         let next = Cut {
             generation: at.generation,
             pos: end,
-            line_start: end,
+            first_end: end,
         };
         Some((window, next))
     }
@@ -1397,7 +1572,7 @@ impl InputReader {
         };
         self.fp.pos = end;
         self.fp.nl += lines;
-        self.fp.line_start = end;
+        self.fp.anchor = end;
         self.pline = self.pline.wrapping_add(lines as i32);
         self.pcol = 0;
         #[cfg(debug_assertions)]
@@ -1409,9 +1584,9 @@ impl InputReader {
 
     /// After records were read one at a time from a window's line: whether
     /// the reader has reached `target` (a line start of window
-    /// `generation`), consuming whitespace up to it (JSON only) when it is
-    /// idle there.
-    pub(crate) fn catch_up(&mut self, generation: u64, target: usize) -> CatchUp {
+    /// `generation`, whose first chunk ends at `first_end`), consuming
+    /// whitespace up to it (JSON only) when it is idle there.
+    pub(crate) fn catch_up(&mut self, generation: u64, target: usize, first_end: usize) -> CatchUp {
         if self.generation != generation || self.cur.is_none() || self.ended {
             return CatchUp::Left;
         }
@@ -1422,23 +1597,26 @@ impl InputReader {
         if !self.windowable() {
             return CatchUp::Behind;
         }
-        if p == target {
-            return CatchUp::Reached;
-        }
-        if self.opts.raw {
-            return CatchUp::Behind;
-        }
-        let cur = self.cur.as_ref().expect("checked");
-        if cur
-            .slice(p, target)
-            .iter()
-            .all(|&c| matches!(c, b' ' | b'\t' | b'\r' | b'\n'))
-        {
+        if p < target {
+            if self.opts.raw {
+                return CatchUp::Behind;
+            }
+            let cur = self.cur.as_ref().expect("checked");
+            if !cur
+                .slice(p, target)
+                .iter()
+                .all(|&c| matches!(c, b' ' | b'\t' | b'\r' | b'\n'))
+            {
+                return CatchUp::Behind;
+            }
             self.advance(target, true);
-            CatchUp::Reached
-        } else {
-            CatchUp::Behind
         }
+        // The job assumed where its first chunk ends (a chunk starts at a
+        // line, unless fread swallowed the newline before it).
+        if self.first_end() != Some(first_end) {
+            return CatchUp::Beyond;
+        }
+        CatchUp::Reached
     }
 
     /// Where the current input is released up to (0 for streams, and for
@@ -1480,8 +1658,8 @@ pub(crate) struct Window {
     pub(crate) start: usize,
     /// Just after a newline.
     pub(crate) end: usize,
-    /// Start of the line containing `start`.
-    pub(crate) line_start: usize,
+    /// [`Cut::first_end`] for `start`.
+    pub(crate) first_end: usize,
     /// Which input (see [`InputReader::catch_up`]).
     pub(crate) generation: u64,
     /// `-R`: lines are strings.
@@ -1550,8 +1728,9 @@ fn release_step_from_env() -> usize {
 pub(crate) struct Cut {
     pub(crate) generation: u64,
     pub(crate) pos: usize,
-    /// Start of the line containing `pos`.
-    pub(crate) line_start: usize,
+    /// Where the `fgets` chunk holding `pos` ends, at the newline of
+    /// `pos`'s line or before; `pos` itself when a chunk starts there.
+    pub(crate) first_end: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1593,14 +1772,13 @@ pub(crate) fn window_line_record<'t>(
     simd: &mut SimdParser,
     buf: &[u8],
     base: usize,
-    a: usize,
-    b: usize,
+    (a, first_end, b): (usize, usize, usize),
     raw: bool,
     tape: Option<&mut (dyn TapeSink + 't)>,
 ) -> Result<Option<(Record, usize)>, ()> {
     let line = &buf[a - base..b - base];
     if raw || tape.is_none() {
-        return window_line(simd, buf, base, a, b, raw)
+        return window_line(simd, buf, base, (a, first_end, b), raw)
             .map(|r| r.map(|(v, e)| (Record::Value(v), e)));
     }
     let mut s = 0;
@@ -1621,35 +1799,41 @@ pub(crate) fn window_line_record<'t>(
             Ok(_) => unreachable!("parse_text gives a value or a status"),
             Err(_) => Err(()),
         },
-        _ => window_line(simd, buf, base, a, b, raw).map(|r| r.map(|(v, e)| (Record::Value(v), e))),
+        _ => window_line(simd, buf, base, (a, first_end, b), raw)
+            .map(|r| r.map(|(v, e)| (Record::Value(v), e))),
     }
 }
 
 /// The value jq reads for one line of a window, and where jq's parser
 /// would emit it: `Ok(None)` for a blank line, `Err(())` when the line
 /// isn't exactly one text the fast path would take (read it with
-/// [`InputReader::next`] instead). `line` is `[a, b)` with `b` just after
-/// its newline; `buf[p - base]` is absolute offset `p`.
+/// [`InputReader::next`] instead). The line is `[a, b)` with `b` just after
+/// its newline, and its first chunk ends at `first_end`
+/// ([`Cut::first_end`]); `buf[p - base]` is absolute offset `p`.
 pub(crate) fn window_line(
     simd: &mut SimdParser,
     buf: &[u8],
     base: usize,
-    a: usize,
-    b: usize,
+    (a, first_end, b): (usize, usize, usize),
     raw: bool,
 ) -> Result<Option<(Value, usize)>, ()> {
     let line = &buf[a - base..b - base];
     if raw {
-        // jq converts each fgets chunk (4095 bytes) of a long line on its
-        // own; the value is complete when the chunk with the newline is read.
+        // jq converts each fgets chunk of a long line on its own; the value
+        // is complete when the chunk with the newline is read.
         let text = &line[..line.len() - 1];
-        let s = if line.len() <= CHUNK {
+        let s = if line.len() <= CHUNK && (first_end == a || first_end == b) {
             Str::from_bytes(text)
         } else {
+            let mut ends = Vec::new();
+            line_chunks(buf, base, a, first_end, b, Some(&mut ends)).ok_or(())?;
             let mut s = String::with_capacity(text.len());
-            for piece in text.chunks(CHUNK) {
-                unicode::push_lossy(&mut s, piece);
+            let mut from = a;
+            for &e in &ends {
+                unicode::push_lossy(&mut s, &buf[from - base..e - base]);
+                from = e;
             }
+            unicode::push_lossy(&mut s, &buf[from - base..b - 1 - base]);
             Str::from(s)
         };
         return Ok(Some((Value::String(s), b - 1)));
@@ -1686,12 +1870,43 @@ pub(crate) fn window_line(
     }
 }
 
-/// `input_line_number` for a value emitted at `e` on the line starting at
-/// `line_start` and ending with the newline at `b - 1`: the newlines before
-/// the line, plus one if the `fgets` chunk holding `e` also holds that
-/// newline.
-pub(crate) fn window_line_number(nl_before: u64, line_start: usize, b: usize, e: usize) -> u64 {
-    nl_before + ((e - line_start) / CHUNK == (b - 1 - line_start) / CHUNK) as u64
+/// The `fgets` chunks of a window's line `[a, b)` (`b` just after its
+/// newline), the first of which ends at `first_end` ([`Cut::first_end`]):
+/// the start of the last one, which ends with the newline (a value emitted
+/// from there on counts it), or `None` where `fread` swallows the newline
+/// (read such a line with [`InputReader::next`]). The ends of the chunks
+/// before it go to `ends`, if given.
+pub(crate) fn line_chunks(
+    buf: &[u8],
+    base: usize,
+    a: usize,
+    first_end: usize,
+    b: usize,
+    mut ends: Option<&mut Vec<usize>>,
+) -> Option<usize> {
+    let mut c = a;
+    if first_end > a {
+        if first_end >= b {
+            return (first_end == b).then_some(a);
+        }
+        if let Some(v) = ends.as_mut() {
+            v.push(first_end);
+        }
+        c = first_end;
+    }
+    loop {
+        if b - 1 < c + CHUNK {
+            return Some(c);
+        }
+        let e = c + CHUNK + utf8_completion(&buf[c - base..c + CHUNK - base]);
+        if e >= b {
+            return None;
+        }
+        if let Some(v) = ends.as_mut() {
+            v.push(e);
+        }
+        c = e;
+    }
 }
 
 fn default_message_sink(m: InputMessage) {
@@ -1699,35 +1914,15 @@ fn default_message_sink(m: InputMessage) {
 }
 
 enum ChunkAt {
-    Chunk { end: usize, has_nl: bool },
+    /// A chunk ends at `end`, after a newline that ends it (`has_nl`), or
+    /// where jq's `fgets` or `fread` hit the end of the input (`eof_hit`).
+    Chunk {
+        end: usize,
+        has_nl: bool,
+        eof_hit: bool,
+    },
     NeedData,
     Exhausted,
-}
-
-/// The `fgets` chunk starting at `p` (on the line starting at
-/// `line_start`): up to and including a newline, or 4095 bytes counted from
-/// the line start in steps, or up to EOF.
-fn next_chunk(cur: &FileData, p: usize, line_start: usize) -> ChunkAt {
-    if p >= cur.end {
-        return if cur.eof {
-            ChunkAt::Exhausted
-        } else {
-            ChunkAt::NeedData
-        };
-    }
-    let limit = line_start + ((p - line_start) / CHUNK + 1) * CHUNK;
-    let stop = limit.min(cur.end);
-    match memchr::memchr(b'\n', cur.slice(p, stop)) {
-        Some(i) => ChunkAt::Chunk {
-            end: p + i + 1,
-            has_nl: true,
-        },
-        None if stop == limit || cur.eof => ChunkAt::Chunk {
-            end: stop,
-            has_nl: false,
-        },
-        None => ChunkAt::NeedData,
-    }
 }
 
 /// simdjson errors that mean "not exactly one text here" (so scanning for

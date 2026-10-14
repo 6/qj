@@ -1,14 +1,21 @@
-//! The oracle for the fast reader: jq 1.8.1's `util.c` input loop
+//! The oracle for the fast reader: jq 1.8.2's `util.c` input loop
 //! (`jq_util_input_read_more` / `jq_util_input_next_input`) ported line by
-//! line over in-memory inputs, with `fgets` into a 4096-byte buffer
-//! (memset to 0xff first, as jq does) and jq's parser port. Nothing here is
-//! shared with `crate::io::reader`.
+//! line over in-memory inputs, with `fgets` of at most 4091 bytes into a
+//! 4096-byte buffer (memset to 0xff first, as jq does), then `fread` of the
+//! rest of a UTF-8 sequence the chunk cut, and jq's parser port. Nothing
+//! here is shared with `crate::io::reader`.
 
 use std::ffi::OsString;
 
 use super::MemFile;
 use crate::io::source::strerror;
+use crate::jq::value::unicode::utf8_backtrack;
 use crate::jq::value::{Array, Error, ParseFlags, Parser, Str, Value};
+
+/// `sizeof(state->buf)`.
+const BUF: usize = 4096;
+/// `max_gets_len`: `sizeof(state->buf) - max_utf8_len`.
+const MAX_GETS_LEN: usize = BUF - 4;
 
 struct RefFile {
     data: Vec<u8>,
@@ -21,20 +28,25 @@ struct RefFile {
 }
 
 impl RefFile {
-    /// `fgets(buf, 4096, f)`: `None` for NULL.
-    fn fgets(&mut self, buf: &mut [u8; 4096]) -> Option<()> {
-        if self.pos == self.data.len() {
-            match self.read_error {
-                Some(code) => {
-                    self.error = true;
-                    self.errno = code;
-                }
-                None => self.eof = true,
+    /// The stream runs out: `feof`, or the read error.
+    fn hit_end(&mut self) {
+        match self.read_error {
+            Some(code) => {
+                self.error = true;
+                self.errno = code;
             }
+            None => self.eof = true,
+        }
+    }
+
+    /// `fgets(buf, size, f)`: `None` for NULL.
+    fn fgets(&mut self, buf: &mut [u8], size: usize) -> Option<()> {
+        if self.pos == self.data.len() {
+            self.hit_end();
             return None;
         }
         let rest = &self.data[self.pos..];
-        let lim = rest.len().min(4095);
+        let lim = rest.len().min(size - 1);
         let n = match memchr::memchr(b'\n', &rest[..lim]) {
             Some(i) => i + 1,
             None => lim,
@@ -42,17 +54,22 @@ impl RefFile {
         buf[..n].copy_from_slice(&rest[..n]);
         buf[n] = 0;
         self.pos += n;
-        if self.pos == self.data.len() && buf[n - 1] != b'\n' && n < 4095 {
+        if self.pos == self.data.len() && buf[n - 1] != b'\n' && n < size - 1 {
             // fgets tried to read past the data.
-            match self.read_error {
-                Some(code) => {
-                    self.error = true;
-                    self.errno = code;
-                }
-                None => self.eof = true,
-            }
+            self.hit_end();
         }
         Some(())
+    }
+
+    /// `fread(buf, 1, buf.len(), f)`: how many bytes it read.
+    fn fread(&mut self, buf: &mut [u8]) -> usize {
+        let n = buf.len().min(self.data.len() - self.pos);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        if n < buf.len() {
+            self.hit_end();
+        }
+        n
     }
 }
 
@@ -66,7 +83,7 @@ pub(crate) struct RefInput {
     stdin: Option<RefFile>,
     parser: Option<Parser>,
     slurped: Option<Value>,
-    buf: [u8; 4096],
+    buf: [u8; BUF],
     buf_valid_len: usize,
     pub(crate) failures: usize,
     pub(crate) current_filename: Option<Str>,
@@ -94,7 +111,7 @@ impl RefInput {
                 (true, false) => Some(Value::Array(Array::new())),
                 _ => None,
             },
-            buf: [0; 4096],
+            buf: [0; BUF],
             buf_valid_len: 0,
             failures: 0,
             current_filename: None,
@@ -194,29 +211,36 @@ impl RefInput {
         self.buf_valid_len = 0;
         if let Some(f) = &mut self.current {
             self.buf.fill(0xff);
-            let res = f.fgets(&mut self.buf);
+            let res = f.fgets(&mut self.buf, MAX_GETS_LEN);
             if res.is_none() {
                 self.buf[0] = 0;
                 if f.error {
                     self.failures += 1;
                 }
             } else {
-                let p = memchr::memchr(b'\n', &self.buf);
+                let p = memchr::memchr(b'\n', &self.buf[..MAX_GETS_LEN]);
                 if p.is_some() {
                     self.current_line += 1;
                 }
                 self.buf_valid_len = match p {
-                    None if self.parser.is_some() => {
-                        memchr::memchr(0, &self.buf).unwrap_or(self.buf.len())
-                    }
                     None if f.eof => {
-                        let mut i = self.buf.len() - 1;
+                        let mut i = MAX_GETS_LEN - 1;
                         while i > 0 && self.buf[i] != 0 {
                             i -= 1;
                         }
                         i
                     }
-                    None => self.buf.len() - 1,
+                    None => {
+                        let mut len = MAX_GETS_LEN - 1;
+                        let mut missing = 0;
+                        if utf8_backtrack(&self.buf[..len], len - 1, 0, Some(&mut missing))
+                            .is_some()
+                            && missing > 0
+                        {
+                            len += f.fread(&mut self.buf[len..len + missing]);
+                        }
+                        len
+                    }
                     Some(p) => p + 1,
                 };
             }

@@ -1,4 +1,4 @@
-//! End to end against the jq 1.8.1 binary: NDJSON-like files through the
+//! End to end against the jq 1.8.2 binary: NDJSON-like files through the
 //! reader and the parallel engine, each worker running its own compiled
 //! program on the port's VM, with `main.c`'s `process()` output, error
 //! messages and exit status. (A model for the CLI's worker.)
@@ -256,9 +256,9 @@ fn jq_available() -> bool {
     super::jq_binary().is_some()
 }
 
-/// jq 1.8.1 (see [`super::jq_binary`]; only called when it's available).
+/// jq 1.8.2 (see [`super::jq_binary`]; only called when it's available).
 fn jq() -> Command {
-    Command::new(super::jq_binary().expect("jq 1.8.1"))
+    Command::new(super::jq_binary().expect("jq 1.8.2"))
 }
 
 /// Runs `f` on a thread with a jq-sized stack (the VM runs sequential
@@ -275,7 +275,7 @@ fn big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
 #[test]
 fn engine_with_vm_matches_jq() {
     if !jq_available() {
-        eprintln!("skipped: jq 1.8.1 not on PATH");
+        eprintln!("skipped: jq 1.8.2 not on PATH");
         return;
     }
     let failures = big_stack(|| {
@@ -295,7 +295,7 @@ fn engine_with_vm_matches_jq() {
 #[ignore]
 fn engine_with_vm_matches_jq_long() {
     if !jq_available() {
-        eprintln!("skipped: jq 1.8.1 not on PATH");
+        eprintln!("skipped: jq 1.8.2 not on PATH");
         return;
     }
     let failures = big_stack(|| {
@@ -396,7 +396,7 @@ fn run_shared(program: &str, null_input: bool, paths: &[OsString]) -> (Vec<u8>, 
 #[test]
 fn shared_reader_with_input_builtins_matches_jq() {
     if !jq_available() {
-        eprintln!("skipped: jq 1.8.1 not on PATH");
+        eprintln!("skipped: jq 1.8.2 not on PATH");
         return;
     }
     let cases: &[(&str, bool, &[&str])] = &[

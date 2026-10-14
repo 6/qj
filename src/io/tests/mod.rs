@@ -1,4 +1,4 @@
-//! Tests for the input layer. Expectations come from jq 1.8.1 (fixtures
+//! Tests for the input layer. Expectations come from jq 1.8.2 (fixtures
 //! recorded from the binary, or live runs when `jq` is on PATH), or from
 //! jq's parser port fed exactly as jq's `util.c` feeds it (`reference`).
 
@@ -26,8 +26,8 @@ use crate::io::reader::{InputReader, ReaderOptions};
 use crate::io::source::{InputMessage, Opened, Opener};
 use crate::jq::value::{DumpOptions, Value, dump_string};
 
-/// The jq 1.8.1 binary on PATH, as an absolute path (`None` if `jq` on PATH
-/// isn't 1.8.1).
+/// The jq 1.8.2 binary on PATH, as an absolute path (`None` if `jq` on PATH
+/// isn't 1.8.2).
 ///
 /// The live tests run jq in temporary directories, where a version manager's
 /// shim may not run this project's jq: mise's `jq` is the `mise` binary, which
@@ -54,7 +54,7 @@ pub(crate) fn jq_binary() -> Option<&'static Path> {
             .arg("--version")
             .output()
             .ok()?;
-        (String::from_utf8_lossy(&out.stdout).trim() == "jq-1.8.1").then_some(jq)
+        (String::from_utf8_lossy(&out.stdout).trim() == "jq-1.8.2").then_some(jq)
     })
     .as_deref()
 }

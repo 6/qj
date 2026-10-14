@@ -215,9 +215,36 @@ pub(crate) fn stream(r: &mut Rng) -> Vec<u8> {
         if g.odd() {
             g.oddity(&mut out, pretty);
         } else if g.r.chance(1, 40) {
-            // padding to put the next text near a 4095-byte boundary
+            // padding to put the next text near a 4091-byte boundary
             let len = 4000 + g.r.below(200);
             out.extend(std::iter::repeat_n(b' ', len));
+        } else if g.r.chance(1, 30) {
+            // a line whose first 4091 bytes end in (or just before) a UTF-8
+            // sequence, valid or cut short, maybe by a newline that fread
+            // then swallows
+            out.push(b'\n');
+            out.push(b'"');
+            let len = 4086 + g.r.below(6);
+            out.extend(std::iter::repeat_n(b'x', len));
+            let tails: [&[u8]; 9] = [
+                "é".as_bytes(),
+                "€".as_bytes(),
+                "😀".as_bytes(),
+                b"\xe2",
+                b"\xe2\x82",
+                b"\xf0\x9f",
+                b"\xf0\x9f\x98",
+                b"\x80\x80",
+                b"\xff",
+            ];
+            out.extend_from_slice(tails[g.r.below(tails.len())]);
+            match g.r.below(4) {
+                0 => out.push(b'\n'),
+                1 => out.extend_from_slice(b"\nx"),
+                2 => out.extend_from_slice(b"\n\n"),
+                _ => {}
+            }
+            out.push(b'"');
         } else {
             g.value(&mut out, 0, pretty);
         }
