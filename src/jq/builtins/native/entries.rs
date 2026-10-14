@@ -21,8 +21,7 @@ pub(super) fn to_entries_consts(pool: &Pool<'_>) -> Option<Vec<ConstRef>> {
     ])
 }
 
-/// from_entries' constants: the `{}` of `.//={}` (its `$tmp`), then the keys it
-/// looks up.
+/// from_entries' constants: the `{}` of `add // {}`, then the keys it looks up.
 pub(super) fn from_entries_consts(pool: &Pool<'_>) -> Option<Vec<ConstRef>> {
     let mut c = vec![empty_object(pool, 0)?];
     for k in ["key", "Key", "name", "Name", "value", "Value"] {
@@ -69,7 +68,7 @@ pub(super) fn to_entries(input: Value, c: ConstView<'_>) -> Result<Value, Stop> 
 }
 
 /// `from_entries`. `c`: [`from_entries_consts`].
-pub(super) fn from_entries(vm: &mut Jq, input: Value, c: ConstView<'_>) -> Result<Value, Stop> {
+pub(super) fn from_entries(input: Value, c: ConstView<'_>) -> Result<Value, Stop> {
     let entries: &[Value] = match &input {
         Value::Array(a) => a.as_slice(),
         Value::Object(_) => &[],
@@ -95,7 +94,7 @@ pub(super) fn from_entries(vm: &mut Jq, input: Value, c: ConstView<'_>) -> Resul
             return Err(Error::msg(format!(
                 "Cannot use {} ({}) as object key",
                 k.kind_name(),
-                dump_string_trunc(&k, 15)
+                dump_string_trunc(&k, 30)
             ))
             .into());
         };
@@ -116,8 +115,7 @@ pub(super) fn from_entries(vm: &mut Jq, input: Value, c: ConstView<'_>) -> Resul
             }
         }
     }
-    // `.//={}` is `_modify(.; . // $tmp)`: one label, and `$tmp` itself for `null`.
-    vm.gen_labels(1);
+    // `add // {}`: the definition's `{}` itself for `null`.
     Ok(if acc.is_truthy() {
         acc
     } else {
@@ -146,5 +144,5 @@ pub(super) fn with_entries(
         })?;
     }
     drop(entries);
-    from_entries(vm, Value::Array(out), c.from(4))
+    from_entries(Value::Array(out), c.from(4))
 }

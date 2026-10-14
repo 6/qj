@@ -302,7 +302,7 @@ fn cannot_iterate(v: &Value) -> Stop {
     Error::msg(format!(
         "Cannot iterate over {} ({})",
         v.kind_name(),
-        dump_string_trunc(v, 15)
+        dump_string_trunc(v, 30)
     ))
     .into()
 }
@@ -405,7 +405,7 @@ pub(crate) fn call(id: NativeId, vm: &mut Jq, c: Call<'_>) -> Outcome {
         }
         Join => strings::join(vm, c.input, c.args[0], c.consts),
         ToEntries => entries::to_entries(c.input, c.consts).into(),
-        FromEntries => entries::from_entries(vm, c.input, c.consts).into(),
+        FromEntries => entries::from_entries(c.input, c.consts).into(),
         WithEntries => entries::with_entries(vm, c.input, c.args[0], c.consts).into(),
         Walk => walk::walk(vm, c.input, c.args[0], c.consts),
         Paths0 => paths::paths0(c.input),
