@@ -601,8 +601,13 @@ definitions, with each platform's `assert()` line (`Assertion failed: (0 && "Unk
 function type"), function expand_call_arglist, file compile.c, line 1158.` on macOS,
 `jq: src/compile.c:1158: expand_call_arglist: Assertion ... failed.` on Linux), and the
 default keeps every definition that is called, which is what jq keeps whenever it doesn't
-abort. A freed data import (`import "d" as $d`) aborts only when it is read, on
-`stack_push`'s `assert(jv_is_valid(val))`.
+abort. A freed data import (`import "d" as $d`) depends on the platform's allocator: on
+macOS it aborts only when it is read, on `stack_push`'s `assert(jv_is_valid(val))`; on
+Linux compiling any kept reference to it fails `nesting_level`'s
+`assert(bc && bc == target->compiled)`, read or not, in every run (with glibc's
+`tcache_count=0` some programs fail the `assert()` two lines above it instead); and
+jq.exe on Windows fails that neighbouring one. Compat mode follows macOS and Linux each
+(Windows has no compat mode, and its jq_diff run lists the case as a known mismatch).
 
 What follows is the analysis of jq 1.8.1.
 
