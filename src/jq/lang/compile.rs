@@ -1944,14 +1944,19 @@ impl Compiler {
                 let binder = self.inst(inst.bound_by.unwrap());
                 if binder.freed {
                     // A data import's global that `block_drop_unreferenced` freed
-                    // (see `Inst::freed`). With glibc, `nesting_level` finds the
-                    // freed instruction's memory compiled into another function;
-                    // with Apple's libc it passes, jq reads a variable nothing
-                    // stored, and dies when the instruction runs (same length as
-                    // `LOADV`). musl is unmeasured.
+                    // (see `Inst::freed`). What jq's `nesting_level` finds in the
+                    // freed memory depends on the allocator: on Linux (glibc and
+                    // musl) another function's instruction, on Intel macOS
+                    // nothing compiled, and on arm64 macOS (and, untested, the
+                    // BSDs) this function's, so it passes, jq reads a variable
+                    // nothing stored, and dies when the instruction runs (same
+                    // length as `LOADV`).
                     debug_assert_eq!(op, LOADV);
-                    if cfg!(all(target_os = "linux", target_env = "gnu")) {
+                    if cfg!(target_os = "linux") {
                         return Err(EmitFailure::FreedGlobal);
+                    }
+                    if cfg!(all(target_vendor = "apple", target_arch = "x86_64")) {
+                        return Err(EmitFailure::Unassigned);
                     }
                     code.push(CALL_BUILTIN as u16);
                     code.push(1);
@@ -2035,9 +2040,8 @@ impl Compiler {
                 && let Err(failure) = self.emit(&mut fns, &done, &mut cfunctions)
                 && crate::compat::exactly_jq()
             {
-                // Otherwise the error that left the parameter unassigned
-                // makes the program fail (a global is freed only in compat
-                // mode).
+                // Otherwise the error that left a parameter unassigned makes
+                // the program fail (a global is freed only in compat mode).
                 let (expr, line) = match failure {
                     EmitFailure::Unassigned => ("bc && target && target->compiled", 1086),
                     EmitFailure::FreedGlobal => ("bc && bc == target->compiled", 1091),
@@ -2057,11 +2061,13 @@ impl Compiler {
     }
 }
 
-/// Where jq's codegen (`nesting_level`) fails an assertion.
+/// Which of jq's `nesting_level` assertions fails in codegen.
 enum EmitFailure {
-    /// A parameter past the limit, which jq leaves unassigned.
+    /// The target was never compiled: a parameter past the limit, which jq
+    /// leaves unassigned, or a freed data import's global on Intel macOS.
     Unassigned,
-    /// A data import's freed global (with glibc).
+    /// The target was compiled into another function: a freed data import's
+    /// global on Linux.
     FreedGlobal,
 }
 

@@ -184,13 +184,6 @@ args = ["-L", ".", "-nc", "include \"m1\"; f"]
 files = { "m1.jq" = "import \"d\" as $d;\ndef f: $d;\n", "d.json" = "[1,2,3]\n" }
 
 [[case]]
-name = "data-import-in-a-chain-unused"
-note = "jq frees the data global, but this never reads it (with glibc, compiling the reference aborts)"
-args = ["-L", ".", "-nc", "include \"m0\"; f"]
-os = "macos"
-files = { "m0.jq" = "import \"m1\" as m;\ndef f: m::f;\n", "m1.jq" = "import \"d\" as $d;\ndef f: if false then $d else 7 end;\n", "d.json" = "[1,2,3]\n" }
-
-[[case]]
 name = "data-import-in-a-chain-not-referred-to"
 args = ["-L", ".", "-nc", "include \"m0\"; f"]
 files = { "m0.jq" = "import \"m1\" as m;\ndef f: m::g;\n", "m1.jq" = "import \"d\" as $d;\ndef g: 7;\n", "d.json" = "[1,2,3]\n" }
