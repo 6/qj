@@ -81,7 +81,7 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
   only, for what jq does on one platform and not the same way on the other
   (`corpus/lgamma_glibc.test`, `corpus/debug_trace_macos.toml`); `mem_mb = 256` gives a TOML
   case its own memory cap, so that a program that grows forever reaches it well before the
-  timeout in both tools (the `delpaths`-nan hangs).
+  timeout in both tools.
   A case can't ask for a stack limit: Darwin refuses `setrlimit(RLIMIT_STACK)` in a process
   forked from a multi-threaded one, so a `stack_kb` option would need a shell per case.
   Cases near one of `QJ_JQ_COMPAT`'s stack-overflow thresholds therefore live in
@@ -389,7 +389,7 @@ Read by the input layer (`src/io`, `src/cli/{input,run}.rs`):
 - `--threads N` — worker threads for the engine (default: all non-efficiency cores); 0 or 1
   runs sequentially. Records always run sequentially for -n, -s, -R, --seq, --stream,
   --debug-trace, and programs using input/inputs, now, halt/halt_error, debug/stderr,
-  localtime/strflocaltime/mktime/strptime, _strindices, modulemeta, labels, $__loc__, or
+  localtime/strflocaltime/mktime/strptime, modulemeta, labels, $__loc__, or
   modules (see `SEQUENTIAL_BUILTINS` and `parallel_plan` in `src/cli/run.rs`).
 
 Read by everything (`src/compat.rs`):
