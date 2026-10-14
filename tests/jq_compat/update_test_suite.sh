@@ -56,7 +56,7 @@ done
 # jq-f-test.sh is left out on purpose: CI shellchecks every tracked *.sh file.
 echo "Downloading shtest..."
 rm -rf "$SCRIPT_DIR/shtest"
-for f in shtest setup no-main-program.jq yes-main-program.jq utf8-truncate.jq \
+for f in shtest setup no-main-program.jq yes-main-program.jq \
     torture/input0.json; do
     fetch "tests/$f" "$SCRIPT_DIR/shtest/$f"
 done

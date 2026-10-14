@@ -326,8 +326,8 @@ mod tests {
             assert!(!f.cases.is_empty(), "{name} has no cases");
             total += f.cases.len();
         }
-        // jq 1.8.1's suites; update when the vendored version changes.
-        assert_eq!(total, 838);
+        // jq 1.8.2's suites; update when the vendored version changes.
+        assert_eq!(total, 879);
     }
 
     #[test]

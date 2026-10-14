@@ -4,13 +4,20 @@
 
 msys=false
 mingw=false
+sunos=false
 case "$(uname -s)" in
 MSYS*)  msys=true;;
 MINGW*) mingw=true;;
+SunOS*) sunos=true;;
 esac
 
 JQ_NO_B=$JQ
 JQ="$JQ -b"
+
+# On Solaris, GNU tools are available in /usr/gnu. This script should prefer
+# them over the native tools, because the native versions may lack some
+# command-line options the script relies on.
+$sunos && PATH="/usr/gnu/bin:$PATH"
 
 PATH=$JQBASEDIR:$PATH $JQBASEDIR/tests/jq-f-test.sh > /dev/null
 
@@ -375,15 +382,38 @@ if ! HOME="$mods/home2" $VALGRIND $Q $JQ -n 'include "g"; empty'; then
     exit 1
 fi
 
+(
 cd "$JQBASEDIR" # so that relative library paths are guaranteed correct
 if ! $VALGRIND $Q $JQ -L ./tests/modules -ne 'import "test_bind_order" as check; check::check==true'; then
     echo "Issue #817 regression?" 1>&2
     exit 1
 fi
+)
 
+(
 cd "$JQBASEDIR"
 if ! $VALGRIND $Q $JQ -L tests/modules -ne 'import "test_bind_order" as check; check::check==true'; then
     echo "Issue #817 regression?" 1>&2
+    exit 1
+fi
+)
+
+# CVE-2026-44777: Circular imports should be detected
+if $VALGRIND $JQ -L "$mods" -ne 'import "cycle_a" as a; null' 2> $d/out; then
+    echo "Mutual import should be rejected" 1>&2
+    exit 1
+fi
+if ! grep -q "circular import" $d/out; then
+    echo "Expected circular import error" 1>&2
+    exit 1
+fi
+
+if $VALGRIND $JQ -L "$mods" -ne 'import "cycle_self" as s; null' 2> $d/out; then
+    echo "Self import should be rejected" 1>&2
+    exit 1
+fi
+if ! grep -q "circular import" $d/out; then
+    echo "Expected circular import error" 1>&2
     exit 1
 fi
 
@@ -603,16 +633,18 @@ cmp $d/color $d/expect
 echo 'Failed to set $JQ_COLORS' > $d/expect_warning
 $JQ -Ccn '[{"a":true,"b":false},"abc",123,null]' > $d/expect
 for colors in '/' '[30' '30m' '30:31m:32' '30:*:31' 'invalid'; do
-  JQ_COLORS=$colors \
-    $JQ -Ccn '[{"a":true,"b":false},"abc",123,null]' > $d/color 2>$d/warning
+  export JQ_COLORS=$colors
+  $JQ -Ccn '[{"a":true,"b":false},"abc",123,null]' > $d/color 2>$d/warning
   cmp $d/color $d/expect
   cmp $d/warning $d/expect_warning
 done
+unset JQ_COLORS
 
 # Check $NO_COLOR
 test_no_color=true
 $msys  && test_no_color=false
 $mingw && test_no_color=false
+$sunos && test_no_color=false
 if $test_no_color && command -v script >/dev/null 2>&1; then
   if script -qc echo /dev/null >/dev/null 2>&1; then
     faketty() { script -qec "$*" /dev/null; }
@@ -680,9 +712,11 @@ EOF
   if [ -z "$l" ]; then
     echo "WARNING: Not testing localization"
   else
-    date=$(LC_ALL=$l date +'%a %d %b %Y at %H:%M:%S')
-    if ! LC_ALL=$l $JQ -nR --arg date "$date" '$date|strptime("%a %d %b %Y at %H:%M:%S")'; then
-      echo "jq does not honor LC_ALL environment variable"
+    dt1=$(LC_ALL=$l date +'%a %d %b %Y at %H:%M:%S')
+    dt2=$(LC_ALL=$l $JQ -nr 'now | strflocaltime("%a %d %b %Y at %H:%M:%S")')
+    dt3=$(LC_ALL=$l date +'%a %d %b %Y at %H:%M:%S')
+    if [ "$dt1" != "$dt2" ] && [ "$dt2" != "$dt3" ]; then
+      echo "jq does not honor LC_ALL environment variable ($dt1, $dt2, $dt3)"
       exit 1
     fi
   fi
@@ -840,6 +874,63 @@ if ! $msys && ! $mingw; then
     echo "strftime or strftimelocal are not pure functions"
     exit 1
   fi
+fi
+
+# Test ARG_NEWCLOSURE overflow protection (issue #3458)
+# Test 1: Too many function parameters (4097 params triggers the limit)
+echo "Testing function parameter limit..."
+cat > $d/expected <<EOF
+jq: error: too many function parameters or local function definitions (max 4095)
+jq: 1 compile error
+EOF
+$JQ -rn '"def f(\([range(4097) | "a\(.)"] | join(";"))): .; f(\([range(4097)] | join(";")))"' > $d/prog.jq
+$JQ -nf $d/prog.jq 2> $d/out && {
+  echo "Expected compile error for too many parameters"
+  exit 1
+}
+diff $d/out $d/expected
+
+# Test 2: Too many local functions (4097 functions triggers the limit)
+echo "Testing local function limit..."
+cat > $d/expected <<EOF
+jq: error: too many function parameters or local function definitions (max 4095)
+jq: 1 compile error
+EOF
+$JQ -rn '"\([range(4097) | "def f\(.): \(.)"] | join("; ")); \([range(4097) | "f\(.)"] | join(" + "))"' > $d/prog.jq
+$JQ -nf $d/prog.jq 2> $d/out && {
+  echo "Expected compile error for too many local functions"
+  exit 1
+}
+diff $d/out $d/expected
+
+# CVE-2026-33948: No NUL truncation in the JSON parser
+if printf '{}\x00{}' | $JQ >/dev/null 2> /dev/null; then
+  printf 'Error expected but jq exited successfully\n' 1>&2
+  exit 1
+fi
+
+# CVE-2026-41256: No NUL truncation in program files loaded with -f
+printf '.\x00invalid' > "$d/nul_prog.jq"
+if echo '42' | $JQ -f "$d/nul_prog.jq" >/dev/null 2>/dev/null; then
+  printf 'Error expected for program file with NUL bytes\n' 1>&2
+  exit 1
+fi
+
+# CVE-2026-43895: No NUL bytes in module/data import paths
+printf 'import "a\\u0000b" as $x; .' > "$d/nul_import.jq"
+if $JQ -nf "$d/nul_import.jq" >/dev/null 2>/dev/null; then
+  printf 'Error expected for import path with NUL bytes\n' 1>&2
+  exit 1
+fi
+printf 'include "a\\u0000b"; .' > "$d/nul_include.jq"
+if $JQ -nf "$d/nul_include.jq" >/dev/null 2>/dev/null; then
+  printf 'Error expected for include path with NUL bytes\n' 1>&2
+  exit 1
+fi
+printf '"a\\u0000b" | modulemeta' > "$d/nul_modulemeta.jq"
+if $JQ -nf "$d/nul_modulemeta.jq" >/dev/null 2>/dev/null; then
+  printf 'Error expected for modulemeta with NUL bytes\n' 1>&2
+  exit 1
 fi
 
 exit 0
