@@ -1,4 +1,4 @@
-//! How deep jq 1.8.1's recursive value operations go, following jq's own
+//! How deep jq 1.8.2's recursive value operations go, following jq's own
 //! traversal — for [`crate::compat`], which raises `SIGSEGV` where that
 //! depth would overflow jq's C stack.
 //!
@@ -12,7 +12,9 @@
 //! Every walk is iterative (jq's values can be nested far deeper than qj's
 //! own stack allows), and every walk takes a `cap`: it stops as soon as the
 //! depth passes it, because the caller only needs to know whether jq's stack
-//! would have run out.
+//! would have run out. And every walk stops where jq gives up: a frame whose
+//! depth is past [`MAX_DEPTH`] answers "too deep" without recursing, and that
+//! answer unwinds the whole traversal.
 //!
 //! Depth is counted in jq's frames as the measurements in
 //! [`crate::compat`] count them: 1 for the outermost call, and one more per
@@ -22,7 +24,12 @@
 
 use std::cmp::Ordering;
 
-use crate::jq::value::{Object, Str, Value};
+use crate::jq::value::{MAX_DEPTH, Object, Str, Value};
+
+/// The deepest level a walk reaches: jq's depth counts from 0 where these
+/// levels count from 1, and the frame past `MAX_DEPTH` is entered (it answers
+/// "too deep" at once).
+const DEEPEST: u64 = MAX_DEPTH as u64 + 2;
 
 /// One step of a traversal: a pair of values to visit at `depth`, or the
 /// point at which jq's frame answers "not equal" / "not contained" /
@@ -65,7 +72,7 @@ where
         // visited.
         let Step::Pair(x, y, d) = step else { break };
         deepest = deepest.max(d);
-        if deepest > cap {
+        if deepest > cap || d >= DEEPEST {
             return deepest;
         }
         let n = node(x, y, d, &mut deepest);
@@ -168,12 +175,14 @@ pub(super) fn compare(a: &Value, b: &Value, cap: u64) -> u64 {
                 // strings in it.
                 let kp = sorted_keys(p);
                 let kq = sorted_keys(q);
-                *deepest = (*deepest).max(if kp.is_empty() || kq.is_empty() {
+                let keys = if kp.is_empty() || kq.is_empty() {
                     d + 1
                 } else {
                     d + 2
-                });
-                if kp != kq {
+                };
+                *deepest = (*deepest).max(keys);
+                // Past jq's limit the key comparison answers "too deep".
+                if kp != kq || keys >= DEEPEST {
                     return Node::leaf(true);
                 }
                 // Then the values, in sorted key order.
@@ -292,6 +301,9 @@ pub(super) fn contains(a: &Value, b: &Value, cap: u64) -> u64 {
             }
         };
         match next {
+            // The frame past jq's limit answers "too deep", which unwinds
+            // the whole search.
+            Ok(_) if d + 1 >= DEEPEST => return deepest.max(d + 1),
             Ok((x, y)) => match start(x, y) {
                 Step::Done(r) => {
                     deepest = deepest.max(d + 1);
@@ -326,7 +338,8 @@ pub(super) fn merge(a: &Object, b: &Object, cap: u64) -> u64 {
     let mut deepest = 0;
     while let Some((x, y, d)) = work.pop() {
         deepest = deepest.max(d);
-        if deepest > cap {
+        // Past jq's limit the merge fails ("Object merge too deep").
+        if deepest > cap || d >= DEEPEST {
             return deepest;
         }
         for (k, v) in y.iter() {
@@ -501,5 +514,28 @@ mod tests {
             panic!("objects");
         };
         assert_eq!(merge(&x, &y, 10), 11);
+    }
+
+    /// Past `MAX_DEPTH` jq answers "too deep" instead of recursing, so no walk
+    /// goes deeper than the frame that answers it, however deep the values.
+    #[test]
+    fn every_walk_stops_at_jqs_limit() {
+        let deep = nest(30_000, false);
+        let other = nest(30_000, false);
+        for got in [
+            equal(&deep, &other, u64::MAX),
+            compare(&deep, &other, u64::MAX),
+            contains(&deep, &other, u64::MAX),
+        ] {
+            assert_eq!(got, DEEPEST);
+        }
+        let (Value::Object(x), Value::Object(y)) = (nest(30_000, true), nest(30_000, true)) else {
+            panic!("objects");
+        };
+        assert_eq!(merge(&x, &y, u64::MAX), DEEPEST);
+        // Just inside the limit, the walks reach the bottom.
+        let shallow = nest(9_000, false);
+        let same = nest(9_000, false);
+        assert_eq!(equal(&shallow, &same, u64::MAX), 9_001);
     }
 }
