@@ -1,4 +1,4 @@
-# Track C1's corpus: programs exercising jq 1.8.1's binding, scoping, lowering and
+# Track C1's corpus: programs exercising jq 1.8.2's binding, scoping, lowering and
 # linking. One JSON string per line, or {"src": ..., "args": [...], "positional":
 # [...], "home": "modules/home1"}; lines starting with '#' are comments. Expected
 # results come from the jq binary (see tests/jq_compile.rs).

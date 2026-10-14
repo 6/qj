@@ -1,4 +1,4 @@
-//! The input layer for the jq port: jq 1.8.1's input handling (`util.c`),
+//! The input layer for the jq port: jq 1.8.2's input handling (`util.c`),
 //! byte for byte, made fast with simdjson, memory mapping and parallel
 //! processing of line-delimited records.
 //!

@@ -2,8 +2,8 @@
 //!
 //! Port of builtin.c. Owned by Track B1 (docs/JQ_PORT_PLAN.md).
 //!
-//! jq 1.8.1 knows `text`, `json`, `csv`, `tsv`, `html`, `uri`, `urid`, `sh`, `base64` and
-//! `base64d`. There is no `@base32`/`@base32d` in 1.8.1: `jq -n '"hello" | @base32'` fails
+//! jq 1.8.2 knows `text`, `json`, `csv`, `tsv`, `html`, `uri`, `urid`, `sh`, `base64` and
+//! `base64d`. There is no `@base32`/`@base32d` in 1.8.2: `jq -n '"hello" | @base32'` fails
 //! with `base32 is not a valid format`, and so does the port.
 
 use super::general::tostring;

@@ -1,9 +1,9 @@
-//! Port of jq 1.8.1's regex primitive `_match_impl/3` (`builtin.c: f_match`), which
+//! Port of jq 1.8.2's regex primitive `_match_impl/3` (`builtin.c: f_match`), which
 //! `builtin.jq` builds `test`, `match`, `capture`, `scan`, `split/2`, `splits`, `sub` and
 //! `gsub` on.
 //!
 //! The engine is Oniguruma 6.9.10 built from source by `onig_sys` (the FFI layer of the
-//! `onig` crate). jq 1.8.1 vendors the same Oniguruma snapshot (the C sources are
+//! `onig` crate). jq 1.8.2 vendors the same Oniguruma snapshot (the C sources are
 //! identical), so this module calls it directly, the way `f_match` does: the same
 //! syntax (`ONIG_SYNTAX_PERL_NG`), encoding (UTF-8), options, search calls on raw byte
 //! pointers (jq's search can restart in the middle of a UTF-8 sequence), and error

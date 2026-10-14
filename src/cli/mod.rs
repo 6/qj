@@ -1,6 +1,6 @@
 //! qj's command line.
 //!
-//! - [`args`]: a port of jq 1.8.1's `main.c` argument handling: the option
+//! - [`args`]: a port of jq 1.8.2's `main.c` argument handling: the option
 //!   loop, its diagnostics and exit codes, and the option-dependent setup that
 //!   follows it (output flags, colors, the default program, `-f` files).
 //! - [`usage`]: qj's own help, version and build-configuration text, which

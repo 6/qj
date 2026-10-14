@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `libm.h`: the math builtins jq takes straight from the C math
+//! Port of jq 1.8.2's `libm.h`: the math builtins jq takes straight from the C math
 //! library, as a table the builtin layer can register.
 //!
 //! Every entry calls the platform's C function through FFI (not a Rust approximation),

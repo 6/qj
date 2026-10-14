@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `exec_stack.h`, plus the block types execute.c keeps on it
+//! Port of jq 1.8.2's `exec_stack.h`, plus the block types execute.c keeps on it
 //! (`struct frame`, `struct forkpoint`, data values).
 //!
 //! jq's stack is "a directed forest of variably sized blocks": one memory region holding

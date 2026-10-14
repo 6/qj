@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn layout_rules() {
-        // Expectations from jq 1.8.1 (`jq -n '[...] | map(. * 1)'`).
+        // Expectations from jq 1.8.2 (`jq -n '[...] | map(. * 1)'`).
         let cases: &[(f64, &str)] = &[
             (0.0, "0"),
             (-0.0, "-0"),

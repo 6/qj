@@ -1,5 +1,5 @@
 /*
- * jq 1.8.1's strptime (src/util.c, lines 446-1256 at tag jq-1.8.1),
+ * jq 1.8.2's strptime (src/util.c, lines 448-1258 at tag jq-1.8.2),
  * unchanged but for the name: jq builds it where the C library has no
  * strptime, which includes its Windows release binary, so qj builds it for
  * Windows only (build.rs) and calls it as jq_strptime

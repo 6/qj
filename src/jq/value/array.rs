@@ -10,7 +10,7 @@
 //! These details are observable and deliberately reproduced:
 //! * `jv_equal` treats two views of the same storage with the same length as
 //!   equal without comparing elements, so `[1,2,3,4] | .[0:2] == .[2:4]` is
-//!   `true` in jq 1.8.1 (see [`Array::same_storage`]).
+//!   `true` in jq 1.8.2 (see [`Array::same_storage`]).
 //! * writing past the end of a uniquely owned view reuses the storage, so
 //!   elements beyond the view's end reappear:
 //!   `[range(4)+1] | .[0:2] | .[3] = 9` gives `[1,2,3,9]`.

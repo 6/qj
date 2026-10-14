@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's date/time C builtins (`builtin.c`): `strptime/1`, `strftime/1`,
+//! Port of jq 1.8.2's date/time C builtins (`builtin.c`): `strptime/1`, `strftime/1`,
 //! `strflocaltime/1`, `mktime`, `gmtime`, `localtime` and `now`, plus the `tm2jv` /
 //! `jv2tm` conversions. `todate`, `fromdate`, `dateadd` and friends are jq code in
 //! `builtin.jq` on top of these.
@@ -7,7 +7,7 @@
 //! `gmtime_r`, `localtime_r`, `gettimeofday`), so results depend on the platform the
 //! same way jq's do: macOS and glibc differ (for example in `strptime`'s handling of
 //! `%s`, `%z`, `%Z` and `%j`), and both honor `TZ`. The macOS behavior was checked
-//! against the jq 1.8.1 binary; the glibc paths follow the C source.
+//! against the jq 1.8.2 binary; the glibc paths follow the C source.
 //!
 //! # Process-wide state
 //!
@@ -696,7 +696,7 @@ fn strptime_in(
 /// their first NUL, as C sees them.
 ///
 /// [`Error::Abort`] on macOS when `strptime` set a day of year that disagrees with
-/// jq's computation (`"100" | strptime("%j")`): jq 1.8.1 fails an assertion there.
+/// jq's computation (`"100" | strptime("%j")`): jq 1.8.2 fails an assertion there.
 pub fn strptime(input: Option<&str>, format: Option<&str>) -> Result<Parsed, Error> {
     strptime_in(input, format, date_locale())
 }

@@ -1,4 +1,4 @@
-# jq 1.8.1 (macOS arm64) libm builtins: name/arity args results, as IEEE-754 bits (nan = any NaN; jq prints NaN as null).
+# jq 1.8.2 (macOS arm64) libm builtins: name/arity args results, as IEEE-754 bits (nan = any NaN; jq prints NaN as null).
 acos/0 3fe0000000000000 3ff0c152382d7365
 acos/0 bfe0000000000000 4000c152382d7366
 acos/0 0000000000000000 3ff921fb54442d18

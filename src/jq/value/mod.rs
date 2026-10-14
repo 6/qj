@@ -1,4 +1,4 @@
-//! jq values: port of jq 1.8.1's `jv.c`, `jv_aux.c`, `jv_print.c`,
+//! jq values: port of jq 1.8.2's `jv.c`, `jv_aux.c`, `jv_print.c`,
 //! `jv_parse.c`, `jv_unicode.c`, `jv_file.c` and the output format of
 //! `jv_dtoa.c`'s `jvp_dtoa_fmt`.
 //!

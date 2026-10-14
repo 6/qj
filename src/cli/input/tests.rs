@@ -1,4 +1,4 @@
-//! Tests for the util.c reader. Expectations come from running jq 1.8.1 on
+//! Tests for the util.c reader. Expectations come from running jq 1.8.2 on
 //! the same inputs (the commands are in the comments).
 
 use std::collections::HashMap;

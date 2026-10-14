@@ -22,7 +22,7 @@ pub mod testing;
 use crate::jq::value::{Error, Value};
 
 /// What a C-coded builtin produces. execute.c's `CALL_BUILTIN` pushes a valid result and
-/// raises an invalid-with-message as an error. No builtin in jq 1.8.1 returns a bare
+/// raises an invalid-with-message as an error. No builtin in jq 1.8.2 returns a bare
 /// `jv_invalid()` (which would backtrack like `empty`), so there is no third case.
 pub type CResult = Result<Value, Error>;
 
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn function_list_matches_jq_order_and_arity() {
         let list = function_list();
-        // The libm.h entries followed by jq 1.8.1's 75 other entries (64 CFUNCs + 11 BINOPS).
+        // The libm.h entries followed by jq 1.8.2's 75 other entries (64 CFUNCs + 11 BINOPS).
         assert_eq!(
             list.len(),
             crate::jq::platform::math::table().len() + FUNCTION_LIST_TAIL.len()

@@ -1028,7 +1028,7 @@ fn stack_usage() {
         );
     }
 }
-/// Binding and scoping edge cases, with jq 1.8.1's output inline (recorded with
+/// Binding and scoping edge cases, with jq 1.8.2's output inline (recorded with
 /// `jq --debug-dump-disasm -L modules [ARGS] -- PROGRAM`, as [`live_jq`] runs it):
 /// the disassembly, or the compile errors (exit code 3).
 #[test]

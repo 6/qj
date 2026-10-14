@@ -1,4 +1,4 @@
-# libFuzzer dictionary for fuzz_compile: jq 1.8.1's keywords, operators,
+# libFuzzer dictionary for fuzz_compile: jq 1.8.2's keywords, operators,
 # syntax and builtins (`jq -nr '[builtins[]|split("/")[0]]|unique[]'`).
 #   cargo +nightly fuzz run fuzz_compile -s none -- -dict=fuzz/dict/jq.dict ...
 

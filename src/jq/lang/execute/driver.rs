@@ -264,7 +264,7 @@ mod tests {
         s
     }
 
-    /// End-to-end checks that don't need the jq binary (expectations from jq 1.8.1).
+    /// End-to-end checks that don't need the jq binary (expectations from jq 1.8.2).
     #[test]
     fn compiled_programs_run() {
         for (program, input, want) in [

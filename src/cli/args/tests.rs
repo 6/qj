@@ -1,5 +1,5 @@
 //! Unit tests for the main.c port. Expected results, messages and exit codes
-//! come from running jq 1.8.1 (in the C locale, as the Rust test harness runs).
+//! come from running jq 1.8.2 (in the C locale, as the Rust test harness runs).
 
 use super::print_flags::{ASCII, COLOR, ISATTY, PRETTY, SORTED, TAB, indent_flags};
 use super::*;

@@ -5,7 +5,7 @@ Usage:
     python3 tests/jq_compat/corpus/gen_builtin_matrix.py          # jq on PATH
     JQ=/path/to/jq python3 tests/jq_compat/corpus/gen_builtin_matrix.py
 
-The builtin list comes from `jq -n builtins` (jq 1.8.1). Each builtin is
+The builtin list comes from `jq -n builtins` (jq 1.8.2). Each builtin is
 called with `.` for every argument, and appears twice per input:
 
     f(.; .)                   compares outputs, exit code and the stderr error
@@ -20,7 +20,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "builtins_matrix.test")
-REQUIRED = "jq-1.8.1"
+REQUIRED = "jq-1.8.2"
 
 INPUTS = [
     "null",

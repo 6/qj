@@ -3,7 +3,7 @@
 #
 # Format: jq's .test format (see tests/jq_compat/jq.test), without expected
 # output lines: each case is a program line followed by one input line, and
-# cases are separated by blank lines. jq_diff runs every case under jq 1.8.1
+# cases are separated by blank lines. jq_diff runs every case under jq 1.8.2
 # and qj in compact, pretty, file and ndjson modes and compares stdout, exit
 # code and stderr byte for byte; jq's output is the expectation.
 

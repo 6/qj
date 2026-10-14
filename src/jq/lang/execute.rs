@@ -1,4 +1,4 @@
-//! The jq virtual machine: port of jq 1.8.1's `execute.c` (and `exec_stack.h`).
+//! The jq virtual machine: port of jq 1.8.2's `execute.c` (and `exec_stack.h`).
 //!
 //! # Usage
 //!

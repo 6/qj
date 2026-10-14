@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1 `jv_unicode.c` (and `jv_utf8_tables.h`).
+//! Port of jq 1.8.2 `jv_unicode.c` (and `jv_utf8_tables.h`).
 //!
 //! jq's UTF-8 decoder differs from Rust's `String::from_utf8_lossy` in how many
 //! bytes a single U+FFFD replaces: jq consumes a whole overlong or surrogate

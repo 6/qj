@@ -541,7 +541,7 @@ fn format_throughput_result(val: Option<&ResultValue>, bytes: u64) -> String {
     }
 }
 
-/// Format tool versions as a markdown line: "Tools: qj 0.1.0, jq-1.8.1, ..."
+/// Format tool versions as a markdown line: "Tools: qj 0.1.0, jq-1.8.2, ..."
 fn format_tool_versions(tools: &[Tool]) -> String {
     let versions: Vec<String> = tools
         .iter()
