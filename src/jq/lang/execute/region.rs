@@ -130,7 +130,7 @@ impl BinKind {
 fn dtoi(n: f64) -> i64 {
     if n < i64::MIN as f64 {
         i64::MIN
-    } else if -n < i64::MIN as f64 {
+    } else if -n <= i64::MIN as f64 {
         i64::MAX
     } else {
         n as i64
@@ -1774,7 +1774,7 @@ impl Jq {
                             let msg = format!(
                                 "Cannot use {} ({}) as object key",
                                 k.kind_name(),
-                                dump_string_trunc(&k, 15)
+                                dump_string_trunc(&k, 30)
                             );
                             self.set_error(Value::from(msg));
                             return End::Dirty;
@@ -1824,7 +1824,7 @@ impl Jq {
         if tracking && !t.identical(&self.value_at_path) {
             let msg = format!(
                 "Invalid path expression near attempt to access element {} of {}",
-                dump_string_trunc(k, 15),
+                dump_string_trunc(k, 30),
                 dump_string_trunc(&t, 30)
             );
             self.set_error(Value::from(msg));
@@ -1859,7 +1859,7 @@ impl Jq {
         if tracking && !t.identical(&self.value_at_path) {
             let msg = format!(
                 "Invalid path expression near attempt to access element {} of {}",
-                dump_string_trunc(&k, 15),
+                dump_string_trunc(&k, 30),
                 dump_string_trunc(&t, 30)
             );
             self.set_error(Value::from(msg));

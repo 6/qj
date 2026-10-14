@@ -673,6 +673,10 @@ fn magnitude_cmp(a: &Literal, b: &Literal) -> Ordering {
     Ordering::Equal
 }
 
+/// decNumber's `DEC_MAX_DIGITS`: `jvp_literal_number_new` rejects a longer
+/// literal (by its length in bytes) before parsing it.
+const DEC_MAX_DIGITS: usize = 999_999_999;
+
 impl Number {
     /// `jv_number`: a native double.
     #[inline]
@@ -687,8 +691,12 @@ impl Number {
     ///
     /// The whole slice is parsed; callers mirroring C string semantics
     /// (the JSON parser, `tonumber`) must cut at the first NUL themselves
-    /// (see [`Number::from_c_literal`]).
+    /// (see [`Number::from_c_literal`]). A literal longer than decNumber's
+    /// `DEC_MAX_DIGITS` is invalid.
     pub fn from_literal(s: &[u8]) -> Option<Number> {
+        if s.len() > DEC_MAX_DIGITS {
+            return None;
+        }
         match parse_decimal(s)? {
             ParsedNumber::NaN => Some(Number::from_f64(f64::NAN)),
             ParsedNumber::Decimal(d) => Some(Number(Repr::Literal(Rc::new(d.into_literal())))),
@@ -1027,6 +1035,12 @@ mod tests {
             Number::from_c_literal(b"12\x003").unwrap().to_json_string(),
             "12"
         );
+        // Longer than DEC_MAX_DIGITS: rejected before parsing. The rest is
+        // NUL, which parsing would reject too, but calloc's pages are never
+        // touched this way.
+        let mut long = vec![0u8; DEC_MAX_DIGITS + 1];
+        long[0] = b'1';
+        assert!(Number::from_literal(&long).is_none());
     }
 
     #[test]

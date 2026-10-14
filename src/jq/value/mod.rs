@@ -44,7 +44,7 @@
 //!   `jv_parse_sized`; [`parse_sized`] (or [`Number::from_literal`], which
 //!   gives the same literal for lexer tokens) keeps `1.000`/`1E+2` exact.
 //! * Errors that print a value use [`dump_string_trunc`] with jq's buffer
-//!   size (15 or 30), e.g. `Cannot iterate over number (123)`.
+//!   size (30), e.g. `Cannot iterate over number (123)`.
 //! * `tojson`/`tostring`/`@json` are [`Value::to_json`]; output uses
 //!   [`dump`] with the CLI's [`DumpOptions`].
 //! * Path tracking (`path(...)`, `jq->value_at_path`) must use
@@ -109,6 +109,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 pub use array::Array;
+pub use deep::{MAX_DEPTH, TooDeep};
 pub use error::Error;
 pub use file::load_file;
 pub use jv_aux::{group, sort, unique};
@@ -266,8 +267,16 @@ impl Value {
     /// with [`Number::equal`] (NaN is unequal to everything), objects ignore
     /// key order, and arrays sharing storage with the same length are equal
     /// without looking at the elements (see [`Array::same_storage`]).
-    /// Safe on arbitrarily deep values.
+    /// Safe on arbitrarily deep values. A comparison deeper than
+    /// [`MAX_DEPTH`] levels counts as equal, as `jv_equal`'s -1 does where a
+    /// caller doesn't check for it; see [`Value::equal_checked`].
     pub fn equal(&self, other: &Value) -> bool {
+        deep::equal(self, other).unwrap_or(true)
+    }
+
+    /// `jv_equal` with its -1: [`TooDeep`] when the comparison goes deeper
+    /// than [`MAX_DEPTH`] levels (`Equality check too deep`).
+    pub fn equal_checked(&self, other: &Value) -> Result<bool, TooDeep> {
         deep::equal(self, other)
     }
 
@@ -289,8 +298,9 @@ impl Value {
     /// arrays contain arrays whose every element is contained by some
     /// element, strings contain substrings; anything else must be equal.
     /// Values of different kinds (including `true` vs `false`) never
-    /// contain each other. Safe on arbitrarily deep values.
-    pub fn contains(&self, other: &Value) -> bool {
+    /// contain each other. Safe on arbitrarily deep values; [`TooDeep`]
+    /// past [`MAX_DEPTH`] levels (`Containment check too deep`).
+    pub fn contains(&self, other: &Value) -> Result<bool, TooDeep> {
         deep::contains(self, other)
     }
 

@@ -844,7 +844,7 @@ impl ParseHooks for CompileHooks<'_> {
                 return Some(format!(
                     "Cannot use {} ({}) as object key",
                     k.kind_name(),
-                    dump_string_trunc(&k, 15)
+                    dump_string_trunc(&k, 30)
                 ));
             }
         }

@@ -40,12 +40,12 @@ impl Error {
         self.0.as_str()
     }
 
-    /// builtin.c's `type_error`: `"<kind> (<value, truncated to 11 bytes>) <msg>"`.
+    /// builtin.c's `type_error`: `"<kind> (<value, truncated to 29 bytes>) <msg>"`.
     pub fn type_error(bad: &Value, msg: &str) -> Error {
         Error::msg(format!(
             "{} ({}) {}",
             bad.kind_name(),
-            dump_string_trunc(bad, 15),
+            dump_string_trunc(bad, 30),
             msg
         ))
     }
@@ -56,9 +56,9 @@ impl Error {
         Error::msg(format!(
             "{} ({}) and {} ({}) {}",
             bad1.kind_name(),
-            dump_string_trunc(bad1, 15),
+            dump_string_trunc(bad1, 30),
             bad2.kind_name(),
-            dump_string_trunc(bad2, 15),
+            dump_string_trunc(bad2, 30),
             msg
         ))
     }

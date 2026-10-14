@@ -36,6 +36,12 @@ struct Header {
 
 const HEADER: usize = std::mem::size_of::<Header>();
 
+/// jq's bound on a string's length in bytes, `INT_MAX - sizeof(jvp_string) / 2`
+/// (`jvp_string` is 16 bytes: a refcount, the hash, the length and the
+/// allocated size, each 4): `jvp_string_append` and `jv_string_repeat`
+/// refuse to make a string this long or longer.
+pub const MAX_LEN: usize = i32::MAX as usize - 8;
+
 /// A jq string value (`JV_KIND_STRING`).
 pub struct Str(NonNull<Header>);
 
@@ -261,11 +267,16 @@ impl Str {
         self.push_str(c.encode_utf8(&mut buf));
     }
 
-    /// `jv_string_concat` (in place when `self` is uniquely owned).
-    pub fn concat(&mut self, other: &Str) {
+    /// `jv_string_concat` (in place when `self` is uniquely owned):
+    /// `String too long` when the result would be [`MAX_LEN`] bytes or more.
+    pub fn concat(&mut self, other: &Str) -> Result<(), super::Error> {
+        if self.len() as u64 + other.len() as u64 >= MAX_LEN as u64 {
+            return Err(super::Error::msg("String too long"));
+        }
         // (`other` can't share `self`'s buffer while `self` is unique, so an
         // in-place append never moves bytes `other` points into.)
         self.push_str(other.as_str());
+        Ok(())
     }
 
     /// Consumes the string, returning the contents.
@@ -475,14 +486,14 @@ impl Str {
     }
 
     /// `jv_string_repeat` (with jq's own argument conventions: `n < 0`
-    /// gives `null`, a result of `INT_MAX` bytes or more is an error).
+    /// gives `null`, a result of [`MAX_LEN`] bytes or more is an error).
     pub fn repeat(&self, n: i32) -> Result<Value, super::Error> {
         if n < 0 {
             return Ok(Value::Null);
         }
         let len = self.len() as i64;
         let res_len = len * n as i64;
-        if res_len >= i32::MAX as i64 {
+        if res_len >= MAX_LEN as i64 {
             return Err(super::Error::msg("Repeat string result too long"));
         }
         if res_len == 0 {
@@ -700,6 +711,18 @@ mod tests {
         assert_eq!(s("ab").repeat(3).unwrap().as_str().unwrap(), "ababab");
         assert_eq!(
             s("ab").repeat(i32::MAX / 2 + 1).unwrap_err().to_string(),
+            "Repeat string result too long"
+        );
+        // INT_MAX - 8 bytes is already too long.
+        assert_eq!(
+            s("x").repeat(MAX_LEN as i32).unwrap_err().to_string(),
+            "Repeat string result too long"
+        );
+        assert_eq!(
+            s("ab")
+                .repeat(MAX_LEN as i32 / 2 + 1)
+                .unwrap_err()
+                .to_string(),
             "Repeat string result too long"
         );
     }

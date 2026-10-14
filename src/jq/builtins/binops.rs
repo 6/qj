@@ -9,7 +9,7 @@
 //! when uniquely owned (`jv_string_concat`, `jv_array_concat`, `jv_object_merge`).
 
 use super::{CResult, Host};
-use crate::jq::value::{Array, Error, Value};
+use crate::jq::value::{Array, Error, TooDeep, Value};
 use std::cmp::Ordering;
 
 /// `BINOP(name)`: `f_name(jq, input, a, b)` frees the input and returns `binop_name(a, b)`.
@@ -72,7 +72,7 @@ pub fn binop_plus(a: Value, b: Value) -> CResult {
         (Value::Number(x), Value::Number(y)) => Ok(Value::number(x.value() + y.value())),
         (Value::String(mut x), Value::String(y)) => {
             // jv_string_concat
-            x.concat(&y);
+            x.concat(&y)?;
             Ok(Value::String(x))
         }
         (Value::Array(mut x), Value::Array(y)) => {
@@ -98,7 +98,14 @@ pub fn binop_minus(a: Value, b: Value) -> CResult {
         (Value::Array(x), Value::Array(y)) => {
             let mut out = Array::new();
             for elem in x.iter() {
-                if !y.iter().any(|e| elem.equal(e)) {
+                let mut include = true;
+                for e in y.iter() {
+                    if elem.equal_checked(e).map_err(equality_too_deep)? {
+                        include = false;
+                        break;
+                    }
+                }
+                if include {
                     out.push(elem.clone());
                 }
             }
@@ -128,7 +135,7 @@ pub fn binop_multiply(a: Value, b: Value) -> CResult {
         }
         (Value::Object(mut x), Value::Object(y)) => {
             // jv_object_merge_recursive
-            x.merge_recursive(&y);
+            x.merge_recursive(&y)?;
             Ok(Value::Object(x))
         }
         (a, b) => Err(Error::type_error2(&a, &b, "cannot be multiplied")),
@@ -154,12 +161,12 @@ pub fn binop_divide(a: Value, b: Value) -> CResult {
     }
 }
 
-/// builtin.c's `dtoi`: a double to `intmax_t`, saturating (a NaN never gets here). The
-/// in-range cast truncates toward zero; `2^63` itself saturates as on arm64.
+/// builtin.c's `dtoi`: a double to `intmax_t`, saturating (a NaN never gets here), so
+/// `2^63` is `INTMAX_MAX` on every platform; the in-range cast truncates toward zero.
 fn dtoi(n: f64) -> i64 {
     if n < i64::MIN as f64 {
         i64::MIN
-    } else if -n < i64::MIN as f64 {
+    } else if -n <= i64::MIN as f64 {
         i64::MAX
     } else {
         n as i64
@@ -195,17 +202,31 @@ pub fn binop_mod(a: Value, b: Value) -> CResult {
 
 /// Port of builtin.c `binop_equal` (`==`, `jv_equal`), also used by constant folding.
 pub fn binop_equal(a: Value, b: Value) -> CResult {
-    Ok(Value::Bool(a.equal(&b)))
+    Ok(Value::Bool(a.equal_checked(&b).map_err(equality_too_deep)?))
 }
 
 /// Port of builtin.c `binop_notequal` (`!=`), also used by constant folding.
 pub fn binop_notequal(a: Value, b: Value) -> CResult {
-    Ok(Value::Bool(!a.equal(&b)))
+    Ok(Value::Bool(
+        !a.equal_checked(&b).map_err(equality_too_deep)?,
+    ))
+}
+
+/// `Equality check too deep`: `jv_equal` returned -1.
+pub fn equality_too_deep(_: TooDeep) -> Error {
+    Error::msg("Equality check too deep")
+}
+
+/// `Comparison too deep`: `jv_cmp` returned `INT_MIN`.
+pub fn comparison_too_deep(_: TooDeep) -> Error {
+    Error::msg("Comparison too deep")
 }
 
 /// builtin.c's `order_cmp`: `jv_cmp(a, b)` against the operator.
 fn order_cmp(a: &Value, b: &Value, accept: fn(Ordering) -> bool) -> CResult {
-    Ok(Value::Bool(accept(a.compare(b))))
+    Ok(Value::Bool(accept(
+        a.compare_checked(b).map_err(comparison_too_deep)?,
+    )))
 }
 
 /// Port of builtin.c `binop_less` (`<`), also used by constant folding.
@@ -279,10 +300,15 @@ mod tests {
             op(binop_plus, "true", "false"),
             r#"ERR "boolean (true) and boolean (false) cannot be added""#
         );
-        // type_error2 truncates each value to 11 bytes + "...".
+        // type_error2 cuts each value to 29 bytes, ending in "..." and its
+        // closing delimiter.
         assert_eq!(
-            op(binop_plus, "\"abcdefghijklmnop\"", "{\"key\":[1,2,3]}"),
-            r#"ERR "string (\"abcdefghij...) and object ({\"key\":[1,2...) cannot be added""#
+            op(
+                binop_plus,
+                "\"abcdefghijklmnopqrstuvwxyz0123456789\"",
+                "{\"key\":[1,2,3,4,5,6,7,8,9,10,11,12]}"
+            ),
+            r#"ERR "string (\"abcdefghijklmnopqrstuvwx...\") and object ({\"key\":[1,2,3,4,5,6,7,8,9...}) cannot be added""#
         );
     }
 
