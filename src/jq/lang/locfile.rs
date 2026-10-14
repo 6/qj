@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `locfile.c`: source text plus a line map, used to turn byte
+//! Port of jq 1.8.2's `locfile.c`: source text plus a line map, used to turn byte
 //! locations into `line N, column M` and to format compile errors with the offending
 //! source line and a caret underline.
 //!

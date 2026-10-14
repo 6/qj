@@ -1,4 +1,4 @@
-//! AST for jq 1.8.1 programs, produced by [`super::parser`] (port of `parser.y`).
+//! AST for jq 1.8.2 programs, produced by [`super::parser`] (port of `parser.y`).
 //!
 //! # Shape
 //!

@@ -384,7 +384,7 @@ PLAIN0 = ["length", "utf8bytelength", "not", "keys", "keys_unsorted", "to_entrie
           "error", "empty", "get_prog_origin", "values", "toboolean", "significand",
           "gamma", "frexp", "modf", "logb", "trunc", "keys", "length", "tojson", "add",
           "to_entries", "tostring", "type", "min", "max", "unique", "sort", "not"]
-# Not defined in jq 1.8.1 (or not with arity 0): compile errors.
+# Not defined in jq 1.8.2 (or not with arity 0): compile errors.
 BOGUS0 = ["leaf_paths", "isvalid", "dateiso8601", "splits", "ascii", "toarray", "getpath",
           "ltrimstr", "to_number", "join", "map", "select", "del", "path", "has", "in",
           "date", "dateadd", "recurse_down", "finites(1)", "error(1;2)", "range"]

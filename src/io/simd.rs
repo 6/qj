@@ -1,7 +1,7 @@
 //! simdjson → [`Value`]: builds jq values straight from simdjson's DOM tape.
 //!
 //! [`SimdParser::parse`] accepts exactly one strict JSON (RFC 8259) document.
-//! For such a document jq 1.8.1's parser (`jv_parse.c`, ported as
+//! For such a document jq 1.8.2's parser (`jv_parse.c`, ported as
 //! [`crate::jq::value::Parser`]) produces a fully determined value, and this
 //! module produces the same one:
 //!

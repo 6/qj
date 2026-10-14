@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Differential fuzzer: the qj binary against jq 1.8.1.
+"""Differential fuzzer: the qj binary against jq 1.8.2.
 
 Every case is a random jq program, input and command line (gen.py for the
 general generator, modes.py for focused ones), run under both tools with the
@@ -27,7 +27,7 @@ NDJSON: qj's parallel record engine), tty (stdout on a pseudo-terminal),
 merged (stderr into stdout's file: buffering order). `probe '{"args": [...],
 "stdin": "...", "files": {...}, "env": {...}}'` runs one invocation under both
 tools (`--diff` for a line diff). Environment: JQ (default: jq on PATH, must be
-jq-1.8.1), QJ (default: target/release/qj).
+jq-1.8.2), QJ (default: target/release/qj).
 
 Both tools run with a pinned environment (PATH, HOME, LC_ALL=C,
 TZ=America/New_York, PAGER=less). A case is skipped when jq times out or hits
@@ -1200,8 +1200,8 @@ def find_jq():
     else:
         jq = real
     v = subprocess.run([jq, "--version"], capture_output=True, text=True).stdout.strip()
-    if v != "jq-1.8.1":
-        sys.exit(f"{jq} is {v!r}, need jq-1.8.1")
+    if v != "jq-1.8.2":
+        sys.exit(f"{jq} is {v!r}, need jq-1.8.2")
     return jq
 
 

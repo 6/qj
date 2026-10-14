@@ -17,7 +17,7 @@
 //! simulation keeps exactly the binders jq keeps, and binding just those produces the
 //! same blocks (unkept binders bind nothing in jq).
 //!
-//! `builtin.jq` is vendored verbatim from jq 1.8.1 (MIT, see `LICENSE-jq`) as
+//! `builtin.jq` is vendored verbatim from jq 1.8.2 (MIT, see `LICENSE-jq`) as
 //! `src/jq/builtins/builtin.jq`, behind a license header that is stripped here.
 
 mod table;

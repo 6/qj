@@ -201,7 +201,7 @@ fn arb_nullary_builtin() -> BoxedStrategy<String> {
         Just("isinfinite".to_string()),
         Just("isnormal".to_string()),
         Just("paths".to_string()),
-        // jq 1.8.1 has no leaf_paths; this is its old definition
+        // jq 1.8.2 has no leaf_paths; this is its old definition
         Just("paths(scalars)".to_string()),
         Just("tonumber".to_string()),
         Just("toarray".to_string()),

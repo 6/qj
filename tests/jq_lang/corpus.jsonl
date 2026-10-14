@@ -1,4 +1,4 @@
-# Hand-written programs exercising jq 1.8.1's lexer and parser (Track P).
+# Hand-written programs exercising jq 1.8.2's lexer and parser (Track P).
 # One JSON string per line; lines starting with '#' are comments.
 # Expected results come from the jq binary (see tests/jq_lang_parse.rs).
 #

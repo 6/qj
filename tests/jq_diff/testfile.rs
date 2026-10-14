@@ -1,6 +1,6 @@
 //! Parser for jq's `--run-tests` file format (`jq.test`, `man.test`, ...).
 //!
-//! Mirrors `run_jq_tests` in jq 1.8.1's `src/jq_test.c`:
+//! Mirrors `run_jq_tests` in jq 1.8.2's `src/jq_test.c`:
 //! - A line is skipped when, after leading spaces/tabs, it is empty or starts
 //!   with `#` (`skipline`).
 //! - `%%FAIL` or `%%FAIL IGNORE MSG` (exact lines) mark the next program as one

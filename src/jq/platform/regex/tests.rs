@@ -1,5 +1,5 @@
 //! Tests for the `_match_impl` port. Every expectation below was produced by the jq
-//! 1.8.1 binary (`jq -nc '$in | _match_impl($re; $flags; $test)'`).
+//! 1.8.2 binary (`jq -nc '$in | _match_impl($re; $flags; $test)'`).
 
 use super::*;
 
@@ -424,7 +424,7 @@ fn concurrent_use_is_consistent() {
     });
 }
 
-/// Every `_match_impl` call made by the regex cases in jq 1.8.1's `onig.test` and
+/// Every `_match_impl` call made by the regex cases in jq 1.8.2's `onig.test` and
 /// `manonig.test` (collected by running them with the regex builtins shadowed by
 /// logging copies), plus curated edge cases, with jq's exact output.
 #[test]

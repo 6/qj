@@ -972,7 +972,7 @@ fn passthrough_array_construct_prefix_builtin() {
 }
 
 // --- Number literals ---
-// jq 1.8.1 (built with decNumber) keeps each number literal's decimal value
+// jq 1.8.2 (built with decNumber) keeps each number literal's decimal value
 // and prints it in decNumber's canonical form: trailing zeros stay, while
 // exponents are normalized (`1e2` → `1E+2`, `2.5E-3` → `0.0025`).
 
@@ -2796,7 +2796,7 @@ fn jq_compat_paths() {
 
 #[test]
 fn leaf_paths_is_not_a_builtin() {
-    // jq 1.8.1 has no leaf_paths (it's paths(scalars)): calling it is a
+    // jq 1.8.2 has no leaf_paths (it's paths(scalars)): calling it is a
     // compile error, exit 3, with jq's message.
     let (code, stdout, stderr) = qj_exit(&["-c", "[leaf_paths]"], r#"{"a":1,"b":{"c":2}}"#);
     assert_eq!(code, 3, "stderr: {stderr}");
@@ -7813,7 +7813,7 @@ fn jq_compat_map_on_non_iterable() {
 }
 
 // =========================================================================
-// Numbers beyond 2^53: jq 1.8.1's decNumber literal semantics
+// Numbers beyond 2^53: jq 1.8.2's decNumber literal semantics
 // =========================================================================
 // A number literal keeps its exact decimal value through printing, tostring,
 // tojson, negation and comparisons with other literals; arithmetic converts

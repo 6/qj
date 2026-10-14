@@ -1357,7 +1357,7 @@ fn a_closed_stderr_loses_the_message_but_not_the_status() {
     assert_eq!((rc, text.as_str()), (5, ""));
 }
 
-/// Every combination, with the results jq 1.8.1 gives (see
+/// Every combination, with the results jq 1.8.2 gives (see
 /// `docs/COMPATIBILITY.md`). Rust's runtime used to reopen the closed
 /// descriptors on /dev/null, so qj wrote into the void and exited 0.
 #[test]

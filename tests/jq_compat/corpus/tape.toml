@@ -319,7 +319,7 @@ programs = ["type", "map(type)", 'has("a")', "not", ".a == 1", ".[]? | scalars",
 
 # Not map(type) with --debug-trace=all: its BACKTRACKs run with an empty data
 # stack, where jq's full trace reads 4 bytes it never wrote (0 on macOS; with
-# glibc, leftover heap data, and jq 1.8.1 dies of SIGSEGV). See
+# glibc, leftover heap data, and jq 1.8.2 dies of SIGSEGV). See
 # src/jq/lang/execute/trace.rs.
 [[sweep]]
 name = "tape-types-trace-all"

@@ -568,7 +568,7 @@ impl Compiler {
                         if fl & bindflags == want && inst.bound_by.is_none() && {
                             let sym = inst.symbol.as_deref().unwrap_or("");
                             sym == &*bsym
-                                // break/break2/break3 (dead in jq 1.8.1, kept for fidelity)
+                                // break/break2/break3 (dead in jq 1.8.2, kept for fidelity)
                                 || (wildcard && {
                                     let s = sym.as_bytes();
                                     s.len() == 2

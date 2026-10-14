@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn canonical_literals() {
-        // Expectations from `jq -c . <<< '[...]'` (jq 1.8.1).
+        // Expectations from `jq -c . <<< '[...]'` (jq 1.8.2).
         let cases = [
             ("1e2", "1E+2"),
             ("1E-2", "0.01"),

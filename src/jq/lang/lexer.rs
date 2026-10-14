@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `lexer.l` (a flex scanner) to a hand-written scanner.
+//! Port of jq 1.8.2's `lexer.l` (a flex scanner) to a hand-written scanner.
 //!
 //! The rules and their order are flex's: at each position the longest match wins, and
 //! ties go to the rule listed first (so `if` is a keyword but `if::x` and `ifx` are

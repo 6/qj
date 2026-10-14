@@ -1,4 +1,4 @@
-//! Compiled jq programs: port of jq 1.8.1's `opcode_list.h`, `bytecode.h` and
+//! Compiled jq programs: port of jq 1.8.2's `opcode_list.h`, `bytecode.h` and
 //! `bytecode.c` (the disassembler), plus the tail-call pass of `execute.c`
 //! (`optimize`), which `jq_compile_args` applies before anything runs.
 //!

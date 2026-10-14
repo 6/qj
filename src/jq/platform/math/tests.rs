@@ -1,8 +1,8 @@
-//! Tests for the libm table. Expected values come from the jq 1.8.1 binary.
+//! Tests for the libm table. Expected values come from the jq 1.8.2 binary.
 
 use super::*;
 
-/// The libm names in `jq -n 'builtins'` (jq 1.8.1 on macOS; glibc has the same set),
+/// The libm names in `jq -n 'builtins'` (jq 1.8.2 on macOS; glibc has the same set),
 /// in `libm.h` order.
 const JQ_LIBM_BUILTINS: [&str; 61] = [
     "acos/0",
@@ -162,7 +162,7 @@ fn same(a: f64, b: f64) -> bool {
     a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
 }
 
-/// Functions IEEE 754 / C99 specify exactly, so any libm agrees (jq 1.8.1 output).
+/// Functions IEEE 754 / C99 specify exactly, so any libm agrees (jq 1.8.2 output).
 #[test]
 fn exact_functions() {
     assert_eq!(num("floor", -2.5), -3.0);
@@ -210,7 +210,7 @@ fn exact_functions() {
     );
 }
 
-/// macOS specifics (jq 1.8.1 output on macOS arm64).
+/// macOS specifics (jq 1.8.2 output on macOS arm64).
 #[cfg(target_vendor = "apple")]
 #[test]
 fn apple_renames() {
@@ -228,7 +228,7 @@ fn apple_renames() {
 }
 
 /// C's double-to-int conversion for `jn`, `yn`, `ldexp` and `scalbln` saturates on
-/// aarch64 and maps NaN to 0 (jq 1.8.1 on macOS arm64).
+/// aarch64 and maps NaN to 0 (jq 1.8.2 on macOS arm64).
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn integer_arguments_saturate_on_aarch64() {
@@ -240,7 +240,7 @@ fn integer_arguments_saturate_on_aarch64() {
     assert_eq!(num2("jn", f64::NAN, 1.0), num("j0", 1.0));
 }
 
-/// Every libm builtin on a grid of inputs, against jq 1.8.1 on macOS arm64
+/// Every libm builtin on a grid of inputs, against jq 1.8.2 on macOS arm64
 /// (`testdata/libm_corpus.txt`, bit patterns).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]

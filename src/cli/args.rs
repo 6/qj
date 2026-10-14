@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1 `src/main.c`: command-line argument handling.
+//! Port of jq 1.8.2 `src/main.c`: command-line argument handling.
 //!
 //! [`parse`] is main.c's option loop. It walks argv the way jq does, so a
 //! command line is accepted or rejected at the same argument, with the same

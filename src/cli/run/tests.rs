@@ -1,5 +1,5 @@
 //! Tests for main.c's pieces that don't need a process (the binary's behavior
-//! is covered by jq_diff). Expectations come from jq 1.8.1.
+//! is covered by jq_diff). Expectations come from jq 1.8.2.
 
 use super::*;
 

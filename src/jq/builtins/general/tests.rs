@@ -158,7 +158,7 @@ fn type_returns_a_new_string_each_time() {
 //
 // These builtins talk to the interpreter through `Host`, so they are exercised with a
 // scripted `TestHost` instead of the fixtures. Expected values and messages come from
-// jq 1.8.1 (commands in the comments).
+// jq 1.8.2 (commands in the comments).
 
 mod host {
     use std::collections::VecDeque;

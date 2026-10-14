@@ -1,4 +1,4 @@
-//! Tests for the date/time port. Expectations come from the jq 1.8.1 binary on macOS
+//! Tests for the date/time port. Expectations come from the jq 1.8.2 binary on macOS
 //! (`jq -nc '<input> | <builtin>'` with the stated `TZ`/`LC_ALL`). Tests of behavior
 //! that is macOS libc specific are `cfg(target_os = "macos")`; the rest hold on glibc
 //! too.
@@ -551,7 +551,7 @@ fn in_own_process(name: &str, f: impl FnOnce()) {
 }
 
 /// For a date mktime can't represent, `%Z` comes from libc's `tzname`, which the last
-/// local-time conversion set (jq 1.8.1 prints "JST", "LMT", "JST" for this sequence).
+/// local-time conversion set (jq 1.8.2 prints "JST", "LMT", "JST" for this sequence).
 #[cfg(target_os = "macos")]
 #[test]
 fn pre_1900_zone_name_follows_earlier_conversions() {
@@ -838,7 +838,7 @@ fn set_tm_wday_and_yday() {
     assert_eq!(set_tm_yday(&mut t), Err(abort_set_tm_yday()));
 }
 
-/// The date cases of jq 1.8.1's `jq.test` and `man.test`, evaluated through the
+/// The date cases of jq 1.8.2's `jq.test` and `man.test`, evaluated through the
 /// primitives the way `builtin.jq` composes them (`fromdate` is
 /// `strptime("%Y-%m-%dT%H:%M:%SZ") | mktime`, `todate` is `strftime` of that format).
 #[test]

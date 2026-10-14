@@ -1,4 +1,4 @@
-//! Runs jq 1.8.1's upstream test suites (`tests/jq_compat/*.test`, and qj's corpus with
+//! Runs jq 1.8.2's upstream test suites (`tests/jq_compat/*.test`, and qj's corpus with
 //! `SUITES_CORPUS=1`) through the new core and compares stdout, the uncaught error and
 //! the exit code with the jq binary. Two bytecode sources:
 //!

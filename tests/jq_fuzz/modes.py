@@ -12,7 +12,7 @@ import re
 from gen import (A, E, FLAGS, FMTS, Q, RARE_STRS, REGEXES, T, Gen, gen_input_bytes, gen_value,
                  input_to_bytes, jstr, lf, render, ser)
 
-# jq 1.8.1 `builtins`, plus internal helpers that programs can call.
+# jq 1.8.2 `builtins`, plus internal helpers that programs can call.
 ALL_BUILTINS = """IN/1 IN/2 INDEX/1 INDEX/2 JOIN/2 JOIN/3 JOIN/4 abs/0 acos/0 acosh/0 add/0 add/1 all/0
 all/1 all/2 any/0 any/1 any/2 arrays/0 ascii_downcase/0 ascii_upcase/0 asin/0 asinh/0 atan/0
 atan2/2 atanh/0 booleans/0 bsearch/1 capture/1 capture/2 cbrt/0 ceil/0 combinations/0

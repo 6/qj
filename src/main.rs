@@ -1,4 +1,4 @@
-//! The `qj` binary: jq 1.8.1's `main.c` (`src/cli/run.rs`) on the ported core
+//! The `qj` binary: jq 1.8.2's `main.c` (`src/cli/run.rs`) on the ported core
 //! (`src/jq`), reading input through `src/io`.
 //!
 //! # Why `#![no_main]`
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn main(
 
     // SAFETY: argc and argv are the C runtime's, valid for this call.
     let args = unsafe { command_line(argc, argv) };
-    // qj is the jq 1.8.1 port: jq's main.c (src/cli/run.rs) on the ported
+    // qj is the jq 1.8.2 port: jq's main.c (src/cli/run.rs) on the ported
     // core (src/jq), reading input through src/io, on a stack of its own (see
     // the module docs). It exits the process itself; this returns only if it
     // panicked, which the default hook has reported, and 101 is the exit

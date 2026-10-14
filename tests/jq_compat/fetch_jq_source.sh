@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash tests/jq_compat/fetch_jq_source.sh           # uses version from mise.toml
-#   bash tests/jq_compat/fetch_jq_source.sh 1.8.1     # explicit version
+#   bash tests/jq_compat/fetch_jq_source.sh 1.8.2     # explicit version
 #
 # Extracts to target/jq-src/jq-<version>/ (gitignored). Prints the path.
 # Requires: gh (GitHub CLI)

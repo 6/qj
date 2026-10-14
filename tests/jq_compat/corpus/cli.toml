@@ -1,5 +1,5 @@
 # CLI cases for jq_diff (format: tests/jq_diff/cli.rs). Each case runs jq
-# 1.8.1 and qj with exactly these args, stdin, files and env, in its own
+# 1.8.2 and qj with exactly these args, stdin, files and env, in its own
 # directory, and compares stdout, exit code and stderr byte for byte.
 # Without `stdin`, stdin is /dev/null. jq's test modules are at ../../modules.
 
@@ -935,7 +935,7 @@ stdin = '["a",1]'
 
 # ---------------------------------------------------------------------------
 # jq main.c option handling (src/cli/args.rs, track A). Expected behavior is
-# jq 1.8.1's; the harness runs in the C locale.
+# jq 1.8.2's; the harness runs in the C locale.
 # ---------------------------------------------------------------------------
 
 # Which arguments are options: '-' then '-' or a letter; bundles of short

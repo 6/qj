@@ -1408,7 +1408,7 @@ tests = [
 category = "Bignum"
 name = "Large integer precision"
 tests = [
-  # Arithmetic is f64 in jq 1.8.1, so it loses precision beyond 2^53.
+  # Arithmetic is f64 in jq 1.8.2, so it loses precision beyond 2^53.
   { filter = '.[0] - 10', input = '[9007199254740993]', expected = '9007199254740982' },
   # Literals keep their exact decimal value (decNumber), however large.
   { filter = '. | tostring', input = '100000000000000000000', expected = '"100000000000000000000"' },

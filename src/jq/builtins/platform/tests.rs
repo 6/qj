@@ -1,5 +1,5 @@
 //! Tests for the platform-backed builtins, called through `function_list()` the way the
-//! VM calls them. Every expectation comes from the jq 1.8.1 binary: `cases.jsonl` is
+//! VM calls them. Every expectation comes from the jq 1.8.2 binary: `cases.jsonl` is
 //! written by `gen_cases.py`, and the regex and libm corpora in
 //! `src/jq/platform/testdata/` were recorded by Track X.
 
@@ -245,7 +245,7 @@ fn time_zone_cases_child() {
     assert_no_failures(failures, run.len());
 }
 
-/// jq 1.8.1 aborts on these (a failed `assert()`); so does the port. Each runs in a
+/// jq 1.8.2 aborts on these (a failed `assert()`); so does the port. Each runs in a
 /// child process, which must die of SIGABRT after printing jq's assertion line.
 #[cfg(unix)]
 #[test]

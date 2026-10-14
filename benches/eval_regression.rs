@@ -1,4 +1,4 @@
-//! iai-callgrind regression benchmarks for qj's core: the jq 1.8.1 port's
+//! iai-callgrind regression benchmarks for qj's core: the jq 1.8.2 port's
 //! compiler and VM, its value printer, and the input layer (simdjson's tape
 //! to jq values, jq's parser port, and the NDJSON reader).
 //!

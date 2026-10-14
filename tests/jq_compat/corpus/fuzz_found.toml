@@ -78,7 +78,7 @@ note = "qj showed [\"a\" (2),\"b\" (2)] where jq has (1)"
 # (Not to_entries with --debug-trace=all: its BACKTRACKs run with an empty
 # data stack, where jq's full trace reads 4 bytes of its stack memory that it
 # never wrote. They are 0 on macOS; with glibc they're leftover heap data and
-# jq 1.8.1 dies of SIGSEGV. See src/jq/lang/execute/trace.rs.)
+# jq 1.8.2 dies of SIGSEGV. See src/jq/lang/execute/trace.rs.)
 [[case]]
 name = "trace-input-keys-file"
 args = ["-c", "--debug-trace", "to_entries", "f.json"]

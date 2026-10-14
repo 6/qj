@@ -1,4 +1,4 @@
-//! Checks the *content* of `qj::jq::lang`'s AST against jq 1.8.1 itself (Track P).
+//! Checks the *content* of `qj::jq::lang`'s AST against jq 1.8.2 itself (Track P).
 //!
 //! Each program is parsed, printed back as a fully parenthesized jq program from the
 //! AST, and both texts are run by the jq binary on the test's input. Any structural
@@ -6,7 +6,7 @@
 //! changes the output. `unparse_is_stable` runs in the fast suite without jq.
 //!
 //! ```text
-//! JQ=/path/to/jq-1.8.1 QJ_JQ_TESTS=/path/to/jq-1.8.1/tests \
+//! JQ=/path/to/jq-1.8.2 QJ_JQ_TESTS=/path/to/jq-1.8.2/tests \
 //!   cargo test --release --test jq_lang_roundtrip -- --ignored --nocapture
 //! ```
 

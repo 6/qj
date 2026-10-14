@@ -251,7 +251,7 @@ pub fn binop_greatereq(a: Value, b: Value) -> CResult {
 
 #[cfg(test)]
 mod tests {
-    //! Expectations from the jq 1.8.1 binary, with the operands as JSON input so that
+    //! Expectations from the jq 1.8.2 binary, with the operands as JSON input so that
     //! they are literals exactly as here:
     //! `jq -c 'try _plus(.[0]; .[1]) catch ["ERR", .]' <<< '[a, b]'`.
     use super::*;

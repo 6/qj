@@ -1,4 +1,4 @@
-//! Port of jq 1.8.1's `main.c` after option parsing: setup, compilation, the
+//! Port of jq 1.8.2's `main.c` after option parsing: setup, compilation, the
 //! `process()` loop over inputs, and exit codes, on the ported core
 //! (`src/jq`). [`main`] is what the `qj` binary runs by default.
 //!
