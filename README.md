@@ -1,6 +1,6 @@
 # qj
 
-`qj` is a fast, [`jq`](https://github.com/jqlang/jq)-compatible JSON processor powered by [simdjson](https://github.com/simdjson/simdjson).
+`qj` is a Rust port of [`jq`](https://github.com/jqlang/jq) with byte-for-byte identical output, errors and exit codes, made fast by [simdjson](https://github.com/simdjson/simdjson) and parallelism across cores.
 
 Benchmarked on M5 Max MacBook Pro:
 
@@ -9,11 +9,11 @@ Benchmarked on M5 Max MacBook Pro:
 
 ## qj vs jq
 
-**Drop-in replacement.** qj is a port of jq 1.8.1 itself, so output, errors and exit codes match jq byte for byte: 100% feature coverage (181/181) and 100% pass rate on all of jq's official test suites. All filters, builtins, and flags. ([details](docs/COMPATIBILITY.md))
+**Drop-in replacement.** qj is a port of jq 1.8.1 itself, so output, errors and exit codes match jq byte for byte: 100% feature coverage (181/181) and 100% pass rate on all of jq's official test suites. All filters, builtins, and flags. Other reimplementations differ from jq in places: on jq's own `jq.test`, gojq passes 425 of 497 cases and jaq 343. ([details](docs/COMPATIBILITY.md))
 
 **NDJSON / JSONL pipelines.** On file inputs, qj combines SIMD parsing, mmap, automatic parallelism across cores, and direct evaluation of simple filters on simdjson's tape. It's often **~95–200x** faster than jq for common streaming filters, and **~60–170x** faster on complex filters. Stdin and slurp (`-s`) see smaller gains (no mmap / less parallelism - [see benchmarks](#benchmarks)).
 
-**Large JSON files.** qj is 5-18x faster than jq on a single file. Simple operations (`length`, `keys`, `map`) see the biggest gains; heavier transforms (`group_by`, `sort_by`) are ~5x faster.
+**Large JSON files.** qj is 5-28x faster than jq on a single file. Printing large parts of a document (`.`, `.statuses`, `walk`) sees the biggest gains (~25x); heavier transforms (`group_by`, `sort_by`) are ~5x faster.
 
 **Memory usage.** qj trades memory for speed, using a ~80–410 MB sliding window for a 3.4 GB file vs jq's ~6 MB.
 
