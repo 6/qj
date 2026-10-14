@@ -51,7 +51,7 @@ fn chunks(data: &[u8], step: usize) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn fgets_reads_lines_and_4095_byte_pieces() {
+fn fgets_reads_lines_and_4091_byte_pieces() {
     for step in [1, 7, 4096, 1 << 20] {
         assert_eq!(chunks(b"abc\ndef", step), [&b"abc\n"[..], b"def"]);
         assert_eq!(chunks(b"\n\n", step), [b"\n", b"\n"]);
@@ -60,10 +60,10 @@ fn fgets_reads_lines_and_4095_byte_pieces() {
         long.push(b'\n');
         let c = chunks(&long, step);
         assert_eq!(c.len(), 2);
-        assert_eq!(c[0].len(), 4095);
-        assert_eq!(c[1].len(), 906);
-        // Exactly 4095 bytes and then a newline: the newline is a chunk.
-        let mut exact = vec![b'b'; 4095];
+        assert_eq!(c[0].len(), 4091);
+        assert_eq!(c[1].len(), 910);
+        // Exactly 4091 bytes and then a newline: the newline is a chunk.
+        let mut exact = vec![b'b'; 4091];
         exact.push(b'\n');
         assert_eq!(chunks(&exact, step).len(), 2);
         // NULs don't end a chunk.
@@ -223,10 +223,14 @@ fn a_read_error_is_reported_when_the_next_input_opens() {
 }
 
 #[test]
-fn chunks_without_a_newline_stop_at_nul() {
-    // printf '1 2\0003 4' | jq -c .   => 1, 2
+fn nul_bytes_reach_the_parser() {
+    // printf '1 2\0003 4' | jq -c .   => 1, 2, 4: jq's parser reads the
+    // token `2\0003` as a C string.
     let (mut r, _) = reader(&["-"], &[("-", b"1 2\x003 4")], json());
-    assert_eq!(drain(&mut r), ["1 @<stdin>:0 f0", "2 @<stdin>:0 f0"]);
+    assert_eq!(
+        drain(&mut r),
+        ["1 @<stdin>:0 f0", "2 @<stdin>:0 f0", "4 @<stdin>:0 f0"]
+    );
 }
 
 #[test]
@@ -255,23 +259,36 @@ fn raw_lines_join_across_files() {
 }
 
 #[test]
-fn raw_chunks_are_repaired_one_by_one() {
-    // A euro sign split by the 4095-byte chunk boundary: jq -R 'length' gives
-    // 4097 (its three bytes become three U+FFFD).
+fn raw_chunks_complete_their_last_character() {
     let raw = InputOptions {
         raw: true,
         ..InputOptions::default()
     };
-    let mut line = vec![b'a'; 4094];
+    // A euro sign straddling the 4091-byte chunk boundary: fread completes
+    // it, so jq -R 'length' gives 4091.
+    let mut line = vec![b'a'; 4090];
     line.extend_from_slice("€\n".as_bytes());
     let (mut r, _) = reader(&["-"], &[("-", &line)], raw);
     match r.next() {
         Some(Ok(Value::String(s))) => {
-            assert_eq!(s.codepoint_len(), 4097);
-            assert!(s.as_str().ends_with("\u{FFFD}\u{FFFD}\u{FFFD}"));
+            assert_eq!(s.codepoint_len(), 4091);
+            assert!(s.as_str().ends_with('€'));
         }
         other => panic!("{other:?}"),
     }
+    // A lead byte cut short by a newline: fread reads the newline and the
+    // next byte too, so the line goes on, and the newline isn't counted.
+    let mut line = vec![b'a'; 4090];
+    line.extend_from_slice(b"\xe2\nb\nc\n");
+    let (mut r, _) = reader(&["-"], &[("-", &line)], raw);
+    let a = "a".repeat(4090);
+    assert_eq!(
+        drain(&mut r),
+        [
+            format!("{:?} @<stdin>:1 f0", format!("{a}\u{FFFD}\nb")),
+            "\"c\" @<stdin>:2 f0".to_string()
+        ]
+    );
 }
 
 #[test]

@@ -29,7 +29,7 @@ const DELIVERIES: [Delivery; 6] = [
     Delivery::Stream { seed: 4, max: 5000 },
 ];
 
-/// jq 1.8.1's CLI on stdin (`src/jq/value/testdata/parse_cli.json`, recorded
+/// jq 1.8.2's CLI on stdin (`src/jq/value/testdata/parse_cli.json`, recorded
 /// by track V): every case, every delivery, with and without the fast path.
 #[test]
 fn parse_cli_fixture() {
@@ -89,7 +89,7 @@ fn parse_cli_fixture() {
 /// `-s --stream` when the input ends inside a text right after a nested
 /// value: util.c's slurp loop stops once the parser has used up the last
 /// chunk, so the events so far come first and the parse error on the next
-/// read (jq 1.8.1: `printf '[[1]' | jq -c -s --stream .` prints
+/// read (jq 1.8.2: `printf '[[1]' | jq -c -s --stream .` prints
 /// `[[[0,0],1],[[0,0]]]`, then the error). Found by tests/jq_fuzz.
 #[test]
 fn slurped_stream_ending_inside_a_text() {

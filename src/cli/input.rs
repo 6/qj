@@ -1,26 +1,27 @@
-//! Port of jq 1.8.1's `util.c` input layer (`jq_util_input_*`) on the ported
+//! Port of jq 1.8.2's `util.c` input layer (`jq_util_input_*`) on the ported
 //! JSON parser ([`Parser`]).
 //!
-//! jq reads every input with `fgets` into a 4096-byte buffer and hands each
-//! chunk (one line, or 4095 bytes of a longer one) to a single parser shared
-//! by all inputs. [`UtilInput`] reproduces that exactly, because it is
-//! observable:
+//! jq reads every input with `fgets` of at most 4091 bytes into a 4096-byte
+//! buffer and hands each chunk (one line, or 4091 bytes of a longer one, plus
+//! up to 3 that `fread` adds to complete the UTF-8 sequence the chunk ends
+//! in) to a single parser shared by all inputs. [`UtilInput`] reproduces
+//! that exactly, because it is observable:
 //!
 //! * texts continue across file boundaries (`printf 1 > a; printf 2 > b;
 //!   jq . a b` prints `12`), and the parser's line and column counters in
 //!   error messages run on across files;
-//! * a chunk without a newline is cut at its first NUL (jq takes its
-//!   `strlen`), except with `-R`, where the whole chunk is used;
 //! * after a parse error the parser drops the rest of the current chunk;
 //! * `input_line_number` counts the chunks that ended with a newline since
-//!   the current input was opened, and `input_filename` is its name
-//!   (`<stdin>` for `-`);
+//!   the current input was opened (a newline among the bytes `fread` added
+//!   doesn't count), and `input_filename` is its name (`<stdin>` for `-`);
 //! * inputs are opened lazily, when the parser needs more bytes. A file that
 //!   can't be opened prints `Could not open file ...` and counts as a
 //!   failure (`input_filename` still becomes its name); a read error is
 //!   reported only when the next input is opened;
-//! * with `-R`, each chunk becomes a string on its own, so a character split
-//!   by a 4095-byte boundary becomes two U+FFFD, and lines join across files.
+//! * with `-R`, each chunk becomes a string on its own, so an invalid UTF-8
+//!   sequence the chunk ends in becomes U+FFFD there, lines join across
+//!   files, and a line goes on past a newline among the bytes `fread` added
+//!   unless that newline ends the chunk.
 //!
 //! This is the CLI's input seam: `src/io`'s reader (the same interface, plus
 //! a simdjson fast path) replaces it when it lands, by implementing
@@ -37,10 +38,10 @@ use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::rc::Rc;
 
-use crate::jq::value::{Array, Error, ParseFlags, Parser, Str, Value};
+use crate::jq::value::{Array, Error, ParseFlags, Parser, Str, Value, unicode};
 
-/// `fgets(buf, 4096, f)` reads at most this many bytes.
-const FGETS_MAX: usize = 4095;
+/// `fgets(buf, sizeof(buf) - 4, f)` reads at most this many bytes.
+const FGETS_MAX: usize = 4091;
 
 /// How much a [`Stream`] reads from its source at once.
 const READ_SIZE: usize = 64 * 1024;
@@ -157,18 +158,23 @@ impl Stream {
         }
     }
 
-    /// `fgets(out, 4096, stream)`: the next line (with its newline), or the
-    /// next 4095 bytes of a longer line, or the rest of the input. `false`
-    /// is `NULL`: nothing left, or a read error (whatever was read is lost,
-    /// as in C).
+    /// util.c's `fgets(out, 4092, stream)` (see [`Stream::fgets_max`]).
     pub(super) fn fgets(&mut self, out: &mut Vec<u8>) -> bool {
+        self.fgets_max(out, FGETS_MAX)
+    }
+
+    /// `fgets(out, max + 1, stream)`: the next line (with its newline), or
+    /// the next `max` bytes of a longer line, or the rest of the input.
+    /// `false` is `NULL`: nothing left, or a read error (whatever was read
+    /// is lost, as in C).
+    pub(super) fn fgets_max(&mut self, out: &mut Vec<u8>, max: usize) -> bool {
         out.clear();
         loop {
             if self.pos == self.len && !self.fill() {
                 break;
             }
             let avail = &self.buf[self.pos..self.len];
-            let take = avail.len().min(FGETS_MAX - out.len());
+            let take = avail.len().min(max - out.len());
             if let Some(i) = memchr::memchr(b'\n', &avail[..take]) {
                 out.extend_from_slice(&avail[..=i]);
                 self.pos += i + 1;
@@ -176,7 +182,7 @@ impl Stream {
             }
             out.extend_from_slice(&avail[..take]);
             self.pos += take;
-            if out.len() == FGETS_MAX {
+            if out.len() == max {
                 return true;
             }
         }
@@ -185,6 +191,21 @@ impl Stream {
             return false;
         }
         !out.is_empty()
+    }
+
+    /// `fread(buf, 1, n, stream)`, appending what it reads to `out`: fewer
+    /// than `n` bytes only at the end of the input or on an error.
+    pub(super) fn fread(&mut self, n: usize, out: &mut Vec<u8>) {
+        let mut want = n;
+        while want > 0 {
+            if self.pos == self.len && !self.fill() {
+                return;
+            }
+            let take = want.min(self.len - self.pos);
+            out.extend_from_slice(&self.buf[self.pos..self.pos + take]);
+            self.pos += take;
+            want -= take;
+        }
     }
 }
 
@@ -602,7 +623,6 @@ impl UtilInput {
         let mut buf = std::mem::take(&mut self.buf);
         buf.clear();
         self.buf_valid_len = 0;
-        let raw = self.parser.is_none();
         let mut failed = false;
         let mut newline = false;
         if let Some(s) = self.stream() {
@@ -612,6 +632,18 @@ impl UtilInput {
             } else {
                 // fgets stops after a newline, so one can only be last.
                 newline = buf.last() == Some(&b'\n');
+                if !newline && !s.eof {
+                    // A chunk cut short by the buffer: complete the UTF-8
+                    // sequence it ends in. What fread reads isn't searched
+                    // for a newline: one there neither ends the chunk early
+                    // nor counts as a line.
+                    let mut missing = 0;
+                    if unicode::utf8_backtrack(&buf, buf.len() - 1, 0, Some(&mut missing)).is_some()
+                        && missing > 0
+                    {
+                        s.fread(missing, &mut buf);
+                    }
+                }
             }
         }
         if failed {
@@ -620,15 +652,9 @@ impl UtilInput {
         if newline {
             self.current_line += 1;
         }
-        self.buf_valid_len = if !newline && !raw {
-            // There should be no NULs in JSON texts (but JSON text sequences
-            // are another story): jq takes the chunk's strlen.
-            memchr::memchr(0, &buf).unwrap_or(buf.len())
-        } else {
-            // A whole line, or (raw) everything fgets read: jq finds its end
-            // by the terminator fgets wrote.
-            buf.len()
-        };
+        // Everything fgets and fread read: jq finds the end of a chunk at
+        // the end of the input by the terminator fgets wrote.
+        self.buf_valid_len = buf.len();
         self.buf = buf;
         self.curr_file == self.files.len() && self.current.is_none()
     }

@@ -62,7 +62,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::reader::{
-    CatchUp, Cut, InputReader, Pin, Record, TapeSink, window_line_number, window_line_record,
+    CatchUp, Cut, InputReader, Pin, Record, TapeSink, line_chunks, window_line_record,
 };
 use super::simd::SimdParser;
 use super::source::SharedBytes;
@@ -360,8 +360,8 @@ struct Job {
     base: usize,
     start: usize,
     end: usize,
-    /// Start of the line containing `start`.
-    line_start: usize,
+    /// Where the `fgets` chunk holding `start` ends ([`Cut::first_end`]).
+    first_end: usize,
     raw: bool,
     filename: Option<Arc<str>>,
     /// Keeps the input from being released from `start` on while phase 1
@@ -812,11 +812,17 @@ fn parse_job<'t>(
     let mut a = job.start;
     // (Counted from the job's start.)
     let mut nl = 0;
-    let mut ls = job.line_start;
+    let mut first_end = job.first_end;
     while a < job.end {
         let b = a
             + memchr::memchr(b'\n', &buf[a - base..job.end - base]).expect("jobs end at a newline")
             + 1;
+        // Where the chunk that ends with the newline starts: a line that
+        // doesn't end a chunk is the reader's.
+        let Some(last_start) = line_chunks(buf, base, a, first_end, b, None) else {
+            p.failed_at = Some(a);
+            return p;
+        };
         let line = match &mut tape {
             Some(t) => {
                 let mut sink = TapeLines {
@@ -824,15 +830,16 @@ fn parse_job<'t>(
                     out: &mut p.out,
                     marks: &mut p.marks,
                 };
-                window_line_record(simd, buf, base, a, b, job.raw, Some(&mut sink))
+                window_line_record(simd, buf, base, (a, first_end, b), job.raw, Some(&mut sink))
             }
-            None => window_line_record(simd, buf, base, a, b, job.raw, None),
+            None => window_line_record(simd, buf, base, (a, first_end, b), job.raw, None),
         };
         match line {
             Ok(None) => {}
             Ok(Some((Record::Value(value), e))) => {
+                // jq counts the newline once it has read the chunk with it.
                 p.items
-                    .push(Item::Value(value, window_line_number(nl, ls, b, e)));
+                    .push(Item::Value(value, nl + (e >= last_start) as u64));
             }
             Ok(Some((Record::Done(status), _))) => p.items.push(Item::Done {
                 out_end: p.out.len(),
@@ -846,7 +853,7 @@ fn parse_job<'t>(
         }
         nl += 1;
         a = b;
-        ls = b;
+        first_end = b;
     }
     p.lines = nl;
     p
@@ -910,6 +917,8 @@ fn step<W: RecordWorker, S: RecordSink>(
 struct Slot {
     id: u64,
     start: usize,
+    /// [`Cut::first_end`] for `start`.
+    first_end: usize,
     end: usize,
     generation: u64,
     /// Phase 1 reported: whether every line was taken.
@@ -962,21 +971,26 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
             self.dispatch();
             let flow = match self.queue.front() {
                 None => self.sequential(),
-                Some(front) => match self.reader.catch_up(front.generation, front.start) {
-                    CatchUp::Reached => self.front_reached(),
-                    CatchUp::Behind => self.sequential(),
-                    CatchUp::Beyond => {
-                        self.cancel_front();
-                        ControlFlow::Continue(())
-                    }
-                    CatchUp::Left => {
-                        while !self.queue.is_empty() {
+                Some(front) => {
+                    match self
+                        .reader
+                        .catch_up(front.generation, front.start, front.first_end)
+                    {
+                        CatchUp::Reached => self.front_reached(),
+                        CatchUp::Behind => self.sequential(),
+                        CatchUp::Beyond => {
                             self.cancel_front();
+                            ControlFlow::Continue(())
                         }
-                        self.cursor = None;
-                        ControlFlow::Continue(())
+                        CatchUp::Left => {
+                            while !self.queue.is_empty() {
+                                self.cancel_front();
+                            }
+                            self.cursor = None;
+                            ControlFlow::Continue(())
+                        }
                     }
-                },
+                }
             };
             if flow.is_break() {
                 break;
@@ -1181,7 +1195,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
                 base: w.base,
                 start: w.start,
                 end: w.end,
-                line_start: w.line_start,
+                first_end: w.first_end,
                 raw: w.raw,
                 filename: self.reader.filename_text().map(Arc::from),
                 pin: w.pin,
@@ -1192,6 +1206,7 @@ impl<W: RecordWorker, S: RecordSink> Ctx<'_, W, S> {
             self.queue.push_back(Slot {
                 id,
                 start: w.start,
+                first_end: w.first_end,
                 end: w.end,
                 generation: w.generation,
                 complete: None,

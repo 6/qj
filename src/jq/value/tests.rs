@@ -155,21 +155,26 @@ fn fromjson_fixture() {
 }
 
 /// How jq's `jq_util_input_read_more` chunks stdin for the parser: `fgets`
-/// into a 4096-byte buffer (so a chunk ends after a newline or 4095 bytes),
-/// and a chunk without a newline is cut at its first NUL (`strlen`).
+/// of up to 4091 bytes (so a chunk ends after a newline or 4091 bytes), and
+/// `fread` of what the UTF-8 sequence such a chunk ends in is missing.
 pub(super) fn jq_stdin_chunks(input: &[u8]) -> Vec<&[u8]> {
     let mut chunks = Vec::new();
     let mut pos = 0;
     while pos < input.len() {
-        let mut end = (pos + 4095).min(input.len());
+        // fgets reads up to 4091 bytes; fread completes the UTF-8 sequence
+        // a full chunk ends in.
+        let mut end = (pos + 4091).min(input.len());
         if let Some(nl) = input[pos..end].iter().position(|&b| b == b'\n') {
             end = pos + nl + 1;
-            chunks.push(&input[pos..end]);
-        } else {
-            let chunk = &input[pos..end];
-            let valid = chunk.iter().position(|&b| b == 0).unwrap_or(chunk.len());
-            chunks.push(&chunk[..valid]);
+        } else if end - pos == 4091 {
+            let mut missing = 0;
+            if super::unicode::utf8_backtrack(&input[pos..end], 4090, 0, Some(&mut missing))
+                .is_some()
+            {
+                end = (end + missing).min(input.len());
+            }
         }
+        chunks.push(&input[pos..end]);
         pos = end;
     }
     chunks
