@@ -77,10 +77,11 @@ const JQ_ERROR_UNKNOWN: i32 = 5;
 /// Reserved, not committed: a stack is address space until it is touched, so
 /// this costs what the deepest recursion touches, not its size — mapping 256
 /// MB costs what mapping 1 MB does. qj's deepest recursions are bounded by
-/// jq's own limits (bison's `YYMAXDEPTH`, Oniguruma's parse depth,
-/// `MAX_PRINT_DEPTH`) or turn into loops past a few hundred levels (values,
-/// paths, modules): the most any of them needs is about 100 KB in an
-/// optimized build and a few MB in a debug one.
+/// jq's own limits (bison's `YYMAXDEPTH`, Oniguruma's parse depth) or turn
+/// into loops past a fixed depth (printing, whose `MAX_PRINT_DEPTH` is
+/// 10,000, past 64 levels; values, paths and modules past a few hundred):
+/// the most any of them needs is about 100 KB in an optimized build and a
+/// few MB in a debug one.
 pub const STACK_BYTES: usize = 256 << 20;
 
 /// Runs qj on the new core with this process's arguments and exits.

@@ -289,7 +289,8 @@ PRINT_DOCS = [
     b'[{"a":[{"b":[]}]}]',
 ]
 
-# Nesting around MAX_PRINT_DEPTH (256): only printed with a few flag sets.
+# Nesting around jq 1.8.1's MAX_PRINT_DEPTH (256; 10000 since 1.8.2): only printed
+# with a few flag sets.
 PRINT_DEEP_DOCS = [
     b'[' * 300 + b'1' + b']' * 300,
     b'[' * 257 + b']' * 257,
