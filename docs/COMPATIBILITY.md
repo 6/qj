@@ -60,21 +60,23 @@ Byte-exact means stdout, exit code (or signal and core dump) and stderr all matc
 
 | | Cases | qj as it is | `QJ_JQ_COMPAT=1` |
 |---|--:|--:|--:|
-| **macOS** total | 40,342 | **40,335** | **40,342 (100%)** |
+| **macOS** total | 40,348 | **40,341** | **40,348 (100%)** |
 | &nbsp;&nbsp;jq's own suites | 3,031 | 3,031 | 3,031 |
-| &nbsp;&nbsp;qj's corpus | 37,311 | 37,304 | 37,311 |
-| **Linux** total | 39,282 | **39,275** | **39,282 (100%)** |
-| &nbsp;&nbsp;jq's own suites | 2,903 | 2,903 | 2,903 |
-| &nbsp;&nbsp;qj's corpus | 36,379 | 36,372 | 36,379 |
+| &nbsp;&nbsp;qj's corpus | 37,317 | 37,310 | 37,317 |
+| **Linux** total | 40,372 | **40,365** | **40,372 (100%)** |
+| &nbsp;&nbsp;jq's own suites | 3,031 | 3,031 | 3,031 |
+| &nbsp;&nbsp;qj's corpus | 37,341 | 37,334 | 37,341 |
 
 The 7 cases qj's default mode doesn't match are all its own help, version and usage text
 (see [Exemptions](#exemptions)); with `QJ_JQ_COMPAT=1` they match too. jq 1.8.2 finishes
 every case. The two platforms differ by the cases that run on one of them only, where jq does
 something on one platform that it can't do the same way on the other
 ([jq's undefined behaviour](#jqs-undefined-behaviour)): 67 on Linux
-(`corpus/lgamma_glibc.test`) and 43 on macOS (`corpus/debug_trace_macos.toml`). Across
+(`corpus/lgamma_glibc.test`) and 43 on macOS (`corpus/debug_trace_macos.toml`), and the
+module chains with a data import, which have a case for each platform in
+`corpus/compat_mode.toml` and `corpus/modules.toml`. Across
 modes, the counts on macOS are 15,598 compact, 6,644 pretty, 6,644 file, 4,575 NDJSON, 19
-`%%FAIL`, and 6,862 command-line cases. The command-line cases include some that merge
+`%%FAIL`, and 6,868 command-line cases. The command-line cases include some that merge
 stdout and stderr into one file or pipe, checking that output and error messages interleave
 exactly as jq's stdio buffering interleaves them, and some that start the tool with standard
 descriptors closed (`corpus/cli_closed_fds.toml`).

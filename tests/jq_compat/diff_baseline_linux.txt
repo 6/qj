@@ -11943,7 +11943,12 @@ pass corpus/compat_mode.toml:module-chain-of-three-namespaced-aborts:cli 81f2a38
 pass corpus/compat_mode.toml:module-chain-of-three-not-called:cli c7908c572a8c
 pass corpus/compat_mode.toml:module-chain-of-three-with-an-error-in-the-program:cli 2661fdd78251
 pass corpus/compat_mode.toml:module-chain-of-twelve-aborts:cli 1b859e5582aa
-stdout corpus/compat_mode.toml:module-data-import-in-a-chain-aborts-when-read:cli 24b45fc727df
+pass corpus/compat_mode.toml:module-data-import-in-a-chain-aborts-when-compiled-not-read:cli 23218e1b6e10
+pass corpus/compat_mode.toml:module-data-import-in-a-chain-aborts-when-compiled-then-read:cli 24b45fc727df
+pass corpus/compat_mode.toml:module-data-import-in-a-chain-namespaced-aborts-when-compiled:cli 8f40ea9875b9
+pass corpus/compat_mode.toml:module-data-import-in-a-chain-not-called:cli e6a826ba2f67
+pass corpus/compat_mode.toml:module-data-import-in-a-chain-not-referred-to:cli 5b197ce9dc77
+pass corpus/compat_mode.toml:module-data-import-two-deep:cli d5d5c34858cc
 pass corpus/compat_mode.toml:module-diamond-below-a-module-aborts:cli d8da0ee51266
 pass corpus/compat_mode.toml:module-import-cycle-of-two:cli e7f6c5a6db6c
 pass corpus/compat_mode.toml:module-import-cycle-via-import:cli 6d089a0ce7f0
@@ -24928,9 +24933,12 @@ pass corpus/modules.toml:chain-12-defs-order:cli 57b2c2421acf
 pass corpus/modules.toml:chain-12-namespaced-called-two-deep:cli a7a490e16ae9
 pass corpus/modules.toml:chain-40-called-two-deep:cli 5912e3680efd
 pass corpus/modules.toml:data-import-bad-json:cli 7ba9dbee4b62
+pass corpus/modules.toml:data-import-in-a-chain-not-called:cli f058d4d37cf5
+pass corpus/modules.toml:data-import-in-a-chain-not-referred-to:cli 71945cbb9b33
 pass corpus/modules.toml:data-import-in-a-module:cli 4c476acbc3b0
 pass corpus/modules.toml:data-import-namespaced:cli d267b4740b29
 pass corpus/modules.toml:data-import-raw:cli 93c6716f9bb6
+pass corpus/modules.toml:data-import-two-deep:cli 6c367fd1e56f
 pass corpus/modules.toml:data-import:cli 6f50f2d18eaf
 pass corpus/modules.toml:data-module-imported-by-itself-is-no-cycle:cli f5c2c3cf3e58
 pass corpus/modules.toml:data-module-path-with-a-nul-byte:cli f71ce71d5fbb
