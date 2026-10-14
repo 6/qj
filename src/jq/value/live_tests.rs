@@ -497,21 +497,6 @@ fn live_random_ops() {
             }
             _ => (gen_small_value(&mut rng), "null".to_owned()),
         };
-        // jq 1.8.1 hangs on delpaths with NaN keys, and double-frees the key
-        // when a slice key on an array is malformed (jv_dels frees the key
-        // that parse_slice already consumed), corrupting its heap:
-        // `jq -nc 'def f: [1,2] | try delpaths([[{}]]) catch .; [range(10) | f]'`
-        // hangs. Keep both out.
-        if LIVE_OPS[op].0 == "delpaths"
-            && (b.contains("nan")
-                || b.contains("NaN")
-                || b.contains("{}")
-                || b.contains("{\"end\"")
-                || b.contains("\"start\":\"x\"")
-                || b.matches("{\"start\":").count() != b.matches(",\"end\":").count())
-        {
-            continue;
-        }
         // `string * n` repeats the string: keep n small.
         if LIVE_OPS[op].0 == "multiply" {
             let (av, bv) = (parse_sized(a.as_bytes()), parse_sized(b.as_bytes()));

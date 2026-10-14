@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Programs that reach one of jq 1.8.1's three undefined behaviors.
+"""Programs that reach one of jq 1.8.1's three undefined behaviors (jq 1.8.2
+fixed `dels`; `trace` and `lgamma` remain).
 
 - dels:   jv_dels' slice-delete error path frees the key twice
           (jv_aux.c: parse_slice consumes `key`, then `jv_free(key)`).

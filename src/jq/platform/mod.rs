@@ -1,12 +1,12 @@
 //! Value-free platform primitives used by jq builtins: Oniguruma regex (`_match_impl`),
 //! libc time functions, and the libm function table (`libm.h`).
 //!
-//! These are ports of the C parts of jq 1.8.1's `builtin.c` that talk to the platform.
+//! These are ports of the C parts of jq 1.8.2's `builtin.c` that talk to the platform.
 //! They take and return plain Rust data (strings, `f64`, small structs) so that the
 //! builtin layer only has to convert between these and jq values:
 //!
 //! - [`regex`]: the engine behind `_match_impl/3` (`f_match`), on the same Oniguruma
-//!   version jq 1.8.1 vendors.
+//!   version jq 1.8.2 vendors.
 //! - [`time`]: `strptime`, `strftime`, `strflocaltime`, `mktime`, `gmtime`, `localtime`
 //!   and `now`, through libc like jq.
 //! - [`math`]: the `libm.h` function table.
@@ -42,14 +42,14 @@ pub enum Error {
     /// jq raises an ordinary error whose value is this exact message string
     /// (`jv_invalid_with_msg(jv_string(msg))`). `try` can catch it.
     Msg(String),
-    /// jq 1.8.1 fails a C `assert()` at this point and aborts the whole process: `try`
+    /// jq 1.8.2 fails a C `assert()` at this point and aborts the whole process: `try`
     /// cannot catch it, and the process dies with SIGABRT (a shell reports exit status
     /// 134). The string is the line the platform's assert handler writes to stderr,
     /// without the newline.
     ///
     /// What happens to output jq had buffered but not yet written depends on the libc:
     /// Apple's `abort()` flushes stdio, so on macOS every earlier result still appears
-    /// (`jq -n 'range(5), (1e30|strflocaltime("%c"))' | cat` prints 0 to 4, then exits
+    /// (`jq -n 'range(5), ("100"|strptime("%j"))' | cat` prints 0 to 4, then exits
     /// 134), while glibc's `abort()` (since 2.27) doesn't flush, so there the unflushed
     /// part of stdout is lost.
     ///
@@ -102,7 +102,7 @@ impl Error {
 /// One of jq's `assert()`s failing, as the C library's `assert` words it
 /// (without the newline). `file` is the path in jq's source tree
 /// (`src/jv.c`), which jq's build passes to the compiler.
-/// - glibc: `jq: src/jv.c:1312: jv_string_indexes: Assertion `EXPR' failed.`,
+/// - glibc: `jq: src/jv.c:991: jv_array_length: Assertion `EXPR' failed.`,
 ///   translated when it aborts ([`glibc_assert_text`]).
 /// - macOS: `Assertion failed: (EXPR), function F, file jv.c, line N.`; jq's
 ///   release build names the file without its directory.
@@ -133,8 +133,8 @@ pub fn assert_text(expr: &str, file: &str, function: &str, line: u32) -> String 
 /// locale's (`jq: <file>:<line>: <function>: Assertion `<expr>' failed.`),
 /// and glibc translates that format for `LC_MESSAGES`, in the locale jq's
 /// `setlocale(LC_ALL, "")` chose. So with German messages installed and
-/// `LC_ALL=de_DE.UTF-8`, jq says `... jv_string_indexes: Zusicherung
-/// »JVP_HAS_KIND(j, JV_KIND_STRING)« nicht erfüllt.`. A message of another
+/// `LC_ALL=de_DE.UTF-8`, jq says `... jv_array_length: Zusicherung
+/// »JVP_HAS_KIND(j, JV_KIND_ARRAY)« nicht erfüllt.`. A message of another
 /// shape, or a format this can't fill in, comes back unchanged.
 ///
 /// The name at the start is glibc's `__progname`, the last component of
@@ -346,7 +346,8 @@ mod tests {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn glibc_assert_lines_fill_translated_formats() {
-        let line = "jq: src/jv.c:1312: jv_string_indexes: Assertion `JVP_HAS_KIND(j, JV_KIND_STRING)' failed.";
+        let line =
+            "jq: src/jv.c:991: jv_array_length: Assertion `JVP_HAS_KIND(j, JV_KIND_ARRAY)' failed.";
         let args = assert_parts(line, "jq").expect("an assert line");
         assert_eq!(
             args,
@@ -354,10 +355,10 @@ mod tests {
                 "jq",
                 ": ",
                 "src/jv.c",
-                "1312",
-                "jv_string_indexes",
+                "991",
+                "jv_array_length",
                 ": ",
-                "JVP_HAS_KIND(j, JV_KIND_STRING)"
+                "JVP_HAS_KIND(j, JV_KIND_ARRAY)"
             ]
         );
         let english = fill_assert_format(b"%s%s%s:%u: %s%sAssertion `%s' failed.\n%n", &args);
@@ -365,12 +366,12 @@ mod tests {
         let german = "%s%s%s:%u: %s%sZusicherung \u{bb}%s\u{ab} nicht erf\u{fc}llt.\n%n";
         assert_eq!(
             fill_assert_format(german.as_bytes(), &args).map(String::from_utf8),
-            Some(Ok("jq: src/jv.c:1312: jv_string_indexes: Zusicherung \u{bb}JVP_HAS_KIND(j, JV_KIND_STRING)\u{ab} nicht erf\u{fc}llt.\n".to_owned()))
+            Some(Ok("jq: src/jv.c:991: jv_array_length: Zusicherung \u{bb}JVP_HAS_KIND(j, JV_KIND_ARRAY)\u{ab} nicht erf\u{fc}llt.\n".to_owned()))
         );
         let positional = fill_assert_format(b"%7$s (%3$s:%4$u)%%", &args);
         assert_eq!(
             positional,
-            Some(b"JVP_HAS_KIND(j, JV_KIND_STRING) (src/jv.c:1312)%".to_vec())
+            Some(b"JVP_HAS_KIND(j, JV_KIND_ARRAY) (src/jv.c:991)%".to_vec())
         );
         assert_eq!(fill_assert_format(b"%d", &args), None);
         assert_eq!(
