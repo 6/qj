@@ -1,22 +1,21 @@
-# QJ_JQ_COMPAT=1: be exactly jq 1.8.1 (format: tests/jq_diff/cli.rs).
+# QJ_JQ_COMPAT=1: be exactly jq 1.8.2 (format: tests/jq_diff/cli.rs).
 #
-# qj deliberately differs from jq where jq 1.8.1 crashes or hangs, and it adds
-# a few things jq doesn't have. `QJ_JQ_COMPAT=1` turns all of that off, so
+# qj deliberately differs from jq where jq 1.8.2 crashes, and it adds a few
+# things jq doesn't have. `QJ_JQ_COMPAT=1` turns all of that off, so
 # every case here must match jq byte for byte. See `src/compat.rs` and
 # `docs/COMPATIBILITY.md`.
 #
 # The same env reaches jq, which ignores it — except that it sits on the
 # stack with the rest of the environment, which moves jq's stack-overflow
-# threshold by about one level per 64 bytes. The nesting depths below are far
-# enough from that threshold for it not to matter.
+# thresholds a little. No case below is near one of them.
 #
 # The cases where qj deliberately differs *without* the variable are unit and
 # e2e tests, not cases here: jq is the expectation in this file, and the
 # default behaviour is by definition not jq's.
 
 # ---------------------------------------------------------------------------
-# Crashes. jq dies of SIGSEGV; so does qj, at the same point in the run, with
-# whatever it had buffered on stdout lost.
+# Crashes, and what jq 1.8.1 crashed on. Where jq 1.8.2 fails an assert(), it
+# dies of SIGABRT, and so does qj, at the same point in the run.
 # ---------------------------------------------------------------------------
 
 # A module that imports itself: jq 1.8.1 recursed until its stack overflowed;
@@ -143,9 +142,10 @@ args = ["-nc", "-f", "p.jq"]
 files = { "p.jq" = { repeat = [["def f(", 1], ["a;", 4096], ["x): 1; def g: f(", 1], ["1;", 4096], ["1); g", 1]] } }
 env = { QJ_JQ_COMPAT = "1" }
 
-# jq's jv_free recurses once per level of nesting; past `ulimit -s` the
-# process dies. 200,000 is well past the ~130,000 the default 8 MB stack
-# allows, and 100,000 well short of it (src/compat.rs has the measurements).
+# Deep values freed and printed. jq 1.8.1's jv_free recursed once per level
+# of nesting and died past about 130,000 levels at the default 8 MB stack;
+# jq 1.8.2 frees without recursing, so 200,000 levels free in both tools, and
+# print as 10,000 levels around `<skipped: too deep>` (MAX_PRINT_DEPTH).
 [[case]]
 name = "deep-value-freed-by-a-builtin"
 args = ["-nc", "reduce range(200000) as $i (null;[.]) | length"]
@@ -161,9 +161,9 @@ name = "deep-value-discarded"
 args = ["-nc", "reduce range(200000) as $i (null;[.]) | empty"]
 env = { QJ_JQ_COMPAT = "1" }
 
-# Past a 16 MB stack too (GitHub's Linux runners have `ulimit -s 16384`, where
-# jq's Linux/x86-64 binary survives about 349,000 levels, and macOS's about
-# 262,000).
+# Past where jq 1.8.1 died on a 16 MB stack too (GitHub's Linux runners have
+# `ulimit -s 16384`, where its Linux/x86-64 binary survived about 349,000
+# levels, and macOS's about 262,000): jq 1.8.2 frees these as well.
 [[case]]
 name = "deep-value-freed-by-a-builtin-past-16mb"
 args = ["-nc", "reduce range(600000) as $i (null;[.]) | length"]
@@ -181,6 +181,7 @@ args = ["-c", "length"]
 stdin = { repeat = [["[", 20000], ["]", 20000]] }
 env = { QJ_JQ_COMPAT = "1" }
 
+# 100,000 levels, short of where jq 1.8.1's jv_free overflowed.
 [[case]]
 name = "not-deep-enough-to-crash"
 args = ["-nc", "reduce range(100000) as $i (null;[.]) | length"]
@@ -192,23 +193,22 @@ args = ["-nc", "reduce range(100000) as $i (null;[.]) | tostring | length"]
 env = { QJ_JQ_COMPAT = "1" }
 
 # ---------------------------------------------------------------------------
-# jq's other recursions over values and paths (`Site` in src/compat.rs). Each
-# has its own frame size, so each has its own threshold; the depths here are
-# far from every one of them on both platforms, so what jq does is the same on
-# every run:
+# jq's other recursions over values and paths (`Site` in src/compat.rs). jq
+# 1.8.2 stops each at 10,000 levels with an error: "Path too deep" (setpath,
+# getpath, delpaths), "Object merge too deep" (object `*`), "Containment check
+# too deep" (contains, inside), "Equality check too deep" (`==`, array `-`)
+# and "Comparison too deep" (`<`, sort, group_by, unique). At 8 MB no stack
+# runs out first, so every case here past 10,000 levels gets that error in
+# both tools, whatever its name says.
 #
-#  * 600,000 is past every model at every stack limit, on macOS and on the
-#    16 MB stacks of GitHub's Linux runners: both tools die.
-#  * 20,000 is short of every model at 8 MB or more: both tools answer.
-#  * the depths in between are past some models and short of others, which is
-#    what shows that each site has a threshold of its own. They are chosen
-#    with thousands of levels of room on both platforms, so the answer never
-#    depends on which one is running (jq's Linux binary starts its stack up to
-#    8 KB below the top at random, which moves its thresholds by about 50
-#    levels).
+# The names and depths come from jq 1.8.1, which had no limit, and where they
+# were chosen against its stack models: 600,000 past every model at every
+# stack limit, 20,000 short of every model at 8 MB, and the depths in between
+# past some models and short of others.
 # ---------------------------------------------------------------------------
 
-# jv_setpath recurses once per path element, whatever the value looks like.
+# jv_setpath recurses once per path element, whatever the value looks like:
+# past 10,000 elements the path is too deep.
 [[case]]
 name = "setpath-with-a-path-past-every-model"
 args = ["-nc", "[range(600000)|0] as $p | null | setpath($p; 1) | length"]
@@ -219,21 +219,23 @@ name = "setpath-with-a-short-path"
 args = ["-nc", "[range(20000)|0] as $p | null | setpath($p; 1) | length"]
 env = { QJ_JQ_COMPAT = "1" }
 
-# Assignment is setpath too, with the same threshold.
+# Assignment is setpath too, with the same limit.
 [[case]]
 name = "assignment-through-a-path-past-every-model"
 args = ["-nc", "[range(600000)|0] as $p | null | (getpath($p) = 1) | length"]
 env = { QJ_JQ_COMPAT = "1" }
 
-# Past the 8 MB threshold, short of the 16 MB one: jq dies on macOS and
-# answers on GitHub's Linux runners, and so does qj.
+# jq 1.8.1 died here on macOS (past its 8 MB threshold) and answered on
+# GitHub's Linux runners (short of the 16 MB one); jq 1.8.2's limit is the same
+# on every platform.
 [[case]]
 name = "setpath-with-a-path-past-the-8mb-model"
 args = ["-nc", "[range(80000)|\"a\"] as $p | null | setpath($p; 1) | length"]
 env = { QJ_JQ_COMPAT = "1" }
 
-# getpath is jq's one *tail* call through a path: both compilers turn it into
-# a loop, so no path is long enough to overflow it.
+# getpath is jq's one *tail* call through a path, which both compilers turn
+# into a loop, so no path ever overflowed it; jq 1.8.2 limits its paths to
+# 10,000 elements all the same.
 [[case]]
 name = "getpath-through-a-very-long-path"
 args = ["-nc", "[range(600000)|0] as $p | null | getpath($p)"]
@@ -248,7 +250,8 @@ args = [
 env = { QJ_JQ_COMPAT = "1" }
 
 # delpaths_sorted recurses once per level of the paths it groups, and only as
-# far as the value has children.
+# far as the value has children; jq 1.8.2 rejects paths past 10,000 elements
+# before it starts.
 [[case]]
 name = "delpaths-with-a-path-past-every-model"
 args = [
@@ -274,7 +277,7 @@ args = [
 env = { QJ_JQ_COMPAT = "1" }
 
 # jv_object_merge_recursive (object `*`) descends where both sides are
-# objects.
+# objects, to 10,000 levels.
 [[case]]
 name = "merge-past-every-model"
 args = ["-nc", "(reduce range(600000) as $i (null;{a:.})) as $v | ($v * $v) | length"]
@@ -291,14 +294,14 @@ args = ["-nc", "(reduce range(100000) as $i (null;{a:.})) as $v | ($v * $v) | le
 env = { QJ_JQ_COMPAT = "1" }
 
 # Only where both sides are objects: an array on one side stops the descent,
-# so this one is nowhere near the threshold.
+# so this one is nowhere near the limit.
 [[case]]
 name = "merge-stops-where-a-side-is-not-an-object"
 args = ["-nc", "(reduce range(600000) as $i (null;{a:.})) as $v | ({a:1} * {a:$v}) | length"]
 env = { QJ_JQ_COMPAT = "1" }
 
 # jv_contains searches the elements of an array, so it reaches the depth of
-# the attempts it makes.
+# the attempts it makes, to 10,000 levels.
 [[case]]
 name = "contains-past-every-model"
 args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | $v | contains($v)"]
@@ -315,7 +318,7 @@ args = ["-nc", "(reduce range(100000) as $i (null;{a:.})) as $v | $v | inside($v
 env = { QJ_JQ_COMPAT = "1" }
 
 # jv_equal and jv_cmp: two values built separately, so nothing is shared and
-# the comparison goes all the way down.
+# the comparison goes down until it reaches the limit.
 [[case]]
 name = "equal-past-every-model"
 args = [
@@ -332,8 +335,8 @@ args = [
 ]
 env = { QJ_JQ_COMPAT = "1" }
 
-# Past the comparison model but short of jv_free's: the comparison is what
-# kills jq, and qj dies there too rather than later.
+# In jq 1.8.1 past the comparison's 8 MB threshold but short of jv_free's, so
+# the comparison was what killed it; in jq 1.8.2 it is what errors.
 [[case]]
 name = "equal-past-the-8mb-comparison-model"
 args = [
@@ -382,7 +385,8 @@ args = [
 ]
 env = { QJ_JQ_COMPAT = "1" }
 
-# Array subtraction and `indices` compare element by element with jv_equal.
+# Array subtraction and `indices` compare element by element with jv_equal,
+# under its limit.
 [[case]]
 name = "array-subtraction-past-the-8mb-comparison-model"
 args = [
@@ -409,7 +413,7 @@ args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | [$v] | index([$v
 env = { QJ_JQ_COMPAT = "1" }
 
 # jv_cmp has no such shortcut, so sorting a value against itself does recurse:
-# jq dies where `==` on the same two values answers immediately.
+# jq reaches its limit where `==` on the same two values answers immediately.
 [[case]]
 name = "sorting-one-value-with-itself-has-no-shortcut"
 args = ["-nc", "(reduce range(600000) as $i (null;[.])) as $v | [$v, $v] | sort | length"]
@@ -441,13 +445,16 @@ env = { QJ_JQ_COMPAT = "1" }
 # ---------------------------------------------------------------------------
 # One recursion from inside another. jq's delpaths_sorted compares path
 # elements and frees values a level at a time, with the frames for the levels
-# above it still on the stack, so the same value kills it sooner the deeper the
-# paths go.
+# above it still on the stack, so in jq 1.8.1 the same value killed it sooner
+# the deeper the paths went. In jq 1.8.2 the comparison has its limit and
+# freeing doesn't recurse.
 # ---------------------------------------------------------------------------
 
-# A deep path element compared 1,000 levels into delpaths_sorted: past every
-# comparison model there, short of it at the top (the 20,000-deep case below
-# is the same program with a value jq can compare anywhere).
+# Path elements nested past 10,000 levels (200,000 here, 20,000 in the case
+# below): sorting the paths is "Comparison too deep", jq 1.8.2's delpaths
+# carries on with that invalid value as its list of paths, and
+# jv_array_length's assert() fails. Both tools die of SIGABRT, `try` or not.
+# (In jq 1.8.1 only the deeper one died, of a stack overflow.)
 [[case]]
 name = "deep-path-element-compared-inside-delpaths"
 args = [
@@ -464,7 +471,8 @@ args = [
 ]
 env = { QJ_JQ_COMPAT = "1" }
 
-# A deep value deleted 1,000 levels into delpaths_sorted, so jq frees it there.
+# A deep value deleted 1,000 levels into delpaths_sorted, so jq frees it there:
+# jq 1.8.1 overflowed its stack doing so, jq 1.8.2 doesn't recurse.
 [[case]]
 name = "deep-value-freed-inside-delpaths"
 args = [
@@ -481,8 +489,9 @@ args = [
 ]
 env = { QJ_JQ_COMPAT = "1" }
 
-# A deep object merged 1,000 levels into jv_object_merge_recursive, where jq
-# frees the value it replaces.
+# A deep object merged 1,000 levels into jv_object_merge_recursive (short of
+# its limit), where jq frees the value it replaces, without recursing since
+# 1.8.2.
 [[case]]
 name = "deep-value-replaced-inside-a-merge"
 args = [
@@ -504,12 +513,11 @@ args = ["--run-tests", "--take"]
 env = { QJ_JQ_COMPAT = "1" }
 
 # ---------------------------------------------------------------------------
-# Hangs. jv_equal(nan, nan) is false, so delpaths_sorted never advances past a
-# NaN path element: it loops forever, appending the key to an array as it
-# goes. Neither tool finishes, and the harness requires that both end the same
-# way: here, at the memory cap. It is 256 MB for these, which jq reaches in
-# about a second even on GitHub's runners (the default 2 GB took it 8.7 s
-# there, close to the 10 s timeout, where it would have ended another way).
+# What used to hang. jv_equal(nan, nan) is false, so jq 1.8.1's
+# delpaths_sorted never advanced past a NaN path element: it looped forever,
+# appending the key to an array, until the memory cap (256 MB for these, so
+# that it got there well inside the timeout). jq 1.8.2 skips a NaN key in an
+# array's paths, and an object's is the error any number key is.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -530,7 +538,7 @@ args = ["-nc", "[1] | try delpaths([[nan]]) catch \"caught\""]
 env = { QJ_JQ_COMPAT = "1" }
 mem_mb = 256
 
-# A NaN deeper in a path reaches the same loop, one level down.
+# A NaN deeper in a path is skipped the same way, one level down.
 [[case]]
 name = "delpaths-nan-deeper-in-a-path"
 args = ["-nc", "[[1]] | try delpaths([[0,nan]]) catch ."]
@@ -690,7 +698,7 @@ env = { QJ_JQ_COMPAT = "1" }
 name = "delpaths-slice-error-still-errors"
 args = ["-nc", "[1,2,3,4] | try delpaths([[{}]]) catch ."]
 env = { QJ_JQ_COMPAT = "1" }
-note = "jq's double free here only kills it for some heap layouts; see docs/COMPATIBILITY.md"
+note = "jq 1.8.1 freed the key twice here, which killed it for some heap layouts; jq 1.8.2 raises the error"
 
 # `QJ_JQ_COMPAT=0` is off, so qj expands this glob and jq doesn't: a
 # deliberate difference, and not a case here. `src/cli/args/tests.rs` checks
@@ -748,8 +756,9 @@ args = ["-nc", "-f", "prog.jq"]
 files = { "prog.jq" = { repeat = [[".", 1], [" + .", 9900], [" | %%%", 1]] } }
 env = { QJ_JQ_COMPAT = "1" }
 
-# A nested constant folded during the parse: what `jv_free` recurses over at
-# the end of the run is the program's own constant, not any input.
+# A nested constant folded during the parse, 9,900 levels: printed whole
+# (short of MAX_PRINT_DEPTH) and freed at the end of the run, the program's own
+# constant rather than any input.
 [[case]]
 name = "deep-array-constant"
 args = ["-nc", "-f", "prog.jq"]
