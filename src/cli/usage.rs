@@ -1,8 +1,8 @@
-//! qj's own help, version and build-configuration text, and jq 1.8.1's.
+//! qj's own help, version and build-configuration text, and jq 1.8.2's.
 //!
 //! By default these describe qj: `docs/JQ_PORT_PLAN.md` exempts them from
 //! comparison with jq. With `QJ_JQ_COMPAT=1` they are jq's, byte for byte:
-//! main.c's `usage()`, `jq-1.8.1`, and the `JQ_CONFIG` string of jq's release
+//! main.c's `usage()`, `jq-1.8.2`, and the `JQ_CONFIG` string of jq's release
 //! binary for this platform. Where jq prints them (and with which exit status)
 //! is the same in both modes; see [`crate::cli::args`].
 
@@ -88,10 +88,10 @@ fn title() -> String {
     )
 }
 
-/// jq 1.8.1's main.c `usage()`, up to where its short and long forms part
-/// (`JQ_VERSION` is `1.8.1`).
+/// jq 1.8.2's main.c `usage()`, up to where its short and long forms part
+/// (`JQ_VERSION` is `1.8.2`).
 const JQ_HEADER: &str = "\
-jq - commandline JSON processor [version 1.8.1]
+jq - commandline JSON processor [version 1.8.2]
 
 Usage:\tjq [options] <jq filter> [file...]
 \tjq [options] --args <jq filter> [strings...]
@@ -162,7 +162,7 @@ Named arguments are also available as $ARGS.named[], while
 positional arguments are available as $ARGS.positional[].
 ";
 
-/// `JQ_CONFIG` of jq 1.8.1's release binary for this platform: the configure
+/// `JQ_CONFIG` of jq 1.8.2's release binary for this platform: the configure
 /// line of the build, which `--build-configuration` prints and
 /// `$JQ_BUILD_CONFIGURATION` holds. These are the binaries `mise` installs
 /// (`jq-macos-arm64`, `jq-linux-amd64`, ...); a jq built elsewhere has its
@@ -198,11 +198,11 @@ pub fn short_usage() -> String {
     }
 }
 
-/// `-V`/`--version`: jq's `jq-1.8.1`, or qj's (the format clap printed
+/// `-V`/`--version`: jq's `jq-1.8.2`, or qj's (the format clap printed
 /// before, kept for scripts).
 pub fn version() -> String {
     if exactly_jq() {
-        "jq-1.8.1\n".to_owned()
+        "jq-1.8.2\n".to_owned()
     } else {
         format!("qj {}\n", env!("CARGO_PKG_VERSION"))
     }
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn jq_usage_is_main_c_s() {
         let long = format!("{JQ_HEADER}{JQ_OPTIONS}");
-        assert!(long.starts_with("jq - commandline JSON processor [version 1.8.1]\n\nUsage:\tjq "));
+        assert!(long.starts_with("jq - commandline JSON processor [version 1.8.2]\n\nUsage:\tjq "));
         assert!(long.ends_with("available as $ARGS.positional[].\n"));
         assert!(!long.contains("qj"));
         assert!(!long.contains("--binary"), "-b is Windows-only in jq");

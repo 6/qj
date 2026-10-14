@@ -274,7 +274,7 @@ pub enum ArgError {
 pub fn usage_hint(prog: &str) -> String {
     format!(
         "Use {prog} --help for help with command-line options,\n\
-         or see the jq manpage, or online docs  at https://jqlang.org\n"
+         or see the jq manpage, or online docs at https://jqlang.org\n"
     )
 }
 
@@ -654,12 +654,15 @@ pub fn load_file(path: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
     Ok(data)
 }
 
+/// main.c's error for a `-f` file holding a NUL byte.
+pub const PROGRAM_NUL: &[u8] = b"program file contains NUL bytes";
+
 /// main.c's `-f` handling: read the program file (`jv_load_file(program,
-/// 1)`), which `jq_compile_args` then reads up to the first NUL byte.
+/// 1)`), which must not hold a NUL byte.
 pub fn load_program(path: &[u8]) -> Result<Vec<u8>, ArgError> {
-    let mut text = load_file(path).map_err(ArgError::ProgramFile)?;
-    if let Some(nul) = text.iter().position(|&b| b == 0) {
-        text.truncate(nul);
+    let text = load_file(path).map_err(ArgError::ProgramFile)?;
+    if text.contains(&0) {
+        return Err(ArgError::ProgramFile(PROGRAM_NUL.to_vec()));
     }
     Ok(text)
 }

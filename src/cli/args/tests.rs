@@ -74,7 +74,7 @@ fn json(s: &str) -> ArgValue<String> {
 }
 
 const HINT: &str = "Use jq --help for help with command-line options,\n\
-                    or see the jq manpage, or online docs  at https://jqlang.org\n";
+                    or see the jq manpage, or online docs at https://jqlang.org\n";
 
 // ---------------------------------------------------------------------------
 // Which arguments are options
@@ -754,11 +754,17 @@ fn from_file_is_a_flag_for_the_first_argument() {
 }
 
 #[test]
-fn load_program_reads_up_to_nul() {
+fn load_program_refuses_nul() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("p.jq");
-    std::fs::write(&p, b".a\0garbage").unwrap();
+    std::fs::write(&p, b".a").unwrap();
     assert_eq!(load_program(p.to_str().unwrap().as_bytes()), Ok(b(".a")));
+    std::fs::write(&p, b".a\0garbage").unwrap();
+    let e = load_program(p.to_str().unwrap().as_bytes()).unwrap_err();
+    assert_eq!(
+        String::from_utf8(e.render("jq")).unwrap(),
+        "jq: program file contains NUL bytes\n"
+    );
     let d = dir.path().to_str().unwrap();
     let e = load_program(d.as_bytes()).unwrap_err();
     assert_eq!(
