@@ -1,4 +1,4 @@
-{"jq": "jq-1.8.1", "cases": [
+{"jq": "jq-1.8.2", "cases": [
 {"a": "1", "b": "1.0", "out": "[false,true,false,false,true]"},
 {"a": "1", "b": "1.00001", "out": "[true,false,false,true,false]"},
 {"a": "-0", "b": "0", "out": "[false,true,false,false,true]"},

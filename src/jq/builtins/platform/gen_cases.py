@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate cases.jsonl: expectations for the platform-backed C builtins.
 
-Every expectation comes from running the jq 1.8.1 binary:
+Every expectation comes from running the jq 1.8.2 binary:
 
     jq -nc --argjson in <input> --argjson a0 <arg0> ... \
         'try ($in | <builtin>($a0; ...) | {ok: tojson}) catch {err: .}'

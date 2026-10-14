@@ -23,19 +23,19 @@
 {"f":"_match_impl","input":true,"args":["a",null,false],"err":"boolean (true) cannot be matched, as it is not a string"}
 {"f":"_match_impl","input":false,"args":["a",null,false],"err":"boolean (false) cannot be matched, as it is not a string"}
 {"f":"_match_impl","input":[1,2],"args":["a",null,false],"err":"array ([1,2]) cannot be matched, as it is not a string"}
-{"f":"_match_impl","input":{"a":"verylongstringhere"},"args":["a",null,false],"err":"object ({\"a\":\"veryl...) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":{"a":"verylongstringhere"},"args":["a",null,false],"err":"object ({\"a\":\"verylongstringhere\"}) cannot be matched, as it is not a string"}
 {"f":"_match_impl","input":1E+2,"args":["a",null,false],"err":"number (1E+2) cannot be matched, as it is not a string"}
 {"f":"_match_impl","input":nan,"args":["a",null,false],"err":"number (null) cannot be matched, as it is not a string"}
 {"f":"_match_impl","input":1.000,"args":["a",null,false],"err":"number (1.000) cannot be matched, as it is not a string"}
-{"f":"_match_impl","input":["ééééééééé"],"args":["a",null,false],"err":"array ([\"éééé...) cannot be matched, as it is not a string"}
-{"f":"_match_impl","input":[1,2,3,4,5,6,7,8,9],"args":["a",null,false],"err":"array ([1,2,3,4,5,...) cannot be matched, as it is not a string"}
-{"f":"_match_impl","input":{"é":"😀😀😀😀"},"args":["a",null,false],"err":"object ({\"é\":\"😀...) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":["ééééééééé"],"args":["a",null,false],"err":"array ([\"ééééééééé\"]) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":[1,2,3,4,5,6,7,8,9],"args":["a",null,false],"err":"array ([1,2,3,4,5,6,7,8,9]) cannot be matched, as it is not a string"}
+{"f":"_match_impl","input":{"é":"😀😀😀😀"},"args":["a",null,false],"err":"object ({\"é\":\"😀😀😀😀\"}) cannot be matched, as it is not a string"}
 {"f":"_match_impl","input":"a","args":[1,null,false],"err":"number (1) is not a string"}
 {"f":"_match_impl","input":"a","args":[null,null,false],"err":"null (null) is not a string"}
 {"f":"_match_impl","input":"a","args":[["x"],null,false],"err":"array ([\"x\"]) is not a string"}
 {"f":"_match_impl","input":"a","args":[{"a":1},null,false],"err":"object ({\"a\":1}) is not a string"}
 {"f":"_match_impl","input":"a","args":[true,null,false],"err":"boolean (true) is not a string"}
-{"f":"_match_impl","input":"a","args":[{"a":"verylongstringhere"},null,false],"err":"object ({\"a\":\"veryl...) is not a string"}
+{"f":"_match_impl","input":"a","args":[{"a":"verylongstringhere"},null,false],"err":"object ({\"a\":\"verylongstringhere\"}) is not a string"}
 {"f":"_match_impl","input":"a","args":["a",1,false],"err":"number (1) is not a string"}
 {"f":"_match_impl","input":"a","args":["a",1,true],"err":"number (1) is not a string"}
 {"f":"_match_impl","input":"a","args":["a",true,false],"err":"boolean (true) is not a string"}
@@ -48,8 +48,8 @@
 {"f":"_match_impl","input":"a","args":["a",{},true],"err":"object ({}) is not a string"}
 {"f":"_match_impl","input":"a","args":["a",["g"],false],"err":"array ([\"g\"]) is not a string"}
 {"f":"_match_impl","input":"a","args":["a",["g"],true],"err":"array ([\"g\"]) is not a string"}
-{"f":"_match_impl","input":"a","args":["a",[1,2,3,4,5,6,7,8,9],false],"err":"array ([1,2,3,4,5,...) is not a string"}
-{"f":"_match_impl","input":"a","args":["a",[1,2,3,4,5,6,7,8,9],true],"err":"array ([1,2,3,4,5,...) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",[1,2,3,4,5,6,7,8,9],false],"err":"array ([1,2,3,4,5,6,7,8,9]) is not a string"}
+{"f":"_match_impl","input":"a","args":["a",[1,2,3,4,5,6,7,8,9],true],"err":"array ([1,2,3,4,5,6,7,8,9]) is not a string"}
 {"f":"_match_impl","input":1,"args":[2,3,false],"err":"number (1) cannot be matched, as it is not a string"}
 {"f":"_match_impl","input":"a","args":[2,3,false],"err":"number (2) is not a string"}
 {"f":"_match_impl","input":1,"args":["a",3,false],"err":"number (1) cannot be matched, as it is not a string"}
@@ -254,10 +254,10 @@
 {"f":"strflocaltime","input":["a",1,2,3,4,5,6,7],"args":[null],"err":"strflocaltime/1 requires a string format"}
 {"f":"strflocaltime","input":["a",1,2,3,4,5,6,7],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
 {"f":"strflocaltime","input":[2015,2,5,23,51,nan],"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"strflocaltime/1 requires parsed datetime inputs"}
-{"f":"strflocaltime","input":1e30,"args":[1],"err":"strflocaltime/1 requires a string format"}
-{"f":"strflocaltime","input":1e30,"args":[{}],"err":"strflocaltime/1 requires a string format"}
-{"f":"strflocaltime","input":1e30,"args":["%Y-%m-%dT%H:%M:%SZ"],"abort":"Assertion failed: (JVP_HAS_KIND(j, JV_KIND_ARRAY)), function jv_array_get, file jv.c, line 1006."}
-{"f":"strflocaltime","input":-1e1000,"args":["%c"],"abort":"Assertion failed: (JVP_HAS_KIND(j, JV_KIND_ARRAY)), function jv_array_get, file jv.c, line 1006."}
+{"f":"strflocaltime","input":1e30,"args":[1],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"strflocaltime","input":1e30,"args":[{}],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"strflocaltime","input":1e30,"args":["%Y-%m-%dT%H:%M:%SZ"],"err":"error converting number of seconds since epoch to datetime"}
+{"f":"strflocaltime","input":-1e1000,"args":["%c"],"err":"error converting number of seconds since epoch to datetime"}
 {"f":"strflocaltime","input":nan,"args":["%Y-%m-%dT%H:%M:%SZ"],"only":"aarch64","err":"strflocaltime/1 requires parsed datetime inputs"}
 {"f":"strptime","input":"2015-03-05T23:51:47Z","args":["%Y-%m-%dT%H:%M:%SZ"],"ok":"[2015,2,5,23,51,47,4,63]"}
 {"f":"strptime","input":"2025-06-07T08:09:10","args":["%FT%T"],"ok":"[2025,5,7,8,9,10,6,157]"}
@@ -294,8 +294,8 @@
 {"f":"strptime","input":"1900-01-01","args":["%Y-%m-%d"],"only":"macos","ok":"[1900,0,1,0,0,0,0,0]"}
 {"f":"strptime","input":" 2015","args":["%Y"],"only":"macos","ok":"[1900,0,0,0,0,0,6,-1,\" 2015\"]"}
 {"f":"strptime","input":"2015 100","args":["%Y %j"],"only":"macos","ok":"[2015,3,10,0,0,0,5,99]"}
-{"f":"strptime","input":"100","args":["%j"],"only":"macos","abort":"Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1549."}
-{"f":"strptime","input":"2015 3 5 100","args":["%Y %m %d %j"],"only":"macos","abort":"Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1549."}
+{"f":"strptime","input":"100","args":["%j"],"only":"macos","abort":"Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1621."}
+{"f":"strptime","input":"2015 3 5 100","args":["%Y %m %d %j"],"only":"macos","abort":"Assertion failed: (yday == tm->tm_yday || tm->tm_yday == 367), function set_tm_yday, file builtin.c, line 1621."}
 {"f":"strptime","input":"1425599507","args":["%s"],"tz":"UTC","only":"macos","ok":"[2015,2,5,23,51,47,4,63]"}
 {"f":"strptime","input":"1425599507","args":["%s"],"tz":"America/New_York","only":"macos","ok":"[2015,2,5,18,51,47,4,63]"}
 {"f":"strptime","input":"2015-03-05 +0900","args":["%Y-%m-%d %z"],"tz":"America/New_York","only":"macos","ok":"[2015,2,4,10,0,0,3,62]"}
@@ -317,10 +317,10 @@
 {"f":"frexp","input":null,"args":[],"err":"null (null) number required"}
 {"f":"floor","input":true,"args":[],"err":"boolean (true) number required"}
 {"f":"frexp","input":true,"args":[],"err":"boolean (true) number required"}
-{"f":"floor","input":[1,2,3,4,5,6,7,8,9],"args":[],"err":"array ([1,2,3,4,5,...) number required"}
-{"f":"frexp","input":[1,2,3,4,5,6,7,8,9],"args":[],"err":"array ([1,2,3,4,5,...) number required"}
-{"f":"floor","input":{"a":"verylongstringhere"},"args":[],"err":"object ({\"a\":\"veryl...) number required"}
-{"f":"frexp","input":{"a":"verylongstringhere"},"args":[],"err":"object ({\"a\":\"veryl...) number required"}
+{"f":"floor","input":[1,2,3,4,5,6,7,8,9],"args":[],"err":"array ([1,2,3,4,5,6,7,8,9]) number required"}
+{"f":"frexp","input":[1,2,3,4,5,6,7,8,9],"args":[],"err":"array ([1,2,3,4,5,6,7,8,9]) number required"}
+{"f":"floor","input":{"a":"verylongstringhere"},"args":[],"err":"object ({\"a\":\"verylongstringhere\"}) number required"}
+{"f":"frexp","input":{"a":"verylongstringhere"},"args":[],"err":"object ({\"a\":\"verylongstringhere\"}) number required"}
 {"f":"floor","input":"1","args":[],"err":"string (\"1\") number required"}
 {"f":"frexp","input":"1","args":[],"err":"string (\"1\") number required"}
 {"f":"pow","input":null,"args":[2,10],"ok":"1024"}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate Track B1's builtin fixtures from the jq 1.8.1 binary.
+"""Regenerate Track B1's builtin fixtures from the jq 1.8.2 binary.
 
     python3 src/jq/builtins/testdata/b1_gen.py            # uses `jq` on PATH
     JQ=/path/to/jq python3 src/jq/builtins/testdata/b1_gen.py
@@ -485,8 +485,8 @@ def gen_random():
     """Seeded random operands for the builtins whose logic lives mostly in the value
     layer (paths, containment, ordering), where hand-picked cases run out.
 
-    `delpaths` gets no NaN keys: jq 1.8.1 loops forever on them (`[1] | delpaths([[nan]])`
-    hangs), and the port deliberately doesn't."""
+    `delpaths` gets no NaN keys (jq 1.8.1 looped forever on them, `[1] | delpaths([[nan]])`;
+    the jq_diff corpus covers them now)."""
     rng = random_module.Random(20260929)
     c = Cases()
     for i in range(180):
