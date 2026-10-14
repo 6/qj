@@ -19,10 +19,9 @@
 //!
 //! # jq's crashes
 //!
-//! jq 1.8.1 fails a C `assert()` in two places reachable from here:
-//! `1e30 | strflocaltime("%c")` (`localtime` fails and `jv2tm` calls `jv_array_get` on
-//! the error) and, on macOS, `"100" | strptime("%j")` (Apple's `strptime` sets a day of
-//! the year that disagrees with jq's own). jq prints the assertion to stderr and dies of
+//! jq 1.8.2 fails a C `assert()` in one place reachable from here: on macOS,
+//! `"100" | strptime("%j")` (Apple's `strptime` sets a day of the year that
+//! disagrees with jq's own). jq prints the assertion to stderr and dies of
 //! `SIGABRT` (exit status 134 in a shell); `try` can't catch it. The primitives report
 //! these as [`platform::Error::Abort`], and the builtins reproduce the crash with
 //! [`platform::Error::abort_process`], which writes the same line to stderr and calls
@@ -30,7 +29,7 @@
 //!
 //! What happens to results jq printed before the crash but hadn't flushed yet depends on
 //! the C library: Apple's `abort()` flushes stdio, so they still reach stdout
-//! (`jq -n '1, (1e30 | strflocaltime("%c"))' > f` leaves `1` in `f`), while glibc's
+//! (`jq -n '1, ("100" | strptime("%j"))' > f` leaves `1` in `f`), while glibc's
 //! doesn't (since 2.27), so they're lost. `abort()` never flushes Rust-side buffers, so
 //! matching that is up to whatever buffers qj's stdout (the CLI).
 
@@ -304,9 +303,7 @@ pub fn f_strftime(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CRe
 
 /// `strflocaltime` (nargs 2): port of builtin.c `f_strflocaltime`.
 ///
-/// Like [`f_strftime`] in the local time zone (see [`time::strflocaltime`]). A number
-/// whose `localtime` conversion fails aborts the process when the format is a string,
-/// as jq 1.8.1 does (see the module docs).
+/// Like [`f_strftime`] in the local time zone (see [`time::strflocaltime`]).
 pub fn f_strflocaltime(_host: &mut dyn Host, input: Value, args: &mut [Value]) -> CResult {
     let [format] = args else {
         unreachable!("strflocaltime takes 1 argument, got {}", args.len());

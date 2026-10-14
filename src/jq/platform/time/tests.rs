@@ -606,17 +606,20 @@ fn strflocaltime_errors() {
         strflocaltime(TimeInput::Array(&[None]), Some("%c")),
         Err(parsed.clone())
     );
-    // localtime's failure isn't checked: without a string format jq reports the format...
-    assert_eq!(strflocaltime(TimeInput::Number(1e30), None), Err(fmt_err));
-    // ...and with one it crashes (jv_array_get's assert).
-    assert!(matches!(
+    // localtime's failure comes first, whatever the format.
+    let convert = msg("error converting number of seconds since epoch to datetime");
+    assert_eq!(
+        strflocaltime(TimeInput::Number(1e30), None),
+        Err(convert.clone())
+    );
+    assert_eq!(
         strflocaltime(TimeInput::Number(1e30), Some("%c")),
-        Err(Error::Abort(m)) if m.contains("JVP_HAS_KIND(j, JV_KIND_ARRAY)")
-    ));
-    assert!(matches!(
+        Err(convert.clone())
+    );
+    assert_eq!(
         strflocaltime(TimeInput::Number(f64::INFINITY), Some("%c")),
-        Err(Error::Abort(_))
-    ));
+        Err(convert)
+    );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(
         strflocaltime(TimeInput::Number(f64::NAN), Some("%c")),
@@ -627,19 +630,6 @@ fn strflocaltime_errors() {
         Err(msg("strflocaltime/1: unknown system failure"))
     );
     assert_eq!(strflocaltime_c(TimeInput::Number(0.0), "").unwrap(), "");
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn strflocaltime_abort_text_macos() {
-    let _s = serial();
-    assert_eq!(
-        strflocaltime(TimeInput::Number(1e30), Some("%c")),
-        Err(Error::Abort(
-            "Assertion failed: (JVP_HAS_KIND(j, JV_KIND_ARRAY)), function jv_array_get, file jv.c, line 1006."
-                .into()
-        ))
-    );
 }
 
 #[test]
