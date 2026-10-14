@@ -288,7 +288,7 @@ fn stack_bytes() -> Option<u64> {
 ///
 /// The ones over values stop at 10,000 levels in jq 1.8.2 (`MAX_EQUAL_DEPTH`
 /// and the rest), so they can overflow only on a stack too small for that
-/// many: 1.6 MB or less. `jv_free`, which 1.8.1 also recursed through, frees
+/// many: 1.8 MB or less. `jv_free`, which 1.8.1 also recursed through, frees
 /// iteratively in 1.8.2.
 ///
 /// Every one of them is a loop with an explicit stack in qj, or a recursion
