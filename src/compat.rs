@@ -1,9 +1,9 @@
-//! `QJ_JQ_COMPAT=1`: be exactly jq 1.8.1, bugs included.
+//! `QJ_JQ_COMPAT=1`: be exactly jq 1.8.2, bugs included.
 //!
-//! qj is a faithful port of jq 1.8.1, but it deliberately differs in a few
+//! qj is a faithful port of jq 1.8.2, but it deliberately differs in a few
 //! places where jq crashes, hangs, or has nothing at all:
 //!
-//! * where jq 1.8.1 dies or never finishes, qj returns a sane result
+//! * where jq 1.8.2 dies or never finishes, qj returns a sane result
 //!   (`docs/COMPATIBILITY.md`, "Exemptions");
 //! * qj adds glob expansion of file arguments, transparent `.gz`/`.zst`
 //!   decompression, and the `--threads`, `--jsonl` and `--debug-timing`
@@ -16,15 +16,16 @@
 //!
 //! Compat mode is jq's identity too: messages start with `jq:` ([`prog_name`]),
 //! and `-h`, the usage after errors, `--version` and `--build-configuration`
-//! print jq 1.8.1's text (`src/cli/usage.rs`). By default they are qj's own,
+//! print jq 1.8.2's text (`src/cli/usage.rs`). By default they are qj's own,
 //! which `docs/JQ_PORT_PLAN.md` exempts from comparison.
 //!
 //! # Stack overflow
 //!
-//! jq frees, compares, merges and walks paths through values by recursing in
-//! C, so a value or path deep enough overflows its stack and the process dies
-//! of `SIGSEGV`; so does a program, a chain of modules or a regex nested deep
-//! enough, and on a small enough stack jq can't even start. qj's value layer
+//! jq compares, merges and walks paths through values by recursing in C, up
+//! to 10,000 levels, so on a small enough stack a value or path deep enough
+//! overflows it and the process dies of `SIGSEGV`; so does a program, a chain
+//! of modules or a regex nested deep enough, and on a smaller one still jq
+//! can't even start. qj's value layer
 //! does all of it iteratively, and everything else runs on a thread with a
 //! large stack of its own (`src/main.rs`), so in compat mode qj measures the
 //! depth jq's recursion would have reached and raises the same signal at the
@@ -71,7 +72,7 @@ fn is_on(value: Option<&std::ffi::OsStr>) -> bool {
 /// The name at the start of qj's messages (`qj: error: ...`): qj's own, or
 /// with `QJ_JQ_COMPAT=1` jq's.
 ///
-/// jq 1.8.1 never prints its `argv[0]`: every message in `main.c`, `util.c`
+/// jq 1.8.2 never prints its `argv[0]`: every message in `main.c`, `util.c`
 /// and the library spells out `jq` (`argv[0]` only gives `$ORIGIN`), so
 /// neither does compat mode. The one line that does carry `argv[0]` comes
 /// from glibc, not jq: `assert()`'s (see `src/jq/platform/mod.rs`).
@@ -141,32 +142,6 @@ pub fn small_core_dump() {
 /// buffered on stdout lost.
 pub fn die_of_stack_overflow() -> ! {
     die_by_signal(libc::SIGSEGV)
-}
-
-/// How much [`spin_forever`] allocates before it stops growing. Well above
-/// any memory limit a caller is likely to impose (the differential harness
-/// caps each process at 2 GB), and low enough not to drive the machine into
-/// swap when nothing stops the process.
-const SPIN_GROWTH_CAP: usize = 4 << 30;
-
-/// Loops forever, holding on to `keep`, as jq does when it cannot make
-/// progress.
-///
-/// jq's loops of this kind are not idle spins: `delpaths_sorted` appends the
-/// key it failed to skip to an array on every turn, so jq's memory grows
-/// without bound (about 1.2 GB/s on an M4) until something kills it.
-/// Reproduce that, so that a memory limit ends both tools the same way —
-/// but stop growing at [`SPIN_GROWTH_CAP`] and spin from there, which is the
-/// one place this is deliberately gentler than jq.
-pub fn spin_forever<T: Clone>(keep: &T) -> ! {
-    let cap = SPIN_GROWTH_CAP / size_of::<T>().max(1);
-    let mut grow: Vec<T> = Vec::new();
-    while grow.len() < cap {
-        grow.push(keep.clone());
-    }
-    loop {
-        std::hint::spin_loop();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,8 +283,13 @@ fn stack_bytes() -> Option<u64> {
     *BYTES.get_or_init(|| Some(effective_limit(rlimit_stack()?).saturating_sub(own_area())))
 }
 
-/// A recursion in jq 1.8.1 that a deep enough value, path, program or regex
+/// A recursion in jq 1.8.2 that a deep enough value, path, program or regex
 /// can drive past its C stack, killing the process with `SIGSEGV`.
+///
+/// The ones over values stop at 10,000 levels in jq 1.8.2 (`MAX_EQUAL_DEPTH`
+/// and the rest), so they can overflow only on a stack too small for that
+/// many: 1.6 MB or less. `jv_free`, which 1.8.1 also recursed through, frees
+/// iteratively in 1.8.2.
 ///
 /// Every one of them is a loop with an explicit stack in qj, or a recursion
 /// of qj's own on its own large stack, so in compat mode qj measures the
@@ -319,11 +299,11 @@ fn stack_bytes() -> Option<u64> {
 /// lists them, and the recursions that cannot overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Site {
-    /// `jv_free` → `jvp_array_free`/`jvp_object_free`: value nesting.
-    Free,
-    /// `jv_equal` → `jvp_array_equal`/`jvp_object_equal`, and `jv_cmp`:
-    /// the nesting the comparison reaches before the first difference.
-    /// One model for both, at the smaller (`jv_cmp`'s) depth.
+    /// `jv_equal` → `jvp_array_equal`/`jvp_object_equal`: the nesting the
+    /// comparison reaches before the first difference.
+    Equal,
+    /// `jv_cmp`: the same, plus a level for an object's sorted key array.
+    /// A frame of its own: gcc gives `jvp_equal` 16 bytes more on Linux.
     Compare,
     /// `jv_contains` → `jvp_array_contains`/`jvp_object_contains`.
     Contains,
@@ -364,12 +344,8 @@ pub enum Site {
     ExpandArgs,
     /// `jv_dump_term` (`jv_print.c`) from `main.c`'s output path: one frame
     /// per level of the value being printed, at most `MAX_PRINT_DEPTH + 2`
-    /// (258) of them — the level past `MAX_PRINT_DEPTH` writes `<skipped: too
-    /// deep>` instead of descending.
-    ///
-    /// The cap means this can only overflow on a stack of about 80 KB or less;
-    /// it is the one recursion here whose depth is bounded by jq's own code
-    /// rather than by the value.
+    /// (10,002) of them — the level past `MAX_PRINT_DEPTH` writes `<skipped:
+    /// too deep>` instead of descending.
     Print,
     /// `jv_dump_term` while the program runs: `tojson`, `tostring`, `@json`,
     /// `@text`, string interpolation, `debug`, `stderr`, error messages. The
@@ -408,10 +384,10 @@ impl Site {
         // macOS/arm64 (jq's release binary, built by Apple clang).
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         let m = match self {
-            Site::Free => (64, VALUE_BASE_BYTES),
+            Site::Equal => (128, VALUE_BASE_BYTES),
             Site::Compare => (128, VALUE_BASE_BYTES),
             Site::Contains => (176, VALUE_BASE_BYTES),
-            Site::Merge => (112, VALUE_BASE_BYTES),
+            Site::Merge => (128, VALUE_BASE_BYTES),
             Site::Setpath => (144, VALUE_BASE_BYTES),
             Site::Delpaths => (240, VALUE_BASE_BYTES),
             Site::Modules => (416, 11_136),
@@ -420,23 +396,23 @@ impl Site {
             Site::ExpandArgs => (192, 3_440),
             Site::Print => (256, 2_976),
             Site::Dump => (256, 4_064),
-            Site::RegexParse => (784, 4_848),
-            Site::RegexTree => (624, 4_400),
+            Site::RegexParse => (784, 4_864),
+            Site::RegexTree => (624, 4_416),
         };
         // Linux/x86-64 (jq's release binary, built by gcc, glibc linked
         // statically), measured with the kernel's stack randomization off.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let m = match self {
-            Site::Free => (48, VALUE_BASE_BYTES),
+            Site::Equal => (160, VALUE_BASE_BYTES),
             Site::Compare => (144, VALUE_BASE_BYTES),
             Site::Contains => (176, VALUE_BASE_BYTES),
-            Site::Merge => (128, VALUE_BASE_BYTES),
+            Site::Merge => (144, VALUE_BASE_BYTES),
             Site::Setpath => (160, VALUE_BASE_BYTES),
             Site::Delpaths => (240, VALUE_BASE_BYTES),
-            Site::Modules => (464, 7_776),
+            Site::Modules => (464, 7_792),
             Site::Bind => (112, 7_328),
-            Site::Compile => (224, 1_696),
-            Site::ExpandArgs => (224, 1_696),
+            Site::Compile => (224, 1_712),
+            Site::ExpandArgs => (224, 1_712),
             Site::Print => (304, 1_424),
             Site::Dump => (304, 2_176),
             Site::RegexParse => (784, 3_600),
@@ -450,17 +426,14 @@ impl Site {
     /// inside the module chain — parsing and binding each module.
     const fn drives(self) -> &'static [Site] {
         match self {
-            // `delpaths_sorted` compares path elements and frees what it
-            // deletes; `jv_setpath` and `jv_object_merge_recursive` free the
-            // value they replace.
-            Site::Delpaths => &[Site::Compare, Site::Free],
-            Site::Setpath | Site::Merge => &[Site::Free],
+            // `delpaths_sorted` compares path elements a level at a time, and
+            // `jv_dels` sorts the keys it deletes.
+            Site::Delpaths => &[Site::Equal, Site::Compare],
             // `load_library` reads and parses a module at every level, which
-            // binds its definitions and frees its text.
-            Site::Modules => &[Site::Bind, Site::Free],
-            // `compile` calls `expand_call_arglist` at every level, and frees
-            // the block when it is done with it.
-            Site::Compile => &[Site::ExpandArgs, Site::Free],
+            // binds its definitions.
+            Site::Modules => &[Site::Bind],
+            // `compile` calls `expand_call_arglist` at every level.
+            Site::Compile => &[Site::ExpandArgs],
             _ => &[],
         }
     }
@@ -489,7 +462,7 @@ impl Site {
     }
 
     /// The bytes of stack one level of this recursion costs jq, from the
-    /// disassembly of jq 1.8.1's release binary for this platform (see
+    /// disassembly of jq 1.8.2's release binary for this platform (see
     /// `docs/COMPATIBILITY.md`). Public so that a test can work out where a
     /// recursion this one drives runs out.
     pub fn frame_bytes(self) -> u64 {
@@ -554,28 +527,16 @@ const RANDOMIZATION_BYTES: u64 = 0;
 
 /// The base the six recursions over values share: the largest any of them
 /// was measured with, at any depth, so that one run inside another is
-/// charged the same base once. On macOS that is `jv_object_merge_recursive`'s
-/// 3,896 bytes, where the allocator took a slow path at the deepest level (it
-/// is 3,304 at most depths); on Linux `jv_cmp`'s from `sort`, 3,148 (glibc's
-/// allocator never moved a base). The cost is that a site measured with a
-/// smaller base loses up to 752 bytes on macOS (12 levels of `jv_free`) and
-/// 1,604 on Linux (33).
+/// charged the same base once. On macOS that is `jv_setpath`'s 3,880 bytes,
+/// where the allocator took a slow path at the deepest level (it is 3,384 at
+/// most depths); on Linux `jv_cmp`'s from `sort`, 3,212 (glibc's allocator
+/// never moved a base). The cost is that a site measured with a smaller base
+/// loses up to 736 bytes on macOS (5 levels of `jv_equal`) and 1,671 on Linux
+/// (10).
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 const VALUE_BASE_BYTES: u64 = 3_904;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const VALUE_BASE_BYTES: u64 = 3_152;
-
-/// How many nested `jv_free` calls jq 1.8.1 can make before its stack
-/// overflows: one per level of nesting of the value being freed, so this is
-/// the value's nesting depth plus one for the scalar at the bottom.
-///
-/// On macOS/arm64 it is 64 bytes a frame, on Linux/x86-64 48. Other targets
-/// use the macOS model, unmeasured.
-///
-/// `None` when the stack is unlimited, where jq doesn't overflow either.
-pub fn free_frame_budget() -> Option<u64> {
-    Site::Free.frame_budget()
-}
+const VALUE_BASE_BYTES: u64 = 3_216;
 
 // ---------------------------------------------------------------------------
 // jq's start
@@ -653,30 +614,32 @@ fn macos_release() -> Option<u32> {
 /// the syntax error it reports (9,460). Nothing in the small-stack corpus of
 /// dates, formats, sorting, regex matching, `--stream`, `-s` or modules goes
 /// deeper without a recursion that has a model of its own. Below the
-/// start-up's need on macOS, where it matters only inside `--run-tests`.
+/// start-up's need on macOS, where it matters only inside `--run-tests`, and
+/// is what a test file of programs that don't nest needs less what
+/// `--run-tests` holds above them (11,565 bytes).
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const COMPILE_BYTES: u64 = 11_904;
+const COMPILE_BYTES: u64 = 11_568;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const COMPILE_BYTES: u64 = 9_472;
 
 /// What `--run-tests` holds above everything it compiles and runs: its test
 /// loop's buffers (`jq_test.c`'s `prog`, `buf` and error buffer) and the
 /// frames to them. Measured as the stack a deep program needs in a test file
-/// less what it needs run as a program: 28,496 bytes on macOS and 12,648 on
-/// Linux for the compiler's recursions, 128 and 112 less for the rest.
+/// less what it needs run as a program: 32,799 bytes on macOS and 12,767 on
+/// Linux for the compiler's recursions.
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const RUN_TESTS_BYTES: u64 = 28_496;
+const RUN_TESTS_BYTES: u64 = 32_800;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const RUN_TESTS_BYTES: u64 = 12_656;
+const RUN_TESTS_BYTES: u64 = 12_776;
 
-/// What `--run-tests` needs for a file of tests that don't nest: up to 40,392
-/// bytes on macOS 27 and 40,360 on macOS 26 (it varies from one run to the
-/// next there, by up to 330 bytes) and 23,796 on Linux, the same whether they
+/// What `--run-tests` needs for a file of tests that don't nest: up to 44,364
+/// bytes on macOS 27 and 44,299 on macOS 26 (it varies from one run to the
+/// next there, by up to 190 bytes) and 23,867 on Linux, the same whether they
 /// pass or fail.
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-const RUN_TESTS_FLOOR_BYTES: u64 = 40_400;
+const RUN_TESTS_FLOOR_BYTES: u64 = 44_368;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const RUN_TESTS_FLOOR_BYTES: u64 = 23_808;
+const RUN_TESTS_FLOOR_BYTES: u64 = 23_880;
 
 /// Whether `bytes` of stack, at what the recursions around this point hold
 /// ([`OUTER`]), fit in jq's.
@@ -701,11 +664,6 @@ pub fn starting() {
     own_area();
     if !fits(start_bytes()) {
         die_of_stack_overflow();
-    }
-    // jq frees values natively below this depth; see `native_drop_limit`.
-    if let Some(budget) = Site::Free.frame_budget() {
-        let limit = u32::try_from(budget.saturating_sub(1)).unwrap_or(u32::MAX);
-        NATIVE_DROP_LIMIT.fetch_min(limit, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -751,20 +709,6 @@ pub fn compiling_regex(pattern: &[u8], extended: bool, ignorecase: bool) {
     }
 }
 
-/// The deepest `src/jq/value/array.rs` frees a value natively before it hands
-/// the rest to its iterative loop, which checks it against jq's stack
-/// ([`freeing_iteratively`]). 256 levels by default; in compat mode on a stack
-/// where jq's `jv_free` has fewer frames than that, one short of them, so
-/// that a value too deep for jq always reaches the check.
-static NATIVE_DROP_LIMIT: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(crate::jq::value::array::MAX_DROP_RECURSION);
-
-/// [`NATIVE_DROP_LIMIT`].
-#[inline]
-pub fn native_drop_limit() -> u32 {
-    NATIVE_DROP_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// The stack jq's start-up, its compiler and its test loop need, margin
 /// included — what [`starting`], [`compiling`] and [`running_tests`] compare
 /// with the stack beyond argv and the environment. Public so that a test can
@@ -783,44 +727,6 @@ pub struct FixedNeeds {
     pub start: u64,
     pub compile: u64,
     pub run_tests: u64,
-}
-
-/// The nesting depth of the deepest value in `items`, counted as jq counts
-/// `jv_free` frames: one for the value itself, plus the deepest child.
-///
-/// Walks iteratively, so it cannot overflow the stack itself. Only called in
-/// compat mode, and only for values already too deep for qj's own native
-/// recursion, so it never runs on ordinary data.
-fn free_frames(items: &[Value]) -> u64 {
-    // (value, frames already counted above it)
-    let mut work: Vec<(&Value, u64)> = items.iter().map(|v| (v, 1)).collect();
-    let mut deepest = 0;
-    while let Some((v, above)) = work.pop() {
-        deepest = deepest.max(above);
-        match v {
-            Value::Array(a) => work.extend(a.iter().map(|c| (c, above + 1))),
-            Value::Object(o) => work.extend(o.iter().map(|(_, c)| (c, above + 1))),
-            _ => {}
-        }
-    }
-    deepest
-}
-
-/// Hook for `src/jq/value/array.rs`: `items` are the contents of a container
-/// `native_frames` levels below the value being freed, about to be freed
-/// iteratively because they are too deeply nested for native recursion.
-///
-/// jq would have recursed all the way down, so in compat mode this checks
-/// whether the whole chain fits in jq's stack and dies of `SIGSEGV` if it
-/// doesn't, before any of the value is freed and with jq's buffered output
-/// lost.
-pub fn freeing_iteratively(items: &[Value], native_frames: u64) {
-    let Some(budget) = budget_of(Site::Free) else {
-        return;
-    };
-    if native_frames + free_frames(items) > budget {
-        die_of_stack_overflow();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -872,7 +778,7 @@ pub fn frames_available(site: Site) -> u64 {
 /// difference, so this dies only if the comparison jq would make reaches
 /// deeper than its stack allows.
 pub fn comparing_equal(a: &Value, b: &Value) {
-    if let Some(budget) = budget_of(Site::Compare)
+    if let Some(budget) = budget_of(Site::Equal)
         && depth::equal(a, b, budget) > budget
     {
         die_of_stack_overflow();
@@ -880,11 +786,6 @@ pub fn comparing_equal(a: &Value, b: &Value) {
 }
 
 /// Hook for `src/jq/value/deep.rs`: `jv_cmp(a, b)`.
-///
-/// `jv_cmp` shares [`Site::Compare`]'s model: it recurses with the same frame
-/// and, on the call sites measured, slightly deeper (an object compares its
-/// sorted key arrays before its values), which is the depth the model is
-/// calibrated to.
 pub fn comparing_order(a: &Value, b: &Value) {
     if let Some(budget) = budget_of(Site::Compare)
         && depth::compare(a, b, budget) > budget
@@ -1009,7 +910,7 @@ mod tests {
         }
     }
 
-    /// What the jq 1.8.1 binary needs at each site, beyond what argv and the
+    /// What the jq 1.8.2 binary needs at each site, beyond what argv and the
     /// environment take, over 16 random depths each (`docs/COMPATIBILITY.md`
     /// has the programs): `(site, bytes a level, the base at most depths, the
     /// largest base at any depth)`. A site with more than one call site
@@ -1017,35 +918,35 @@ mod tests {
     /// builtin that dumps) lists each.
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     const MEASURED: &[(Site, u64, u64, u64)] = &[
-        (Site::Free, 64, 3_160, 3_160),
-        (Site::Compare, 128, 3_128, 3_128),
-        (Site::Compare, 128, 3_448, 3_448),
-        (Site::Contains, 176, 3_336, 3_336),
-        (Site::Merge, 112, 3_304, 3_896),
-        (Site::Setpath, 144, 3_192, 3_640),
-        (Site::Delpaths, 240, 3_192, 3_704),
+        (Site::Equal, 128, 3_176, 3_184),
+        (Site::Compare, 128, 3_176, 3_184),
+        (Site::Compare, 128, 3_496, 3_504),
+        (Site::Contains, 176, 3_416, 3_424),
+        (Site::Merge, 128, 3_352, 3_360),
+        (Site::Setpath, 144, 3_240, 3_736),
+        (Site::Delpaths, 240, 3_240, 3_721),
         (Site::Modules, 416, 11_128, 11_128),
         (Site::Bind, 112, 8_696, 8_696),
-        (Site::Compile, 176, 3_176, 3_432),
+        (Site::Compile, 176, 3_240, 3_432),
         (Site::Print, 256, 2_920, 2_967),
         (Site::Dump, 256, 3_288, 3_336),
         (Site::Dump, 256, 4_008, 4_056),
         (Site::Dump, 256, 3_704, 3_704),
-        (Site::RegexParse, 784, 4_840, 4_840),
-        (Site::RegexTree, 624, 4_392, 4_392),
+        (Site::RegexParse, 784, 4_856, 4_856),
+        (Site::RegexTree, 624, 4_408, 4_408),
     ];
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     const MEASURED: &[(Site, u64, u64, u64)] = &[
-        (Site::Free, 48, 1_548, 1_548),
-        (Site::Compare, 144, 1_548, 1_548),
-        (Site::Compare, 144, 3_148, 3_148),
-        (Site::Contains, 176, 1_676, 1_676),
-        (Site::Merge, 128, 2_028, 2_028),
+        (Site::Equal, 160, 1_596, 1_596),
+        (Site::Compare, 144, 1_564, 1_564),
+        (Site::Compare, 144, 3_212, 3_212),
+        (Site::Contains, 176, 1_740, 1_740),
+        (Site::Merge, 144, 1_996, 1_996),
         (Site::Setpath, 160, 1_692, 1_692),
         (Site::Delpaths, 240, 1_708, 1_708),
-        (Site::Modules, 464, 7_772, 7_772),
+        (Site::Modules, 464, 7_788, 7_788),
         (Site::Bind, 112, 7_324, 7_324),
-        (Site::Compile, 224, 1_692, 1_692),
+        (Site::Compile, 224, 1_708, 1_708),
         (Site::Print, 304, 1_404, 1_412),
         (Site::Dump, 304, 1_644, 1_836),
         (Site::Dump, 304, 2_172, 2_172),
@@ -1060,7 +961,7 @@ mod tests {
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     const SHARED_BASE_COST: u64 = 800;
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    const SHARED_BASE_COST: u64 = 1_620;
+    const SHARED_BASE_COST: u64 = 1_660;
 
     /// Every model against the measurements: never below what jq needs at any
     /// depth measured (so qj never survives where jq dies), and above it by no
@@ -1093,9 +994,9 @@ mod tests {
     #[test]
     fn start_compile_and_run_tests_cover_jq() {
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let (compile, run_tests_trivial, run_tests_offset) = (11_896, 40_392, 28_496);
+        let (compile, run_tests_trivial, run_tests_offset) = (11_565, 44_364, 32_799);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let (compile, run_tests_trivial, run_tests_offset) = (9_460, 23_796, 12_648);
+        let (compile, run_tests_trivial, run_tests_offset) = (9_460, 23_867, 12_767);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let starts = [(None, 5_172)];
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -1129,16 +1030,13 @@ mod tests {
     }
 
     /// Every site whose recursion jq drives from inside another one, and where
-    /// it does: `delpaths_sorted` compares path elements and frees the values it
-    /// deletes, `jv_setpath` and `jv_object_merge_recursive` free the value they
-    /// replace, `load_library` parses and binds a module at every level, and
-    /// `compile` expands a call list and frees a block at every level.
+    /// it does: `delpaths_sorted` compares path elements and sorts the keys it
+    /// deletes, `load_library` parses and binds a module at every level, and
+    /// `compile` expands a call list at every level.
     const DRIVEN: &[(Site, &[Site])] = &[
-        (Site::Delpaths, &[Site::Compare, Site::Free]),
-        (Site::Setpath, &[Site::Free]),
-        (Site::Merge, &[Site::Free]),
-        (Site::Modules, &[Site::Bind, Site::Free]),
-        (Site::Compile, &[Site::ExpandArgs, Site::Free]),
+        (Site::Delpaths, &[Site::Equal, Site::Compare]),
+        (Site::Modules, &[Site::Bind]),
+        (Site::Compile, &[Site::ExpandArgs]),
     ];
 
     /// At the deepest level a driving site allows, whatever it drives has to be
@@ -1185,7 +1083,7 @@ mod tests {
     #[test]
     fn every_site_has_a_budget() {
         let sites = [
-            Site::Free,
+            Site::Equal,
             Site::Compare,
             Site::Contains,
             Site::Merge,
@@ -1200,39 +1098,18 @@ mod tests {
                 for site in sites {
                     let budget = site.frame_budget().expect("a limited stack");
                     assert!(budget > 1000, "{site:?}: implausible budget {budget}");
-                    // jv_free's frame is the smallest, so it goes deepest.
-                    assert!(budget <= Site::Free.frame_budget().expect("limited"));
+                    // jv_cmp's frame is the smallest, so it goes deepest.
+                    assert!(budget <= Site::Compare.frame_budget().expect("limited"));
                 }
             }
         }
-    }
-
-    /// The frame count is jq's `jv_free` recursion depth, and the walk is
-    /// iterative so it survives values deeper than the stack.
-    #[test]
-    fn free_frames_counts_nesting() {
-        use crate::jq::value::parse_sized;
-        let d = |text: &str| {
-            let v = parse_sized(text.as_bytes()).expect("valid JSON");
-            free_frames(std::slice::from_ref(&v))
-        };
-        assert_eq!(d("1"), 1);
-        assert_eq!(d("[]"), 1);
-        assert_eq!(d("[1]"), 2);
-        assert_eq!(d("[[1]]"), 3);
-        assert_eq!(d(r#"{"a":[1]}"#), 3);
-        // The deepest branch wins, whichever side it is on.
-        assert_eq!(d("[[[1]],2]"), 4);
-        assert_eq!(d("[2,[[1]]]"), 4);
-        let deep = format!("{}1{}", "[".repeat(5000), "]".repeat(5000));
-        assert_eq!(d(&deep), 5001);
     }
 
     #[test]
     fn a_limited_stack_gives_a_frame_budget() {
         // The test binary's stack is the shell's, which is never unlimited
         // on macOS; on Linux CI it could be, so accept either answer.
-        match free_frame_budget() {
+        match Site::Compare.frame_budget() {
             Some(d) => assert!(d > 1000, "implausible depth limit {d}"),
             None => assert!(rlimit_stack().is_none()),
         }
