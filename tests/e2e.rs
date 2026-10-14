@@ -1975,6 +1975,60 @@ fn assert_jq_compat_strict(args: &[&str], input: &str) {
 }
 
 #[test]
+fn jq_compat_index_errors_dump_the_key() {
+    // jq 1.8.2: `Cannot index <kind> with <kind> (<key>)`, the key cut to 29 bytes.
+    for (filter, input) in [
+        (".x", "[1,2,3]"),
+        (".[0]", r#"{"a":1}"#),
+        (".a.b", r#"{"a":"a string longer than thirty bytes"}"#),
+        (".[\"a string longer than thirty bytes\"]", "[1]"),
+        (".[]", "12345678901234567890123456789012345"),
+        (".[] | .x", r#"[1, "€€€€€€€€€€€€€€€€€"]"#),
+        ("{(.): 1}", "[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]"),
+    ] {
+        assert_jq_compat_strict(&["-c", filter], input);
+    }
+}
+
+#[test]
+fn jq_compat_comparisons_stop_past_depth_10000() {
+    let deep = "def D($n): reduce range($n) as $_ (1; [.]); ";
+    for (n, program) in [
+        (10000, "D($n) == D($n)"),
+        (10001, "D($n) == D($n)"),
+        (10001, "D($n) < D($n)"),
+        (10001, "[D($n), D($n)] | sort | length"),
+        (10001, "D($n) | contains(D($n))"),
+        (10001, "[D($n)] - [D($n)]"),
+        (10001, "D($n) | IN(D($n))"),
+        (10001, "null | setpath([range($n) | 0]; 1)"),
+        (10001, "D($n) | tojson | length"),
+    ] {
+        let program = format!("{deep}{n} as $n | {program}");
+        assert_jq_compat_strict(&["-nc", &program], "");
+    }
+}
+
+#[test]
+fn jq_compat_jq182_builtin_changes() {
+    for (filter, input) in [
+        (".[] | try tonumber catch .", r#"["1\u00002", "12"]"#),
+        (".[] | try toboolean catch .", r#"["true\u0000", "false"]"#),
+        (
+            ".[] | try @urid catch .",
+            r#"["%00", "é", "%C3%A9", "%C3", "%4", "%zz"]"#,
+        ),
+        (".[] | try _strindices(\"a\") catch .", r#"[1, "aba"]"#),
+        ("try from_entries catch .", "[]"),
+        (".[] | rtrimstr(\"\")", r#"["abc", ""]"#),
+        ("9223372036854775808 % 3, 5 % 9223372036854775808", "null"),
+        ("try (\"x\" * 2147483639) catch .", "null"),
+    ] {
+        assert_jq_compat_strict(&["-c", filter], input);
+    }
+}
+
+#[test]
 fn jq_compat_number_formatting() {
     assert_jq_compat(".x", r#"{"x":75.80}"#);
     assert_jq_compat(".x", r#"{"x":0.10}"#);
