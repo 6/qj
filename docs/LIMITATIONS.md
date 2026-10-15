@@ -18,7 +18,9 @@ and stderr go to the same file, the order of large outputs between them (when qj
 buffer goes out) differs: on musl it depends on the size of each of jq's writes, which qj
 doesn't model, and on FreeBSD on a few buffer-boundary cases. Second, compat mode's
 stack-overflow depths, whose models were measured on macOS and glibc Linux only (see
-[COMPATIBILITY.md](COMPATIBILITY.md)).
+[COMPATIBILITY.md](COMPATIBILITY.md)), and with them how jq 1.8.2's use-after-free on a
+chain of modules comes out, which depends on the allocator: on musl a chain of twelve
+modules dies of SIGSEGV in jq, where compat mode reproduces glibc's `assert()`.
 
 ### Windows
 
