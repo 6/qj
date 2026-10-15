@@ -482,13 +482,13 @@ program compiles. [Small stacks](#small-stacks) has the check of everything else
 **Which platforms the models cover.** The models were measured on macOS arm64 and Linux
 x86-64, the two platforms the Checks workflow tests on every push. The other two release
 targets use them unmeasured: Linux aarch64 uses macOS arm64's, and macOS x86-64 uses
-macOS arm64's. The Release check workflow runs jq_diff natively on both; against jq 1.8.1
-(it hasn't run against 1.8.2 yet):
-- **Linux aarch64:** the compat scoreboard is 39,282/39,282.
-- **macOS x86-64:** it is 39,257/39,258. The one miss is a recursion the other builds
-  don't have. jq's x86-64 macOS build doesn't turn `jv_getpath` into a loop, so
-  `[range(600000)|0] as $p | null | getpath($p)` dies of SIGSEGV there, where compat mode
-  answers `null`.
+macOS arm64's. The Release check workflow runs jq_diff natively on both, against jq 1.8.2:
+- **Linux aarch64:** the compat scoreboard is 40,372/40,372.
+- **macOS x86-64:** it is 40,347/40,347. Against 1.8.1 it missed one case: jq's x86-64
+  macOS build doesn't turn `jv_getpath` into a loop, so a path of 600,000 elements killed
+  it. 1.8.2 rejects paths longer than 10,000 first. jq's linker bug comes out differently
+  on that build: a data import in a chain of modules aborts while compiling, as on Linux
+  but with the `assert()` two lines above, and compat mode follows it there.
 
 Near the thresholds on those two platforms, how deep jq gets is the borrowed model's
 guess, not a measurement. The same goes, with no jq_diff run to check it, for the other
