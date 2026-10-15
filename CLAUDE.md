@@ -101,7 +101,8 @@ answer, a crash, another cap) is a `fail`. The scoreboard shows all of it per su
   given to jq too so `$ENV` stays comparable), `JQ_DIFF_BASELINE=path` and
   `JQ_DIFF_COMPAT_BASELINE=path`, `JQ_DIFF_UPDATE_BASELINE=1`, `JQ_DIFF_JQ`/`JQ_DIFF_QJ` (binaries),
   `JQ_DIFF_TIMEOUT` (s, default 10), `JQ_DIFF_MEM_MB` (per-process RSS cap, default 2048),
-  `JQ_DIFF_JOBS`. All of them apply to both scoreboards.
+  `JQ_DIFF_JOBS`, `JQ_DIFF_PROGRESS=N` (every N s, cases done and the ones running longest;
+  the platform workflow's VMs use it). All of them apply to both scoreboards.
 - **Outputs:** `target/tmp/jq_diff/report.txt` (every non-passing case, and every `unfin`
   one, jq vs qj stdout, stderr, exit code), `results.tsv` (one line per case),
   `baseline_candidate.txt`; the compat scoreboard's are in `target/tmp/jq_diff/compat/`.

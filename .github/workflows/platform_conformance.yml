@@ -32,14 +32,22 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Shared by the three jobs. VMs are slower than hosted runners, so jq gets
-  # more than the default 10 s for the deepest programs.
+  # more than the default 10 s for the deepest programs. Everything goes to
+  # the log as it happens (the build, then jq_diff's progress every minute
+  # with the cases running longest), because a VM's files only come back
+  # when its step ends: a run that hangs until the job is cancelled leaves
+  # nothing else behind.
   JQ_DIFF_RUN: >-
     ulimit -c 0;
+    date -u;
+    cargo test --release --test jq_diff --no-run;
+    date -u;
     JQ_DIFF_TIMEOUT=60
+    JQ_DIFF_PROGRESS=60
     JQ_DIFF_JQ="$PWD/target/jq/bin/jq"
     JQ_DIFF_BASELINE=target/tmp/no_baseline.txt
-    cargo test --release --test jq_diff -- --ignored --exact --nocapture jq_diff > jq_diff.txt 2>&1 || true;
-    grep -E '^(jq_diff|TOTAL|group )' jq_diff.txt || tail -40 jq_diff.txt
+    cargo test --release --test jq_diff -- --ignored --exact --nocapture jq_diff 2>&1 | tee jq_diff.txt || true;
+    date -u
 
 jobs:
   musl:

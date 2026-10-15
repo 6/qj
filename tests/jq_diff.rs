@@ -45,6 +45,9 @@
 //! - `JQ_DIFF_JQ`, `JQ_DIFF_QJ`: binaries (default: `jq` on PATH, cargo's qj).
 //! - `JQ_DIFF_TIMEOUT` (seconds, default 10), `JQ_DIFF_MEM_MB` (resident
 //!   memory cap per process, default 2048), `JQ_DIFF_JOBS` (parallelism).
+//! - `JQ_DIFF_PROGRESS=N`: every N seconds, print how many cases are done and
+//!   the ones that have been running longest (for CI, where a stuck run
+//!   otherwise shows nothing until it is killed).
 //!
 //! The test fails when a case in the baseline drops to a lower level. Full
 //! details of every non-passing case are written to
@@ -72,10 +75,12 @@ mod testfile;
 use cases::{Job, Mode};
 use compare::{Blob, Level, Observed, Verdict};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const REQUIRED_JQ: &str = "jq-1.8.2";
@@ -170,6 +175,7 @@ struct Config {
     timeout: Duration,
     max_rss: u64,
     jobs: usize,
+    progress: Option<Duration>,
     jq: Option<PathBuf>,
     qj: PathBuf,
 }
@@ -238,6 +244,14 @@ impl Config {
             timeout: Duration::from_secs_f64(timeout),
             max_rss: mem_mb << 20,
             jobs: jobs.max(1),
+            progress: env_nonempty("JQ_DIFF_PROGRESS")
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|e| format!("JQ_DIFF_PROGRESS: {e}"))
+                })
+                .transpose()?
+                .filter(|&s| s > 0.0)
+                .map(Duration::from_secs_f64),
             jq: env_nonempty("JQ_DIFF_JQ").map(PathBuf::from),
             qj: env_nonempty("JQ_DIFF_QJ")
                 .map(PathBuf::from)
@@ -412,10 +426,52 @@ struct Outcome {
     qj_time: Option<Duration>,
 }
 
-fn run_job(ctx: &Ctx, cache: &cache::Cache, key: &str, jq: &Path, qj: &Path, job: &Job) -> Outcome {
+/// What `JQ_DIFF_PROGRESS` reports: how many cases are done, and which tool
+/// is running which case since when.
+#[derive(Default)]
+struct Progress {
+    done: AtomicUsize,
+    running: Mutex<HashMap<usize, (&'static str, Instant)>>,
+}
+
+impl Progress {
+    fn start(&self, slot: usize, tool: &'static str) {
+        if let Ok(mut r) = self.running.lock() {
+            r.insert(slot, (tool, Instant::now()));
+        }
+    }
+
+    fn finish(&self, slot: usize) {
+        if let Ok(mut r) = self.running.lock() {
+            r.remove(&slot);
+        }
+        self.done.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The `n` cases that have been running longest: `(slot, tool, for how long)`.
+    fn longest(&self, n: usize) -> Vec<(usize, &'static str, Duration)> {
+        let mut v: Vec<_> = match self.running.lock() {
+            Ok(r) => r.iter().map(|(&i, &(t, s))| (i, t, s.elapsed())).collect(),
+            Err(_) => Vec::new(),
+        };
+        v.sort_by(|a, b| b.2.cmp(&a.2));
+        v.truncate(n);
+        v
+    }
+}
+
+fn run_job(
+    ctx: &Ctx,
+    cache: &cache::Cache,
+    key: &str,
+    (jq, qj): (&Path, &Path),
+    job: &Job,
+    (progress, slot): (&Progress, usize),
+) -> Outcome {
     let (jq_obs, jq_time) = match cache.get(key) {
         Some(o) => (o, None),
         None => {
+            progress.start(slot, "jq");
             let (o, _, t) = observe(ctx, jq, job, false);
             cache.put(key.to_string(), o.clone());
             (o, Some(t))
@@ -423,7 +479,9 @@ fn run_job(ctx: &Ctx, cache: &cache::Cache, key: &str, jq: &Path, qj: &Path, job
     };
     // qj runs even when jq never finished: it must not finish either, and in
     // the same way (see `compare::classify`).
+    progress.start(slot, "qj");
     let (qj_obs, qj_raw_err, qj_time) = observe(ctx, qj, job, true);
+    progress.finish(slot);
     let verdict = compare::classify(&jq_obs, &qj_obs);
     let detail = (verdict != Verdict::Level(Level::Pass)).then_some((jq_obs, qj_obs, qj_raw_err));
     Outcome {
@@ -750,11 +808,39 @@ fn run_board(board: Board) {
         .num_threads(cfg.jobs)
         .build()
         .expect("thread pool");
-    let outcomes: Vec<Outcome> = pool.install(|| {
-        jobs.par_iter()
-            .zip(keys.par_iter())
-            .map(|(job, key)| run_job(&ctx, &cache, key, &jq, &cfg.qj, job))
-            .collect()
+    let progress = Progress::default();
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let outcomes: Vec<Outcome> = std::thread::scope(|scope| {
+        if let Some(every) = cfg.progress {
+            let (progress, jobs) = (&progress, &jobs);
+            scope.spawn(move || {
+                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    stopped.recv_timeout(every)
+                {
+                    let mut line = format!(
+                        "{name}: {}/{} cases after {:.0}s",
+                        progress.done.load(Ordering::Relaxed),
+                        jobs.len(),
+                        started.elapsed().as_secs_f64()
+                    );
+                    for (slot, tool, t) in progress.longest(4) {
+                        let _ = write!(line, "; {tool} {} {:.0}s", jobs[slot].id, t.as_secs_f64());
+                    }
+                    say!("{line}");
+                }
+            });
+        }
+        let outcomes = pool.install(|| {
+            jobs.par_iter()
+                .zip(keys.par_iter())
+                .enumerate()
+                .map(|(slot, (job, key))| {
+                    run_job(&ctx, &cache, key, (&jq, &cfg.qj), job, (&progress, slot))
+                })
+                .collect()
+        });
+        drop(stop);
+        outcomes
     });
 
     let keep: HashSet<String> = keys.iter().cloned().collect();
